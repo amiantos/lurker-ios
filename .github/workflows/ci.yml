@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: this workflow only reads the repo.
+permissions:
+  contents: read
+
+# Supersede stale runs on a PR branch, but never cancel a run on main.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    name: Build
+    # NOT macos-latest: that still aliases to macOS 15, whose DEFAULT Xcode is 16.4 —
+    # which cannot build an iOS 26 deployment target. macos-26 ships Xcode 26.x.
+    runs-on: macos-26
+    # The default is 360 minutes, and macOS minutes are the expensive ones.
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        # The image's DEFAULT Xcode is changed by GitHub without warning, so pin it.
+        # `^26.0` floats within Xcode 26: it survives the image dropping a specific
+        # patch release, but will never silently fall back to Xcode 16.
+        # Pinned to a SHA because it's a third-party action: v1.7.0.
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
+        with:
+          xcode-version: '^26.0'
+
+      # Cheap, and it makes the two most likely CI-only failures legible instead of
+      # cryptic: the wrong Xcode got selected, or the shared scheme went missing.
+      - name: Show toolchain and schemes
+        run: |
+          xcodebuild -version
+          xcodebuild -list -project Lurker.xcodeproj
+
+      - name: Build for iOS Simulator
+        # `set -o pipefail` is NOT optional. Without it the pipeline exits with
+        # xcbeautify's status, so a FAILING BUILD REPORTS GREEN.
+        #
+        # `generic/platform=iOS Simulator` deliberately names no device: it builds
+        # against the simulator SDK without needing any simulator runtime installed.
+        # That sidesteps both device-name churn (`name=iPhone 17` rots every September)
+        # and the recurring runner bug where an Xcode ships without its matching iOS
+        # runtime. Name a concrete device only when something must actually RUN.
+        #
+        # Simulator builds are ad-hoc signed, but the project carries a DEVELOPMENT_TEAM
+        # and the runner has no keychain — the CODE_SIGNING flags make that a non-issue.
+        run: |
+          set -o pipefail && xcodebuild build \
+            -project Lurker.xcodeproj \
+            -scheme Lurker \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            | xcbeautify --renderer github-actions
