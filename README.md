@@ -53,11 +53,12 @@ Four files, and the split is not one to imitate:
 - [`BufferListViewController.swift`](Lurker/BufferListViewController.swift) — flat list of buffers.
 - [`ChatViewController.swift`](Lurker/ChatViewController.swift) — messages + input bar.
 
-The real app ([lurker#491](https://github.com/amiantos/lurker/issues/491)) is meant to be built
-around one internal model (`Network` / `Buffer` / `Message` / `Member` + an event enum) behind a
-**transport-adapter seam**, so the UI never knows whether it's talking to a self-hosted Lurker, the
-hosted service via the control plane, or IRC directly. None of that is here — this client is welded
-to one transport on purpose.
+The real app is scoped in the **1.0 — Daily driver** milestone. It gets one client with a
+configurable base URL + auth strategy, behind a proper internal model (`Network` / `Buffer` /
+`Message` / `Member` + an event enum). Note there is deliberately **no transport-adapter seam**: the
+original plan called for one, but it was justified almost entirely by a direct-IRC mode that has
+since been **dropped permanently**. Self-hosted and hosted are the same client differing only in base
+URL and auth, so the seam would abstract over a second transport that will never exist.
 
 ## Running it
 
