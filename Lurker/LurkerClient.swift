@@ -4,9 +4,15 @@
 import Foundation
 
 /// Prototype client for Lurker's WS + REST contract. Proves the bearer-auth work
-/// (lurker#489 / PR #570) end to end from a real iOS app: log in with a password,
-/// open the WebSocket with `Authorization: Bearer`, list buffers, read a channel,
-/// send a message.
+/// end to end from a real iOS app against BOTH backends:
+///   - self-hosted: mint a token at the cell (`POST /api/auth/login/token`,
+///     lurker#489 / PR #570),
+///   - hosted lurker.chat: mint at the control plane (`POST /_cp/auth/app/login`,
+///     CP#58) — the CP verifies the account and hands back the same signed claim,
+///     which its reverse proxy accepts as a Bearer and routes to the account's
+///     cell. Everything after login is byte-identical: the same Bearer opens the
+///     WebSocket and authenticates REST, because the proxy resolves it and injects
+///     the real cell session transparently.
 ///
 /// Deliberately NOT the shape the real app should take — no persistence, no
 /// reconnect/resume, no `?since=` gap handling, no internal-model/transport-adapter
@@ -59,14 +65,26 @@ final class LurkerClient: NSObject {
 
     // MARK: - Auth
 
-    /// `POST /api/auth/login/token` — the mint endpoint added in PR #570. Password
-    /// in, session token out, no browser and no cookie jar in the loop.
-    func login(server: String, username: String, password: String, completion: @escaping (Bool) -> Void) {
+    /// Mint a session token from a password.
+    ///
+    /// - hosted=false → `POST /api/auth/login/token` on the cell (PR #570):
+    ///   `{username, password}` in, `{token}` out.
+    /// - hosted=true → `POST /_cp/auth/app/login` on the control plane (CP#58):
+    ///   `{email, password}` in, `{token}` out. The token is a CP claim the proxy
+    ///   accepts as a Bearer; from here on the flow is identical to self-hosted.
+    func login(
+        server: String,
+        username: String,
+        password: String,
+        hosted: Bool = false,
+        completion: @escaping (Bool) -> Void
+    ) {
         let base = server.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         baseURL = base
 
-        guard let url = URL(string: "\(base)/api/auth/login/token") else {
+        let loginPath = hosted ? "/_cp/auth/app/login" : "/api/auth/login/token"
+        guard let url = URL(string: "\(base)\(loginPath)") else {
             fail("That server URL doesn't look right.", completion)
             return
         }
@@ -74,7 +92,7 @@ final class LurkerClient: NSObject {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(
-            withJSONObject: ["username": username, "password": password]
+            withJSONObject: [(hosted ? "email" : "username"): username, "password": password]
         )
 
         session.dataTask(with: req) { [weak self] data, response, error in
