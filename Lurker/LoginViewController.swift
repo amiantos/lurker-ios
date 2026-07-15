@@ -7,15 +7,24 @@ import UIKit
 /// a local dev server is just `http://localhost:8010` (no 10.0.2.2 equivalent as on
 /// Android). 8010 is the API/WS server — NOT the Vite client dev port, which only
 /// serves the web SPA and has no /api or /ws.
+///
+/// Two backends: self-hosted mints its token at the cell; hosted mints at the
+/// control plane and rides the proxy. See LurkerClient.login.
+private let hostedURL = "https://app.lurker.chat"
+private let selfHostedURL = "http://localhost:8010"
+
 final class LoginViewController: UIViewController {
     private let client: LurkerClient
 
+    private let backendControl = UISegmentedControl(items: ["Self-hosted", "Hosted (lurker.chat)"])
     private let serverField = UITextField()
     private let usernameField = UITextField()
     private let passwordField = UITextField()
     private let signInButton = UIButton(type: .system)
     private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
+
+    private var hosted: Bool { backendControl.selectedSegmentIndex == 1 }
 
     init(client: LurkerClient) {
         self.client = client
@@ -40,7 +49,10 @@ final class LoginViewController: UIViewController {
         blurb.textColor = .secondaryLabel
         blurb.numberOfLines = 0
 
-        configure(serverField, placeholder: "Server URL", text: "http://localhost:8010")
+        backendControl.selectedSegmentIndex = 0
+        backendControl.addTarget(self, action: #selector(backendChanged), for: .valueChanged)
+
+        configure(serverField, placeholder: "Server URL", text: selfHostedURL)
         serverField.keyboardType = .URL
         serverField.autocapitalizationType = .none
         serverField.autocorrectionType = .no
@@ -63,7 +75,7 @@ final class LoginViewController: UIViewController {
         statusLabel.numberOfLines = 0
 
         let stack = UIStackView(arrangedSubviews: [
-            heading, blurb, serverField, usernameField, passwordField, signInButton, spinner, statusLabel,
+            heading, blurb, backendControl, serverField, usernameField, passwordField, signInButton, spinner, statusLabel,
         ])
         stack.axis = .vertical
         stack.spacing = 12
@@ -89,6 +101,20 @@ final class LoginViewController: UIViewController {
         field.heightAnchor.constraint(equalToConstant: 44).isActive = true
     }
 
+    /// Switching backends resets the server URL to that backend's default (unless
+    /// the field has been hand-edited off both defaults) and relabels the identifier
+    /// field: hosted authenticates by account email, self-hosted by IRC-side username.
+    @objc private func backendChanged() {
+        if hosted, serverField.text == selfHostedURL {
+            serverField.text = hostedURL
+        } else if !hosted, serverField.text == hostedURL {
+            serverField.text = selfHostedURL
+        }
+        usernameField.placeholder = hosted ? "Email" : "Username"
+        usernameField.textContentType = hosted ? .emailAddress : .username
+        usernameField.keyboardType = hosted ? .emailAddress : .default
+    }
+
     @objc private func signIn() {
         view.endEditing(true)
         statusLabel.text = nil
@@ -97,7 +123,8 @@ final class LoginViewController: UIViewController {
         client.login(
             server: serverField.text ?? "",
             username: usernameField.text ?? "",
-            password: passwordField.text ?? ""
+            password: passwordField.text ?? "",
+            hosted: hosted
         ) { [weak self] ok in
             guard let self else { return }
             self.setBusy(false)
