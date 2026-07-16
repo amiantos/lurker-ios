@@ -235,8 +235,11 @@ final class LurkerClient {
               let text = String(data: data, encoding: .utf8)
         else { return }
         socket.send(.string(text)) { [weak self] error in
-            guard error != nil else { return }
-            Task { @MainActor in self?.onFrame(.serverError("Send failed")) }
+            guard let error else { return }
+            // Capture the reason (a String) before hopping — Error isn't Sendable, but its
+            // localized description is, and it's what makes an offline/TLS failure legible.
+            let reason = error.localizedDescription
+            Task { @MainActor in self?.onFrame(.serverError("Send failed: \(reason)")) }
         }
     }
 

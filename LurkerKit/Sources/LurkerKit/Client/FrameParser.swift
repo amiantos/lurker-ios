@@ -91,8 +91,12 @@ enum FrameParser {
         let events = obj.objects("events")
         // A shell is `events: []` + `hasMoreOlder: true` — the "unhydrated, fetch on
         // open" marker. Any real events, or a frame that isn't claiming more older,
-        // means we have this buffer's history.
-        let hydrated = !events.isEmpty || !obj.bool("hasMoreOlder")
+        // means we have this buffer's history. Read `hasMoreOlder` once with a `true`
+        // fallback (matching Buffer's default): if a server ever omits it on an empty
+        // frame, treating the buffer as a shell (→ fetch) is safe; the `false` fallback
+        // would mislabel it hydrated and it would render empty forever.
+        let hasMoreOlder = obj.bool("hasMoreOlder", true)
+        let hydrated = !events.isEmpty || !hasMoreOlder
         // Only a resume slice carries a `reset` field. reset:false means "these are
         // just the events past ?since" → append; reset:true (oversized gap) and a plain
         // full/latest backlog (no field) → replace.
@@ -106,7 +110,7 @@ enum FrameParser {
             lastReadId: obj.int("lastReadId"),
             joined: obj.bool("joined"),
             hydrated: hydrated,
-            hasMoreOlder: obj.bool("hasMoreOlder")
+            hasMoreOlder: hasMoreOlder
         )
         return .backlog(buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append)
     }
