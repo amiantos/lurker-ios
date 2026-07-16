@@ -22,6 +22,7 @@ final class LoginViewController: UIViewController {
     private let signInButton = UIButton(type: .system)
     private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
+    private let scrollView = UIScrollView()
 
     private var backend: Backend { backendControl.selectedSegmentIndex == 1 ? .hosted : .selfHosted }
 
@@ -84,13 +85,38 @@ final class LoginViewController: UIViewController {
         stack.spacing = 12
         stack.setCustomSpacing(24, after: blurb)
         stack.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(stack)
+
+        // A scroll view so the keyboard never covers a field: on a short screen (or with
+        // the keyboard up) the whole form scrolls, and we inset for the keyboard below.
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.keyboardDismissMode = .interactive
+        scrollView.alwaysBounceVertical = true
+        view.addSubview(scrollView)
+        scrollView.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            stack.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
-            stack.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
+            scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            // Vertical anchors to the content guide (scrollable); horizontal anchors to the
+            // frame guide (fixed to the viewport, so there's no sideways scroll or offset).
+            stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 32),
+            stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -32),
+            stack.leadingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.trailingAnchor, constant: -24),
         ])
+
+        let center = NotificationCenter.default
+        center.addObserver(
+            self, selector: #selector(keyboardWillChange),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil
+        )
+        center.addObserver(
+            self, selector: #selector(keyboardWillHide),
+            name: UIResponder.keyboardWillHideNotification, object: nil
+        )
 
         // The reason a sign-in failed, or why a prior session ended (a mid-session 401
         // bounces here with an explanation), lands in this label.
@@ -100,10 +126,25 @@ final class LoginViewController: UIViewController {
             .store(in: &cancellables)
     }
 
+    // MARK: - Keyboard
+
+    @objc private func keyboardWillChange(_ note: Notification) {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+        let overlap = max(0, view.bounds.maxY - view.convert(frame, from: nil).minY)
+        scrollView.contentInset.bottom = overlap
+        scrollView.verticalScrollIndicatorInsets.bottom = overlap
+    }
+
+    @objc private func keyboardWillHide() {
+        scrollView.contentInset.bottom = 0
+        scrollView.verticalScrollIndicatorInsets.bottom = 0
+    }
+
     private func configure(_ field: UITextField, placeholder: String, text: String = "") {
         field.placeholder = placeholder
         field.text = text
         field.borderStyle = .roundedRect
+        field.delegate = self
         field.heightAnchor.constraint(equalToConstant: 44).isActive = true
     }
 
@@ -148,5 +189,15 @@ final class LoginViewController: UIViewController {
     private func setBusy(_ busy: Bool) {
         signInButton.isEnabled = !busy
         busy ? spinner.startAnimating() : spinner.stopAnimating()
+    }
+}
+
+extension LoginViewController: UITextFieldDelegate {
+    func textFieldDidBeginEditing(_ textField: UITextField) {
+        // Scroll the focused field above the keyboard, once the inset has been applied.
+        DispatchQueue.main.async {
+            let rect = textField.convert(textField.bounds, to: self.scrollView).insetBy(dx: 0, dy: -20)
+            self.scrollView.scrollRectToVisible(rect, animated: true)
+        }
     }
 }

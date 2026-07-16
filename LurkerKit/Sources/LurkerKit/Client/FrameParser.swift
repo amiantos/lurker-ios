@@ -15,7 +15,17 @@ enum FrameParser {
         switch obj["kind"] as? String {
         case "snapshot": return parseSnapshot(obj)
         case "backlog": return parseBacklog(obj)
+        case "history": return parseHistory(obj)
         case "irc": return parseLive(obj)
+        case "read-state":
+            let target = obj.string("target")
+            return target.isEmpty ? .ignored : .readState(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                lastReadId: obj.int("lastReadId"),
+                unread: obj.int("unread"),
+                highlights: obj.int("highlights")
+            )
         case "send-result":
             return .sendResult(
                 clientId: obj.stringOrNull("clientId"),
@@ -81,8 +91,12 @@ enum FrameParser {
         let events = obj.objects("events")
         // A shell is `events: []` + `hasMoreOlder: true` — the "unhydrated, fetch on
         // open" marker. Any real events, or a frame that isn't claiming more older,
-        // means we have this buffer's history.
-        let hydrated = !events.isEmpty || !obj.bool("hasMoreOlder")
+        // means we have this buffer's history. Read `hasMoreOlder` once with a `true`
+        // fallback (matching Buffer's default): if a server ever omits it on an empty
+        // frame, treating the buffer as a shell (→ fetch) is safe; the `false` fallback
+        // would mislabel it hydrated and it would render empty forever.
+        let hasMoreOlder = obj.bool("hasMoreOlder", true)
+        let hydrated = !events.isEmpty || !hasMoreOlder
         // Only a resume slice carries a `reset` field. reset:false means "these are
         // just the events past ?since" → append; reset:true (oversized gap) and a plain
         // full/latest backlog (no field) → replace.
@@ -95,7 +109,8 @@ enum FrameParser {
             highlights: obj.int("highlights"),
             lastReadId: obj.int("lastReadId"),
             joined: obj.bool("joined"),
-            hydrated: hydrated
+            hydrated: hydrated,
+            hasMoreOlder: hasMoreOlder
         )
         return .backlog(buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append)
     }
@@ -104,6 +119,21 @@ enum FrameParser {
         let target = obj.string("target")
         if target.isEmpty { return .ignored }
         return .live(networkId: obj.intOrNull("networkId"), target: target, message: parseEvent(obj))
+    }
+
+    private static func parseHistory(_ obj: [String: Any]) -> ServerFrame {
+        let target = obj.string("target")
+        if target.isEmpty { return .ignored }
+        let mode = HistoryMode(rawValue: obj.string("mode")) ?? .before
+        // `hasMore` is a legacy alias for `hasMoreOlder`; prefer the explicit field.
+        return .history(
+            networkId: obj.intOrNull("networkId"),
+            target: target,
+            events: obj.objects("events").map(parseEvent),
+            mode: mode,
+            hasMoreOlder: obj.bool("hasMoreOlder", obj.bool("hasMore")),
+            hasMoreNewer: obj.bool("hasMoreNewer")
+        )
     }
 
     /// MessageEvent → domain `Message`. Events are spread flat on the frame, so the

@@ -23,6 +23,24 @@ enum ServerFrame: Equatable, Sendable {
     /// WS `irc`: one live event, its fields spread flat on the frame.
     case live(networkId: Int?, target: String, message: Message)
 
+    /// WS `history`: a paginated slice for an already-open buffer (distinct from
+    /// `backlog`, which is connect-time / open-buffer hydration). `mode` decides how the
+    /// store splices it in — `before` prepends, `after` appends, `latest`/`around` replace.
+    /// `events` is always oldest-first.
+    case history(
+        networkId: Int?,
+        target: String,
+        events: [Message],
+        mode: HistoryMode,
+        hasMoreOlder: Bool,
+        hasMoreNewer: Bool
+    )
+
+    /// WS `read-state`: server-authoritative read counts for a buffer, broadcast to all of
+    /// the user's devices (after a mark-read, or any countable event). The client mirrors
+    /// these onto the buffer — it never derives unread/highlight counts locally.
+    case readState(networkId: Int?, target: String, lastReadId: Int, unread: Int, highlights: Int)
+
     /// WS `send-result`: ack for a send/action/notice, keyed by the client's clientId.
     case sendResult(clientId: String?, ok: Bool, error: String?)
 
@@ -41,6 +59,15 @@ enum ServerFrame: Equatable, Sendable {
 
     /// A frame we parse but the 1.0 foundation doesn't act on yet.
     case ignored
+}
+
+/// The four `history` request modes. `before`/`after` page older/newer, `around` jumps
+/// to a message, `latest` returns to the live tail. See the server's `history` verb.
+public enum HistoryMode: String, Equatable, Sendable {
+    case before
+    case after
+    case around
+    case latest
 }
 
 /// The per-network live view from the WS `snapshot` (no `name` — see `.networks`).

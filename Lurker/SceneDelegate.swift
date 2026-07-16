@@ -41,6 +41,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             .store(in: &cancellables)
     }
 
+    // A socket dies after a long background; the view model reconnects (and resumes from
+    // `?since=`) when we come back, and stops trying while we're away.
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        viewModel.enterForeground()
+    }
+
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        viewModel.enterBackground()
+    }
+
     /// Idempotent: swaps the root only when the on-screen screen doesn't match the
     /// session state, so a replayed/duplicate value is a no-op.
     private func render(_ session: ChatViewModel.SessionState, animated: Bool) {

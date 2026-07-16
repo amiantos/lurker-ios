@@ -4,7 +4,7 @@
 import Combine
 
 /// How the live socket stands, for a connection state the user can actually see.
-public enum SocketStatus: Sendable {
+public enum SocketStatus: Equatable, Sendable {
     case connecting
     case connected
     case reconnecting
@@ -39,6 +39,16 @@ final class LurkerStore {
 
     func reset() { subject.value = ChatState() }
 
+    /// Drop a buffer and its cached messages/members — the optimistic local half of a
+    /// close-buffer (the server then hides it, so it won't re-appear on the next snapshot).
+    func removeBuffer(_ key: BufferKey) {
+        var next = subject.value
+        next.buffers[key.id] = nil
+        next.messages[key.id] = nil
+        next.members[key.id] = nil
+        subject.value = next
+    }
+
     func clearError() { subject.value.error = nil }
 
     func apply(_ frame: ServerFrame) {
@@ -56,6 +66,16 @@ final class LurkerStore {
             return applyBacklog(state, buffer, messages, hydrated: hydrated, append: append)
         case .live(let networkId, let target, let message):
             return applyLive(state, networkId: networkId, target: target, message: message)
+        case .history(let networkId, let target, let events, let mode, let hasMoreOlder, _):
+            return applyHistory(
+                state, networkId: networkId, target: target,
+                events: events, mode: mode, hasMoreOlder: hasMoreOlder
+            )
+        case .readState(let networkId, let target, let lastReadId, let unread, let highlights):
+            return applyReadState(
+                state, networkId: networkId, target: target,
+                lastReadId: lastReadId, unread: unread, highlights: highlights
+            )
         case .serverError(let text):
             var next = state
             next.error = text
@@ -137,6 +157,11 @@ final class LurkerStore {
         let alreadyHydrated = next.buffers[key]?.hydrated == true
         var buffer = frameBuffer
         buffer.hydrated = hydrated || alreadyHydrated
+        // A resync shell (hasMoreOlder defaults true) must not reset the paging state of
+        // a buffer we've already paged into.
+        if !hydrated, let prior = next.buffers[key], prior.hydrated {
+            buffer.hasMoreOlder = prior.hasMoreOlder
+        }
         next.buffers[key] = buffer
 
         if !hydrated {
@@ -146,8 +171,12 @@ final class LurkerStore {
             // Resume gap slice: append past the tail, de-duping by persisted id.
             next.messages[key] = appendMerged(next.messages[key] ?? [], messages)
         } else {
-            // Full / latest / reset backlog: replace wholesale.
-            next.messages[key] = messages
+            // Full / latest backlog: replace — but keep any live events that arrived after
+            // the server built this backlog (id past its tail), so hydrating mid-traffic
+            // (e.g. a message lands between open-buffer and its reply) can't punch a hole.
+            let tail = messages.map(\.id).max() ?? 0
+            let heldNewer = (next.messages[key] ?? []).filter { $0.id > tail }
+            next.messages[key] = messages + heldNewer
         }
         next.maxEventId = maxEventId(next.maxEventId, frameBuffer.networkId, messages)
         return next
@@ -175,6 +204,61 @@ final class LurkerStore {
         }
         next.messages[key] = existing + [message]
         next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
+        return next
+    }
+
+    /// Mirror server-authoritative read counts onto the buffer. The counts are never
+    /// derived locally — a `read-state` broadcast (from this device's mark-read, another
+    /// device's, or any countable event) is the single source of truth.
+    private static func applyReadState(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        lastReadId: Int,
+        unread: Int,
+        highlights: Int
+    ) -> ChatState {
+        var next = state
+        let key = BufferKey(networkId: networkId, target: target).id
+        guard var buffer = next.buffers[key] else { return next }
+        buffer.lastReadId = lastReadId
+        buffer.unread = unread
+        buffer.highlights = highlights
+        next.buffers[key] = buffer
+        return next
+    }
+
+    /// Splice a `history` page in: `before` prepends older, `after` appends newer,
+    /// `latest`/`around` replace. Always de-dupes by persisted id — a page can overlap
+    /// events the live fan-out already delivered.
+    private static func applyHistory(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        events: [Message],
+        mode: HistoryMode,
+        hasMoreOlder: Bool
+    ) -> ChatState {
+        var next = state
+        let key = BufferKey(networkId: networkId, target: target).id
+        let existing = next.messages[key] ?? []
+        switch mode {
+        case .before:
+            let held = Set(existing.compactMap { $0.id != 0 ? $0.id : nil })
+            next.messages[key] = events.filter { $0.id == 0 || !held.contains($0.id) } + existing
+        case .after:
+            next.messages[key] = appendMerged(existing, events)
+        case .latest, .around:
+            // Replace, but keep live events newer than this slice's tail (no hole).
+            let tail = events.map(\.id).max() ?? 0
+            next.messages[key] = events + existing.filter { $0.id > tail }
+        }
+        if var buffer = next.buffers[key] {
+            buffer.hydrated = true
+            if mode != .after { buffer.hasMoreOlder = hasMoreOlder } // `after` pages newer
+            next.buffers[key] = buffer
+        }
+        next.maxEventId = maxEventId(next.maxEventId, networkId, events)
         return next
     }
 

@@ -10,7 +10,7 @@ import UIKit
 /// and live `irc` frames after that — including the echo of our own sends (`self: true`),
 /// which is why there's no optimistic-bubble bookkeeping here. Only speech events
 /// (message/action/notice) render; structural events (join/part/…) are #9.
-final class ChatViewController: UIViewController, UITableViewDataSource {
+final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let viewModel: ChatViewModel
     private let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
@@ -21,7 +21,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
     private let inputBar = UIStackView()
     private var inputBarBottom: NSLayoutConstraint!
 
-    private var messages: [Message] = []
+    /// A rendered row: a message, or the "new messages" divider.
+    private enum Row {
+        case message(Message)
+        case unreadDivider
+    }
+
+    private var messages: [Message] = [] // filtered speech; drives anchoring + mark-read
+    private var rows: [Row] = [] // messages + the unread divider; what the table renders
+    /// The read boundary, snapshotted once when the buffer opens and held fixed for the
+    /// visit — the divider must not jump as we mark messages read live.
+    private var dividerAfterId = 0
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -38,11 +48,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
         title = buffer.target
 
         tableView.dataSource = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "msg")
+        tableView.delegate = self
+        tableView.register(MessageCell.self, forCellReuseIdentifier: MessageCell.reuseID)
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "divider")
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
+
+        // Snapshot the unread boundary once, on open, and hold it for the visit.
+        dividerAfterId = viewModel.state.buffers[buffer.key.id]?.lastReadId ?? 0
 
         inputField.placeholder = "Message \(buffer.target)"
         inputField.borderStyle = .roundedRect
@@ -78,18 +93,78 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
 
         observeKeyboard()
 
+        // Only re-render when this buffer's messages or the error actually change — a
+        // frame for some other channel shouldn't reload this screen.
+        let key = buffer.key.id
         viewModel.statePublisher
+            .removeDuplicates { $0.messages[key] == $1.messages[key] && $0.error == $1.error }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
         apply(viewModel.state)
     }
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        // We're now looking at this buffer — mark it read up to the latest loaded message.
+        viewModel.markRead(buffer.key)
+    }
+
     private func apply(_ state: ChatState) {
-        messages = (state.messages[buffer.key.id] ?? []).filter { $0.type.isSpeech }
-        tableView.reloadData()
-        scrollToBottom()
+        let updated = (state.messages[buffer.key.id] ?? []).filter { $0.type.isSpeech }
+        let oldFirstId = messages.first?.id
+        let newFirstId = updated.first?.id
+        let wasNearBottom = isNearBottom
+        let oldContentHeight = tableView.contentSize.height
+
+        messages = updated
+        rows = buildRows(from: updated)
         surface(state.error)
+        // New traffic arrived while we're on screen → keep it marked read.
+        if view.window != nil { viewModel.markRead(buffer.key) }
+
+        // A history page prepended older messages above the viewport: reload, then shift
+        // the content offset by exactly the added height so the rows you were reading stay
+        // put instead of jumping.
+        let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
+        if prepended {
+            UIView.performWithoutAnimation {
+                tableView.reloadData()
+                tableView.layoutIfNeeded()
+                tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
+            }
+        } else {
+            tableView.reloadData()
+            // Follow live traffic only if you were already at the bottom; if you'd scrolled
+            // up to read, a new message lands below without yanking you down.
+            if wasNearBottom { scrollToBottom() }
+        }
+    }
+
+    /// Interleave the unread divider before the first message past the read boundary.
+    /// Only when there was a real read point (`dividerAfterId > 0`) and something unread —
+    /// a brand-new buffer with nothing previously read shows no divider.
+    private func buildRows(from messages: [Message]) -> [Row] {
+        var result = messages.map(Row.message)
+        if dividerAfterId > 0, let index = messages.firstIndex(where: { $0.id > dividerAfterId }) {
+            result.insert(.unreadDivider, at: index)
+        }
+        return result
+    }
+
+    /// Within ~80pt of the bottom — treated as "following the conversation".
+    private var isNearBottom: Bool {
+        let fromBottom = tableView.contentSize.height - tableView.contentOffset.y - tableView.bounds.height
+        return fromBottom < 80
+    }
+
+    // MARK: - UITableViewDelegate (pagination)
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Near the top → pull older history. The view model guards `hasMoreOlder` and an
+        // in-flight page, so firing this on every scroll tick is safe.
+        guard !messages.isEmpty, scrollView.contentOffset.y < 300 else { return }
+        viewModel.loadOlder(buffer.key)
     }
 
     /// A failed send (`send-result` ok:false) or a server `error` frame lands in
@@ -106,9 +181,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
     }
 
     private func scrollToBottom() {
-        guard !messages.isEmpty else { return }
+        guard !rows.isEmpty else { return }
         tableView.scrollToRow(
-            at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: false
+            at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: false
         )
     }
 
@@ -150,28 +225,33 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
     // MARK: - UITableViewDataSource
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        messages.count
+        rows.count
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "msg", for: indexPath)
-        let message = messages[indexPath.row]
+        switch rows[indexPath.row] {
+        case .unreadDivider:
+            return dividerCell()
+        case .message(let message):
+            return messageCell(message)
+        }
+    }
 
+    private func messageCell(_ message: Message) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: MessageCell.reuseID) as! MessageCell
+        cell.configure(MessageRenderer.render(message))
+        return cell
+    }
+
+    private func dividerCell() -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "divider")!
         var content = cell.defaultContentConfiguration()
-        let nick = message.nick ?? "*"
-        let label = message.type == .action ? "* \(nick)" : nick
-        let line = NSMutableAttributedString(
-            string: label,
-            attributes: [
-                .font: UIFont.preferredFont(forTextStyle: .subheadline).bold(),
-                .foregroundColor: message.isSelf ? UIColor.tintColor : UIColor.secondaryLabel,
-            ]
-        )
-        line.append(NSAttributedString(
-            string: "  \(message.text ?? "")",
-            attributes: [.font: UIFont.preferredFont(forTextStyle: .subheadline)]
-        ))
-        content.attributedText = line
+        content.text = "New messages"
+        content.textProperties.color = .systemRed
+        let caption = UIFont.preferredFont(forTextStyle: .caption1)
+        content.textProperties.font = caption.fontDescriptor.withSymbolicTraits(.traitBold)
+            .map { UIFont(descriptor: $0, size: 0) } ?? caption
+        content.textProperties.alignment = .center
         cell.contentConfiguration = content
         return cell
     }
@@ -181,12 +261,5 @@ extension ChatViewController: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         send()
         return false
-    }
-}
-
-private extension UIFont {
-    func bold() -> UIFont {
-        guard let descriptor = fontDescriptor.withSymbolicTraits(.traitBold) else { return self }
-        return UIFont(descriptor: descriptor, size: 0)
     }
 }

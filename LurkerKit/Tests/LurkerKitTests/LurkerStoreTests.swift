@@ -45,6 +45,18 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(state.messages[chanKey]!.map(\.text), ["hi", "there"])
     }
 
+    func testHydrationPreservesLiveEventsNewerThanTheBacklogTail() {
+        let store = LurkerStore()
+        // Shell, then a live event arrives before the user opens the buffer.
+        store.apply(channelBuffer(hydrated: false, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(50, "arrived-before-open")))
+        // Open → the hydrated backlog was built a moment earlier and tops out at id 40,
+        // so it doesn't contain id 50. The live event must survive the replace.
+        store.apply(channelBuffer(hydrated: true, messages: [msg(38, "a"), msg(40, "b")]))
+
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["a", "b", "arrived-before-open"])
+    }
+
     func testALaterShellNeverUnhydratesOrWipesAnAlreadyReadBuffer() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
@@ -119,6 +131,58 @@ final class LurkerStoreTests: XCTestCase {
             append: false
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["z"])
+    }
+
+    func testHistoryBeforePrependsOlderAndDedupes() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))
+        // A before-page brings 3,4 and re-sends 5 (overlap): prepend 3,4, drop the dup 5.
+        store.apply(.history(
+            networkId: 1, target: "#lurker",
+            events: [msg(3, "c"), msg(4, "d"), msg(5, "e")],
+            mode: .before, hasMoreOlder: false, hasMoreNewer: false
+        ))
+
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["c", "d", "e", "f"])
+        XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreOlder, "hasMoreOlder:false stops paging")
+    }
+
+    func testHistoryTracksHasMoreOlderForThePagingGate() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(4, "d")],
+            mode: .before, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreOlder)
+    }
+
+    func testReadStateMirrorsCountsOntoTheBuffer() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "a")]))
+        store.apply(.readState(networkId: 1, target: "#lurker", lastReadId: 10, unread: 4, highlights: 2))
+
+        let buffer = store.state.buffers[chanKey]!
+        XCTAssertEqual(buffer.lastReadId, 10)
+        XCTAssertEqual(buffer.unread, 4)
+        XCTAssertEqual(buffer.highlights, 2)
+    }
+
+    func testRemoveBufferDropsItAndItsMessages() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "a")]))
+        XCTAssertNotNil(store.state.buffers[chanKey])
+
+        store.removeBuffer(BufferKey(networkId: 1, target: "#lurker"))
+
+        XCTAssertNil(store.state.buffers[chanKey])
+        XCTAssertNil(store.state.messages[chanKey])
+    }
+
+    func testReadStateForAnUnknownBufferIsANoOp() {
+        let store = LurkerStore()
+        store.apply(.readState(networkId: 1, target: "#nope", lastReadId: 5, unread: 1, highlights: 0))
+        XCTAssertNil(store.state.buffers["1::#nope"])
     }
 
     func testSnapshotSeedsChannelBuffersMembersAndNetworkLiveState() {

@@ -18,8 +18,11 @@ public struct Buffer: Equatable, Sendable {
     public var joined: Bool
     /// False until the server has actually read this buffer's history. On a fresh
     /// connect channel/DM buffers arrive as SHELLS (`events: []`); their history is
-    /// not read until the client sends `open-buffer`. Full hydration is #5.
+    /// not read until the client sends `open-buffer`.
     public var hydrated: Bool
+    /// Whether more history exists above what's loaded — gates the scroll-up pagination
+    /// (#6). Defaults true (an unopened buffer has all its history still to fetch).
+    public var hasMoreOlder: Bool
 
     public init(
         networkId: Int?,
@@ -29,7 +32,8 @@ public struct Buffer: Equatable, Sendable {
         highlights: Int = 0,
         lastReadId: Int = 0,
         joined: Bool = false,
-        hydrated: Bool = false
+        hydrated: Bool = false,
+        hasMoreOlder: Bool = true
     ) {
         self.networkId = networkId
         self.target = target
@@ -39,6 +43,7 @@ public struct Buffer: Equatable, Sendable {
         self.lastReadId = lastReadId
         self.joined = joined
         self.hydrated = hydrated
+        self.hasMoreOlder = hasMoreOlder
     }
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }
