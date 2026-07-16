@@ -46,8 +46,13 @@ enum MessageRenderer {
     private static func body(_ message: Message, base: UIFont) -> NSAttributedString {
         let attributed = NSMutableAttributedString()
         for run in IRCFormatting.parse(message.text ?? "") {
-            var attributes: [NSAttributedString.Key: Any] = [.font: font(base, bold: run.bold, italic: run.italic)]
-            if let fg = run.fg, let color = mircColor(fg) { attributes[.foregroundColor] = color }
+            // Always set an explicit color: unlike a label, a UITextView's attributed runs
+            // without a foreground color fall back to a static black, not the dynamic
+            // `.label`, so uncolored text would be unreadable in dark mode.
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font(base, bold: run.bold, italic: run.italic),
+                .foregroundColor: run.fg.flatMap(mircColor) ?? UIColor.label,
+            ]
             if let bg = run.bg, let color = mircColor(bg) { attributes[.backgroundColor] = color }
             if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             if run.strike { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
@@ -100,7 +105,7 @@ enum MessageRenderer {
 
     /// mIRC index → color. The theme slots (0/1/14/15) map to system colors; 16+ don't
     /// render.
-    private static func mircColor(_ index: Int) -> UIColor? {
+    private nonisolated static func mircColor(_ index: Int) -> UIColor? {
         guard index >= 0, index < IRCPalette.mirc.count else { return nil }
         if let hex = IRCPalette.mirc[index] { return UIColor(hex: hex) }
         switch index {
@@ -132,7 +137,7 @@ private extension UIFont {
 
 extension UIColor {
     /// `#rrggbb` → color, or nil if malformed.
-    convenience init?(hex: String) {
+    nonisolated convenience init?(hex: String) {
         var string = hex
         if string.hasPrefix("#") { string.removeFirst() }
         guard string.count == 6, let value = UInt32(string, radix: 16) else { return nil }

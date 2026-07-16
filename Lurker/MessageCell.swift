@@ -18,6 +18,7 @@ final class MessageCell: UITableViewCell {
         messageText.isScrollEnabled = false
         messageText.isSelectable = true // required for tappable links (also enables copy)
         messageText.backgroundColor = .clear
+        messageText.textColor = .label // dynamic fallback for any run without an explicit color
         messageText.textContainerInset = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
         messageText.textContainer.lineFragmentPadding = 0
         messageText.linkTextAttributes = [
