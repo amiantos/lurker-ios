@@ -102,6 +102,31 @@ final class FrameParserTests: XCTestCase {
         XCTAssertFalse(append, "absent reset → replace, not append")
     }
 
+    func testHistoryBeforePageParses() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"before","hasMoreOlder":true,"hasMoreNewer":false,"events":[{"id":10,"type":"message","nick":"a","text":"old"}]}"##
+        )
+        guard case let .history(networkId, target, events, mode, hasMoreOlder, hasMoreNewer) = frame else {
+            return XCTFail("expected history, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 1)
+        XCTAssertEqual(target, "#lurker")
+        XCTAssertEqual(mode, .before)
+        XCTAssertEqual(events.map(\.text), ["old"])
+        XCTAssertTrue(hasMoreOlder)
+        XCTAssertFalse(hasMoreNewer)
+    }
+
+    func testHistoryHasMoreFallsBackToLegacyAlias() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"before","hasMore":true,"events":[]}"##
+        )
+        guard case let .history(_, _, _, _, hasMoreOlder, _) = frame else {
+            return XCTFail("expected history, got \(frame)")
+        }
+        XCTAssertTrue(hasMoreOlder, "hasMore is the legacy alias for hasMoreOlder")
+    }
+
     func testSendResultCarriesClientIdOkAndError() {
         let frame = FrameParser.parseWs(##"{"kind":"send-result","clientId":"c1","ok":false,"error":"unknown-network"}"##)
         guard case let .sendResult(clientId, ok, error) = frame else {

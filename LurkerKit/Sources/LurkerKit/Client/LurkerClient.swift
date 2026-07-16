@@ -192,6 +192,14 @@ final class LurkerClient {
         send(["type": "send", "networkId": networkId, "target": target, "text": text])
     }
 
+    /// Page older history for a buffer, back from `before` (exclusive message id). The
+    /// reply is a `history` frame (mode `before`) the store prepends. System-buffer paging
+    /// isn't wired for 1.0.
+    func loadOlder(networkId: Int?, target: String, before: Int, limit: Int = 100) {
+        guard let networkId else { return }
+        send(["type": "history", "networkId": networkId, "target": target, "before": before, "limit": limit])
+    }
+
     private func send(_ verb: [String: Any]) {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),

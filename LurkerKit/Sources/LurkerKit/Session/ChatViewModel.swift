@@ -36,6 +36,8 @@ public final class ChatViewModel {
     private var reconnectAttempt = 0
     private var isForeground = true
     private var backgroundedAt: Date?
+    /// Buffer keys with an older-history page in flight, so scroll-up can't spam requests.
+    private var loadingOlder: Set<String> = []
 
     public init(sessions: SessionStore = SessionStore()) {
         self.sessions = sessions
@@ -95,6 +97,18 @@ public final class ChatViewModel {
         client.sendMessage(networkId: key.networkId, target: key.target, text: text)
     }
 
+    /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an
+    /// exclusive cursor; no-ops if nothing older exists, nothing is held yet, or a page is
+    /// already in flight.
+    public func loadOlder(_ key: BufferKey) {
+        guard !loadingOlder.contains(key.id),
+              let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
+              let oldest = store.state.messages[key.id]?.first(where: { $0.id != 0 })?.id
+        else { return }
+        loadingOlder.insert(key.id)
+        client.loadOlder(networkId: key.networkId, target: key.target, before: oldest)
+    }
+
     public func clearError() { store.clearError() }
 
     // MARK: - App lifecycle (fed by the SceneDelegate)
@@ -146,8 +160,12 @@ public final class ChatViewModel {
             store.apply(frame)
             reconnectAttempt = 0 // a clean connection resets the backoff
         case .socketClosed:
+            loadingOlder.removeAll() // in-flight history pages won't get a reply now
             store.apply(frame)
             onSocketDropped()
+        case .history(let networkId, let target, _, _, _, _):
+            loadingOlder.remove(BufferKey(networkId: networkId, target: target).id)
+            store.apply(frame)
         default:
             store.apply(frame)
         }

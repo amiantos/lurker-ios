@@ -56,6 +56,11 @@ final class LurkerStore {
             return applyBacklog(state, buffer, messages, hydrated: hydrated, append: append)
         case .live(let networkId, let target, let message):
             return applyLive(state, networkId: networkId, target: target, message: message)
+        case .history(let networkId, let target, let events, let mode, let hasMoreOlder, _):
+            return applyHistory(
+                state, networkId: networkId, target: target,
+                events: events, mode: mode, hasMoreOlder: hasMoreOlder
+            )
         case .serverError(let text):
             var next = state
             next.error = text
@@ -137,6 +142,11 @@ final class LurkerStore {
         let alreadyHydrated = next.buffers[key]?.hydrated == true
         var buffer = frameBuffer
         buffer.hydrated = hydrated || alreadyHydrated
+        // A resync shell (hasMoreOlder defaults true) must not reset the paging state of
+        // a buffer we've already paged into.
+        if !hydrated, let prior = next.buffers[key], prior.hydrated {
+            buffer.hasMoreOlder = prior.hasMoreOlder
+        }
         next.buffers[key] = buffer
 
         if !hydrated {
@@ -179,6 +189,40 @@ final class LurkerStore {
         }
         next.messages[key] = existing + [message]
         next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
+        return next
+    }
+
+    /// Splice a `history` page in: `before` prepends older, `after` appends newer,
+    /// `latest`/`around` replace. Always de-dupes by persisted id — a page can overlap
+    /// events the live fan-out already delivered.
+    private static func applyHistory(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        events: [Message],
+        mode: HistoryMode,
+        hasMoreOlder: Bool
+    ) -> ChatState {
+        var next = state
+        let key = BufferKey(networkId: networkId, target: target).id
+        let existing = next.messages[key] ?? []
+        switch mode {
+        case .before:
+            let held = Set(existing.compactMap { $0.id != 0 ? $0.id : nil })
+            next.messages[key] = events.filter { $0.id == 0 || !held.contains($0.id) } + existing
+        case .after:
+            next.messages[key] = appendMerged(existing, events)
+        case .latest, .around:
+            // Replace, but keep live events newer than this slice's tail (no hole).
+            let tail = events.map(\.id).max() ?? 0
+            next.messages[key] = events + existing.filter { $0.id > tail }
+        }
+        if var buffer = next.buffers[key] {
+            buffer.hydrated = true
+            if mode != .after { buffer.hasMoreOlder = hasMoreOlder } // `after` pages newer
+            next.buffers[key] = buffer
+        }
+        next.maxEventId = maxEventId(next.maxEventId, networkId, events)
         return next
     }
 

@@ -10,7 +10,7 @@ import UIKit
 /// and live `irc` frames after that — including the echo of our own sends (`self: true`),
 /// which is why there's no optimistic-bubble bookkeeping here. Only speech events
 /// (message/action/notice) render; structural events (join/part/…) are #9.
-final class ChatViewController: UIViewController, UITableViewDataSource {
+final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let viewModel: ChatViewModel
     private let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
@@ -38,6 +38,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
         title = buffer.target
 
         tableView.dataSource = self
+        tableView.delegate = self
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "msg")
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
@@ -86,10 +87,46 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
     }
 
     private func apply(_ state: ChatState) {
-        messages = (state.messages[buffer.key.id] ?? []).filter { $0.type.isSpeech }
-        tableView.reloadData()
-        scrollToBottom()
+        let updated = (state.messages[buffer.key.id] ?? []).filter { $0.type.isSpeech }
+        let oldFirstId = messages.first?.id
+        let newFirstId = updated.first?.id
+        let wasNearBottom = isNearBottom
+        let oldContentHeight = tableView.contentSize.height
+
+        messages = updated
         surface(state.error)
+
+        // A history page prepended older messages above the viewport: reload, then shift
+        // the content offset by exactly the added height so the rows you were reading stay
+        // put instead of jumping.
+        let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
+        if prepended {
+            UIView.performWithoutAnimation {
+                tableView.reloadData()
+                tableView.layoutIfNeeded()
+                tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
+            }
+        } else {
+            tableView.reloadData()
+            // Follow live traffic only if you were already at the bottom; if you'd scrolled
+            // up to read, a new message lands below without yanking you down.
+            if wasNearBottom { scrollToBottom() }
+        }
+    }
+
+    /// Within ~80pt of the bottom — treated as "following the conversation".
+    private var isNearBottom: Bool {
+        let fromBottom = tableView.contentSize.height - tableView.contentOffset.y - tableView.bounds.height
+        return fromBottom < 80
+    }
+
+    // MARK: - UITableViewDelegate (pagination)
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Near the top → pull older history. The view model guards `hasMoreOlder` and an
+        // in-flight page, so firing this on every scroll tick is safe.
+        guard !messages.isEmpty, scrollView.contentOffset.y < 300 else { return }
+        viewModel.loadOlder(buffer.key)
     }
 
     /// A failed send (`send-result` ok:false) or a server `error` frame lands in

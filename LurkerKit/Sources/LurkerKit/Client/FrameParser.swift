@@ -15,6 +15,7 @@ enum FrameParser {
         switch obj["kind"] as? String {
         case "snapshot": return parseSnapshot(obj)
         case "backlog": return parseBacklog(obj)
+        case "history": return parseHistory(obj)
         case "irc": return parseLive(obj)
         case "send-result":
             return .sendResult(
@@ -95,7 +96,8 @@ enum FrameParser {
             highlights: obj.int("highlights"),
             lastReadId: obj.int("lastReadId"),
             joined: obj.bool("joined"),
-            hydrated: hydrated
+            hydrated: hydrated,
+            hasMoreOlder: obj.bool("hasMoreOlder")
         )
         return .backlog(buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append)
     }
@@ -104,6 +106,21 @@ enum FrameParser {
         let target = obj.string("target")
         if target.isEmpty { return .ignored }
         return .live(networkId: obj.intOrNull("networkId"), target: target, message: parseEvent(obj))
+    }
+
+    private static func parseHistory(_ obj: [String: Any]) -> ServerFrame {
+        let target = obj.string("target")
+        if target.isEmpty { return .ignored }
+        let mode = HistoryMode(rawValue: obj.string("mode")) ?? .before
+        // `hasMore` is a legacy alias for `hasMoreOlder`; prefer the explicit field.
+        return .history(
+            networkId: obj.intOrNull("networkId"),
+            target: target,
+            events: obj.objects("events").map(parseEvent),
+            mode: mode,
+            hasMoreOlder: obj.bool("hasMoreOlder", obj.bool("hasMore")),
+            hasMoreNewer: obj.bool("hasMoreNewer")
+        )
     }
 
     /// MessageEvent → domain `Message`. Events are spread flat on the frame, so the

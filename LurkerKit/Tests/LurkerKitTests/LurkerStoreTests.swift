@@ -133,6 +133,30 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["z"])
     }
 
+    func testHistoryBeforePrependsOlderAndDedupes() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))
+        // A before-page brings 3,4 and re-sends 5 (overlap): prepend 3,4, drop the dup 5.
+        store.apply(.history(
+            networkId: 1, target: "#lurker",
+            events: [msg(3, "c"), msg(4, "d"), msg(5, "e")],
+            mode: .before, hasMoreOlder: false, hasMoreNewer: false
+        ))
+
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["c", "d", "e", "f"])
+        XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreOlder, "hasMoreOlder:false stops paging")
+    }
+
+    func testHistoryTracksHasMoreOlderForThePagingGate() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(4, "d")],
+            mode: .before, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreOlder)
+    }
+
     func testSnapshotSeedsChannelBuffersMembersAndNetworkLiveState() {
         let store = LurkerStore()
         store.apply(.snapshot([
