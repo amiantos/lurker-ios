@@ -73,7 +73,18 @@ final class BufferTitleButton: UIButton {
         return size
     }
 
+    /// What's currently rendered, so an unchanged update costs nothing.
+    private var shown: (title: String, status: StatusLight)?
+
     func update(title: String, status: StatusLight) {
+        // This is called from every state change — i.e. once per arriving message on a busy
+        // channel — while the title is fixed for the screen's life and the light only moves
+        // on connection transitions. Reassigning `configuration` schedules a button
+        // reconfiguration and the invalidate below relayouts the whole navigation bar, so
+        // without this guard each message would pay for a bar relayout that changes nothing.
+        guard shown?.title != title || shown?.status != status else { return }
+        shown = (title, status)
+
         // One font size app-wide; the pill earns its emphasis with weight, not size.
         var attributed = AttributedString(title)
         attributed.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold

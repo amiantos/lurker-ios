@@ -101,4 +101,18 @@ public enum BufferKind: Sendable {
         default: type.isSpeech
         }
     }
+
+    /// Whether the server will answer an `open-buffer` for this kind.
+    ///
+    /// It won't for the system buffer or a `:server:` log — `handleOpenBuffer` discards
+    /// both up front (`if (!networkId || requested.startsWith(':server:')) return`) and
+    /// sends no reply, because their history ships complete in the connect backlog rather
+    /// than on demand. Asking anyway isn't harmless: the caller has no failure to observe,
+    /// so it waits forever on a reply the server already threw away.
+    public var hydratesOnDemand: Bool {
+        switch self {
+        case .channel, .dm: true
+        case .system, .server: false
+        }
+    }
 }

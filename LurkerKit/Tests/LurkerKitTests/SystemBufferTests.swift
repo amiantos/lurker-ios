@@ -113,6 +113,64 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertEqual(message.type, .other)
     }
 
+    // MARK: - The system backlog is a latest slice, never a resume delta
+
+    func testTheSystemBacklogReplacesEvenThoughItSaysResetFalse() {
+        // `buildSystemBacklog` hardcodes `reset: false` on EVERY connect — it always ships
+        // a full latest slice. Reading that the way a *network* buffer's `reset` is read
+        // ("reset present and false → this is a resume delta → append") is what corrupts
+        // the buffer, so the system buffer must ignore the field entirely.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":null,"target":":system:","reset":false,"hasMoreOlder":false,"events":[{"id":5,"type":"system","text":"hi"}]}"##
+        )
+        guard case let .backlog(_, _, _, append) = frame else { return XCTFail("expected backlog") }
+        XCTAssertFalse(append, "the system backlog is a latest slice — replace, don't append")
+    }
+
+    func testANetworkResumeSliceStillAppends() {
+        // The exception above must not cost channels their resume path.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","reset":false,"hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"hi"}]}"##
+        )
+        guard case let .backlog(_, _, _, append) = frame else { return XCTFail("expected backlog") }
+        XCTAssertTrue(append, "reset:false on a network buffer IS a resume delta")
+    }
+
+    func testAnOversizedNetworkGapStillReplaces() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","reset":true,"hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"hi"}]}"##
+        )
+        guard case let .backlog(_, _, _, append) = frame else { return XCTFail("expected backlog") }
+        XCTAssertFalse(append, "reset:true means the gap overflowed — replace or splice a hole")
+    }
+
+    @MainActor
+    func testALiveSystemLineBeatingTheBacklogDoesNotShoveHistoryBelowIt() {
+        // The bug this guards: a system line logged at connect ("connecting to libera")
+        // can land before the backlog. Appending the backlog then renders the entire
+        // history *underneath* a line that came after all of it.
+        let store = LurkerStore()
+        store.apply(FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":null,"target":":system:","type":"system","id":101,"text":"connecting"}"##
+        ))
+        store.apply(FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":null,"target":":system:","reset":false,"hasMoreOlder":false,"events":[{"id":51,"type":"system","text":"older"},{"id":52,"type":"system","text":"newer"}]}"##
+        ))
+        let ids = store.state.messages[Buffer.system.key.id]?.map(\.id) ?? []
+        XCTAssertEqual(ids, [51, 52, 101], "history first, then the live line that outran it")
+    }
+
+    // MARK: - What the server will actually answer
+
+    func testOnlyChannelsAndDmsHydrateOnDemand() {
+        // `handleOpenBuffer` drops the request for the system buffer and `:server:` logs
+        // and never replies, so asking latches a wait on a reply that isn't coming.
+        XCTAssertTrue(BufferKind.channel.hydratesOnDemand)
+        XCTAssertTrue(BufferKind.dm.hydratesOnDemand)
+        XCTAssertFalse(BufferKind.system.hydratesOnDemand, "server: `if (!networkId) return`")
+        XCTAssertFalse(BufferKind.server.hydratesOnDemand, "server: `if (target.startsWith(':server:')) return`")
+    }
+
     // MARK: - The buffer itself
 
     func testTheSystemBufferIsConstructibleWithoutTheServer() {

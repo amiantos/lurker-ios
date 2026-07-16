@@ -120,6 +120,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         ])
 
         observeKeyboard()
+        addEdgeSwipes()
 
         // Re-render when this buffer's messages or the error change — a frame for some
         // other channel shouldn't reload this screen. The title pill's light also depends
@@ -154,6 +155,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidAppear(animated)
         // We're now looking at this buffer — mark it read up to the latest loaded message.
         viewModel.markRead(buffer.key)
+        // …and it's now the most recent, which is what the switcher promotes. Recorded on
+        // appear rather than on the pick, so the launch buffer counts too and a buffer
+        // reached any other way can't slip past the bookkeeping.
+        UserPreferences.standard.recordRecentBuffer(buffer.key.id)
         // An error that landed before we had a window — or while the buffer list was
         // covering us — has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
@@ -214,13 +219,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// Ask for history once the socket is up.
     ///
-    /// Buffers arrive as shells (`events: []`) and aren't read until the client sends
-    /// `open-buffer`. Picking a buffer from the list opens it on the way in, but this
-    /// screen is also the *launch* screen, so it exists before there's a socket to ask
-    /// over — and a reconnect resyncs it back to a shell. Both cases land here.
+    /// Channel and DM buffers arrive as shells (`events: []`) and aren't read until the
+    /// client sends `open-buffer`. This screen is also the *launch* screen, so it can exist
+    /// before there's a socket to ask over — that's the case this covers.
+    ///
+    /// The system buffer and `:server:` logs are excluded rather than merely redundant:
+    /// the server discards `open-buffer` for both without replying (see
+    /// `BufferKind.hydratesOnDemand`), so asking would set `openRequested` on a request
+    /// that can never be answered and wedge the screen waiting on it.
     private func hydrateIfNeeded(_ state: ChatState) {
+        guard buffer.kind.hydratesOnDemand else { return }
         guard state.connection == .connected else {
-            openRequested = false // a reconnect will resync this buffer as a shell
+            openRequested = false // a reconnect resyncs buffers, so ask again on the next one
             return
         }
         guard !openRequested, let known = state.buffers[buffer.key.id], !known.hydrated else { return }
@@ -328,13 +338,43 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Navigation
 
+    /// Swipe in from either edge to reach the two lists this screen sits between: buffers
+    /// on the left, nicks on the right. The same places the pill and (eventually) a member
+    /// button go — a gesture, not a replacement for a visible control.
+    ///
+    /// The left edge is free to claim because this screen is the navigation stack's root,
+    /// so there's no interactive pop gesture to collide with.
+    private func addEdgeSwipes() {
+        for (edge, action) in [
+            (UIRectEdge.left, #selector(swipedFromLeft)),
+            (UIRectEdge.right, #selector(swipedFromRight)),
+        ] {
+            let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
+            swipe.edges = edge
+            view.addGestureRecognizer(swipe)
+        }
+    }
+
+    @objc private func swipedFromLeft(_ recognizer: UIScreenEdgePanGestureRecognizer) {
+        // On `.began`, so the sheet starts coming as soon as the intent is unambiguous
+        // rather than waiting for the finger to lift.
+        guard recognizer.state == .began else { return }
+        showBufferList()
+    }
+
+    @objc private func swipedFromRight(_ recognizer: UIScreenEdgePanGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        showMemberList()
+    }
+
     /// The pill expands into the buffer list. A sheet, not a push: the list is a picker
     /// for this screen, not a place you go — so the stack never grows and there's no back
     /// chevron competing with the pill for the same job.
     private func showBufferList() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let viewModel = self.viewModel
         let nav = navigationController
-        let list = BufferListViewController(viewModel: viewModel)
+        let list = BufferSwitcherViewController(viewModel: viewModel)
         // `nav` weakly: it holds the sheet, which holds the list, which holds this
         // closure — a strong capture would close that loop for as long as the sheet is up.
         list.onSelect = { [weak nav] buffer in
@@ -357,6 +397,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // to be replaced as its root — a presenting VC deallocated mid-dismiss takes the
         // sheet down with it.
         nav?.present(sheet, animated: true)
+    }
+
+    /// The nick list. Presented from `self`, unlike the buffer switcher: nothing here
+    /// replaces this screen, so there's no VC about to be deallocated under the sheet.
+    private func showMemberList() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let sheet = UINavigationController(
+            rootViewController: MemberListViewController(viewModel: viewModel, buffer: buffer)
+        )
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        // Medium first: a nick list is a glance, and half-height keeps the conversation
+        // you're reading it against on screen behind it.
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
     }
 
     // MARK: - Actions

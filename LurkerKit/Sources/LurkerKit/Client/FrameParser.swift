@@ -97,10 +97,18 @@ enum FrameParser {
         // would mislabel it hydrated and it would render empty forever.
         let hasMoreOlder = obj.bool("hasMoreOlder", true)
         let hydrated = !events.isEmpty || !hasMoreOlder
-        // Only a resume slice carries a `reset` field. reset:false means "these are
-        // just the events past ?since" → append; reset:true (oversized gap) and a plain
-        // full/latest backlog (no field) → replace.
-        let append = obj.has("reset") && !obj.bool("reset")
+        // For a *network* buffer, only a resume slice carries a `reset` field. reset:false
+        // means "these are just the events past ?since" → append; reset:true (oversized
+        // gap) and a plain full/latest backlog (no field) → replace.
+        //
+        // The system buffer is the exception, and reading it the same way corrupts it: the
+        // server's `buildSystemBacklog` hardcodes `reset: false` on EVERY connect, because
+        // it always ships a full latest slice and expects the client to reconcile it — it
+        // is never a resume delta. Appending it instead would (a) splice the whole history
+        // *after* any live system line that beat the backlog in, and (b) leave a permanent
+        // hole when a reconnect gap exceeds the server's slice cap. Replacing is what the
+        // server means, and the replace path already preserves live events past the tail.
+        let append = networkId != nil && obj.has("reset") && !obj.bool("reset")
         let buffer = Buffer(
             networkId: networkId,
             target: target,
