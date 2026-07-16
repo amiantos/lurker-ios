@@ -146,8 +146,12 @@ final class LurkerStore {
             // Resume gap slice: append past the tail, de-duping by persisted id.
             next.messages[key] = appendMerged(next.messages[key] ?? [], messages)
         } else {
-            // Full / latest / reset backlog: replace wholesale.
-            next.messages[key] = messages
+            // Full / latest backlog: replace — but keep any live events that arrived after
+            // the server built this backlog (id past its tail), so hydrating mid-traffic
+            // (e.g. a message lands between open-buffer and its reply) can't punch a hole.
+            let tail = messages.map(\.id).max() ?? 0
+            let heldNewer = (next.messages[key] ?? []).filter { $0.id > tail }
+            next.messages[key] = messages + heldNewer
         }
         next.maxEventId = maxEventId(next.maxEventId, frameBuffer.networkId, messages)
         return next

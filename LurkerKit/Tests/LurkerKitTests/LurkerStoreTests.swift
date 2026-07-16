@@ -45,6 +45,18 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(state.messages[chanKey]!.map(\.text), ["hi", "there"])
     }
 
+    func testHydrationPreservesLiveEventsNewerThanTheBacklogTail() {
+        let store = LurkerStore()
+        // Shell, then a live event arrives before the user opens the buffer.
+        store.apply(channelBuffer(hydrated: false, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(50, "arrived-before-open")))
+        // Open → the hydrated backlog was built a moment earlier and tops out at id 40,
+        // so it doesn't contain id 50. The live event must survive the replace.
+        store.apply(channelBuffer(hydrated: true, messages: [msg(38, "a"), msg(40, "b")]))
+
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["a", "b", "arrived-before-open"])
+    }
+
     func testALaterShellNeverUnhydratesOrWipesAnAlreadyReadBuffer() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
