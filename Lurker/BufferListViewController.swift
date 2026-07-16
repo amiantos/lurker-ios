@@ -27,6 +27,9 @@ final class BufferListViewController: UITableViewController {
         super.viewDidLoad()
         title = "Connecting…"
         navigationItem.hidesBackButton = true
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "Sign Out", style: .plain, target: self, action: #selector(signOut)
+        )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         viewModel.statePublisher
@@ -58,6 +61,11 @@ final class BufferListViewController: UITableViewController {
     private func subtitle(for buffer: Buffer) -> String {
         guard let networkId = buffer.networkId else { return "system" }
         return state.networks[networkId]?.name ?? "network"
+    }
+
+    @objc private func signOut() {
+        // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
+        viewModel.logout()
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {

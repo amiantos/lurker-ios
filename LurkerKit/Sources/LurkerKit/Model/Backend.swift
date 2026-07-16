@@ -6,7 +6,7 @@
 /// builds one client with a configurable base URL + auth strategy rather than a
 /// transport-adapter seam. Direct IRC is dropped permanently, so no second transport
 /// will ever appear; if one does, extract the seam then, against a real case.
-public enum Backend: Sendable, CaseIterable {
+public enum Backend: String, Sendable, CaseIterable, Codable {
     /// Mint at the cell: `POST /api/auth/login/token`, `{username, password}`.
     case selfHosted
     /// Mint at the control plane: `POST /_cp/auth/app/login`, `{email, password}`.

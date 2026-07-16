@@ -73,9 +73,17 @@ final class LurkerClient {
 
     // MARK: - Lifecycle
 
-    /// After login: fetch the network roster (proves the bearer authenticates plain
-    /// REST, and supplies the names the snapshot omits), then open the socket. If the
-    /// roster fetch already saw a 401 the token is dead — don't bother with the upgrade.
+    /// Re-arm from a persisted session (no password round-trip); follow with `start()`.
+    /// If the token is stale, `start()`'s first authenticated call surfaces the 401 as
+    /// `.unauthorized`.
+    func restore(server: String, token: String) {
+        baseURL = Self.normalize(server)
+        self.token = token
+    }
+
+    /// After login/restore: fetch the network roster (proves the bearer authenticates
+    /// plain REST, and supplies the names the snapshot omits), then open the socket. If
+    /// the roster fetch already saw a 401 the token is dead — skip the upgrade.
     func start() async {
         if await fetchNetworks() { openSocket() }
     }
@@ -168,12 +176,31 @@ final class LurkerClient {
         }
     }
 
-    /// Drop the socket and forget the token without revoking server-side. For teardown.
-    /// The deliberate, server-revoking sign-out is #3.
+    /// Drop the socket and forget the token without revoking server-side. For teardown
+    /// and the dead-token case (a 401) where there's nothing left to revoke.
     func close() {
         socket?.cancel(with: .goingAway, reason: nil)
         socket = nil
         token = nil
+    }
+
+    /// The deliberate sign-out. Tears the local session down *immediately* (drops the
+    /// socket + token) and fires the server-side revoke in the background, so sign-out
+    /// feels instant even when the server is slow or unreachable. `POST /api/auth/logout`
+    /// accepts the bearer. The revoke uses the captured token and never touches this
+    /// client again, so a subsequent sign-in that mints a fresh session can't be
+    /// clobbered by an in-flight revoke.
+    func logout() {
+        let revokeToken = token
+        let base = baseURL
+        close()
+        guard let revokeToken, let url = URL(string: base + "/api/auth/logout") else { return }
+        Task { [session] in
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
+            _ = try? await session.data(for: request)
+        }
     }
 
     // MARK: - Helpers
