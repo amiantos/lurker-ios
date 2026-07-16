@@ -13,6 +13,15 @@ public enum SocketStatus: Equatable, Sendable {
 /// Immutable snapshot of everything the chat UI renders. The map keys are `BufferKey.id`.
 public struct ChatState: Sendable {
     public var connection: SocketStatus = .connecting
+    /// Whether the device has a network path at all, per the OS — fed in by the app
+    /// (`ChatViewModel.setReachable`), the same way foreground/background is, so this
+    /// package stays free of the `Network` framework (whose `NWPath` would also collide
+    /// with our own `Network` model type).
+    ///
+    /// Deliberately separate from `connection`: they're two different truths. The socket
+    /// only ever reports connecting/connected/reconnecting — it has no way to say "there
+    /// is no internet" — so without this the indicator could never legitimately show red.
+    public var reachable: Bool = true
     /// Highest persisted message id seen (excluding the system buffer, which has its own
     /// id space) — replayed as `?since=` on reconnect so the server ships only the gap.
     /// Populated now so #4 can resume without a store change.
@@ -37,7 +46,14 @@ final class LurkerStore {
     var state: ChatState { subject.value }
     var statePublisher: AnyPublisher<ChatState, Never> { subject.eraseToAnyPublisher() }
 
-    func reset() { subject.value = ChatState() }
+    /// Clear everything session-scoped. Reachability survives: it's a fact about the
+    /// device, not the session, and nothing re-reports it on sign-out — resetting it to
+    /// the `true` default would leave an offline phone claiming it's online.
+    func reset() {
+        var next = ChatState()
+        next.reachable = subject.value.reachable
+        subject.value = next
+    }
 
     /// Drop a buffer and its cached messages/members — the optimistic local half of a
     /// close-buffer (the server then hides it, so it won't re-appear on the next snapshot).
@@ -50,6 +66,14 @@ final class LurkerStore {
     }
 
     func clearError() { subject.value.error = nil }
+
+    /// Mirror the OS's view of network reachability into the state. Not a `ServerFrame`
+    /// because it isn't one — it comes from the device, not the server — so it sits
+    /// alongside the other direct mutations rather than lying in `reduce`.
+    func setReachable(_ reachable: Bool) {
+        guard subject.value.reachable != reachable else { return }
+        subject.value.reachable = reachable
+    }
 
     func apply(_ frame: ServerFrame) {
         subject.value = Self.reduce(subject.value, frame)

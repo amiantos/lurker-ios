@@ -47,6 +47,14 @@ public struct Buffer: Equatable, Sendable {
     }
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }
+
+    /// The server's sentinel target for the app-scoped system buffer.
+    public static let systemTarget = ":system:"
+
+    /// The system buffer, constructed without the server. It's app-scoped and always
+    /// exists, so the app can open it as its landing screen before any frame has arrived;
+    /// the real one folds in over this when the backlog lands.
+    public static let system = Buffer(networkId: nil, target: systemTarget, kind: .system)
 }
 
 /// Stable identity for a buffer, plus its string form for use as a dictionary key.
@@ -76,9 +84,21 @@ public enum BufferKind: Sendable {
 
     /// Classify a target the way the server does (isDmTarget / SYSTEM_TARGET).
     public static func of(networkId: Int?, target: String) -> BufferKind {
-        if networkId == nil || target == ":system:" { return .system }
+        if networkId == nil || target == Buffer.systemTarget { return .system }
         if target.hasPrefix(":server:") { return .server }
         if target.hasPrefix("#") || target.hasPrefix("&") { return .channel }
         return .dm
+    }
+
+    /// Whether an event of this type is something this buffer kind shows.
+    ///
+    /// This is per-kind and not a single global predicate because the system buffer's
+    /// content is *entirely* `type: "system"` lines, which are not speech. Filtering it
+    /// by `isSpeech` — correct for a channel — renders it permanently empty.
+    public func renders(_ type: EventType) -> Bool {
+        switch self {
+        case .system: type == .system
+        default: type.isSpeech
+        }
     }
 }

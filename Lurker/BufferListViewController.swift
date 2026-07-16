@@ -5,12 +5,20 @@ import Combine
 import LurkerKit
 import UIKit
 
-/// Screen 2: the buffer list, grouped by network, with unread + highlight badges. DMs are
-/// first-class rows alongside channels (not a sub-list). Swipe a row to close it; "+" joins
-/// a channel.
+/// The buffer list, grouped by network, with unread + highlight badges. DMs are
+/// first-class rows alongside channels (not a sub-list). Swipe a row to close it.
+///
+/// Presented as a sheet from the title pill, so it's a picker rather than a screen you
+/// navigate to. It doesn't push anything and doesn't know what happens next — it reports
+/// the pick through `onSelect` and the chat screen swaps itself out. Sign-out and "+" used
+/// to live here; they're on the chat screen now, flanking the pill.
 final class BufferListViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
+
+    /// Called with the picked buffer. The presenter owns both hydrating it and dismissing
+    /// this sheet.
+    var onSelect: ((Buffer) -> Void)?
 
     private struct Section {
         let title: String
@@ -30,13 +38,11 @@ final class BufferListViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Connecting…"
-        navigationItem.hidesBackButton = true
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "Sign Out", style: .plain, target: self, action: #selector(signOut)
-        )
+        title = "Buffers"
         navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .add, target: self, action: #selector(promptJoin)
+            systemItem: .done, primaryAction: UIAction { [weak self] _ in
+                self?.dismiss(animated: true)
+            }
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
@@ -56,7 +62,6 @@ final class BufferListViewController: UITableViewController {
     private func apply(_ state: ChatState) {
         self.state = state
         sections = buildSections(state)
-        title = connectionTitle(for: state.connection)
         tableView.reloadData()
     }
 
@@ -115,55 +120,13 @@ final class BufferListViewController: UITableViewController {
         return lhs.target.lowercased() < rhs.target.lowercased()
     }
 
+    /// The system buffer is called "Lurker" wherever the user sees it — it's the app's own
+    /// buffer, and the pill it opens under says the same.
     private func displayName(_ buffer: Buffer) -> String {
         switch buffer.kind {
         case .server: return "Server"
-        case .system: return "System"
+        case .system: return "Lurker"
         default: return buffer.target
-        }
-    }
-
-    // MARK: - Actions
-
-    @objc private func signOut() {
-        // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
-        viewModel.logout()
-    }
-
-    @objc private func promptJoin() {
-        let networks = viewModel.networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        guard !networks.isEmpty else { return }
-        guard networks.count > 1 else { return presentJoinAlert(network: networks[0]) }
-        let sheet = UIAlertController(title: "Join a channel on…", message: nil, preferredStyle: .actionSheet)
-        for network in networks {
-            sheet.addAction(UIAlertAction(title: network.name, style: .default) { [weak self] _ in
-                self?.presentJoinAlert(network: network)
-            })
-        }
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
-        present(sheet, animated: true)
-    }
-
-    private func presentJoinAlert(network: Network) {
-        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
-        alert.addTextField {
-            $0.placeholder = "#channel"
-            $0.autocapitalizationType = .none
-            $0.autocorrectionType = .no
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
-            self?.viewModel.joinChannel(networkId: network.id, channel: alert?.textFields?.first?.text ?? "")
-        })
-        present(alert, animated: true)
-    }
-
-    private func connectionTitle(for status: SocketStatus) -> String {
-        switch status {
-        case .connecting: return "Connecting…"
-        case .connected: return "Lurker"
-        case .reconnecting: return "Reconnecting…"
         }
     }
 
@@ -192,12 +155,7 @@ final class BufferListViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        let buffer = sections[indexPath.section].buffers[indexPath.row]
-        // Hydrate before pushing: channel/DM buffers arrive as empty shells.
-        viewModel.openBuffer(buffer.key)
-        navigationController?.pushViewController(
-            ChatViewController(viewModel: viewModel, buffer: buffer), animated: true
-        )
+        onSelect?(sections[indexPath.section].buffers[indexPath.row])
     }
 
     override func tableView(

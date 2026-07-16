@@ -138,15 +138,23 @@ enum FrameParser {
 
     /// MessageEvent → domain `Message`. Events are spread flat on the frame, so the
     /// same reader handles both a backlog array element and a live `irc` frame.
+    ///
+    /// `level` and `originNetworkId` are only ever set on system-buffer lines, and are
+    /// nil everywhere else — severity there is a sibling field, not a `type`.
     private static func parseEvent(_ event: [String: Any]) -> Message {
-        Message(
+        let time = event.stringOrNull("time")
+        let type = EventType.from(event.stringOrNull("type"))
+        return Message(
             id: event.int("id"),
-            type: EventType.from(event.stringOrNull("type")),
+            type: type,
             nick: event.stringOrNull("nick"),
             text: event.stringOrNull("text"),
             isSelf: event.bool("self"),
-            time: event.stringOrNull("time"),
-            matched: event.bool("matched")
+            time: time,
+            date: ISOTime.parse(time),
+            matched: event.bool("matched"),
+            level: type == .system ? SystemLevel.from(event.stringOrNull("level")) : nil,
+            originNetworkId: event.intOrNull("originNetworkId")
         )
     }
 }
