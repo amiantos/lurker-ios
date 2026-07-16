@@ -61,6 +61,11 @@ final class LurkerStore {
                 state, networkId: networkId, target: target,
                 events: events, mode: mode, hasMoreOlder: hasMoreOlder
             )
+        case .readState(let networkId, let target, let lastReadId, let unread, let highlights):
+            return applyReadState(
+                state, networkId: networkId, target: target,
+                lastReadId: lastReadId, unread: unread, highlights: highlights
+            )
         case .serverError(let text):
             var next = state
             next.error = text
@@ -189,6 +194,27 @@ final class LurkerStore {
         }
         next.messages[key] = existing + [message]
         next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
+        return next
+    }
+
+    /// Mirror server-authoritative read counts onto the buffer. The counts are never
+    /// derived locally — a `read-state` broadcast (from this device's mark-read, another
+    /// device's, or any countable event) is the single source of truth.
+    private static func applyReadState(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        lastReadId: Int,
+        unread: Int,
+        highlights: Int
+    ) -> ChatState {
+        var next = state
+        let key = BufferKey(networkId: networkId, target: target).id
+        guard var buffer = next.buffers[key] else { return next }
+        buffer.lastReadId = lastReadId
+        buffer.unread = unread
+        buffer.highlights = highlights
+        next.buffers[key] = buffer
         return next
     }
 

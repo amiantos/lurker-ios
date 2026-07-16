@@ -157,6 +157,23 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreOlder)
     }
 
+    func testReadStateMirrorsCountsOntoTheBuffer() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "a")]))
+        store.apply(.readState(networkId: 1, target: "#lurker", lastReadId: 10, unread: 4, highlights: 2))
+
+        let buffer = store.state.buffers[chanKey]!
+        XCTAssertEqual(buffer.lastReadId, 10)
+        XCTAssertEqual(buffer.unread, 4)
+        XCTAssertEqual(buffer.highlights, 2)
+    }
+
+    func testReadStateForAnUnknownBufferIsANoOp() {
+        let store = LurkerStore()
+        store.apply(.readState(networkId: 1, target: "#nope", lastReadId: 5, unread: 1, highlights: 0))
+        XCTAssertNil(store.state.buffers["1::#nope"])
+    }
+
     func testSnapshotSeedsChannelBuffersMembersAndNetworkLiveState() {
         let store = LurkerStore()
         store.apply(.snapshot([

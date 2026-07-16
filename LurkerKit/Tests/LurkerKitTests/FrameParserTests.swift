@@ -127,6 +127,20 @@ final class FrameParserTests: XCTestCase {
         XCTAssertTrue(hasMoreOlder, "hasMore is the legacy alias for hasMoreOlder")
     }
 
+    func testReadStateParses() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"read-state","networkId":1,"target":"#lurker","lastReadId":42,"unread":3,"highlights":1}"##
+        )
+        guard case let .readState(networkId, target, lastReadId, unread, highlights) = frame else {
+            return XCTFail("expected readState, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 1)
+        XCTAssertEqual(target, "#lurker")
+        XCTAssertEqual(lastReadId, 42)
+        XCTAssertEqual(unread, 3)
+        XCTAssertEqual(highlights, 1)
+    }
+
     func testSendResultCarriesClientIdOkAndError() {
         let frame = FrameParser.parseWs(##"{"kind":"send-result","clientId":"c1","ok":false,"error":"unknown-network"}"##)
         guard case let .sendResult(clientId, ok, error) = frame else {

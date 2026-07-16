@@ -200,6 +200,22 @@ final class LurkerClient {
         send(["type": "history", "networkId": networkId, "target": target, "before": before, "limit": limit])
     }
 
+    /// Mark a buffer read up to `messageId`. The server MAX-clamps, so re-sending a lower
+    /// id is a safe no-op. The system buffer sends `networkId: null` (hence NSNull, not a
+    /// dropped key), so this can't reuse the `guard let networkId` shortcut.
+    func markRead(networkId: Int?, target: String, messageId: Int) {
+        send([
+            "type": "mark-read",
+            "networkId": networkId.map { $0 as Any } ?? NSNull(),
+            "target": target,
+            "messageId": messageId,
+        ])
+    }
+
+    func markAllRead() {
+        send(["type": "mark-all-read"])
+    }
+
     private func send(_ verb: [String: Any]) {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),

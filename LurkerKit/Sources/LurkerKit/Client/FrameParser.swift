@@ -17,6 +17,15 @@ enum FrameParser {
         case "backlog": return parseBacklog(obj)
         case "history": return parseHistory(obj)
         case "irc": return parseLive(obj)
+        case "read-state":
+            let target = obj.string("target")
+            return target.isEmpty ? .ignored : .readState(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                lastReadId: obj.int("lastReadId"),
+                unread: obj.int("unread"),
+                highlights: obj.int("highlights")
+            )
         case "send-result":
             return .sendResult(
                 clientId: obj.stringOrNull("clientId"),

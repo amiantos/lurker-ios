@@ -36,6 +36,11 @@ enum ServerFrame: Equatable, Sendable {
         hasMoreNewer: Bool
     )
 
+    /// WS `read-state`: server-authoritative read counts for a buffer, broadcast to all of
+    /// the user's devices (after a mark-read, or any countable event). The client mirrors
+    /// these onto the buffer — it never derives unread/highlight counts locally.
+    case readState(networkId: Int?, target: String, lastReadId: Int, unread: Int, highlights: Int)
+
     /// WS `send-result`: ack for a send/action/notice, keyed by the client's clientId.
     case sendResult(clientId: String?, ok: Bool, error: String?)
 

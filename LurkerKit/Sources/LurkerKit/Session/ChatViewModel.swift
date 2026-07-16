@@ -38,6 +38,8 @@ public final class ChatViewModel {
     private var backgroundedAt: Date?
     /// Buffer keys with an older-history page in flight, so scroll-up can't spam requests.
     private var loadingOlder: Set<String> = []
+    /// Highest message id we've already marked read per buffer, to dedupe mark-read spam.
+    private var lastMarked: [String: Int] = [:]
 
     public init(sessions: SessionStore = SessionStore()) {
         self.sessions = sessions
@@ -85,6 +87,8 @@ public final class ChatViewModel {
         client.logout()
         sessions.clear()
         store.reset()
+        loadingOlder.removeAll()
+        lastMarked.removeAll()
         statusSubject.value = nil
         sessionSubject.value = .loggedOut
     }
@@ -107,6 +111,21 @@ public final class ChatViewModel {
         else { return }
         loadingOlder.insert(key.id)
         client.loadOlder(networkId: key.networkId, target: key.target, before: oldest)
+    }
+
+    /// Mark a buffer read up to its latest loaded message. Server-authoritative and
+    /// MAX-clamped, and deduped here, so calling it on every state change while viewing a
+    /// buffer is cheap. The `read-state` echo updates the counts.
+    public func markRead(_ key: BufferKey) {
+        guard let latest = store.state.messages[key.id]?.compactMap({ $0.id != 0 ? $0.id : nil }).max(),
+              latest > (lastMarked[key.id] ?? 0)
+        else { return }
+        lastMarked[key.id] = latest
+        client.markRead(networkId: key.networkId, target: key.target, messageId: latest)
+    }
+
+    public func markAllRead() {
+        client.markAllRead()
     }
 
     public func clearError() { store.clearError() }
@@ -214,6 +233,8 @@ public final class ChatViewModel {
         client.close()
         sessions.clear()
         store.reset()
+        loadingOlder.removeAll()
+        lastMarked.removeAll()
         statusSubject.value = "Your session ended — please sign in again."
         sessionSubject.value = .loggedOut
     }
