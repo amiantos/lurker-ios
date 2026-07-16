@@ -1,15 +1,19 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Combine
+import LurkerKit
 import UIKit
 
-/// Screen 3: a buffer's messages, plus the input bar. Messages arrive two ways and
-/// are treated identically: the `backlog` frame the server sends in reply to
-/// `open-buffer`, and live `irc` frames after that — including the echo of our own
-/// sends (`self: true`), which is why there's no optimistic-bubble bookkeeping here.
+/// Screen 3: a buffer's messages, plus the input bar. Messages arrive two ways and are
+/// treated identically: the `backlog` frame the server sends in reply to `open-buffer`,
+/// and live `irc` frames after that — including the echo of our own sends (`self: true`),
+/// which is why there's no optimistic-bubble bookkeeping here. Only speech events
+/// (message/action/notice) render; structural events (join/part/…) are #9.
 final class ChatViewController: UIViewController, UITableViewDataSource {
-    private let client: LurkerClient
+    private let viewModel: ChatViewModel
     private let buffer: Buffer
+    private var cancellables = Set<AnyCancellable>()
 
     private let tableView = UITableView()
     private let inputField = UITextField()
@@ -17,10 +21,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
     private let inputBar = UIStackView()
     private var inputBarBottom: NSLayoutConstraint!
 
-    private var messages: [Msg] = []
+    private var messages: [Message] = []
 
-    init(client: LurkerClient, buffer: Buffer) {
-        self.client = client
+    init(viewModel: ChatViewModel, buffer: Buffer) {
+        self.viewModel = viewModel
         self.buffer = buffer
         super.init(nibName: nil, bundle: nil)
     }
@@ -73,22 +77,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
         ])
 
         observeKeyboard()
-        reload()
+
+        viewModel.statePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in self?.apply(state) }
+            .store(in: &cancellables)
+        apply(viewModel.state)
     }
 
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        // Claim the callback — the buffer list also sets it, and whoever is on screen
-        // owns it. Reclaimed on the way back in didMove(toParent:) below.
-        client.onMessagesChanged = { [weak self] key in
-            guard let self, key == self.buffer.key else { return }
-            self.reload()
-        }
-    }
-
-    private func reload() {
-        messages = client.messages(for: buffer)
+    private func apply(_ state: ChatState) {
+        messages = (state.messages[buffer.key.id] ?? []).filter { $0.type.isSpeech }
         tableView.reloadData()
+        scrollToBottom()
+        surface(state.error)
+    }
+
+    /// A failed send (`send-result` ok:false) or a server `error` frame lands in
+    /// `state.error`; surface it rather than losing it silently. Comprehensive error /
+    /// empty / loading states across every screen are #19 — this is the send-failure
+    /// case the composer must never swallow.
+    private func surface(_ error: String?) {
+        guard let error, presentedViewController == nil else { return }
+        let alert = UIAlertController(title: nil, message: error, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            self?.viewModel.clearError()
+        })
+        present(alert, animated: true)
+    }
+
+    private func scrollToBottom() {
         guard !messages.isEmpty else { return }
         tableView.scrollToRow(
             at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: false
@@ -98,7 +115,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
     @objc private func send() {
         let text = (inputField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        client.send(buffer, text: text)
+        viewModel.send(buffer.key, text: text)
         inputField.text = ""
     }
 
@@ -122,11 +139,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
         let overlap = view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom
         inputBarBottom.constant = -max(0, overlap)
         view.layoutIfNeeded()
-        if !messages.isEmpty {
-            tableView.scrollToRow(
-                at: IndexPath(row: messages.count - 1, section: 0), at: .bottom, animated: false
-            )
-        }
+        scrollToBottom()
     }
 
     @objc private func keyboardWillHide() {
@@ -142,19 +155,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource {
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "msg", for: indexPath)
-        let msg = messages[indexPath.row]
+        let message = messages[indexPath.row]
 
         var content = cell.defaultContentConfiguration()
-        let nick = msg.type == "action" ? "* \(msg.nick)" : msg.nick
+        let nick = message.nick ?? "*"
+        let label = message.type == .action ? "* \(nick)" : nick
         let line = NSMutableAttributedString(
-            string: nick,
+            string: label,
             attributes: [
                 .font: UIFont.preferredFont(forTextStyle: .subheadline).bold(),
-                .foregroundColor: msg.isSelf ? UIColor.tintColor : UIColor.secondaryLabel,
+                .foregroundColor: message.isSelf ? UIColor.tintColor : UIColor.secondaryLabel,
             ]
         )
         line.append(NSAttributedString(
-            string: "  \(msg.text)",
+            string: "  \(message.text ?? "")",
             attributes: [.font: UIFont.preferredFont(forTextStyle: .subheadline)]
         ))
         content.attributedText = line
