@@ -4,7 +4,7 @@
 import Combine
 
 /// How the live socket stands, for a connection state the user can actually see.
-public enum SocketStatus: Sendable {
+public enum SocketStatus: Equatable, Sendable {
     case connecting
     case connected
     case reconnecting

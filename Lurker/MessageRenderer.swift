@@ -14,6 +14,12 @@ enum MessageRenderer {
         let nick = message.nick ?? "*"
         let line = NSMutableAttributedString()
 
+        if let stamp = timestamp(message.time) {
+            line.append(NSAttributedString(
+                string: stamp + "  ", attributes: [.font: base, .foregroundColor: UIColor.tertiaryLabel]
+            ))
+        }
+
         switch message.type {
         case .action:
             // "* " muted marker, then the actor's nick + body, italicized.
@@ -48,13 +54,40 @@ enum MessageRenderer {
             attributed.append(NSAttributedString(string: run.text, attributes: attributes))
         }
         // Auto-link URLs over the assembled plain text (control codes already stripped).
+        // The cell's `linkTextAttributes` colors + underlines them; here we only mark them.
         for match in URLMatcher.matches(in: attributed.string) {
             guard let url = URL(string: match.href) else { continue }
-            attributed.addAttributes(
-                [.link: url, .underlineStyle: NSUnderlineStyle.single.rawValue], range: match.range
-            )
+            attributed.addAttribute(.link, value: url, range: match.range)
         }
         return attributed
+    }
+
+    // MARK: - Timestamps
+
+    private static let isoParser: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let isoParserPlain: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short // locale-aware 12/24h, shown in local time
+        return formatter
+    }()
+
+    /// The server's ISO time → a short local time (nil if absent/unparseable).
+    private static func timestamp(_ iso: String?) -> String? {
+        guard let iso else { return nil }
+        guard let date = isoParser.date(from: iso) ?? isoParserPlain.date(from: iso) else { return nil }
+        return timeFormatter.string(from: date)
     }
 
     // MARK: - Colors

@@ -40,7 +40,13 @@ final class BufferListViewController: UITableViewController {
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
+        // The list only depends on networks, buffers, and connection state — a message
+        // arriving in some channel shouldn't rebuild the whole list (badge counts arrive
+        // as read-state updates, which do change `buffers`).
         viewModel.statePublisher
+            .removeDuplicates {
+                $0.networks == $1.networks && $0.buffers == $1.buffers && $0.connection == $1.connection
+            }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)

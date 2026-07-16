@@ -49,7 +49,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "msg")
+        tableView.register(MessageCell.self, forCellReuseIdentifier: MessageCell.reuseID)
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "divider")
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
@@ -93,7 +93,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         observeKeyboard()
 
+        // Only re-render when this buffer's messages or the error actually change — a
+        // frame for some other channel shouldn't reload this screen.
+        let key = buffer.key.id
         viewModel.statePublisher
+            .removeDuplicates { $0.messages[key] == $1.messages[key] && $0.error == $1.error }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
@@ -234,11 +238,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func messageCell(_ message: Message) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "msg")!
-        var content = cell.defaultContentConfiguration()
-        content.attributedText = MessageRenderer.render(message)
-        content.textProperties.numberOfLines = 0
-        cell.contentConfiguration = content
+        let cell = tableView.dequeueReusableCell(withIdentifier: MessageCell.reuseID) as! MessageCell
+        cell.configure(MessageRenderer.render(message))
         return cell
     }
 
