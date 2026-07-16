@@ -35,7 +35,13 @@ final class BufferTitleButton: UIButton {
         // Leading inset leaves room for the light, which sits outside the configuration's
         // content and so isn't accounted for by its own layout.
         config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 26, bottom: 6, trailing: 12)
+        // A pill is a single line by definition — a long channel name truncates rather
+        // than wrapping the capsule to two lines or breaking mid-word.
+        config.titleLineBreakMode = .byTruncatingTail
         configuration = config
+
+        // Yield when squeezed instead of insisting on the width a long name wants.
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         light.layer.cornerRadius = Self.lightSize / 2
         light.isUserInteractionEnabled = false
@@ -52,12 +58,29 @@ final class BufferTitleButton: UIButton {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// How much of the bar the pill may claim before its title starts truncating. The rest
+    /// belongs to the buttons either side of it.
+    private static let maxWidthFraction: CGFloat = 0.5
+
+    /// A `titleView` is laid out from its intrinsic size, so left alone a long channel
+    /// name asks for more width than the bar has and crowds the buttons flanking it. Cap
+    /// the ask; `titleLineBreakMode` truncates the name inside whatever's granted.
+    override var intrinsicContentSize: CGSize {
+        var size = super.intrinsicContentSize
+        if let available = window?.bounds.width {
+            size.width = min(size.width, available * Self.maxWidthFraction)
+        }
+        return size
+    }
+
     func update(title: String, status: StatusLight) {
         // One font size app-wide; the pill earns its emphasis with weight, not size.
         var attributed = AttributedString(title)
         attributed.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
         attributed.foregroundColor = UIColor.label
         configuration?.attributedTitle = attributed
+        // The name drives the pill's width, and the cap above is applied on measure.
+        invalidateIntrinsicContentSize()
 
         light.backgroundColor = Palette.color(for: status)
         // The light is a color-only signal, so it has to be spoken too.

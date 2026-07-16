@@ -64,9 +64,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferList() })
         navigationItem.titleView = titleButton
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "Sign Out", style: .plain, target: self, action: #selector(signOut)
-        )
+        navigationItem.leftBarButtonItem = overflowItem()
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             barButtonSystemItem: .add, target: self, action: #selector(promptJoin)
         )
@@ -363,9 +361,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
-    @objc private func signOut() {
-        // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
-        viewModel.logout()
+    /// The overflow button, balancing "+" across the pill. A bare "…" means "there's a
+    /// menu here" on iOS, so sign-out lives inside it rather than firing on tap — an
+    /// unlabelled button that ends your session on one touch is a trap. It's also where
+    /// the rest of Settings (#20) lands, which is why it's an ellipsis and not a door.
+    private func overflowItem() -> UIBarButtonItem {
+        UIBarButtonItem(
+            image: UIImage(systemName: "ellipsis"),
+            menu: UIMenu(children: [
+                UIAction(
+                    title: "Sign Out",
+                    image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+                    attributes: .destructive
+                ) { [weak self] _ in
+                    // Revokes server-side + clears the Keychain; SceneDelegate returns us
+                    // to sign-in.
+                    self?.viewModel.logout()
+                },
+            ])
+        )
     }
 
     @objc private func promptJoin() {
