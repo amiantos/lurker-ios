@@ -40,10 +40,11 @@ public final class SessionStore: Sendable {
         SecItemDelete(baseQuery() as CFDictionary)
         var attributes = baseQuery()
         attributes[kSecValueData as String] = data
-        // Available after the first unlock post-boot — survives a locked screen, which
-        // a background reconnect (#4) will need, without being readable before first
-        // unlock.
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        // Available after the first unlock post-boot — survives a locked screen, which a
+        // background reconnect (#4) will need. `ThisDeviceOnly` keeps the bearer token
+        // out of encrypted backups and off a migrated device, so a restored backup can't
+        // silently carry a live session onto new hardware (the user re-signs-in there).
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(attributes as CFDictionary, nil)
     }
 

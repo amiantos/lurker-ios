@@ -128,11 +128,16 @@ final class LoginViewController: UIViewController {
         let password = passwordField.text ?? ""
 
         // Remember the backend + server for the next sign-in (prefill after sign-out).
+        // Only a non-blank server, so a stray empty submit can't wipe a good value.
         UserPreferences.standard.set(lastBackend: backend)
-        UserPreferences.standard.set(lastServerURL: server)
+        if !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            UserPreferences.standard.set(lastServerURL: server)
+        }
 
         setBusy(true)
-        Task { [weak self] in
+        // `@MainActor` is already implied here (the VC is main-isolated), but stated so
+        // the post-`await` UI calls are unambiguously on the main actor.
+        Task { @MainActor [weak self] in
             await self?.viewModel.login(backend: backend, server: server, identifier: identifier, password: password)
             // On success SceneDelegate swaps this screen out; on failure statusLabel
             // already carries the reason. Either way, stop the spinner.
