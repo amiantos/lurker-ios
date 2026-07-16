@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		44E100032FDE0000000F8303 /* LurkerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 44E100022FDE0000000F8302 /* LurkerKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		44D29C6F2FDD4EED000F839D /* Lurker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Lurker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				44E100032FDE0000000F8303 /* LurkerKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = Lurker;
 			packageProductDependencies = (
+				44E100022FDE0000000F8302 /* LurkerKit */,
 			);
 			productName = Lurker;
 			productReference = 44D29C6F2FDD4EED000F839D /* Lurker.app */;
@@ -107,6 +113,9 @@
 			);
 			mainGroup = 44D29C662FDD4EED000F839D;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				44E100012FDE0000000F8301 /* XCLocalSwiftPackageReference "LurkerKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 44D29C702FDD4EED000F839D /* Products */;
 			projectDirPath = "";
@@ -343,6 +352,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		44E100012FDE0000000F8301 /* XCLocalSwiftPackageReference "LurkerKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = LurkerKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		44E100022FDE0000000F8302 /* LurkerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LurkerKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 44D29C672FDD4EED000F839D /* Project object */;
 }

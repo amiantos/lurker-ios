@@ -67,3 +67,26 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             | xcbeautify --renderer github-actions
+
+  test:
+    name: Test (LurkerKit)
+    # The model/client/store live in a plain Swift package, so the tricky store/parser
+    # core is tested on the host with `swift test` — no simulator, no app build.
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        # Pin to Xcode 26 so `swift` is the Swift 6.2 toolchain the package expects.
+        # Pinned to a SHA because it's a third-party action: v1.7.0.
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
+        with:
+          xcode-version: '^26.0'
+
+      - name: Run LurkerKit tests
+        run: swift test --package-path LurkerKit

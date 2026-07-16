@@ -1,20 +1,20 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Combine
+import LurkerKit
 import UIKit
 
-/// Screen 1: password → session token. The Simulator shares the host's network, so
-/// a local dev server is just `http://localhost:8010` (no 10.0.2.2 equivalent as on
-/// Android). 8010 is the API/WS server — NOT the Vite client dev port, which only
-/// serves the web SPA and has no /api or /ws.
+/// Screen 1: password → session token. The Simulator shares the host's network, so a
+/// local dev server is just `http://localhost:8010` (no 10.0.2.2 equivalent as on
+/// Android). 8010 is the API/WS server — NOT the Vite client dev port, which only serves
+/// the web SPA and has no /api or /ws.
 ///
-/// Two backends: self-hosted mints its token at the cell; hosted mints at the
-/// control plane and rides the proxy. See LurkerClient.login.
-private let hostedURL = "https://app.lurker.chat"
-private let selfHostedURL = "http://localhost:8010"
-
+/// Two backends: self-hosted mints its token at the cell; hosted mints at the control
+/// plane and rides the proxy. See `Backend`.
 final class LoginViewController: UIViewController {
-    private let client: LurkerClient
+    private let viewModel: ChatViewModel
+    private var cancellables = Set<AnyCancellable>()
 
     private let backendControl = UISegmentedControl(items: ["Self-hosted", "Hosted (lurker.chat)"])
     private let serverField = UITextField()
@@ -24,10 +24,10 @@ final class LoginViewController: UIViewController {
     private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
 
-    private var hosted: Bool { backendControl.selectedSegmentIndex == 1 }
+    private var backend: Backend { backendControl.selectedSegmentIndex == 1 ? .hosted : .selfHosted }
 
-    init(client: LurkerClient) {
-        self.client = client
+    init(viewModel: ChatViewModel) {
+        self.viewModel = viewModel
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -44,7 +44,7 @@ final class LoginViewController: UIViewController {
         heading.font = .preferredFont(forTextStyle: .largeTitle)
 
         let blurb = UILabel()
-        blurb.text = "Prototype client — signs in with a password and opens the WebSocket with a bearer token."
+        blurb.text = "Signs in with a password and opens the WebSocket with a bearer token."
         blurb.font = .preferredFont(forTextStyle: .footnote)
         blurb.textColor = .secondaryLabel
         blurb.numberOfLines = 0
@@ -52,12 +52,12 @@ final class LoginViewController: UIViewController {
         backendControl.selectedSegmentIndex = 0
         backendControl.addTarget(self, action: #selector(backendChanged), for: .valueChanged)
 
-        configure(serverField, placeholder: "Server URL", text: selfHostedURL)
+        configure(serverField, placeholder: "Server URL", text: Backend.selfHosted.defaultURL)
         serverField.keyboardType = .URL
         serverField.autocapitalizationType = .none
         serverField.autocorrectionType = .no
 
-        configure(usernameField, placeholder: "Username")
+        configure(usernameField, placeholder: Backend.selfHosted.identifierLabel)
         usernameField.autocapitalizationType = .none
         usernameField.autocorrectionType = .no
         usernameField.textContentType = .username
@@ -89,9 +89,11 @@ final class LoginViewController: UIViewController {
             stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
         ])
 
-        client.onStatus = { [weak self] message in
-            self?.statusLabel.text = message
-        }
+        // The reason a sign-in failed (bad password, passkey-only account, …) lands here.
+        viewModel.statusPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] message in self?.statusLabel.text = message }
+            .store(in: &cancellables)
     }
 
     private func configure(_ field: UITextField, placeholder: String, text: String = "") {
@@ -101,18 +103,16 @@ final class LoginViewController: UIViewController {
         field.heightAnchor.constraint(equalToConstant: 44).isActive = true
     }
 
-    /// Switching backends resets the server URL to that backend's default (unless
-    /// the field has been hand-edited off both defaults) and relabels the identifier
-    /// field: hosted authenticates by account email, self-hosted by IRC-side username.
+    /// Switching backends resets the server URL to that backend's default (unless the
+    /// field was hand-edited off both defaults) and relabels the identifier field: hosted
+    /// authenticates by account email, self-hosted by IRC-side username.
     @objc private func backendChanged() {
-        if hosted, serverField.text == selfHostedURL {
-            serverField.text = hostedURL
-        } else if !hosted, serverField.text == hostedURL {
-            serverField.text = selfHostedURL
+        if serverField.text == Backend.selfHosted.defaultURL || serverField.text == Backend.hosted.defaultURL {
+            serverField.text = backend.defaultURL
         }
-        usernameField.placeholder = hosted ? "Email" : "Username"
-        usernameField.textContentType = hosted ? .emailAddress : .username
-        usernameField.keyboardType = hosted ? .emailAddress : .default
+        usernameField.placeholder = backend.identifierLabel
+        usernameField.textContentType = backend == .hosted ? .emailAddress : .username
+        usernameField.keyboardType = backend == .hosted ? .emailAddress : .default
     }
 
     @objc private func signIn() {
@@ -120,17 +120,18 @@ final class LoginViewController: UIViewController {
         statusLabel.text = nil
         setBusy(true)
 
-        client.login(
-            server: serverField.text ?? "",
-            username: usernameField.text ?? "",
-            password: passwordField.text ?? "",
-            hosted: hosted
-        ) { [weak self] ok in
-            guard let self else { return }
-            self.setBusy(false)
-            guard ok else { return } // onStatus already carries the reason
-            let buffers = BufferListViewController(client: self.client)
-            self.navigationController?.setViewControllers([buffers], animated: true)
+        Task {
+            let ok = await viewModel.login(
+                backend: backend,
+                server: serverField.text ?? "",
+                identifier: usernameField.text ?? "",
+                password: passwordField.text ?? ""
+            )
+            setBusy(false)
+            guard ok else { return } // statusLabel already carries the reason
+            navigationController?.setViewControllers(
+                [BufferListViewController(viewModel: viewModel)], animated: true
+            )
         }
     }
 
