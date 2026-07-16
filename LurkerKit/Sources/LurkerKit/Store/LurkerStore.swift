@@ -39,6 +39,16 @@ final class LurkerStore {
 
     func reset() { subject.value = ChatState() }
 
+    /// Drop a buffer and its cached messages/members — the optimistic local half of a
+    /// close-buffer (the server then hides it, so it won't re-appear on the next snapshot).
+    func removeBuffer(_ key: BufferKey) {
+        var next = subject.value
+        next.buffers[key.id] = nil
+        next.messages[key.id] = nil
+        next.members[key.id] = nil
+        subject.value = next
+    }
+
     func clearError() { subject.value.error = nil }
 
     func apply(_ frame: ServerFrame) {

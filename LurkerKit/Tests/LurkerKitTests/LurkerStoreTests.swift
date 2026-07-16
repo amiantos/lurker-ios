@@ -168,6 +168,17 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(buffer.highlights, 2)
     }
 
+    func testRemoveBufferDropsItAndItsMessages() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "a")]))
+        XCTAssertNotNil(store.state.buffers[chanKey])
+
+        store.removeBuffer(BufferKey(networkId: 1, target: "#lurker"))
+
+        XCTAssertNil(store.state.buffers[chanKey])
+        XCTAssertNil(store.state.messages[chanKey])
+    }
+
     func testReadStateForAnUnknownBufferIsANoOp() {
         let store = LurkerStore()
         store.apply(.readState(networkId: 1, target: "#nope", lastReadId: 5, unread: 1, highlights: 0))

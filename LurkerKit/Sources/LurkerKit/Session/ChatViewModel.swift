@@ -128,6 +128,21 @@ public final class ChatViewModel {
         client.markAllRead()
     }
 
+    public func joinChannel(networkId: Int, channel: String) {
+        let name = channel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        client.joinChannel(networkId: networkId, channel: name)
+    }
+
+    /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
+    public func closeBuffer(_ key: BufferKey) {
+        client.closeBuffer(networkId: key.networkId, target: key.target)
+        store.removeBuffer(key)
+    }
+
+    /// The networks the user is on, for the join picker and buffer-list grouping.
+    public var networks: [Network] { Array(store.state.networks.values) }
+
     public func clearError() { store.clearError() }
 
     // MARK: - App lifecycle (fed by the SceneDelegate)

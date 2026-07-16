@@ -216,6 +216,19 @@ final class LurkerClient {
         send(["type": "mark-all-read"])
     }
 
+    /// Join a channel on a network. The server sends its backlog once joined, which
+    /// materializes the buffer in the list.
+    func joinChannel(networkId: Int, channel: String) {
+        send(["type": "join", "networkId": networkId, "channel": channel])
+    }
+
+    /// Close a buffer: parts a channel and stops tracking a DM. The server pseudo-buffer
+    /// (`:server:`) can't be closed. No-op for the system buffer (networkId nil).
+    func closeBuffer(networkId: Int?, target: String) {
+        guard let networkId, !target.hasPrefix(":server:") else { return }
+        send(["type": "close-buffer", "networkId": networkId, "target": target])
+    }
+
     private func send(_ verb: [String: Any]) {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
