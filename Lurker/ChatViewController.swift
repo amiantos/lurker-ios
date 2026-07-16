@@ -236,20 +236,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func messageCell(_ message: Message) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "msg")!
         var content = cell.defaultContentConfiguration()
-        let nick = message.nick ?? "*"
-        let label = message.type == .action ? "* \(nick)" : nick
-        let line = NSMutableAttributedString(
-            string: label,
-            attributes: [
-                .font: UIFont.preferredFont(forTextStyle: .subheadline).bold(),
-                .foregroundColor: message.isSelf ? UIColor.tintColor : UIColor.secondaryLabel,
-            ]
-        )
-        line.append(NSAttributedString(
-            string: "  \(message.text ?? "")",
-            attributes: [.font: UIFont.preferredFont(forTextStyle: .subheadline)]
-        ))
-        content.attributedText = line
+        content.attributedText = MessageRenderer.render(message)
+        content.textProperties.numberOfLines = 0
         cell.contentConfiguration = content
         return cell
     }
@@ -259,7 +247,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         var content = cell.defaultContentConfiguration()
         content.text = "New messages"
         content.textProperties.color = .systemRed
-        content.textProperties.font = .preferredFont(forTextStyle: .caption1).bold()
+        let caption = UIFont.preferredFont(forTextStyle: .caption1)
+        content.textProperties.font = caption.fontDescriptor.withSymbolicTraits(.traitBold)
+            .map { UIFont(descriptor: $0, size: 0) } ?? caption
         content.textProperties.alignment = .center
         cell.contentConfiguration = content
         return cell
@@ -270,12 +260,5 @@ extension ChatViewController: UITextFieldDelegate {
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         send()
         return false
-    }
-}
-
-private extension UIFont {
-    func bold() -> UIFont {
-        guard let descriptor = fontDescriptor.withSymbolicTraits(.traitBold) else { return self }
-        return UIFont(descriptor: descriptor, size: 0)
     }
 }
