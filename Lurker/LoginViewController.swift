@@ -7,11 +7,10 @@ import UIKit
 
 /// Screen 1: password → session token. The Simulator shares the host's network, so a
 /// local dev server is just `http://localhost:8010` (no 10.0.2.2 equivalent as on
-/// Android). 8010 is the API/WS server — NOT the Vite client dev port, which only serves
-/// the web SPA and has no /api or /ws.
+/// Android). 8010 is the API/WS server — NOT the Vite client dev port.
 ///
-/// Two backends: self-hosted mints its token at the cell; hosted mints at the control
-/// plane and rides the proxy. See `Backend`.
+/// Navigation away from here on success is driven by `SceneDelegate` observing the
+/// session state; this screen just kicks off the sign-in.
 final class LoginViewController: UIViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -49,18 +48,22 @@ final class LoginViewController: UIViewController {
         blurb.textColor = .secondaryLabel
         blurb.numberOfLines = 0
 
-        backendControl.selectedSegmentIndex = 0
+        // Prefill the last-used backend + server so a returning user (after sign-out)
+        // doesn't retype them. The token itself is in the Keychain, not here.
+        let savedBackend = UserPreferences.standard.lastBackend
+        backendControl.selectedSegmentIndex = savedBackend == .hosted ? 1 : 0
         backendControl.addTarget(self, action: #selector(backendChanged), for: .valueChanged)
 
-        configure(serverField, placeholder: "Server URL", text: Backend.selfHosted.defaultURL)
+        configure(serverField, placeholder: "Server URL", text: UserPreferences.standard.lastServerURL)
         serverField.keyboardType = .URL
         serverField.autocapitalizationType = .none
         serverField.autocorrectionType = .no
 
-        configure(usernameField, placeholder: Backend.selfHosted.identifierLabel)
+        configure(usernameField, placeholder: savedBackend.identifierLabel)
         usernameField.autocapitalizationType = .none
         usernameField.autocorrectionType = .no
-        usernameField.textContentType = .username
+        usernameField.textContentType = savedBackend == .hosted ? .emailAddress : .username
+        usernameField.keyboardType = savedBackend == .hosted ? .emailAddress : .default
 
         configure(passwordField, placeholder: "Password")
         passwordField.isSecureTextEntry = true
@@ -89,7 +92,8 @@ final class LoginViewController: UIViewController {
             stack.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
         ])
 
-        // The reason a sign-in failed (bad password, passkey-only account, …) lands here.
+        // The reason a sign-in failed, or why a prior session ended (a mid-session 401
+        // bounces here with an explanation), lands in this label.
         viewModel.statusPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] message in self?.statusLabel.text = message }
@@ -118,20 +122,26 @@ final class LoginViewController: UIViewController {
     @objc private func signIn() {
         view.endEditing(true)
         statusLabel.text = nil
-        setBusy(true)
+        let backend = self.backend
+        let server = serverField.text ?? ""
+        let identifier = usernameField.text ?? ""
+        let password = passwordField.text ?? ""
 
-        Task {
-            let ok = await viewModel.login(
-                backend: backend,
-                server: serverField.text ?? "",
-                identifier: usernameField.text ?? "",
-                password: passwordField.text ?? ""
-            )
-            setBusy(false)
-            guard ok else { return } // statusLabel already carries the reason
-            navigationController?.setViewControllers(
-                [BufferListViewController(viewModel: viewModel)], animated: true
-            )
+        // Remember the backend + server for the next sign-in (prefill after sign-out).
+        // Only a non-blank server, so a stray empty submit can't wipe a good value.
+        UserPreferences.standard.set(lastBackend: backend)
+        if !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            UserPreferences.standard.set(lastServerURL: server)
+        }
+
+        setBusy(true)
+        // `@MainActor` is already implied here (the VC is main-isolated), but stated so
+        // the post-`await` UI calls are unambiguously on the main actor.
+        Task { @MainActor [weak self] in
+            await self?.viewModel.login(backend: backend, server: server, identifier: identifier, password: password)
+            // On success SceneDelegate swaps this screen out; on failure statusLabel
+            // already carries the reason. Either way, stop the spinner.
+            self?.setBusy(false)
         }
     }
 
