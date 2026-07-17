@@ -47,11 +47,14 @@ enum MessageRenderer {
         }
     }
 
-    /// The caption's color, which is not always a nick color — a system line's says how
-    /// bad it is, and server text isn't anyone.
-    static func captionColor(_ message: Message) -> UIColor {
+    /// The caption's color. Usually a nick color, but a system line names a *network*, and
+    /// server text is nobody.
+    static func captionColor(_ message: Message, networkName: String?) -> UIColor {
         switch message.type {
-        case .system: color(for: message.level ?? .info)
+        // A network-tied system line hashes its network name through the same palette as
+        // nicks, so each network gets a stable, distinguishable color — matching the web.
+        // The app speaking in its own voice ("System", no network) stays muted.
+        case .system: networkName.map(hashedColor) ?? .secondaryLabel
         case .motd, .other: .secondaryLabel
         default: nickColor(message)
         }
@@ -261,8 +264,14 @@ enum MessageRenderer {
 
     static func nickColor(_ message: Message) -> UIColor {
         if message.isSelf { return .tintColor }
-        let hex = IRCPalette.nick[NickColor.index(for: message.nick ?? "")]
-        return UIColor(hex: hex) ?? .secondaryLabel
+        return hashedColor(message.nick ?? "")
+    }
+
+    /// A stable color for a name, from the shared nick palette. Nicks and network names
+    /// both run through it, so the same name is always the same color and different ones
+    /// are told apart.
+    static func hashedColor(_ name: String) -> UIColor {
+        UIColor(hex: IRCPalette.nick[NickColor.index(for: name)]) ?? .secondaryLabel
     }
 
     /// mIRC index → color. The theme slots (0/1/14/15) map to system colors; 16+ don't

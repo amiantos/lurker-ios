@@ -137,7 +137,7 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         let caption = MessageRenderer.caption(message, networkName: networkName)
         nickLabel.isHidden = isSelf || !position.isFirst || caption == nil
         nickLabel.text = caption
-        nickLabel.textColor = MessageRenderer.captionColor(message)
+        nickLabel.textColor = MessageRenderer.captionColor(message, networkName: networkName)
         // Per message, not per run: once you've gone looking for a time, you want the one
         // for the line you're looking at.
         revealTime.text = MessageRenderer.timestamp(message.date)

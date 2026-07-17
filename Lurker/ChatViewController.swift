@@ -195,7 +195,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Filter by what this *kind* of buffer renders. The system buffer's content is
         // entirely `type: "system"`, which isn't speech — a blanket `isSpeech` filter
         // (right for channels) left it permanently empty.
-        let updated = (state.messages[buffer.key.id] ?? []).filter { buffer.kind.renders($0.type) }
+        let updated = (state.messages[buffer.key.id] ?? [])
+            .filter { buffer.kind.renders($0.type) && $0.isRenderable }
         let oldFirstId = messages.first?.id
         let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom

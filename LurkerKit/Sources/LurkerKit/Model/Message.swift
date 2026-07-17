@@ -50,6 +50,19 @@ public struct Message: Equatable, Sendable {
         self.level = level
         self.originNetworkId = originNetworkId
     }
+
+    /// Whether this event has anything to show. Every type the client renders draws its
+    /// body from `text`, so an event with no text is a blank row.
+    ///
+    /// The server streams state-only events to a buffer alongside its log lines — a
+    /// `usermode` carrying `modes`, an `away-state` carrying an `away` object, `lag`,
+    /// `peer-presence` — none of which have a `text` field. The client parses them as
+    /// `.other` (it consumes none of them yet) and, left in, each renders as an empty
+    /// bubble. The web client either folds them into state or filters them; this is how
+    /// the client keeps them off screen without modeling every one.
+    public var isRenderable: Bool {
+        !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 /// Severity of a system-buffer line. Absent/unrecognized → `info`, matching the server's

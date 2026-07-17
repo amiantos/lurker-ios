@@ -45,6 +45,21 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertFalse(BufferKind.system.renders(.join))
     }
 
+    /// The server streams state-only events to the server buffer alongside its log lines —
+    /// `usermode` (carries `modes`), `away-state` (an `away` object), `lag`, `peer-presence`
+    /// — none with a `text` field. The client parses them as `.other` and, unfiltered, each
+    /// draws an empty bubble. `isRenderable` is what keeps them off screen.
+    func testAnEventWithNoTextIsNotRenderable() {
+        let usermode = Message(id: 1, type: .other, nick: nil, text: nil)
+        XCTAssertFalse(usermode.isRenderable)
+
+        let blank = Message(id: 2, type: .other, nick: nil, text: "   ")
+        XCTAssertFalse(blank.isRenderable, "whitespace-only is still blank")
+
+        let motd = Message(id: 3, type: .motd, nick: nil, text: "- Welcome -")
+        XCTAssertTrue(motd.isRenderable)
+    }
+
 
     // MARK: - Severity rides `level`, not `type`
 
