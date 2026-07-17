@@ -118,13 +118,22 @@ public enum BufferKind: Sendable {
 
     /// Whether an event of this type is something this buffer kind shows.
     ///
-    /// This is per-kind and not a single global predicate because the system buffer's
-    /// content is *entirely* `type: "system"` lines, which are not speech. Filtering it
-    /// by `isSpeech` — correct for a channel — renders it permanently empty.
+    /// This is per-kind and not a single global predicate because a buffer kind's content
+    /// is not the same shape everywhere:
+    ///
+    ///  - A **channel or DM** shows speech. The structural traffic (joins, modes) is noise
+    ///    against a conversation.
+    ///  - The **system buffer**'s content is *entirely* `type: "system"` lines, which are
+    ///    not speech — filtering it by `isSpeech` renders it permanently empty.
+    ///  - A **server log** is a log: it shows everything. What the server actually sends
+    ///    there is `motd`, `usermode`, `error`, `notice` and `invite`, and only `notice`
+    ///    is speech — so `isSpeech` hid the entire MOTD, every mode line, and every server
+    ///    error, leaving a buffer that looked almost empty rather than broken.
     public func renders(_ type: EventType) -> Bool {
         switch self {
         case .system: type == .system
-        default: type.isSpeech
+        case .server: true
+        case .channel, .dm: type.isSpeech
         }
     }
 

@@ -99,10 +99,36 @@ final class MessageGroupingTests: XCTestCase {
         )
     }
 
-    func testOnlyMessagesAreBubbles() {
+    /// Everything is a bubble except narration. Sorting lines into bubbles vs. log output
+    /// by how "conversational" they seemed kept drawing plain conversations as logs — your
+    /// DM to NickServ bubbling while its reply didn't. An action stays a line because the
+    /// actor is inside the sentence, so a captioned bubble would name them twice.
+    func testEverythingBubblesExceptNarration() {
         XCTAssertTrue(EventType.message.isBubble)
+        XCTAssertTrue(EventType.notice.isBubble)
+        XCTAssertTrue(EventType.system.isBubble)
+        XCTAssertTrue(EventType.motd.isBubble)
         XCTAssertFalse(EventType.action.isBubble)
-        XCTAssertFalse(EventType.notice.isBubble)
-        XCTAssertFalse(EventType.system.isBubble)
+    }
+
+    /// Both are bubbles now, so "both are bubbles" is no longer enough to group them: a bot
+    /// uses NOTICE precisely to mark a line as not-a-reply, and a run captions once, so
+    /// grouping a message with a notice would render the rest of them identically and erase
+    /// the distinction the sender chose.
+    func testAMessageAndANoticeFromTheSameNickDoNotGroup() {
+        XCTAssertFalse(
+            MessageGrouping.continuesRun(
+                message("nickserv", type: .notice, at: 2),
+                after: message("nickserv", at: 1)
+            ),
+            "a notice must not continue a message's run"
+        )
+        XCTAssertTrue(
+            MessageGrouping.continuesRun(
+                message("nickserv", type: .notice, at: 2),
+                after: message("nickserv", type: .notice, at: 1)
+            ),
+            "but notices group with each other"
+        )
     }
 }

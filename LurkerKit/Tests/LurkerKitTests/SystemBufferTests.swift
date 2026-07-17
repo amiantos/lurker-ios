@@ -18,8 +18,10 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertFalse(EventType.system.isSpeech, "the type that IS the system buffer is not speech")
     }
 
-    func testChannelsStillRenderOnlySpeech() {
-        for kind in [BufferKind.channel, .dm, .server] {
+    func testChannelsAndDmsStillRenderOnlySpeech() {
+        // Deliberately no longer includes `.server` — lumping it in with conversations is
+        // what hid the entire server log. See below.
+        for kind in [BufferKind.channel, .dm] {
             XCTAssertTrue(kind.renders(.message), "\(kind)")
             XCTAssertTrue(kind.renders(.action), "\(kind)")
             XCTAssertTrue(kind.renders(.notice), "\(kind)")
@@ -28,10 +30,21 @@ final class SystemBufferTests: XCTestCase {
         }
     }
 
+    /// The same bug as the system buffer's, one kind over: a server log is a log, and only
+    /// one of the five types the server actually routes to `:server:` is speech, so
+    /// `isSpeech` hid the whole MOTD, every mode line, and every server error — leaving a
+    /// buffer that looked nearly empty rather than broken.
+    func testServerLogsRenderEverythingTheServerSendsThem() {
+        for type in [EventType.motd, .other, .error, .notice, .invite] {
+            XCTAssertTrue(BufferKind.server.renders(type), "\(type)")
+        }
+    }
+
     func testSystemBufferRendersNothingButSystemLines() {
         XCTAssertFalse(BufferKind.system.renders(.message))
         XCTAssertFalse(BufferKind.system.renders(.join))
     }
+
 
     // MARK: - Severity rides `level`, not `type`
 

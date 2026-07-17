@@ -447,9 +447,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func apply(reveal offset: CGFloat) {
         reveal = offset
-        // Only the bubbles move. A full-width line can't slide — translating it would push
-        // its text off the leading edge, and in the system buffer every row is one — but it
-        // doesn't need to: it already stamps its time inline, so it has nothing to reveal.
+        // Every kind of row reveals now, but what actually moves differs: our own bubbles
+        // slide aside because they sit where the time is arriving, while a full-width line
+        // holds still and lets the time come into the gutter it already reserves. Each cell
+        // decides for itself — see `setReveal`.
         for case let cell as TimestampRevealing in tableView.visibleCells {
             cell.setReveal(offset)
         }
@@ -692,17 +693,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return dividerCell()
         case .bubble(let message, let position):
             let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID) as! BubbleCell
-            cell.configure(message, position: position)
+            cell.configure(message, position: position, networkName: networkName(for: message))
             // Scrolled into view mid-drag: match the neighbors it's arriving next to.
             cell.setReveal(reveal)
             return cell
         case .line(let message):
             let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            // A system line names the network it's about; everything else ignores this.
-            let networkName = message.originNetworkId.flatMap { networks[$0]?.name }
-            cell.configure(MessageRenderer.render(message, networkName: networkName))
+            cell.configure(MessageRenderer.render(message, networkName: networkName(for: message)), date: message.date)
+            cell.setReveal(reveal)
             return cell
         }
+    }
+
+    /// What to call the network a nick-less line belongs to.
+    ///
+    /// Two sources, because two different lines need it: a system line is app-scoped and
+    /// carries the network it's *about* in `originNetworkId`, while server text carries
+    /// nothing and simply belongs to whichever server buffer we're looking at.
+    private func networkName(for message: Message) -> String? {
+        (message.originNetworkId ?? buffer.networkId).flatMap { networks[$0]?.name }
     }
 
     private func dividerCell() -> UITableViewCell {

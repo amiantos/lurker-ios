@@ -90,11 +90,19 @@ public enum EventType: String, Sendable {
     /// Types that render as someone speaking (vs. a structural/system line).
     public var isSpeech: Bool { self == .message || self == .action || self == .notice }
 
-    /// Speech that reads as a person talking, and so renders as a bubble. `action` and
-    /// `notice` are speech but they aren't dialogue — narration ("* nick waves") and
-    /// server-ish output. Both carry their own inline prefix and would fight a bubble's
-    /// "who said this" framing, so they stay full-width lines.
-    public var isBubble: Bool { self == .message }
+    /// Whether this renders as a bubble. Nearly everything does.
+    ///
+    /// The list is one thing — bubbles — rather than a bubble/line/box taxonomy sorted by
+    /// how "conversational" a line was judged to be. That taxonomy kept drawing lines that
+    /// were plainly a conversation as log output: your DM to NickServ bubbled while its
+    /// reply didn't, and a `-SaslServ-` notice sat as a bare line under a run of bubbles
+    /// for no reason a reader could see.
+    ///
+    /// An `action` is the exception: "* alice waves" puts the actor inside the sentence,
+    /// so a bubble captioned with her nick would name her twice. It's narration about the
+    /// room rather than speech in it, and stays a line — as it does in IRCCloud, Slack and
+    /// Telegram.
+    public var isBubble: Bool { self != .action }
 
     public static func from(_ raw: String?) -> EventType {
         guard let raw, let type = EventType(rawValue: raw) else { return .other }
