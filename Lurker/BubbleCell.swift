@@ -4,36 +4,43 @@
 import LurkerKit
 import UIKit
 
+/// A cell that keeps its timestamp parked off the right edge until the list is dragged
+/// left, the way Messages does it.
+///
+/// The time is worth almost nothing almost all of the time — you want it for one message,
+/// occasionally — so it costs nothing at rest and is a drag away when it doesn't.
+protocol TimestampRevealing: UITableViewCell {
+    /// Slide the timestamp in by `offset` points. 0 parks it back off-screen.
+    func setReveal(_ offset: CGFloat)
+}
+
+enum TimestampReveal {
+    /// How far the list slides. Enough to clear a `10:00 PM`, and no further — this is a
+    /// peek, not a second column.
+    static let maxOffset: CGFloat = 76
+}
+
 /// A message rendered as a chat bubble: our own tinted and trailing, everyone else's
 /// filled and leading.
 ///
-/// Each run of messages is captioned once, by a header line above the first bubble: who
-/// said it on the left, when the run started hard against the right margin. Both halves
-/// belong to the run rather than the message — that's what keeps a channel readable.
-/// Bubbles encode a two-party "me vs them" axis, and IRC has neither two parties nor
-/// avatars to lean on, so captioning every line would roughly double the list's height to
-/// say the same thing.
-///
-/// The header spans the whole row, not its bubble, so every timestamp lands on the same x
-/// no matter which side its run is on or how wide the bubble under it is. That makes the
-/// column of times scannable — you read down it, not hunt along each run's edge for it.
-///
-/// Our own runs get the header too, with the nick dropped: the side and the tint already
-/// say who sent it, but the time is worth the same as anyone else's and reads better
-/// against the run it belongs to than trailing off the end of it.
-final class BubbleCell: UITableViewCell {
+/// A run of messages is captioned once, by the nick above its first bubble — and not at
+/// all when the run is ours, where the side and the tint already say who sent it. Bubbles
+/// encode a two-party "me vs them" axis, and IRC has neither two parties nor avatars to
+/// lean on, so captioning every line would roughly double the list's height to say the
+/// same thing.
+final class BubbleCell: UITableViewCell, TimestampRevealing {
     static let reuseID = "bubble"
 
     private let column = UIStackView()
-    private let header = UIStackView()
     private let nickLabel = UILabel()
-    private let spacer = UIView()
-    private let timeLabel = UILabel()
     private let bubble = UIView()
     private let messageText = UITextView()
+    private let revealTime = UILabel()
 
     private var columnTop: NSLayoutConstraint!
     private var columnBottom: NSLayoutConstraint!
+    /// Whether this run gives way to the timestamp — see `setReveal`.
+    private var slidesAside = false
 
     /// How much of the width a bubble may take before wrapping. The rest is the gutter
     /// that makes the leading/trailing axis legible at a glance.
@@ -47,34 +54,21 @@ final class BubbleCell: UITableViewCell {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         selectionStyle = .none
         backgroundColor = .clear
+        // Parks the timestamp: it's laid out past the trailing edge and only exists on
+        // screen once the drag pulls it in.
+        contentView.clipsToBounds = true
 
         nickLabel.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
         nickLabel.adjustsFontForContentSizeCategory = true
-        // A long nick gives way to the timestamp rather than shoving it off the row.
         nickLabel.lineBreakMode = .byTruncatingTail
-        nickLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // Same size as everything else — one font size app-wide. The timestamp recedes on
-        // color alone, which is also how `MessageRenderer` renders it on full-width lines,
-        // so the two agree.
-        timeLabel.font = .preferredFont(forTextStyle: .subheadline)
-        timeLabel.textColor = .tertiaryLabel
-        timeLabel.adjustsFontForContentSizeCategory = true
-        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
-        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        // Takes up the slack between the two, which is what pins the time to the right
-        // edge — and what leaves the time correctly placed on our own runs, where the nick
-        // is gone entirely.
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        header.axis = .horizontal
-        header.spacing = 8
-        header.alignment = .center
-        header.addArrangedSubview(nickLabel)
-        header.addArrangedSubview(spacer)
-        header.addArrangedSubview(timeLabel)
+        // One font size app-wide; it recedes on color, the same way `MessageRenderer`
+        // stamps full-width lines.
+        revealTime.font = .preferredFont(forTextStyle: .subheadline)
+        revealTime.textColor = .tertiaryLabel
+        revealTime.adjustsFontForContentSizeCategory = true
+        revealTime.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(revealTime)
 
         messageText.isEditable = false
         messageText.isScrollEnabled = false
@@ -91,10 +85,10 @@ final class BubbleCell: UITableViewCell {
         bubble.addSubview(messageText)
 
         column.axis = .vertical
-        // The caption needs air under it — set tight against its bubble it reads as part of
+        // The nick needs air under it — set tight against its bubble it reads as part of
         // the message rather than a label for the run.
         column.spacing = 6
-        column.addArrangedSubview(header)
+        column.addArrangedSubview(nickLabel)
         column.addArrangedSubview(bubble)
         column.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(column)
@@ -112,10 +106,10 @@ final class BubbleCell: UITableViewCell {
                 lessThanOrEqualTo: contentView.widthAnchor, multiplier: Self.maxWidthFraction
             ),
 
-            // Full row width, so every timestamp lands on the same x. The column is already
-            // pinned to both margins, so matching the margin guide fills it whichever way
-            // `column.alignment` is pointing the bubble underneath.
-            header.widthAnchor.constraint(equalTo: margins.widthAnchor),
+            // Just past the trailing edge, so it's invisible until dragged in, and level
+            // with the bubble it belongs to rather than the row.
+            revealTime.leadingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: 12),
+            revealTime.centerYAnchor.constraint(equalTo: bubble.centerYAnchor),
 
             columnTop,
             columnBottom,
@@ -130,14 +124,15 @@ final class BubbleCell: UITableViewCell {
     func configure(_ message: Message, position: RunPosition) {
         let isSelf = message.isSelf
         column.alignment = isSelf ? .trailing : .leading
+        slidesAside = isSelf
 
-        // One caption per run, above it. The nick drops out on our own runs; the spacer
-        // keeps the time hard right either way.
-        header.isHidden = !position.isFirst
-        nickLabel.isHidden = isSelf
+        // Our own runs need no nick — the side and the tint already say who sent it.
+        nickLabel.isHidden = isSelf || !position.isFirst
         nickLabel.text = message.nick
         nickLabel.textColor = MessageRenderer.nickColor(message)
-        timeLabel.text = MessageRenderer.timestamp(message.date)
+        // Per message, not per run: once you've gone looking for a time, you want the one
+        // for the line you're looking at.
+        revealTime.text = MessageRenderer.timestamp(message.date)
 
         bubble.backgroundColor = isSelf ? Palette.outgoingBubble : Palette.incomingBubble
         bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
@@ -155,9 +150,29 @@ final class BubbleCell: UITableViewCell {
         columnBottom.constant = position.isLast ? -6 : -1
 
         isAccessibilityElement = false
-        messageText.accessibilityLabel = [message.nick, message.text]
+        // VoiceOver has no drag to make, so the time goes in the label rather than behind a
+        // gesture it can't perform.
+        messageText.accessibilityLabel = [message.nick, message.text, revealTime.text]
             .compactMap { $0 }
             .joined(separator: ", ")
+    }
+
+    /// Only our own runs give way.
+    ///
+    /// They sit against the trailing margin — exactly where the timestamp is arriving — so
+    /// they have to move. Everyone else's already have that gutter free: their bubbles are
+    /// capped well short of it, so the timestamp slides into empty space. Sliding them
+    /// anyway would push their text and nick straight off the *leading* edge, since they're
+    /// flush against it.
+    func setReveal(_ offset: CGFloat) {
+        column.transform = CGAffineTransform(translationX: slidesAside ? -offset : 0, y: 0)
+        revealTime.transform = CGAffineTransform(translationX: -offset, y: 0)
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        // A cell recycled mid-drag would otherwise come back still slid over.
+        setReveal(0)
     }
 
     /// Round the outside of a run and tighten the side it's stacked along, so a run reads

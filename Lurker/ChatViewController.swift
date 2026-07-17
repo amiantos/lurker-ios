@@ -13,7 +13,8 @@ import UIKit
 /// This is the root of the navigation stack, not a pushed detail: the buffer list is a
 /// sheet summoned from the title pill. So the stack is exactly one deep, always, and
 /// switching buffers replaces the root rather than growing it.
-final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
+final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate,
+    UIGestureRecognizerDelegate {
     private let viewModel: ChatViewModel
     private let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
@@ -48,6 +49,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Whether we've asked for this buffer's history on the *current* connection. Cleared
     /// when the socket drops, because a reconnect resyncs buffers as shells again.
     private var openRequested = false
+    /// How far the timestamps are currently slid in. Held here, not per-cell, so a cell
+    /// recycled mid-drag comes back at the same offset as its neighbors.
+    private var reveal: CGFloat = 0
+    private var revealPan: UIPanGestureRecognizer!
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -345,14 +350,66 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The left edge is free to claim because this screen is the navigation stack's root,
     /// so there's no interactive pop gesture to collide with.
     private func addEdgeSwipes() {
-        for (edge, action) in [
-            (UIRectEdge.left, #selector(swipedFromLeft)),
-            (UIRectEdge.right, #selector(swipedFromRight)),
-        ] {
+        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) -> UIScreenEdgePanGestureRecognizer {
             let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
             swipe.edges = edge
             view.addGestureRecognizer(swipe)
+            return swipe
         }
+        _ = edgeSwipe(.left, #selector(swipedFromLeft))
+        let rightEdge = edgeSwipe(.right, #selector(swipedFromRight))
+
+        // Drag left anywhere to pull the timestamps in. This overlaps the right-edge swipe
+        // — both are leftward drags — so it defers: starting at the edge opens the nick
+        // list, starting anywhere else reveals times. An edge recognizer fails instantly
+        // when the touch doesn't begin in its strip, so the wait costs nothing.
+        revealPan = UIPanGestureRecognizer(target: self, action: #selector(revealPanned))
+        revealPan.delegate = self
+        revealPan.require(toFail: rightEdge)
+        tableView.addGestureRecognizer(revealPan)
+    }
+
+    @objc private func revealPanned(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .changed:
+            // Leftward only, and it stops at the peek width rather than tracking the finger
+            // off the screen.
+            apply(reveal: min(max(-pan.translation(in: view).x, 0), TimestampReveal.maxOffset))
+        case .ended, .cancelled, .failed:
+            // Always springs back — this is a peek, not a mode you can get stuck in.
+            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0) {
+                self.apply(reveal: 0)
+            }
+        default:
+            break
+        }
+    }
+
+    private func apply(reveal offset: CGFloat) {
+        reveal = offset
+        // Only the bubbles move. A full-width line can't slide — translating it would push
+        // its text off the leading edge, and in the system buffer every row is one — but it
+        // doesn't need to: it already stamps its time inline, so it has nothing to reveal.
+        for case let cell as TimestampRevealing in tableView.visibleCells {
+            cell.setReveal(offset)
+        }
+    }
+
+    /// Claim the drag only when it's clearly a leftward horizontal one, so vertical scrolls
+    /// still belong to the table.
+    func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
+        guard recognizer === revealPan, let pan = recognizer as? UIPanGestureRecognizer else { return true }
+        let velocity = pan.velocity(in: view)
+        return velocity.x < 0 && abs(velocity.x) > abs(velocity.y)
+    }
+
+    /// Run alongside the table's own pan rather than displacing it — a mostly-horizontal
+    /// drag barely scrolls, and fighting the scroll recognizer would cost the flick.
+    func gestureRecognizer(
+        _ recognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+    ) -> Bool {
+        true
     }
 
     @objc private func swipedFromLeft(_ recognizer: UIScreenEdgePanGestureRecognizer) {
@@ -506,6 +563,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .bubble(let message, let position):
             let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID) as! BubbleCell
             cell.configure(message, position: position)
+            // Scrolled into view mid-drag: match the neighbors it's arriving next to.
+            cell.setReveal(reveal)
             return cell
         case .line(let message):
             let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
