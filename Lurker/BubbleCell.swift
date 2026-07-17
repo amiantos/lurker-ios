@@ -8,11 +8,15 @@ import UIKit
 /// filled and leading.
 ///
 /// Each run of messages is captioned once, by a header line above the first bubble: who
-/// said it on the left, when the run started on the right, spanning the bubble's width.
-/// Both halves belong to the run rather than the message — that's what keeps a channel
-/// readable. Bubbles encode a two-party "me vs them" axis, and IRC has neither two parties
-/// nor avatars to lean on, so captioning every line would roughly double the list's height
-/// to say the same thing.
+/// said it on the left, when the run started hard against the right margin. Both halves
+/// belong to the run rather than the message — that's what keeps a channel readable.
+/// Bubbles encode a two-party "me vs them" axis, and IRC has neither two parties nor
+/// avatars to lean on, so captioning every line would roughly double the list's height to
+/// say the same thing.
+///
+/// The header spans the whole row, not its bubble, so every timestamp lands on the same x
+/// no matter which side its run is on or how wide the bubble under it is. That makes the
+/// column of times scannable — you read down it, not hunt along each run's edge for it.
 ///
 /// Our own runs get the header too, with the nick dropped: the side and the tint already
 /// say who sent it, but the time is worth the same as anyone else's and reads better
@@ -29,6 +33,7 @@ final class BubbleCell: UITableViewCell {
     private let messageText = UITextView()
 
     private var columnTop: NSLayoutConstraint!
+    private var columnBottom: NSLayoutConstraint!
 
     /// How much of the width a bubble may take before wrapping. The rest is the gutter
     /// that makes the leading/trailing axis legible at a glance.
@@ -86,7 +91,9 @@ final class BubbleCell: UITableViewCell {
         bubble.addSubview(messageText)
 
         column.axis = .vertical
-        column.spacing = 2
+        // The caption needs air under it — set tight against its bubble it reads as part of
+        // the message rather than a label for the run.
+        column.spacing = 6
         column.addArrangedSubview(header)
         column.addArrangedSubview(bubble)
         column.translatesAutoresizingMaskIntoConstraints = false
@@ -94,6 +101,7 @@ final class BubbleCell: UITableViewCell {
 
         let margins = contentView.layoutMarginsGuide
         columnTop = column.topAnchor.constraint(equalTo: contentView.topAnchor)
+        columnBottom = column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         NSLayoutConstraint.activate([
             messageText.topAnchor.constraint(equalTo: bubble.topAnchor),
             messageText.leadingAnchor.constraint(equalTo: bubble.leadingAnchor),
@@ -104,17 +112,13 @@ final class BubbleCell: UITableViewCell {
                 lessThanOrEqualTo: contentView.widthAnchor, multiplier: Self.maxWidthFraction
             ),
 
-            // The header spans the bubble, so the timestamp lands on the bubble's own right
-            // edge rather than the screen's — at the screen's it would read as belonging to
-            // nothing. `>=` not `==`: a short bubble mustn't crush the nick and time
-            // together, so the header keeps its natural width and simply overhangs.
-            header.widthAnchor.constraint(greaterThanOrEqualTo: bubble.widthAnchor),
-            header.widthAnchor.constraint(
-                lessThanOrEqualTo: contentView.widthAnchor, multiplier: Self.maxWidthFraction
-            ),
+            // Full row width, so every timestamp lands on the same x. The column is already
+            // pinned to both margins, so matching the margin guide fills it whichever way
+            // `column.alignment` is pointing the bubble underneath.
+            header.widthAnchor.constraint(equalTo: margins.widthAnchor),
 
             columnTop,
-            column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -1),
+            columnBottom,
             column.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
             column.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
         ])
@@ -145,8 +149,10 @@ final class BubbleCell: UITableViewCell {
             .underlineStyle: NSUnderlineStyle.single.rawValue,
         ]
 
-        // Open a gap before a new run, and hold the messages inside one tight together.
+        // Open a gap around a run and hold the messages inside one tight together, so a run
+        // reads as a block with space either side rather than as part of the next one.
         columnTop.constant = position.isFirst ? 8 : 1
+        columnBottom.constant = position.isLast ? -6 : -1
 
         isAccessibilityElement = false
         messageText.accessibilityLabel = [message.nick, message.text]
