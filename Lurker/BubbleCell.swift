@@ -7,21 +7,28 @@ import UIKit
 /// A message rendered as a chat bubble: our own tinted and trailing, everyone else's
 /// filled and leading.
 ///
-/// The nick label and timestamp are per-*run*, not per-message — the nick shows once at
-/// the top of a run and the time once at the bottom. That's what keeps a channel readable:
-/// bubbles encode a two-party "me vs them" axis, and IRC has neither two parties nor
-/// avatars to lean on, so without runs every line would need its own nick header and the
-/// list would roughly double in height to say the same thing.
+/// Each run of messages is captioned once, by a header line above the first bubble: who
+/// said it on the left, when the run started on the right, spanning the bubble's width.
+/// Both halves belong to the run rather than the message — that's what keeps a channel
+/// readable. Bubbles encode a two-party "me vs them" axis, and IRC has neither two parties
+/// nor avatars to lean on, so captioning every line would roughly double the list's height
+/// to say the same thing.
+///
+/// Our own runs get the header too, with the nick dropped: the side and the tint already
+/// say who sent it, but the time is worth the same as anyone else's and reads better
+/// against the run it belongs to than trailing off the end of it.
 final class BubbleCell: UITableViewCell {
     static let reuseID = "bubble"
 
     private let column = UIStackView()
+    private let header = UIStackView()
     private let nickLabel = UILabel()
+    private let spacer = UIView()
+    private let timeLabel = UILabel()
     private let bubble = UIView()
     private let messageText = UITextView()
-    private let timeLabel = UILabel()
 
-    private var bubbleTop: NSLayoutConstraint!
+    private var columnTop: NSLayoutConstraint!
 
     /// How much of the width a bubble may take before wrapping. The rest is the gutter
     /// that makes the leading/trailing axis legible at a glance.
@@ -38,10 +45,31 @@ final class BubbleCell: UITableViewCell {
 
         nickLabel.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
         nickLabel.adjustsFontForContentSizeCategory = true
+        // A long nick gives way to the timestamp rather than shoving it off the row.
+        nickLabel.lineBreakMode = .byTruncatingTail
+        nickLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        timeLabel.font = .preferredFont(forTextStyle: .caption2)
+        // Same size as everything else — one font size app-wide. The timestamp recedes on
+        // color alone, which is also how `MessageRenderer` renders it on full-width lines,
+        // so the two agree.
+        timeLabel.font = .preferredFont(forTextStyle: .subheadline)
         timeLabel.textColor = .tertiaryLabel
         timeLabel.adjustsFontForContentSizeCategory = true
+        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        // Takes up the slack between the two, which is what pins the time to the right
+        // edge — and what leaves the time correctly placed on our own runs, where the nick
+        // is gone entirely.
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        header.axis = .horizontal
+        header.spacing = 8
+        header.alignment = .center
+        header.addArrangedSubview(nickLabel)
+        header.addArrangedSubview(spacer)
+        header.addArrangedSubview(timeLabel)
 
         messageText.isEditable = false
         messageText.isScrollEnabled = false
@@ -59,14 +87,13 @@ final class BubbleCell: UITableViewCell {
 
         column.axis = .vertical
         column.spacing = 2
-        column.addArrangedSubview(nickLabel)
+        column.addArrangedSubview(header)
         column.addArrangedSubview(bubble)
-        column.addArrangedSubview(timeLabel)
         column.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(column)
 
         let margins = contentView.layoutMarginsGuide
-        bubbleTop = column.topAnchor.constraint(equalTo: contentView.topAnchor)
+        columnTop = column.topAnchor.constraint(equalTo: contentView.topAnchor)
         NSLayoutConstraint.activate([
             messageText.topAnchor.constraint(equalTo: bubble.topAnchor),
             messageText.leadingAnchor.constraint(equalTo: bubble.leadingAnchor),
@@ -77,7 +104,16 @@ final class BubbleCell: UITableViewCell {
                 lessThanOrEqualTo: contentView.widthAnchor, multiplier: Self.maxWidthFraction
             ),
 
-            bubbleTop,
+            // The header spans the bubble, so the timestamp lands on the bubble's own right
+            // edge rather than the screen's — at the screen's it would read as belonging to
+            // nothing. `>=` not `==`: a short bubble mustn't crush the nick and time
+            // together, so the header keeps its natural width and simply overhangs.
+            header.widthAnchor.constraint(greaterThanOrEqualTo: bubble.widthAnchor),
+            header.widthAnchor.constraint(
+                lessThanOrEqualTo: contentView.widthAnchor, multiplier: Self.maxWidthFraction
+            ),
+
+            columnTop,
             column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -1),
             column.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
             column.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
@@ -91,13 +127,12 @@ final class BubbleCell: UITableViewCell {
         let isSelf = message.isSelf
         column.alignment = isSelf ? .trailing : .leading
 
-        // Our own bubble needs no nick — the side and the tint already say who sent it.
-        let showsNick = position.isFirst && !isSelf
-        nickLabel.isHidden = !showsNick
+        // One caption per run, above it. The nick drops out on our own runs; the spacer
+        // keeps the time hard right either way.
+        header.isHidden = !position.isFirst
+        nickLabel.isHidden = isSelf
         nickLabel.text = message.nick
         nickLabel.textColor = MessageRenderer.nickColor(message)
-
-        timeLabel.isHidden = !position.isLast
         timeLabel.text = MessageRenderer.timestamp(message.date)
 
         bubble.backgroundColor = isSelf ? Palette.outgoingBubble : Palette.incomingBubble
@@ -111,7 +146,7 @@ final class BubbleCell: UITableViewCell {
         ]
 
         // Open a gap before a new run, and hold the messages inside one tight together.
-        bubbleTop.constant = position.isFirst ? 8 : 1
+        columnTop.constant = position.isFirst ? 8 : 1
 
         isAccessibilityElement = false
         messageText.accessibilityLabel = [message.nick, message.text]
