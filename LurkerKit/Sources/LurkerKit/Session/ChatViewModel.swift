@@ -117,11 +117,14 @@ public final class ChatViewModel {
     /// says so via `/api/push/config`, in which case asking the user for notification
     /// permission would be a lie — we'd get the grant and never deliver anything.
     ///
-    /// A server we couldn't reach reads as "no" for now (don't prompt on a guess) but
-    /// isn't remembered as such, so the next activation asks again.
-    public func serverSupportsAPNs() async -> Bool {
+    /// `nil` means we couldn't ask. Deliberately NOT folded into `false`: the two are one
+    /// wifi blip apart and would read identically at the call site, so collapsing them
+    /// makes a transient failure report a permanent fact about the server's configuration
+    /// — and sends whoever reads that line off auditing env vars on a box that was fine.
+    /// Only a real answer is cached, so an unreachable server is asked again next time.
+    public func serverSupportsAPNs() async -> Bool? {
         if let apnsSupported { return apnsSupported }
-        guard let transports = await client.pushTransports() else { return false }
+        guard let transports = await client.pushTransports() else { return nil }
         let supported = transports.contains("apns")
         apnsSupported = supported
         return supported

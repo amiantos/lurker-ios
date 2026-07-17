@@ -26,8 +26,13 @@ final class PushRegistrar {
     enum Outcome: Equatable {
         /// Registered with Apple; the token is on its way to `didRegister`.
         case registering
-        /// The server can't deliver APNs (self-hosted, or older than #490).
+        /// The server answered, and it can't deliver APNs (self-hosted, or older
+        /// than #490). A permanent fact about that server.
         case unsupportedByServer
+        /// We couldn't ask the server. Distinct from `unsupportedByServer` because it's
+        /// transient and says nothing about the server's configuration — conflating them
+        /// turns a wifi blip into a log line accusing a healthy server.
+        case serverUnreachable
         /// The user said no, or had already said no.
         case denied
         /// Asking Apple failed. Rare, and usually a provisioning problem.
@@ -42,8 +47,12 @@ final class PushRegistrar {
 
     /// Run the sequence. Safe to call on every foreground: iOS re-issues the same token,
     /// the server upserts, and an already-granted authorization doesn't re-prompt.
-    func enable(serverSupportsAPNs: @Sendable () async -> Bool) async -> Outcome {
-        guard await serverSupportsAPNs() else { return .unsupportedByServer }
+    ///
+    /// `serverSupportsAPNs` returns nil when it couldn't ask — which is not the same
+    /// answer as "no", and must not prompt either way.
+    func enable(serverSupportsAPNs: @Sendable () async -> Bool?) async -> Outcome {
+        guard let supported = await serverSupportsAPNs() else { return .serverUnreachable }
+        guard supported else { return .unsupportedByServer }
 
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {

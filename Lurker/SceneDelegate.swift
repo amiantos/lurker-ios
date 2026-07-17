@@ -115,9 +115,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             case .unsupportedByServer:
                 // Expected on a self-hosted server: it has no Apple key and never will.
                 // Not an error, and not the user's problem — the PWA is their push path.
-                // (A server we couldn't REACH also lands here, but isn't remembered as
-                // unsupported, so the next activation asks again.)
-                NSLog("[push] server does not deliver APNs; skipping registration")
+                NSLog("[push] this server delivers Web Push only, not APNs; not registering")
+            case .serverUnreachable:
+                // Says nothing about the server's config — we never got an answer. Worded
+                // so nobody reads this and goes auditing LURKER_APNS_* on a healthy box.
+                NSLog("[push] couldn't reach the server to ask about push; retrying later")
             case .denied:
                 NSLog("[push] notification permission denied")
             case .failed(let message):
@@ -220,10 +222,11 @@ extension SceneDelegate: NotificationTapHandling {
     /// switch would, unread divider and history request included.
     func open(_ tap: NotificationTap) {
         guard let navigation, viewModel.session == .loggedIn else {
-            // Tapped while signed out (a push that outlived the session). Park it: if the
-            // user signs back in, `render` builds the stack and this is stale anyway, so
-            // dropping it is the honest outcome — better than bouncing them somewhere
-            // they didn't ask for.
+            // Tapped while signed out — a push that outlived its session. Dropped, not
+            // parked: signing back in has to go through `render`, which rebuilds the
+            // stack from scratch, and by then this tap is stale. Better to land on the
+            // normal landing screen than to bounce someone to a buffer they asked about
+            // several minutes and one sign-in ago.
             return
         }
         let key = BufferKey(networkId: tap.networkId, target: tap.target)
