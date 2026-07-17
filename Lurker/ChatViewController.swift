@@ -675,7 +675,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // subtract it or the bar floats above the keyboard by the home-indicator height.
         keyboardOverlap = max(0, view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom)
         composerBottom.constant = keyboardOverlap > 0 ? -(keyboardOverlap + Self.keyboardGap) : 0
-        updateBottomInset()
+        // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
+        // runs `viewDidLayoutSubviews` → `updateBottomInset` against that fresh frame. So
+        // the inset isn't recomputed here — doing it before layout would read the old frame.
         view.layoutIfNeeded()
         scrollToBottom()
     }
@@ -683,8 +685,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     @objc private func keyboardWillHide() {
         keyboardOverlap = 0
         composerBottom.constant = 0
-        updateBottomInset()
-        view.layoutIfNeeded()
+        view.layoutIfNeeded() // re-runs updateBottomInset via viewDidLayoutSubviews
     }
 
     /// Reserve room at the bottom of the conversation for the floating composer (and the
@@ -727,7 +728,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return cell
         case .line(let message):
             let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            cell.configure(MessageRenderer.render(message, networkName: networkName(for: message)), date: message.date)
+            cell.configure(MessageRenderer.render(message), date: message.date)
             cell.setReveal(reveal)
             return cell
         }

@@ -70,80 +70,47 @@ enum MessageRenderer {
 
     // MARK: - Full-width lines
 
-    /// A complete line: prefix, then body. `networkName` labels a system line with the
-    /// network it's about, and is ignored for every other type.
+    /// A full-width line. Only actions reach this now — every other type renders as a
+    /// bubble (see `EventType.isBubble`) — so it renders the action and keeps a plain
+    /// fallback for the arm that no longer fires.
     ///
-    /// No timestamp. It used to be stamped inline down the left because a full-width line
-    /// can't slide aside the way a bubble does — but that put a column of identical times
-    /// beside every line of a MOTD to say one thing, and made the times the first thing
-    /// you read on every row. `LineCell` reserves a trailing gutter instead, and the time
-    /// slides into that on a drag like everywhere else.
-    static func render(_ message: Message, networkName: String? = nil) -> NSAttributedString {
+    /// No timestamp. `LineCell` reserves a trailing gutter and the time slides into it on a
+    /// drag, the same as a bubble; it used to be stamped inline down the left, which put a
+    /// column of identical times beside a block of server text.
+    static func render(_ message: Message) -> NSAttributedString {
         let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        let nick = message.nick ?? "*"
-        // Built as two halves rather than appended in one run, so the indent below can
-        // measure the prefix exactly instead of trying to find where it ended by scanning
-        // the assembled string — the separators differ per type, and a MOTD body can
-        // contain the same run of spaces a prefix ends with.
         let prefixText = NSMutableAttributedString()
         let bodyText: NSAttributedString
-        let line = NSMutableAttributedString()
 
-        switch message.type {
-        case .system:
-            // The system buffer is app-scoped, so a line names the network it's about (or
-            // "System" when it's about the app itself) where a channel line would name a
-            // nick. Severity rides `level`, never the type.
-            prefixText.append(NSAttributedString(
-                string: (networkName ?? "System") + "  ",
-                attributes: [.font: base.bold, .foregroundColor: color(for: message.level ?? .info)]
-            ))
-            bodyText = body(message, base: base, fallback: color(for: message.level ?? .info))
-        case .action:
+        if message.type == .action {
             // An asterisk marker, then the actor's nick and what they did — the whole line
-            // in their color, italic. Actions are content, not metadata: alice *did* this,
-            // so it's tinted like she said it rather than muted like a join. The tint is
-            // what separates it from a bubble at a glance.
+            // in their color, italic. An action is content, not metadata: alice *did* this,
+            // so it's tinted like she said it. The tint is what separates it from a bubble.
             let color = nickColor(message)
             prefixText.append(asterisk(color: color, base: base))
             prefixText.append(NSAttributedString(
-                string: " " + nick + " ", attributes: [.font: base.italic, .foregroundColor: color]
+                string: " " + (message.nick ?? "*") + " ", attributes: [.font: base.italic, .foregroundColor: color]
             ))
             bodyText = body(message, base: base.italic, fallback: color)
-        case .notice:
+        } else {
+            // Unreachable while only actions are lines, but a line still has to render
+            // *something* if that split ever changes: the nick, then the body.
             prefixText.append(NSAttributedString(
-                string: "-\(nick)- ", attributes: [.font: base.bold, .foregroundColor: nickColor(message)]
+                string: (message.nick ?? "*") + "  ",
+                attributes: [.font: base.bold, .foregroundColor: nickColor(message)]
             ))
             bodyText = body(message, base: base, fallback: .label)
-        default:
-            if let prefix = prefix(message) {
-                prefixText.append(NSAttributedString(
-                    string: prefix.text, attributes: [.font: base.bold, .foregroundColor: prefix.color]
-                ))
-                prefixText.append(NSAttributedString(string: "  ", attributes: [.font: base]))
-            }
-            // Everything down here except a plain message is *about* the conversation
-            // rather than part of it, so it recedes: muted, and italic unless it's server
-            // text (the web client's `meta-body`).
-            let meta = !message.type.isSpeech
-            let font = message.type == .motd ? mono(base) : (meta ? base.italic : base)
-            bodyText = body(message, base: font, fallback: meta ? .secondaryLabel : .label)
         }
 
+        let line = NSMutableAttributedString()
         line.append(prefixText)
         line.append(bodyText)
 
-        // Wrap continuation lines clear of the prefix rather than back under it. A server
-        // log wraps constantly — a MOTD is long prose in a narrow column — and without
-        // this the second line of every one starts back at the far-left margin, level with
-        // the `--`, so the prefix stops reading as a column at all.
-        //
-        // Capped at the glyph column rather than set to the prefix's own width: aligning
-        // continuations under the body is exactly right for a `--`, and absurd for a
-        // `-NickServ-` or a server's hostname, which would hang the wrap halfway across
-        // the screen. So a glyph line aligns precisely and a long prefix gets the same
-        // modest indent, which keeps one left rail down the whole list either way.
-        if line.length > 0, prefixText.length > 0 {
+        // Wrap continuation lines clear of the prefix rather than back under it — but capped
+        // at a two-glyph column, so a long nick doesn't hang the wrap halfway across the
+        // screen. The prefix is measured exactly (built as its own string) rather than found
+        // by scanning the assembled line.
+        if prefixText.length > 0 {
             let style = NSMutableParagraphStyle()
             style.headIndent = min(ceil(prefixText.size().width), glyphColumnWidth(base))
             line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
@@ -151,8 +118,8 @@ enum MessageRenderer {
         return line
     }
 
-    /// The width of a `--`-style prefix plus its separator, at the current type size.
-    /// Computed rather than a constant so it tracks Dynamic Type.
+    /// The width of a two-glyph prefix column at the current type size — the cap on how far
+    /// a wrapped line's continuation indents. Computed so it tracks Dynamic Type.
     private static func glyphColumnWidth(_ base: UIFont) -> CGFloat {
         ceil(NSAttributedString(string: "--  ", attributes: [.font: base.bold]).size().width)
     }
@@ -177,34 +144,6 @@ enum MessageRenderer {
             return NSAttributedString(string: "*", attributes: [.font: base, .foregroundColor: color])
         }
         return NSAttributedString(attachment: NSTextAttachment(image: image))
-    }
-
-    /// What names a structural line's origin. Ported from the web client's `prefixText` and
-    /// its prefix palette, so the same event reads the same in both clients — a glyph, not
-    /// a nick, because these lines are the channel talking about itself.
-    ///
-    /// Nil means "no prefix at all", which is the web's `default: return ''`: an unknown or
-    /// unmapped type (a `usermode` line, say) is shown as its own text rather than under a
-    /// glyph that would be a guess about what it is.
-    private static func prefix(_ message: Message) -> (text: String, color: UIColor)? {
-        switch message.type {
-        case .message: (message.nick ?? "*", nickColor(message))
-        case .join: ("-->", Palette.good)
-        case .part, .quit: ("<--", .secondaryLabel)
-        case .kick: ("<--", Palette.bad)
-        case .nick, .mode, .topic, .invite: ("--", .secondaryLabel)
-        case .error: ("!!", Palette.bad)
-        // Raw server text — numerics, the MOTD, the capability summary, your hostmask —
-        // all of which the server flattens into `motd`. It's already a line the server
-        // wrote to be read as-is, so it wears no glyph and just gets monospaced.
-        case .motd: nil
-        case .e2e: ("E2E", Palette.good)
-        case .ctcp: ("CTCP", .secondaryLabel)
-        // Handled by their own branches above; listed rather than defaulted so a new
-        // EventType has to come back here and decide.
-        case .action, .notice, .system: nil
-        case .other: nil
-        }
     }
 
     // MARK: - Body
@@ -250,17 +189,6 @@ enum MessageRenderer {
     }
 
     // MARK: - Colors
-
-    /// A system line's severity color, matching the web client's indicator palette. Info
-    /// stays muted: most of the system buffer is routine, and coloring all of it would
-    /// leave nothing for the lines that matter.
-    private static func color(for level: SystemLevel) -> UIColor {
-        switch level {
-        case .info: .secondaryLabel
-        case .warn: Palette.warn
-        case .error: Palette.bad
-        }
-    }
 
     static func nickColor(_ message: Message) -> UIColor {
         if message.isSelf { return .tintColor }

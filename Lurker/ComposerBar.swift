@@ -67,6 +67,11 @@ final class ComposerBar: UIView {
         ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + textInset.top + textInset.bottom
     }
     private var textHeight: NSLayoutConstraint!
+    /// The pills' width/height constraints, kept so a Dynamic Type change can resize them.
+    private var pillSizeConstraints: [NSLayoutConstraint] = []
+    /// Whether the send button is currently in its active (accent) state, so its glass
+    /// effect is only rebuilt when that flips — not on every keystroke.
+    private var sendActive: Bool?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -120,6 +125,15 @@ final class ComposerBar: UIView {
         let content = container.contentView
         let pill = Self.collapsedHeight
         textHeight = textView.heightAnchor.constraint(equalToConstant: pill)
+        // The round pills are sized to the field's one-line height so all three match. That
+        // height tracks Dynamic Type, so these constants have to move with it (see
+        // `updateMetrics`) — kept in one place for that.
+        pillSizeConstraints = [
+            attachGlass.widthAnchor.constraint(equalToConstant: pill),
+            attachGlass.heightAnchor.constraint(equalToConstant: pill),
+            sendGlass.widthAnchor.constraint(equalToConstant: pill),
+            sendGlass.heightAnchor.constraint(equalToConstant: pill),
+        ]
         NSLayoutConstraint.activate([
             textView.topAnchor.constraint(equalTo: fieldGlass.contentView.topAnchor),
             textView.bottomAnchor.constraint(equalTo: fieldGlass.contentView.bottomAnchor),
@@ -144,8 +158,6 @@ final class ComposerBar: UIView {
             // last line as the field grows upward rather than floating to the middle.
             attachGlass.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             attachGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            attachGlass.widthAnchor.constraint(equalToConstant: pill),
-            attachGlass.heightAnchor.constraint(equalToConstant: pill),
 
             fieldGlass.topAnchor.constraint(equalTo: content.topAnchor),
             fieldGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -154,11 +166,26 @@ final class ComposerBar: UIView {
             sendGlass.leadingAnchor.constraint(equalTo: fieldGlass.trailingAnchor, constant: Self.gap),
             sendGlass.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             sendGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            sendGlass.widthAnchor.constraint(equalToConstant: pill),
-            sendGlass.heightAnchor.constraint(equalToConstant: pill),
-        ])
+        ] + pillSizeConstraints)
+
+        // Keep the pills and the field's corner radius sized to one line as the text size
+        // changes under us — without this the field's floor (recomputed live in
+        // `textViewDidChange`) grows on a type change while the pills stay put, and the
+        // three stop matching height.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (bar: ComposerBar, _) in
+            bar.updateMetrics()
+        }
 
         updateSendEnabled()
+    }
+
+    /// Re-size the round pills and the field's corner radius to the current one-line height,
+    /// then refresh the field's floor. Called on a Dynamic Type change.
+    private func updateMetrics() {
+        let pill = Self.collapsedHeight
+        pillSizeConstraints.forEach { $0.constant = pill }
+        fieldGlass.cornerConfiguration = .corners(radius: .fixed(pill / 2))
+        textViewDidChange(textView)
     }
 
     @available(*, unavailable)
@@ -237,8 +264,13 @@ final class ComposerBar: UIView {
         sendButton.isEnabled = hasText
         // Take the accent color when there's something to send, clear glass when not — the
         // same "lights up when it goes live" the Messages send button does, here through the
-        // glass tint so it still belongs to the group.
-        sendGlass.effect = Self.glass(tint: hasText ? .tintColor : nil)
+        // glass tint so it still belongs to the group. Only rebuilt on the transition:
+        // reassigning `.effect` re-triggers the glass materialize, and this runs on every
+        // keystroke.
+        if sendActive != hasText {
+            sendActive = hasText
+            sendGlass.effect = Self.glass(tint: hasText ? .tintColor : nil)
+        }
         placeholderLabel.isHidden = !textView.text.isEmpty
     }
 }
