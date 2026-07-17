@@ -16,14 +16,22 @@ final class ReachabilityMonitor {
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "chat.lurker.reachability")
 
-    /// Begin watching. `onChange` fires on the main queue, once with the current path
+    /// Begin watching. `onChange` runs on the main actor, once with the current path
     /// shortly after starting and then on every flip.
-    func start(onChange: @escaping @Sendable (Bool) -> Void) {
+    ///
+    /// The hop is `DispatchQueue.main.async` rather than `Task { @MainActor in }` because
+    /// order matters here: a path that flaps offline → online → offline must arrive in that
+    /// order, and unstructured tasks don't promise it. `assumeIsolated` then sits directly
+    /// inside the hop that makes it true, so the assertion is one line from its proof
+    /// rather than at a call site that can't see why it holds.
+    func start(onChange: @escaping @MainActor @Sendable (Bool) -> Void) {
         monitor.pathUpdateHandler = { path in
             // `.requiresConnection` means a path exists but needs bringing up (on-demand
             // VPN); that isn't "no internet", so only `.unsatisfied` counts as offline.
             let reachable = path.status != .unsatisfied
-            DispatchQueue.main.async { onChange(reachable) }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { onChange(reachable) }
+            }
         }
         monitor.start(queue: queue)
     }

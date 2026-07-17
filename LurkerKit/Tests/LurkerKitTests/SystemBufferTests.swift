@@ -74,6 +74,18 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertNil(message.level, "a channel message has no severity")
     }
 
+    func testSeverityAndOriginAreBothSystemOnlyEvenIfTheWireSaysOtherwise() {
+        // `systemLineToEvent` is the only producer of either field and only ever builds
+        // `type: "system"` events, so seeing them on anything else means the wire is not
+        // what we think it is — reading them there would invent a meaning it doesn't have.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"message","nick":"alice","text":"hi","level":"error","originNetworkId":7}"##
+        )
+        guard case let .live(_, _, message) = frame else { return XCTFail("expected live") }
+        XCTAssertNil(message.level)
+        XCTAssertNil(message.originNetworkId)
+    }
+
     // MARK: - originNetworkId
 
     func testSystemLineCarriesTheNetworkItIsAbout() {

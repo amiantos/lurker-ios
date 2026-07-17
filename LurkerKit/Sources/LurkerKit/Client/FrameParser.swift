@@ -162,7 +162,10 @@ enum FrameParser {
             date: ISOTime.parse(time),
             matched: event.bool("matched"),
             level: type == .system ? SystemLevel.from(event.stringOrNull("level")) : nil,
-            originNetworkId: event.intOrNull("originNetworkId")
+            // Gated like `level`, matching the server: `systemLineToEvent` is the only
+            // producer of this field and only ever builds `type: "system"` events, so
+            // reading it anywhere else would be inventing a meaning the wire doesn't have.
+            originNetworkId: type == .system ? event.intOrNull("originNetworkId") : nil
         )
     }
 }

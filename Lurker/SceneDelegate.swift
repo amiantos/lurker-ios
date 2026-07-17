@@ -48,7 +48,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // connecting/connected/reconnecting, so without the OS's view of the path there'd
         // be no way to tell "no internet" from "still trying".
         reachability.start { [viewModel] reachable in
-            MainActor.assumeIsolated { viewModel.setReachable(reachable) }
+            viewModel.setReachable(reachable)
         }
     }
 
