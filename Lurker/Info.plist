@@ -2,9 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Prototype only: talk to a plain-HTTP dev server (http://localhost:8010, or a
-	     LAN address from a physical device). App Transport Security blocks cleartext
-	     by default, and it should stay that way in anything that ships. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
@@ -23,8 +20,6 @@
 					<string>Default Configuration</string>
 					<key>UISceneDelegateClassName</key>
 					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
-					<!-- No UISceneStoryboardFile: SceneDelegate builds the window
-					     programmatically. -->
 				</dict>
 			</array>
 		</dict>
