@@ -20,10 +20,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var cancellables = Set<AnyCancellable>()
 
     private let tableView = UITableView()
-    private let inputField = UITextField()
-    private let sendButton = UIButton(type: .system)
-    private let inputBar = UIStackView()
-    private var inputBarBottom: NSLayoutConstraint!
+    private let composer = ComposerBar()
+    private var composerBottom: NSLayoutConstraint!
+    /// How far the keyboard currently intrudes into the view, above the safe area. Held so
+    /// `updateBottomInset` can add it to the composer's height without re-reading the last
+    /// keyboard notification.
+    private var keyboardOverlap: CGFloat = 0
     private var titleButton: BufferTitleButton!
 
     /// A rendered row. A message is either dialogue (a bubble, carrying where it sits in
@@ -92,44 +94,37 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
 
-        inputField.placeholder = "Message \(displayName)"
-        inputField.borderStyle = .roundedRect
-        inputField.autocorrectionType = .no
-        inputField.delegate = self
-
-        sendButton.setTitle("Send", for: .normal)
-        sendButton.addTarget(self, action: #selector(send), for: .touchUpInside)
-        sendButton.setContentHuggingPriority(.required, for: .horizontal)
-
-        inputBar.addArrangedSubview(inputField)
-        inputBar.addArrangedSubview(sendButton)
-        inputBar.axis = .horizontal
-        inputBar.spacing = 8
-        inputBar.isLayoutMarginsRelativeArrangement = true
-        inputBar.directionalLayoutMargins = .init(top: 8, leading: 12, bottom: 8, trailing: 12)
-        inputBar.translatesAutoresizingMaskIntoConstraints = false
+        composer.placeholder = "Message \(displayName)"
+        composer.onSend = { [weak self] text in self?.send(text) }
+        // A grown composer reserves more space (via viewDidLayoutSubviews after this forces
+        // the pass), and should carry the newest message up with it rather than letting the
+        // growing field cover what you were just reading.
+        composer.onHeightChange = { [weak self] in
+            guard let self else { return }
+            let wasNearBottom = isNearBottom
+            view.layoutIfNeeded()
+            if wasNearBottom { scrollToBottom() }
+        }
+        composer.translatesAutoresizingMaskIntoConstraints = false
         // The system buffer is read-only — there's nowhere to send it.
         let composes = buffer.networkId != nil
-        inputBar.isHidden = !composes
-        view.addSubview(inputBar)
+        composer.isHidden = !composes
+        view.addSubview(composer)
 
-        inputBarBottom = inputBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        composerBottom = composer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         NSLayoutConstraint.activate([
-            // Pinned to the view, not the safe area, so messages scroll *under* the
-            // floating title pill and its scroll edge effect. The table's automatic
-            // content inset still keeps the first and last rows clear of the bars.
+            // Full height, under everything. The conversation scrolls beneath the floating
+            // title pill at the top and the floating composer at the bottom, and off into
+            // both safe areas — `updateBottomInset` reserves the composer's height as inset
+            // so the newest message still clears it.
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            // Hiding the input bar doesn't reclaim its space — it's a plain subview, not
-            // a stack's arranged one, so it keeps its intrinsic height and the table
-            // would stop short of it. Skip it entirely when there's no composer, or the
-            // system buffer (now the landing screen) ends in a band of dead space.
-            tableView.bottomAnchor.constraint(equalTo: composes ? inputBar.topAnchor : view.bottomAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            inputBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            inputBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            inputBarBottom,
+            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            composerBottom,
         ])
 
         observeKeyboard()
@@ -243,6 +238,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // The composer's height is only real after layout, so its reservation is set here —
+        // every pass, which also catches rotation and Dynamic Type. Setting a scroll view's
+        // contentInset doesn't invalidate this view's layout, so there's no feedback loop.
+        updateBottomInset()
         // The other half of the initial scroll: this is where an already-hydrated buffer
         // finally gets a height to scroll within.
         landAtBottomIfNeeded()
@@ -394,11 +393,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.scrollToRow(at: last, at: .bottom, animated: false)
     }
 
-    @objc private func send() {
-        let text = (inputField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+    private func send(_ text: String) {
         viewModel.send(buffer.key, text: text)
-        inputField.text = ""
+        composer.clear()
     }
 
     // MARK: - Navigation
@@ -667,19 +664,49 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
     }
 
+    /// The gap the composer keeps above the keyboard, so the capsule doesn't sit flush on
+    /// the key row the way Messages never does. Only applied when the keyboard is actually
+    /// up — at rest the composer sits on the safe-area edge with no extra gap.
+    private static let keyboardGap: CGFloat = 8
+
     @objc private func keyboardWillChange(_ note: Notification) {
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         // The safe-area inset is already accounted for by the constraint's anchor, so
         // subtract it or the bar floats above the keyboard by the home-indicator height.
-        let overlap = view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom
-        inputBarBottom.constant = -max(0, overlap)
+        keyboardOverlap = max(0, view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom)
+        composerBottom.constant = keyboardOverlap > 0 ? -(keyboardOverlap + Self.keyboardGap) : 0
+        updateBottomInset()
         view.layoutIfNeeded()
         scrollToBottom()
     }
 
     @objc private func keyboardWillHide() {
-        inputBarBottom.constant = 0
+        keyboardOverlap = 0
+        composerBottom.constant = 0
+        updateBottomInset()
         view.layoutIfNeeded()
+    }
+
+    /// Reserve room at the bottom of the conversation for the floating composer (and the
+    /// keyboard, when it's up), so the newest message scrolls to just above the composer
+    /// rather than behind it. This is the bottom counterpart to the automatic top inset the
+    /// nav bar gets — without it the table would run its content under the composer with no
+    /// way to see the last line.
+    ///
+    /// Measured from the composer's actual top rather than computed from its height, because
+    /// the keyboard moves the composer and shrinks the safe area, and a frame reads both at
+    /// once. The `- safeAreaInsets.bottom` cancels the safe-area inset the table's automatic
+    /// adjustment has already added, so the reservation isn't double-counted — get that
+    /// wrong and the last line sits half-under the composer.
+    ///
+    /// No composer (the read-only system buffer) means no reservation: content runs to the
+    /// safe-area edge as any full-height scroll view would.
+    private func updateBottomInset() {
+        let reserved = composer.isHidden
+            ? 0
+            : max(0, view.bounds.maxY - composer.frame.minY - view.safeAreaInsets.bottom)
+        tableView.contentInset.bottom = reserved
+        tableView.verticalScrollIndicatorInsets.bottom = reserved
     }
 
     // MARK: - UITableViewDataSource
@@ -730,9 +757,3 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 }
 
-extension ChatViewController: UITextFieldDelegate {
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        send()
-        return false
-    }
-}
