@@ -97,10 +97,18 @@ enum FrameParser {
         // would mislabel it hydrated and it would render empty forever.
         let hasMoreOlder = obj.bool("hasMoreOlder", true)
         let hydrated = !events.isEmpty || !hasMoreOlder
-        // Only a resume slice carries a `reset` field. reset:false means "these are
-        // just the events past ?since" → append; reset:true (oversized gap) and a plain
-        // full/latest backlog (no field) → replace.
-        let append = obj.has("reset") && !obj.bool("reset")
+        // For a *network* buffer, only a resume slice carries a `reset` field. reset:false
+        // means "these are just the events past ?since" → append; reset:true (oversized
+        // gap) and a plain full/latest backlog (no field) → replace.
+        //
+        // The system buffer is the exception, and reading it the same way corrupts it: the
+        // server's `buildSystemBacklog` hardcodes `reset: false` on EVERY connect, because
+        // it always ships a full latest slice and expects the client to reconcile it — it
+        // is never a resume delta. Appending it instead would (a) splice the whole history
+        // *after* any live system line that beat the backlog in, and (b) leave a permanent
+        // hole when a reconnect gap exceeds the server's slice cap. Replacing is what the
+        // server means, and the replace path already preserves live events past the tail.
+        let append = networkId != nil && obj.has("reset") && !obj.bool("reset")
         let buffer = Buffer(
             networkId: networkId,
             target: target,
@@ -138,15 +146,26 @@ enum FrameParser {
 
     /// MessageEvent → domain `Message`. Events are spread flat on the frame, so the
     /// same reader handles both a backlog array element and a live `irc` frame.
+    ///
+    /// `level` and `originNetworkId` are only ever set on system-buffer lines, and are
+    /// nil everywhere else — severity there is a sibling field, not a `type`.
     private static func parseEvent(_ event: [String: Any]) -> Message {
-        Message(
+        let time = event.stringOrNull("time")
+        let type = EventType.from(event.stringOrNull("type"))
+        return Message(
             id: event.int("id"),
-            type: EventType.from(event.stringOrNull("type")),
+            type: type,
             nick: event.stringOrNull("nick"),
             text: event.stringOrNull("text"),
             isSelf: event.bool("self"),
-            time: event.stringOrNull("time"),
-            matched: event.bool("matched")
+            time: time,
+            date: ISOTime.parse(time),
+            matched: event.bool("matched"),
+            level: type == .system ? SystemLevel.from(event.stringOrNull("level")) : nil,
+            // Gated like `level`, matching the server: `systemLineToEvent` is the only
+            // producer of this field and only ever builds `type: "system"` events, so
+            // reading it anywhere else would be inventing a meaning the wire doesn't have.
+            originNetworkId: type == .system ? event.intOrNull("originNetworkId") : nil
         )
     }
 }

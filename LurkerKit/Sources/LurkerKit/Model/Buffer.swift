@@ -47,6 +47,31 @@ public struct Buffer: Equatable, Sendable {
     }
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }
+
+    /// The server's sentinel target for the app-scoped system buffer.
+    public static let systemTarget = ":system:"
+
+    /// The system buffer, constructed without the server. It's app-scoped and always
+    /// exists, so the app can open it as its landing screen before any frame has arrived;
+    /// the real one folds in over this when the backlog lands.
+    public static let system = Buffer(networkId: nil, target: systemTarget, kind: .system)
+
+    /// What to call this buffer wherever the user sees it.
+    ///
+    /// Shared rather than per-screen: the title pill and the buffer switcher name the same
+    /// buffer one tap apart, and two copies of this drifted immediately — the switcher
+    /// called a server log "Server" while the pill it opened called it "libera".
+    ///
+    /// `networkName` is the network this buffer belongs to, when it's known; only a server
+    /// log uses it, and it falls back rather than requiring the caller to have resolved the
+    /// roster yet.
+    public func displayName(networkName: String? = nil) -> String {
+        switch kind {
+        case .system: "Lurker" // the app's own buffer, not a target you'd recognize
+        case .server: networkName ?? "Server"
+        case .channel, .dm: target
+        }
+    }
 }
 
 /// Stable identity for a buffer, plus its string form for use as a dictionary key.
@@ -76,9 +101,35 @@ public enum BufferKind: Sendable {
 
     /// Classify a target the way the server does (isDmTarget / SYSTEM_TARGET).
     public static func of(networkId: Int?, target: String) -> BufferKind {
-        if networkId == nil || target == ":system:" { return .system }
+        if networkId == nil || target == Buffer.systemTarget { return .system }
         if target.hasPrefix(":server:") { return .server }
         if target.hasPrefix("#") || target.hasPrefix("&") { return .channel }
         return .dm
+    }
+
+    /// Whether an event of this type is something this buffer kind shows.
+    ///
+    /// This is per-kind and not a single global predicate because the system buffer's
+    /// content is *entirely* `type: "system"` lines, which are not speech. Filtering it
+    /// by `isSpeech` — correct for a channel — renders it permanently empty.
+    public func renders(_ type: EventType) -> Bool {
+        switch self {
+        case .system: type == .system
+        default: type.isSpeech
+        }
+    }
+
+    /// Whether the server will answer an `open-buffer` for this kind.
+    ///
+    /// It won't for the system buffer or a `:server:` log — `handleOpenBuffer` discards
+    /// both up front (`if (!networkId || requested.startsWith(':server:')) return`) and
+    /// sends no reply, because their history ships complete in the connect backlog rather
+    /// than on demand. Asking anyway isn't harmless: the caller has no failure to observe,
+    /// so it waits forever on a reply the server already threw away.
+    public var hydratesOnDemand: Bool {
+        switch self {
+        case .channel, .dm: true
+        case .system, .server: false
+        }
     }
 }

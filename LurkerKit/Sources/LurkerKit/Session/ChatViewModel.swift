@@ -168,6 +168,23 @@ public final class ChatViewModel {
         backgroundedAt = Date()
     }
 
+    /// The OS's network path came or went. Fed in from the app (which owns the
+    /// `NWPathMonitor`) for the same reason foreground/background is — it keeps this
+    /// package off the `Network` framework, whose `NWPath` types would also have to share
+    /// a namespace with our own `Network` model.
+    ///
+    /// Regaining a path also short-circuits the backoff: the reason we were waiting just
+    /// went away, and a user who reconnects to wifi shouldn't watch a 30s timer run down.
+    public func setReachable(_ reachable: Bool) {
+        let was = store.state.reachable
+        store.setReachable(reachable)
+        guard reachable, !was, session == .loggedIn, isForeground else { return }
+        reconnectAttempt = 0
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        doReconnect(force: false)
+    }
+
     // MARK: - Session restore
 
     /// On launch, re-arm from a Keychain-persisted session if one exists. Optimistic: go

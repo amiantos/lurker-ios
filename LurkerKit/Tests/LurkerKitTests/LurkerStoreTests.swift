@@ -267,4 +267,46 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(.sendResult(clientId: "c2", ok: true, error: nil))
         XCTAssertNil(store.state.error)
     }
+
+    // MARK: - Reachability
+
+    func testReachabilityDefaultsToTrue() {
+        // Assuming offline until told otherwise would paint every fresh launch red.
+        XCTAssertTrue(LurkerStore().state.reachable)
+    }
+
+    func testReachabilitySurvivesReset() {
+        // It's a fact about the device, not the session, and nothing re-reports it on
+        // sign-out — so a reset back to the `true` default would leave an offline phone
+        // claiming it's online, with no path monitor callback coming to correct it.
+        let store = LurkerStore()
+        store.setReachable(false)
+        store.reset()
+        XCTAssertFalse(store.state.reachable)
+    }
+
+    func testResetStillClearsEverythingSessionScoped() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        store.setReachable(false)
+        store.reset()
+        XCTAssertTrue(store.state.buffers.isEmpty)
+        XCTAssertTrue(store.state.messages.isEmpty)
+        XCTAssertEqual(store.state.maxEventId, 0)
+    }
+
+    func testReachabilityIsIndependentOfTheSocket() {
+        // Two different truths: the socket only ever reports connecting/connected/
+        // reconnecting, so it can never say "there is no internet".
+        let store = LurkerStore()
+        store.apply(.socketOpen)
+        store.setReachable(false)
+        XCTAssertEqual(store.state.connection, .connected, "the socket doesn't know yet")
+        XCTAssertFalse(store.state.reachable)
+        XCTAssertEqual(
+            StatusLight.of(reachable: store.state.reachable, connection: store.state.connection, network: nil),
+            .bad,
+            "and the light believes the device over the stale socket"
+        )
+    }
 }

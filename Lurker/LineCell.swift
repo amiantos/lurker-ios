@@ -3,17 +3,23 @@
 
 import UIKit
 
-/// A message row backed by a `UITextView` rather than a label, so auto-linked URLs are
-/// actually tappable (a `UILabel` ignores `.link` interaction) and text is selectable to
-/// copy. Non-editable + non-scrolling so it behaves like a self-sizing label.
-final class MessageCell: UITableViewCell {
-    static let reuseID = "message"
+/// A full-width line, for the events that aren't dialogue: `/me` actions, notices, and the
+/// system buffer's own output. These carry their own inline prefix ("* nick waves",
+/// "-nick-", a network name) and read as narration about the room rather than speech in
+/// it, so they stay lines while messages become bubbles.
+///
+/// Backed by a `UITextView` rather than a label so auto-linked URLs are actually tappable
+/// (a `UILabel` ignores `.link` interaction) and text is selectable to copy. Non-editable
+/// and non-scrolling so it behaves like a self-sizing label.
+final class LineCell: UITableViewCell {
+    static let reuseID = "line"
 
     private let messageText = UITextView()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         selectionStyle = .none
+        backgroundColor = .clear
         messageText.isEditable = false
         messageText.isScrollEnabled = false
         messageText.isSelectable = true // required for tappable links (also enables copy)
