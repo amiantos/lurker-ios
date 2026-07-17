@@ -90,6 +90,8 @@ public final class ChatViewModel {
         cancelReconnect()
         client.logout(deviceToken: deviceToken)
         deviceToken = nil
+        // The next sign-in may be against a different server, whose answer differs.
+        apnsSupported = nil
         sessions.clear()
         store.reset()
         loadingOlder.removeAll()
@@ -105,14 +107,24 @@ public final class ChatViewModel {
     /// remember.
     private var deviceToken: String?
 
+    /// Cached answer to "does this server speak APNs". Fixed for a given server, and the
+    /// question is asked on every activation — without this that's an HTTP round trip every
+    /// time the user opens the app, to re-learn something that cannot have changed.
+    /// Only a real answer is cached: a failed ask stays unknown and is retried.
+    private var apnsSupported: Bool?
+
     /// Does this server speak APNs at all? A self-hosted server holds no Apple key and
     /// says so via `/api/push/config`, in which case asking the user for notification
     /// permission would be a lie — we'd get the grant and never deliver anything.
     ///
-    /// An older server (pre-#490) has no `transports` key and reads as "no", which is the
-    /// correct answer for it too.
+    /// A server we couldn't reach reads as "no" for now (don't prompt on a guess) but
+    /// isn't remembered as such, so the next activation asks again.
     public func serverSupportsAPNs() async -> Bool {
-        await client.pushTransports().contains("apns")
+        if let apnsSupported { return apnsSupported }
+        guard let transports = await client.pushTransports() else { return false }
+        let supported = transports.contains("apns")
+        apnsSupported = supported
+        return supported
     }
 
     /// Hand the OS-issued device token to the server. Idempotent — iOS re-issues the same
@@ -199,7 +211,11 @@ public final class ChatViewModel {
         doReconnect(force: true)
     }
 
-    public func enterBackground() {
+    /// `onFlush` fires once the presence frame is on the wire — the app holds a
+    /// background-task assertion until then, because this frame is sent in the one window
+    /// where iOS is actively trying to suspend us. Always called, including when there was
+    /// nothing to send, so the caller can't leak the assertion.
+    public func enterBackground(onFlush: (@Sendable () -> Void)? = nil) {
         isForeground = false
         backgroundedAt = Date()
         // The moment that makes push work: until the server hears this it believes a
@@ -209,8 +225,11 @@ public final class ChatViewModel {
         //
         // Not covered here: a force-quit or a tunnel, where nothing gets sent and that
         // reaper IS the backstop. That gap is real and known — see #490.
-        guard session == .loggedIn else { return }
-        client.setPresence(false)
+        guard session == .loggedIn else {
+            onFlush?()
+            return
+        }
+        client.setPresence(false, onFlush: onFlush)
     }
 
     /// The OS's network path came or went. Fed in from the app (which owns the

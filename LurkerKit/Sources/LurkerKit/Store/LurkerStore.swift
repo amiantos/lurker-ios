@@ -33,6 +33,21 @@ public struct ChatState: Sendable {
     public var error: String?
 
     public init() {}
+
+    /// What the app-icon badge should read: unread highlights across every buffer (#490).
+    ///
+    /// Mirrors the server's `computeTotalHighlights`, which is what it stamps on each push
+    /// — so the number the icon shows while the app is closed and the number it shows once
+    /// it reopens come from the same definition rather than drifting apart. Per-buffer
+    /// counts are server-authoritative, so this is a sum, never a local tally.
+    ///
+    /// It has to exist client-side at all because a push only ever REVISES the badge: iOS
+    /// applies `aps.badge` and then nothing touches it again, so reading your messages
+    /// would leave the icon stuck on whatever the last notification claimed until another
+    /// one happened to arrive.
+    public var totalHighlights: Int {
+        buffers.values.reduce(0) { $0 + $1.highlights }
+    }
 }
 
 /// Holds the domain state and folds `ServerFrame`s into it. The fold is a pure function

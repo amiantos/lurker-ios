@@ -32,7 +32,13 @@ final class LurkerClient {
     /// Last reported visibility, re-asserted on every new socket. The server starts each
     /// socket at `visible: false` and waits for us to say otherwise, so this has to be
     /// per-socket state rather than something sent once — see `setPresence`.
-    private var presenceVisible = true
+    ///
+    /// Starts false because that's the only value we've been TOLD. Claiming visible before
+    /// the app has said so is an assumption that happens to hold today (nothing launches
+    /// this app without it becoming active), and it suppresses push when it's wrong —
+    /// `enterForeground` reports the truth within milliseconds of the app actually
+    /// appearing, so the assumption buys nothing.
+    private var presenceVisible = false
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
@@ -251,9 +257,13 @@ final class LurkerClient {
     /// describes something the protocol can't express.
     ///
     /// Latched so a new socket can re-assert it (see `handleOpen`).
-    func setPresence(_ visible: Bool) {
+    ///
+    /// `onFlush` fires when the frame is actually written. Backgrounding needs it: that's
+    /// the one frame sent while iOS is trying to suspend us, and losing it suppresses push
+    /// until the server's reaper notices (~60s).
+    func setPresence(_ visible: Bool, onFlush: (@Sendable () -> Void)? = nil) {
         presenceVisible = visible
-        send(["type": "presence", "visible": visible])
+        send(["type": "presence", "visible": visible], onFlush: onFlush)
     }
 
     // MARK: - Push
@@ -262,16 +272,23 @@ final class LurkerClient {
     /// server holds no Apple key and answers `["webpush"]` — knowing that BEFORE asking for
     /// notification permission is the difference between "this server doesn't support push"
     /// and a permission prompt followed by silence forever.
-    func pushTransports() async -> [String] {
-        guard let token, let url = URL(string: baseURL + "/api/push/config") else { return [] }
+    ///
+    /// `nil` means we couldn't ask (offline, 401, unparseable); `[]` means the server
+    /// answered and named nothing. Deliberately distinct: collapsing both into `[]` makes a
+    /// wifi blip during launch indistinguishable from a permanent fact about the server's
+    /// configuration, and the log line that follows sends you auditing env vars on a box
+    /// that was fine.
+    ///
+    /// An older server (pre-#490) has no `transports` key and correctly reads as `[]` —
+    /// it answered, and it has no native push.
+    func pushTransports() async -> [String]? {
+        guard let token, let url = URL(string: baseURL + "/api/push/config") else { return nil }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard let (data, response) = try? await session.data(for: request),
               (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
               let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [] }
-        // Absent (an older server that predates #490) reads the same as "no native push":
-        // both mean don't register, which is the safe answer either way.
+        else { return nil }
         return body["transports"] as? [String] ?? []
     }
 
@@ -308,12 +325,21 @@ final class LurkerClient {
         _ = try? await session.data(for: request)
     }
 
-    private func send(_ verb: [String: Any]) {
+    /// `onFlush` fires once the frame is written (or has definitively failed), on an
+    /// arbitrary queue. Only `setPresence` uses it: the app needs to hold a background-task
+    /// assertion open until the write lands, and "the write landed" is a fact only
+    /// URLSession can report. Called on EVERY exit path — including the early return —
+    /// because a caller holding an OS resource against it must always get it back.
+    private func send(_ verb: [String: Any], onFlush: (@Sendable () -> Void)? = nil) {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
               let text = String(data: data, encoding: .utf8)
-        else { return }
+        else {
+            onFlush?()
+            return
+        }
         socket.send(.string(text)) { [weak self] error in
+            defer { onFlush?() }
             guard let error else { return }
             // Capture the reason (a String) before hopping — Error isn't Sendable, but its
             // localized description is, and it's what makes an offline/TLS failure legible.

@@ -4,6 +4,7 @@
 import Combine
 import LurkerKit
 import UIKit
+import UserNotifications
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -46,7 +47,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] session in
                 self?.render(session, animated: true)
-                self?.enablePushOnSignIn(session)
+                // Signing in is the moment push becomes askable — there's finally an
+                // account to attach a device to. Needed alongside sceneDidBecomeActive
+                // because the first sign-in happens while the scene is already active, and
+                // would otherwise wait for a background/foreground round trip to register.
+                self?.enablePushIfSignedIn()
             }
             .store(in: &cancellables)
 
@@ -57,6 +62,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             viewModel.setReachable(reachable)
         }
 
+        // Keep the app-icon badge honest (#490). A push sets it via `aps.badge` and then
+        // nothing ever revises it, so without this the icon keeps claiming three unread
+        // highlights after you've read all three — until the next push happens to carry a
+        // smaller number. Driven off state so it follows read-state broadcasts (including
+        // ones caused by another device), which is the same thing the web client's
+        // useAppBadge does.
+        viewModel.statePublisher
+            .map(\.totalHighlights)
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { count in
+                // setBadgeCount(0) is how you clear it; there's no separate call.
+                UNUserNotificationCenter.current().setBadgeCount(count) { error in
+                    guard let error else { return }
+                    // Best-effort: a wrong badge is not worth failing anything over, but a
+                    // silent failure here is exactly why a stale badge is hard to diagnose.
+                    NSLog("[push] could not set app badge: %@", error.localizedDescription)
+                }
+            }
+            .store(in: &cancellables)
+
         AppDelegate.tapHandler = self
         // A tap that cold-launched the app arrived before this scene existed, so the
         // AppDelegate parked it. Drain it now that there's something to navigate with.
@@ -66,12 +92,20 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
+    /// In flight, if any. Two paths legitimately want to enable push — the session
+    /// transition and scene activation — and on a restored launch BOTH fire, because
+    /// sessionPublisher is a CurrentValueSubject that replays `.loggedIn` the moment we
+    /// subscribe. Without this they'd race and each do the full round trip.
+    private var pushEnableTask: Task<Void, Never>?
+
     /// Ask for push once we're signed in — never before. Notification permission is a
     /// one-shot grant, and a prompt on the sign-in screen asks the user to authorize
     /// notifications for an account they haven't named yet.
     private func enablePushIfSignedIn() {
-        guard viewModel.session == .loggedIn else { return }
-        Task {
+        guard viewModel.session == .loggedIn, pushEnableTask == nil else { return }
+        pushEnableTask = Task { [weak self] in
+            defer { self?.pushEnableTask = nil }
+            guard let self else { return }
             let outcome = await push.enable(serverSupportsAPNs: { [viewModel] in
                 await viewModel.serverSupportsAPNs()
             })
@@ -81,6 +115,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             case .unsupportedByServer:
                 // Expected on a self-hosted server: it has no Apple key and never will.
                 // Not an error, and not the user's problem — the PWA is their push path.
+                // (A server we couldn't REACH also lands here, but isn't remembered as
+                // unsupported, so the next activation asks again.)
                 NSLog("[push] server does not deliver APNs; skipping registration")
             case .denied:
                 NSLog("[push] notification permission denied")
@@ -102,17 +138,34 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         enablePushIfSignedIn()
     }
 
+    /// Backgrounding reports presence, which is the frame that makes push work at all: the
+    /// server suppresses every notification until it hears we've stopped looking.
+    ///
+    /// It's also the one frame we send while iOS is trying to suspend us, and a WebSocket
+    /// write is asynchronous — enqueued here, drained by URLSession later. Suspended in
+    /// between and the frame is simply lost, leaving the server convinced someone is
+    /// watching until its ping reaper notices (~60s of no push, on the exact path push
+    /// exists for). So buy runtime explicitly rather than assume the write wins the race:
+    /// it usually does, which is what makes this fail as "push is sometimes late" instead
+    /// of as a bug.
     func sceneDidEnterBackground(_ scene: UIScene) {
-        viewModel.enterBackground()
-    }
-
-    /// Signing in is the moment push becomes askable — there's finally an account to
-    /// attach a device to. Driven off the session transition rather than sceneDidBecomeActive
-    /// alone, because the first sign-in happens while the scene is already active and would
-    /// otherwise wait for a background/foreground round trip to register.
-    private func enablePushOnSignIn(_ session: ChatViewModel.SessionState) {
-        guard session == .loggedIn else { return }
-        enablePushIfSignedIn()
+        var assertion: UIBackgroundTaskIdentifier = .invalid
+        // The expiry handler runs if iOS reclaims the time before the write lands; ending
+        // the assertion there is mandatory, or the OS kills the app for holding it.
+        assertion = UIApplication.shared.beginBackgroundTask(withName: "lurker.presence") {
+            guard assertion != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(assertion)
+            assertion = .invalid
+        }
+        viewModel.enterBackground {
+            // Arbitrary queue (URLSession's), and UIBackgroundTaskIdentifier is main-actor
+            // state here — hop before touching it.
+            Task { @MainActor in
+                guard assertion != .invalid else { return }
+                UIApplication.shared.endBackgroundTask(assertion)
+                assertion = .invalid
+            }
+        }
     }
 
     /// The system reclaimed this scene. `NWPathMonitor` is retained by the dispatch source
