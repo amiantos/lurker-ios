@@ -207,7 +207,76 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(state.networks[1]!.nick, "me")
         XCTAssertTrue(state.buffers[chanKey]!.joined)
         XCTAssertEqual(state.buffers[chanKey]!.kind, .channel)
+        XCTAssertEqual(state.buffers[chanKey]!.topic, "welcome")
         XCTAssertEqual(state.members[chanKey]!.map(\.nick), ["alice", "bob"])
+    }
+
+    // MARK: - Topic
+    //
+    // The server has three ways of saying what a channel's topic is, and the client needs
+    // all three: the snapshot (above), a `channel-topic` ephemeral on join, and a `topic`
+    // event when someone changes it. Miss one and the topic is right until it isn't.
+
+    private func topicEvent(_ id: Int, _ topic: String) -> Message {
+        Message(id: id, type: .topic, nick: "alice", text: topic)
+    }
+
+    func testAChannelTopicEventSetsTheTopicWithoutAddingALine() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.channelTopic(networkId: 1, target: "#lurker", topic: "on join"))
+
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "on join")
+        XCTAssertEqual(store.state.messages[chanKey], [], "RPL_TOPIC is silent — it prints nothing")
+    }
+
+    func testAChannelTopicForAnUnknownBufferIsANoOp() {
+        let store = LurkerStore()
+        store.apply(.channelTopic(networkId: 1, target: "#nowhere", topic: "x"))
+
+        XCTAssertNil(store.state.buffers["1::#nowhere"], "no row should be conjured for a topic alone")
+    }
+
+    func testAChannelTopicFoldsTargetCaseLikeEveryOtherTarget() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.channelTopic(networkId: 1, target: "#LURKER", topic: "cased"))
+
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "cased")
+    }
+
+    func testALiveTopicEventBothPrintsALineAndUpdatesTheTopic() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: topicEvent(5, "changed")))
+
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "changed")
+        XCTAssertEqual(store.state.messages[chanKey]?.count, 1, "a topic change is also a line")
+    }
+
+    /// The one that bites. A `topic` event replayed by a backlog/live overlap must not
+    /// re-apply its stale topic over the current one — so the topic mutation has to sit
+    /// below the id de-dupe, not beside the parse. The Vue client documents the same trap.
+    func testAReplayedTopicEventDoesNotRevertTheTopic() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: topicEvent(5, "old")))
+        store.apply(.live(networkId: 1, target: "#lurker", message: topicEvent(6, "new")))
+
+        // id 5 arrives a second time (the overlap), carrying the topic it had back then.
+        store.apply(.live(networkId: 1, target: "#lurker", message: topicEvent(5, "old")))
+
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "new", "a replay must not revert the topic")
+        XCTAssertEqual(store.state.messages[chanKey]?.count, 2, "and must not re-print the line")
+    }
+
+    func testAClearedTopicReadsAsNoTopicRatherThanTheLastOne() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.channelTopic(networkId: 1, target: "#lurker", topic: "something"))
+        store.apply(.channelTopic(networkId: 1, target: "#lurker", topic: nil))
+
+        XCTAssertNil(store.state.buffers[chanKey]!.topic)
     }
 
     func testRestNamesMergeOntoSnapshotCreatedNetworksWithoutDroppingLiveState() {

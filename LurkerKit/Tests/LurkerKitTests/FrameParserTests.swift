@@ -52,6 +52,32 @@ final class FrameParserTests: XCTestCase {
         XCTAssertTrue(message.matched)
     }
 
+    /// `channel-topic` rides `kind:"irc"` like an event, but it isn't one: no id, nothing
+    /// to render, and its payload is in `topic` rather than `text`. Parsed as an event it
+    /// would become an `.other` Message appended to the buffer with the topic in a field
+    /// nothing reads.
+    func testChannelTopicIsLiftedOutOfIrcRatherThanParsedAsAnEvent() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"channel-topic","topic":"welcome all"}"##
+        )
+        guard case let .channelTopic(networkId, target, topic) = frame else {
+            return XCTFail("expected channelTopic, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 1)
+        XCTAssertEqual(target, "#lurker")
+        XCTAssertEqual(topic, "welcome all")
+    }
+
+    func testAClearedChannelTopicParsesAsNilNotEmptyString() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"channel-topic"}"##
+        )
+        guard case let .channelTopic(_, _, topic) = frame else {
+            return XCTFail("expected channelTopic, got \(frame)")
+        }
+        XCTAssertNil(topic)
+    }
+
     func testSnapshotParsesNetworksChannelsAndMembersButNoName() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":1,"state":"connected","nick":"me","channels":[{"name":"#lurker","topic":"hi","members":[{"nick":"alice","modes":["o"],"away":false},{"nick":"bob","modes":[],"away":true}]}]}]}"##

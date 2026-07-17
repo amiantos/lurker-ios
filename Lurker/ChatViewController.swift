@@ -77,12 +77,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferList() })
+        titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferInfo() })
         navigationItem.titleView = titleButton
-        navigationItem.leftBarButtonItem = overflowItem()
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .add, target: self, action: #selector(promptJoin)
-        )
+        navigationItem.leftBarButtonItem = bufferListItem()
+        navigationItem.rightBarButtonItem = overflowItem()
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -405,8 +403,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - Navigation
 
     /// Swipe in from either edge to reach the two lists this screen sits between: buffers
-    /// on the left, nicks on the right. The same places the pill and (eventually) a member
-    /// button go — a gesture, not a replacement for a visible control.
+    /// on the left, nicks on the right. Each edge has the matching bar item above it — the
+    /// list button and the overflow menu's "Members" — so these are shortcuts to visible
+    /// controls, not the only way in.
     ///
     /// The left edge is free to claim because this screen is the navigation stack's root,
     /// so there's no interactive pop gesture to collide with.
@@ -485,9 +484,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         showMemberList()
     }
 
-    /// The pill expands into the buffer list. A sheet, not a push: the list is a picker
-    /// for this screen, not a place you go — so the stack never grows and there's no back
-    /// chevron competing with the pill for the same job.
+    /// The buffer list. A sheet, not a push: the list is a picker for this screen, not a
+    /// place you go — so the stack never grows and there's no back chevron competing with
+    /// the bar items for the same job.
     private func showBufferList() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let viewModel = self.viewModel
@@ -522,6 +521,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         nav?.present(sheet, animated: true)
     }
 
+    /// What the pill opens: this buffer's own info, not a picker for a different one.
+    /// Medium-height first, like the nick list — it's a glance about the conversation
+    /// behind it, so it leaves that conversation on screen.
+    private func showBufferInfo() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let info = BufferInfoViewController(viewModel: viewModel, buffer: buffer)
+        // Runs after this sheet has finished dismissing, so `showMemberList`'s guard sees a
+        // clear screen.
+        info.onShowMembers = { [weak self] in self?.showMemberList() }
+        let sheet = UINavigationController(rootViewController: info)
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
+    }
+
     /// The nick list. Presented from `self`, unlike the buffer switcher: nothing here
     /// replaces this screen, so there's no VC about to be deallocated under the sheet.
     private func showMemberList() {
@@ -538,40 +552,90 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
-    /// The overflow button, balancing "+" across the pill. A bare "…" means "there's a
-    /// menu here" on iOS, so sign-out lives inside it rather than firing on tap — an
-    /// unlabelled button that ends your session on one touch is a trap. It's also where
-    /// the rest of Settings (#20) lands, which is why it's an ellipsis and not a door.
+    /// The buffer list, on the leading side to agree with the left-edge swipe that already
+    /// opens it — the button and the gesture on that edge now mean the same thing.
+    private func bufferListItem() -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "list.bullet"),
+            primaryAction: UIAction { [weak self] _ in self?.showBufferList() }
+        )
+        item.accessibilityLabel = "Buffers"
+        return item
+    }
+
+    /// The overflow button, balancing the buffer list across the pill. A bare "…" means
+    /// "there's a menu here" on iOS, so nothing in it fires on tap — sign-out least of
+    /// all, since an unlabelled button that ends your session on one touch is a trap.
+    /// It's also where the rest of Settings (#20) lands, which is why it's an ellipsis
+    /// and not a door.
+    ///
+    /// Deferred rather than built once here, because what belongs in it moves after
+    /// `viewDidLoad`: networks connect and disconnect. A menu assembled at launch would
+    /// still be offering the networks that existed then.
     private func overflowItem() -> UIBarButtonItem {
-        UIBarButtonItem(
+        let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
             menu: UIMenu(children: [
-                UIAction(
-                    title: "Sign Out",
-                    image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
-                    attributes: .destructive
-                ) { [weak self] _ in
-                    // Revokes server-side + clears the Keychain; SceneDelegate returns us
-                    // to sign-in.
-                    self?.viewModel.logout()
+                UIDeferredMenuElement.uncached { [weak self] completion in
+                    completion(self?.overflowElements() ?? [])
                 },
             ])
         )
+        item.accessibilityLabel = "More"
+        return item
     }
 
-    @objc private func promptJoin() {
-        let networks = viewModel.networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        guard !networks.isEmpty else { return }
-        guard networks.count > 1 else { return presentJoinAlert(network: networks[0]) }
-        let sheet = UIAlertController(title: "Join a channel on…", message: nil, preferredStyle: .actionSheet)
-        for network in networks {
-            sheet.addAction(UIAlertAction(title: network.name, style: .default) { [weak self] _ in
-                self?.presentJoinAlert(network: network)
+    private func overflowElements() -> [UIMenuElement] {
+        var actions: [UIMenuElement] = []
+        if let join = joinElement() { actions.append(join) }
+        // Channels only. A DM has nobody to list and never will, and the system buffer
+        // isn't even on a network — the list would open empty by construction. The
+        // right-edge swipe stays unconditional: a gesture you have to go looking for can
+        // afford to land on an empty list, a row sitting in a menu can't.
+        if buffer.kind == .channel {
+            actions.append(UIAction(title: "Members", image: UIImage(systemName: "person.2")) { [weak self] _ in
+                self?.showMemberList()
             })
         }
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
-        present(sheet, animated: true)
+        let signOut = UIAction(
+            title: "Sign Out",
+            image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+            attributes: .destructive
+        ) { [weak self] _ in
+            // Revokes server-side + clears the Keychain; SceneDelegate returns us to
+            // sign-in.
+            self?.viewModel.logout()
+        }
+        // Inline sections, so sign-out sits below a divider instead of one slip of the
+        // thumb away from "Members".
+        guard !actions.isEmpty else { return [signOut] }
+        return [
+            UIMenu(options: .displayInline, children: actions),
+            UIMenu(options: .displayInline, children: [signOut]),
+        ]
+    }
+
+    /// Join lands here from the menu rather than owning a "+" of its own: it's a rare,
+    /// deliberate act that was holding the most valuable slot on the bar.
+    ///
+    /// One network makes it a plain item, several make it a submenu, none omits it — the
+    /// same three cases the old action sheet decided at tap time, now visible before you
+    /// commit to a tap. Omitted rather than disabled on none, because there's nothing the
+    /// user could do from here to make a greyed-out row work.
+    private func joinElement() -> UIMenuElement? {
+        let networks = viewModel.networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        let icon = UIImage(systemName: "plus.bubble")
+        guard let only = networks.first else { return nil }
+        guard networks.count > 1 else {
+            return UIAction(title: "Join Channel…", image: icon) { [weak self] _ in
+                self?.presentJoinAlert(network: only)
+            }
+        }
+        return UIMenu(title: "Join Channel…", image: icon, children: networks.map { network in
+            UIAction(title: network.name) { [weak self] _ in
+                self?.presentJoinAlert(network: network)
+            }
+        })
     }
 
     private func presentJoinAlert(network: Network) {

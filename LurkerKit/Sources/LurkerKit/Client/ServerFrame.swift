@@ -36,6 +36,13 @@ enum ServerFrame: Equatable, Sendable {
         hasMoreNewer: Bool
     )
 
+    /// A `channel-topic` event: RPL_TOPIC on join, i.e. "here's the topic" rather than
+    /// "someone changed it". Ephemeral and silent — it carries no id and prints no line,
+    /// which is why it's lifted out of `irc` into its own frame instead of arriving as a
+    /// `Message` nothing would render. A topic *change* is a `topic` event and stays a
+    /// message, because it's also something the channel said.
+    case channelTopic(networkId: Int?, target: String, topic: String?)
+
     /// WS `read-state`: server-authoritative read counts for a buffer, broadcast to all of
     /// the user's devices (after a mark-read, or any countable event). The client mirrors
     /// these onto the buffer — it never derives unread/highlight counts locally.

@@ -23,6 +23,13 @@ public struct Buffer: Equatable, Sendable {
     /// Whether more history exists above what's loaded — gates the scroll-up pagination
     /// (#6). Defaults true (an unopened buffer has all its history still to fetch).
     public var hasMoreOlder: Bool
+    /// A channel's topic, when it has one. Nil on a channel with no topic set *and* on
+    /// every other kind — nothing but a channel has one.
+    ///
+    /// Fed from three places, because the server has three ways of saying it: the
+    /// `snapshot` (on connect), a `channel-topic` ephemeral (RPL_TOPIC on join, silent),
+    /// and a `topic` event (someone changed it, which also prints a line).
+    public var topic: String?
 
     public init(
         networkId: Int?,
@@ -33,7 +40,8 @@ public struct Buffer: Equatable, Sendable {
         lastReadId: Int = 0,
         joined: Bool = false,
         hydrated: Bool = false,
-        hasMoreOlder: Bool = true
+        hasMoreOlder: Bool = true,
+        topic: String? = nil
     ) {
         self.networkId = networkId
         self.target = target
@@ -44,6 +52,7 @@ public struct Buffer: Equatable, Sendable {
         self.joined = joined
         self.hydrated = hydrated
         self.hasMoreOlder = hasMoreOlder
+        self.topic = topic
     }
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }

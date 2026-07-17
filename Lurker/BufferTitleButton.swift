@@ -4,8 +4,7 @@
 import LurkerKit
 import UIKit
 
-/// The floating title pill, in the shape Messages uses: an indicator light, the buffer's
-/// name, and a chevron saying it opens something.
+/// The floating title pill: an indicator light and the buffer's name.
 ///
 /// It goes in `navigationItem.titleView` rather than being floated over the content in a
 /// container of our own. An iOS 26 navigation bar is *already* a glass layer with no
@@ -13,9 +12,10 @@ import UIKit
 /// safe-area placement, the scroll edge effect, Dynamic Type, and glass's automatic
 /// light/dark contrast switching, and would land further from Messages, not closer.
 ///
-/// The chevron points down, not right like Messages': Messages opens a details *page* for
-/// the current conversation, while this opens a picker for a different one. Down is the
-/// system's pull-down-menu affordance, which is what this actually is.
+/// No chevron. It carried a `chevron.down` while the pill *was* the way to the buffer
+/// list; that list has its own button on the leading side now, so the glyph was left
+/// promising a pull-down menu this isn't. The pill is still tappable — it's a glass
+/// capsule in a navigation bar, which is already the affordance.
 final class BufferTitleButton: UIButton {
 
     /// The status light. A plain view rather than a symbol in the title, so it can't be
@@ -28,13 +28,10 @@ final class BufferTitleButton: UIButton {
         addAction(UIAction { _ in onTap() }, for: .touchUpInside)
 
         var config = UIButton.Configuration.glass()
-        config.image = UIImage(systemName: "chevron.down")
-        config.imagePlacement = .trailing
-        config.imagePadding = 5
-        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(scale: .small)
         // Leading inset leaves room for the light, which sits outside the configuration's
-        // content and so isn't accounted for by its own layout.
-        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 26, bottom: 6, trailing: 12)
+        // content and so isn't accounted for by its own layout. Trailing matches it, so
+        // the name sits centred in what's left rather than crowding the trailing edge.
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 26, bottom: 6, trailing: 14)
         // A pill is a single line by definition — a long channel name truncates rather
         // than wrapping the capsule to two lines or breaking mid-word.
         config.titleLineBreakMode = .byTruncatingTail
@@ -96,7 +93,7 @@ final class BufferTitleButton: UIButton {
         light.backgroundColor = Palette.color(for: status)
         // The light is a color-only signal, so it has to be spoken too.
         accessibilityLabel = "\(title), \(status.spoken)"
-        accessibilityHint = "Opens the buffer list"
+        accessibilityHint = "Shows this buffer's info and settings"
     }
 }
 
