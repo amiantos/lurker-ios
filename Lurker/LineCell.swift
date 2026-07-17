@@ -36,7 +36,10 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         messageText.isSelectable = true // required for tappable links (also enables copy)
         messageText.backgroundColor = .clear
         messageText.textColor = .label // dynamic fallback for any run without an explicit color
-        messageText.textContainerInset = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
+        // No left inset here: the leading edge is set by pinning to the same layout-margin
+        // guide the bubbles use (below), so an action's `*` lines up with the nicks and
+        // bubble edges rather than sitting a couple points inside them off its own inset.
+        messageText.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 12)
         messageText.textContainer.lineFragmentPadding = 0
         messageText.linkTextAttributes = [
             .foregroundColor: UIColor.tintColor,
@@ -46,7 +49,7 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         contentView.addSubview(messageText)
         NSLayoutConstraint.activate([
             messageText.topAnchor.constraint(equalTo: contentView.topAnchor),
-            messageText.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            messageText.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             // Short of the trailing edge by exactly the reveal's width, so the timestamp
             // has somewhere to arrive. A line is flush to *both* margins, so unlike a
             // bubble it has no gutter of its own — and it can't slide aside to make one
