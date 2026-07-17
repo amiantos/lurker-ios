@@ -105,6 +105,8 @@ final class LurkerStore {
             return applyBacklog(state, buffer, messages, hydrated: hydrated, append: append)
         case .live(let networkId, let target, let message):
             return applyLive(state, networkId: networkId, target: target, message: message)
+        case .channelTopic(let networkId, let target, let topic):
+            return applyChannelTopic(state, networkId: networkId, target: target, topic: topic)
         case .history(let networkId, let target, let events, let mode, let hasMoreOlder, _):
             return applyHistory(
                 state, networkId: networkId, target: target,
@@ -176,6 +178,7 @@ final class LurkerStore {
                 var buffer = next.buffers[key]
                     ?? Buffer(networkId: snapshot.id, target: channel.name, kind: .channel)
                 buffer.joined = true
+                buffer.topic = channel.topic
                 next.buffers[key] = buffer
                 next.members[key] = channel.members
             }
@@ -241,8 +244,31 @@ final class LurkerStore {
                 kind: BufferKind.of(networkId: networkId, target: target)
             )
         }
+        // A topic change is both a line and the topic itself. This has to sit *below* the
+        // id de-dupe above, not with the parse: a `topic` event replayed by a backlog/live
+        // overlap would otherwise re-apply an old topic over the current one, silently
+        // reverting the channel's topic to whatever it was at replay time. The Vue client
+        // hit this first and its handler carries the same warning.
+        if message.type == .topic { next.buffers[key]?.topic = message.text }
         next.messages[key] = existing + [message]
         next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
+        return next
+    }
+
+    /// RPL_TOPIC on join. Unlike a `topic` event this carries no id, so there's nothing to
+    /// de-dupe against — the server only sends it when it's telling us the current truth.
+    ///
+    /// Deliberately does not materialize a missing buffer, which `applyLive` does: a topic
+    /// for a channel we have no row for is nothing to show and nowhere to show it, and the
+    /// snapshot that creates the row carries the topic anyway.
+    private static func applyChannelTopic(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        topic: String?
+    ) -> ChatState {
+        var next = state
+        next.buffers[BufferKey(networkId: networkId, target: target).id]?.topic = topic
         return next
     }
 

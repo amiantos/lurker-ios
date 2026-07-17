@@ -16,12 +16,18 @@ public enum MessageGrouping {
 
     /// Whether `message` continues the run that `previous` is part of.
     ///
-    /// Only bubbles group: an action or notice is a full-width line, so it breaks any run
-    /// it lands in (which is correct — "* nick waves" between two of nick's messages is a
-    /// real interruption).
+    /// Only bubbles group: an action is a full-width line, so it breaks any run it lands in
+    /// (which is correct — "* nick waves" between two of nick's messages is a real
+    /// interruption).
+    ///
+    /// The types must match, not merely both be bubbles. A message and a notice from the
+    /// same nick are different kinds of utterance — NOTICE is what a bot uses precisely to
+    /// say "this is not a reply to talk back to" — and grouping them would caption the run
+    /// once and render the rest identically, erasing the distinction the sender chose.
     public static func continuesRun(_ message: Message, after previous: Message?) -> Bool {
         guard let previous,
               message.type.isBubble, previous.type.isBubble,
+              message.type == previous.type,
               message.isSelf == previous.isSelf,
               sameAuthor(message, previous)
         else { return false }

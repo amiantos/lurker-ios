@@ -204,7 +204,11 @@ final class LurkerClient {
 
     func sendMessage(networkId: Int?, target: String, text: String) {
         guard let networkId else { return }
-        send(["type": "send", "networkId": networkId, "target": target, "text": text])
+        // The one write the user made deliberately, and the one with no resend behind it —
+        // so a socket-level failure to deliver it is worth telling them about. A `send`
+        // that reaches the server but is rejected comes back as a `send-result` instead;
+        // this only covers never getting it onto the wire.
+        send(["type": "send", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
     }
 
     /// Page older history for a buffer, back from `before` (exclusive message id). The
@@ -330,7 +334,20 @@ final class LurkerClient {
     /// assertion open until the write lands, and "the write landed" is a fact only
     /// URLSession can report. Called on EVERY exit path — including the early return —
     /// because a caller holding an OS resource against it must always get it back.
-    private func send(_ verb: [String: Any], onFlush: (@Sendable () -> Void)? = nil) {
+    ///
+    /// `surfacesFailure` gates whether a socket-write failure becomes a user-facing error.
+    /// Only a message the user typed sets it: everything else here is machinery — presence,
+    /// open-buffer, history, mark-read, join — whose write can legitimately fail the instant
+    /// a backgrounded socket is torn down, and which the reconnect re-drives anyway. Routing
+    /// those failures to the alert is the "Send failed: Software caused connection abort"
+    /// modal that pops on foreground: iOS kills the socket while suspended without firing its
+    /// failure callback, so the first write on return (a presence re-assert) writes into a
+    /// dead socket and fails, over a connection the reconnect is about to replace.
+    private func send(
+        _ verb: [String: Any],
+        surfacesFailure: Bool = false,
+        onFlush: (@Sendable () -> Void)? = nil
+    ) {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
               let text = String(data: data, encoding: .utf8)
@@ -340,7 +357,7 @@ final class LurkerClient {
         }
         socket.send(.string(text)) { [weak self] error in
             defer { onFlush?() }
-            guard let error else { return }
+            guard let error, surfacesFailure else { return }
             // Capture the reason (a String) before hopping — Error isn't Sendable, but its
             // localized description is, and it's what makes an offline/TLS failure legible.
             let reason = error.localizedDescription

@@ -126,6 +126,18 @@ enum FrameParser {
     private static func parseLive(_ obj: [String: Any]) -> ServerFrame {
         let target = obj.string("target")
         if target.isEmpty { return .ignored }
+        // `channel-topic` rides the `irc` kind like everything else, but it isn't an event
+        // in the sense the rest of this function means: no id, nothing to render, and its
+        // payload is in `topic` rather than `text`. Left to `parseEvent` it would become an
+        // `.other` Message appended to the buffer, carrying the topic in a field nothing
+        // reads.
+        if obj.string("type") == "channel-topic" {
+            return .channelTopic(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                topic: obj.stringOrNull("topic")
+            )
+        }
         return .live(networkId: obj.intOrNull("networkId"), target: target, message: parseEvent(obj))
     }
 

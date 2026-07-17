@@ -18,8 +18,10 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertFalse(EventType.system.isSpeech, "the type that IS the system buffer is not speech")
     }
 
-    func testChannelsStillRenderOnlySpeech() {
-        for kind in [BufferKind.channel, .dm, .server] {
+    func testChannelsAndDmsStillRenderOnlySpeech() {
+        // Deliberately no longer includes `.server` — lumping it in with conversations is
+        // what hid the entire server log. See below.
+        for kind in [BufferKind.channel, .dm] {
             XCTAssertTrue(kind.renders(.message), "\(kind)")
             XCTAssertTrue(kind.renders(.action), "\(kind)")
             XCTAssertTrue(kind.renders(.notice), "\(kind)")
@@ -28,10 +30,36 @@ final class SystemBufferTests: XCTestCase {
         }
     }
 
+    /// The same bug as the system buffer's, one kind over: a server log is a log, and only
+    /// one of the five types the server actually routes to `:server:` is speech, so
+    /// `isSpeech` hid the whole MOTD, every mode line, and every server error — leaving a
+    /// buffer that looked nearly empty rather than broken.
+    func testServerLogsRenderEverythingTheServerSendsThem() {
+        for type in [EventType.motd, .other, .error, .notice, .invite] {
+            XCTAssertTrue(BufferKind.server.renders(type), "\(type)")
+        }
+    }
+
     func testSystemBufferRendersNothingButSystemLines() {
         XCTAssertFalse(BufferKind.system.renders(.message))
         XCTAssertFalse(BufferKind.system.renders(.join))
     }
+
+    /// The server streams state-only events to the server buffer alongside its log lines —
+    /// `usermode` (carries `modes`), `away-state` (an `away` object), `lag`, `peer-presence`
+    /// — none with a `text` field. The client parses them as `.other` and, unfiltered, each
+    /// draws an empty bubble. `isRenderable` is what keeps them off screen.
+    func testAnEventWithNoTextIsNotRenderable() {
+        let usermode = Message(id: 1, type: .other, nick: nil, text: nil)
+        XCTAssertFalse(usermode.isRenderable)
+
+        let blank = Message(id: 2, type: .other, nick: nil, text: "   ")
+        XCTAssertFalse(blank.isRenderable, "whitespace-only is still blank")
+
+        let motd = Message(id: 3, type: .motd, nick: nil, text: "- Welcome -")
+        XCTAssertTrue(motd.isRenderable)
+    }
+
 
     // MARK: - Severity rides `level`, not `type`
 

@@ -20,10 +20,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var cancellables = Set<AnyCancellable>()
 
     private let tableView = UITableView()
-    private let inputField = UITextField()
-    private let sendButton = UIButton(type: .system)
-    private let inputBar = UIStackView()
-    private var inputBarBottom: NSLayoutConstraint!
+    private let composer = ComposerBar()
+    private var composerBottom: NSLayoutConstraint!
+    /// How far the keyboard currently intrudes into the view, above the safe area. Held so
+    /// `updateBottomInset` can add it to the composer's height without re-reading the last
+    /// keyboard notification.
+    private var keyboardOverlap: CGFloat = 0
     private var titleButton: BufferTitleButton!
 
     /// A rendered row. A message is either dialogue (a bubble, carrying where it sits in
@@ -77,12 +79,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferList() })
+        titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferInfo() })
         navigationItem.titleView = titleButton
-        navigationItem.leftBarButtonItem = overflowItem()
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            barButtonSystemItem: .add, target: self, action: #selector(promptJoin)
-        )
+        navigationItem.leftBarButtonItem = bufferListItem()
+        navigationItem.rightBarButtonItem = overflowItem()
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -94,44 +94,37 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
 
-        inputField.placeholder = "Message \(displayName)"
-        inputField.borderStyle = .roundedRect
-        inputField.autocorrectionType = .no
-        inputField.delegate = self
-
-        sendButton.setTitle("Send", for: .normal)
-        sendButton.addTarget(self, action: #selector(send), for: .touchUpInside)
-        sendButton.setContentHuggingPriority(.required, for: .horizontal)
-
-        inputBar.addArrangedSubview(inputField)
-        inputBar.addArrangedSubview(sendButton)
-        inputBar.axis = .horizontal
-        inputBar.spacing = 8
-        inputBar.isLayoutMarginsRelativeArrangement = true
-        inputBar.directionalLayoutMargins = .init(top: 8, leading: 12, bottom: 8, trailing: 12)
-        inputBar.translatesAutoresizingMaskIntoConstraints = false
+        composer.placeholder = "Message \(displayName)"
+        composer.onSend = { [weak self] text in self?.send(text) }
+        // A grown composer reserves more space (via viewDidLayoutSubviews after this forces
+        // the pass), and should carry the newest message up with it rather than letting the
+        // growing field cover what you were just reading.
+        composer.onHeightChange = { [weak self] in
+            guard let self else { return }
+            let wasNearBottom = isNearBottom
+            view.layoutIfNeeded()
+            if wasNearBottom { scrollToBottom() }
+        }
+        composer.translatesAutoresizingMaskIntoConstraints = false
         // The system buffer is read-only — there's nowhere to send it.
         let composes = buffer.networkId != nil
-        inputBar.isHidden = !composes
-        view.addSubview(inputBar)
+        composer.isHidden = !composes
+        view.addSubview(composer)
 
-        inputBarBottom = inputBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        composerBottom = composer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
         NSLayoutConstraint.activate([
-            // Pinned to the view, not the safe area, so messages scroll *under* the
-            // floating title pill and its scroll edge effect. The table's automatic
-            // content inset still keeps the first and last rows clear of the bars.
+            // Full height, under everything. The conversation scrolls beneath the floating
+            // title pill at the top and the floating composer at the bottom, and off into
+            // both safe areas — `updateBottomInset` reserves the composer's height as inset
+            // so the newest message still clears it.
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            // Hiding the input bar doesn't reclaim its space — it's a plain subview, not
-            // a stack's arranged one, so it keeps its intrinsic height and the table
-            // would stop short of it. Skip it entirely when there's no composer, or the
-            // system buffer (now the landing screen) ends in a band of dead space.
-            tableView.bottomAnchor.constraint(equalTo: composes ? inputBar.topAnchor : view.bottomAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-            inputBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            inputBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            inputBarBottom,
+            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            composerBottom,
         ])
 
         observeKeyboard()
@@ -197,7 +190,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Filter by what this *kind* of buffer renders. The system buffer's content is
         // entirely `type: "system"`, which isn't speech — a blanket `isSpeech` filter
         // (right for channels) left it permanently empty.
-        let updated = (state.messages[buffer.key.id] ?? []).filter { buffer.kind.renders($0.type) }
+        let updated = (state.messages[buffer.key.id] ?? [])
+            .filter { buffer.kind.renders($0.type) && $0.isRenderable }
         let oldFirstId = messages.first?.id
         let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom
@@ -244,6 +238,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // The composer's height is only real after layout, so its reservation is set here —
+        // every pass, which also catches rotation and Dynamic Type. Setting a scroll view's
+        // contentInset doesn't invalidate this view's layout, so there's no feedback loop.
+        updateBottomInset()
         // The other half of the initial scroll: this is where an already-hydrated buffer
         // finally gets a height to scroll within.
         landAtBottomIfNeeded()
@@ -395,18 +393,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.scrollToRow(at: last, at: .bottom, animated: false)
     }
 
-    @objc private func send() {
-        let text = (inputField.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+    private func send(_ text: String) {
         viewModel.send(buffer.key, text: text)
-        inputField.text = ""
+        composer.clear()
     }
 
     // MARK: - Navigation
 
     /// Swipe in from either edge to reach the two lists this screen sits between: buffers
-    /// on the left, nicks on the right. The same places the pill and (eventually) a member
-    /// button go — a gesture, not a replacement for a visible control.
+    /// on the left, nicks on the right. Each edge has the matching bar item above it — the
+    /// list button and the overflow menu's "Members" — so these are shortcuts to visible
+    /// controls, not the only way in.
     ///
     /// The left edge is free to claim because this screen is the navigation stack's root,
     /// so there's no interactive pop gesture to collide with.
@@ -448,9 +445,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func apply(reveal offset: CGFloat) {
         reveal = offset
-        // Only the bubbles move. A full-width line can't slide — translating it would push
-        // its text off the leading edge, and in the system buffer every row is one — but it
-        // doesn't need to: it already stamps its time inline, so it has nothing to reveal.
+        // Every kind of row reveals now, but what actually moves differs: our own bubbles
+        // slide aside because they sit where the time is arriving, while a full-width line
+        // holds still and lets the time come into the gutter it already reserves. Each cell
+        // decides for itself — see `setReveal`.
         for case let cell as TimestampRevealing in tableView.visibleCells {
             cell.setReveal(offset)
         }
@@ -485,9 +483,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         showMemberList()
     }
 
-    /// The pill expands into the buffer list. A sheet, not a push: the list is a picker
-    /// for this screen, not a place you go — so the stack never grows and there's no back
-    /// chevron competing with the pill for the same job.
+    /// The buffer list. A sheet, not a push: the list is a picker for this screen, not a
+    /// place you go — so the stack never grows and there's no back chevron competing with
+    /// the bar items for the same job.
     private func showBufferList() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let viewModel = self.viewModel
@@ -522,6 +520,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         nav?.present(sheet, animated: true)
     }
 
+    /// What the pill opens: this buffer's own info, not a picker for a different one.
+    /// Medium-height first, like the nick list — it's a glance about the conversation
+    /// behind it, so it leaves that conversation on screen.
+    private func showBufferInfo() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let info = BufferInfoViewController(viewModel: viewModel, buffer: buffer)
+        // Runs after this sheet has finished dismissing, so `showMemberList`'s guard sees a
+        // clear screen.
+        info.onShowMembers = { [weak self] in self?.showMemberList() }
+        let sheet = UINavigationController(rootViewController: info)
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
+    }
+
     /// The nick list. Presented from `self`, unlike the buffer switcher: nothing here
     /// replaces this screen, so there's no VC about to be deallocated under the sheet.
     private func showMemberList() {
@@ -538,40 +551,90 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
-    /// The overflow button, balancing "+" across the pill. A bare "…" means "there's a
-    /// menu here" on iOS, so sign-out lives inside it rather than firing on tap — an
-    /// unlabelled button that ends your session on one touch is a trap. It's also where
-    /// the rest of Settings (#20) lands, which is why it's an ellipsis and not a door.
+    /// The buffer list, on the leading side to agree with the left-edge swipe that already
+    /// opens it — the button and the gesture on that edge now mean the same thing.
+    private func bufferListItem() -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "list.bullet"),
+            primaryAction: UIAction { [weak self] _ in self?.showBufferList() }
+        )
+        item.accessibilityLabel = "Buffers"
+        return item
+    }
+
+    /// The overflow button, balancing the buffer list across the pill. A bare "…" means
+    /// "there's a menu here" on iOS, so nothing in it fires on tap — sign-out least of
+    /// all, since an unlabelled button that ends your session on one touch is a trap.
+    /// It's also where the rest of Settings (#20) lands, which is why it's an ellipsis
+    /// and not a door.
+    ///
+    /// Deferred rather than built once here, because what belongs in it moves after
+    /// `viewDidLoad`: networks connect and disconnect. A menu assembled at launch would
+    /// still be offering the networks that existed then.
     private func overflowItem() -> UIBarButtonItem {
-        UIBarButtonItem(
+        let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
             menu: UIMenu(children: [
-                UIAction(
-                    title: "Sign Out",
-                    image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
-                    attributes: .destructive
-                ) { [weak self] _ in
-                    // Revokes server-side + clears the Keychain; SceneDelegate returns us
-                    // to sign-in.
-                    self?.viewModel.logout()
+                UIDeferredMenuElement.uncached { [weak self] completion in
+                    completion(self?.overflowElements() ?? [])
                 },
             ])
         )
+        item.accessibilityLabel = "More"
+        return item
     }
 
-    @objc private func promptJoin() {
-        let networks = viewModel.networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        guard !networks.isEmpty else { return }
-        guard networks.count > 1 else { return presentJoinAlert(network: networks[0]) }
-        let sheet = UIAlertController(title: "Join a channel on…", message: nil, preferredStyle: .actionSheet)
-        for network in networks {
-            sheet.addAction(UIAlertAction(title: network.name, style: .default) { [weak self] _ in
-                self?.presentJoinAlert(network: network)
+    private func overflowElements() -> [UIMenuElement] {
+        var actions: [UIMenuElement] = []
+        if let join = joinElement() { actions.append(join) }
+        // Channels only. A DM has nobody to list and never will, and the system buffer
+        // isn't even on a network — the list would open empty by construction. The
+        // right-edge swipe stays unconditional: a gesture you have to go looking for can
+        // afford to land on an empty list, a row sitting in a menu can't.
+        if buffer.kind == .channel {
+            actions.append(UIAction(title: "Members", image: UIImage(systemName: "person.2")) { [weak self] _ in
+                self?.showMemberList()
             })
         }
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        sheet.popoverPresentationController?.barButtonItem = navigationItem.rightBarButtonItem
-        present(sheet, animated: true)
+        let signOut = UIAction(
+            title: "Sign Out",
+            image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+            attributes: .destructive
+        ) { [weak self] _ in
+            // Revokes server-side + clears the Keychain; SceneDelegate returns us to
+            // sign-in.
+            self?.viewModel.logout()
+        }
+        // Inline sections, so sign-out sits below a divider instead of one slip of the
+        // thumb away from "Members".
+        guard !actions.isEmpty else { return [signOut] }
+        return [
+            UIMenu(options: .displayInline, children: actions),
+            UIMenu(options: .displayInline, children: [signOut]),
+        ]
+    }
+
+    /// Join lands here from the menu rather than owning a "+" of its own: it's a rare,
+    /// deliberate act that was holding the most valuable slot on the bar.
+    ///
+    /// One network makes it a plain item, several make it a submenu, none omits it — the
+    /// same three cases the old action sheet decided at tap time, now visible before you
+    /// commit to a tap. Omitted rather than disabled on none, because there's nothing the
+    /// user could do from here to make a greyed-out row work.
+    private func joinElement() -> UIMenuElement? {
+        let networks = viewModel.networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        let icon = UIImage(systemName: "plus.bubble")
+        guard let only = networks.first else { return nil }
+        guard networks.count > 1 else {
+            return UIAction(title: "Join Channel…", image: icon) { [weak self] _ in
+                self?.presentJoinAlert(network: only)
+            }
+        }
+        return UIMenu(title: "Join Channel…", image: icon, children: networks.map { network in
+            UIAction(title: network.name) { [weak self] _ in
+                self?.presentJoinAlert(network: network)
+            }
+        })
     }
 
     private func presentJoinAlert(network: Network) {
@@ -601,19 +664,50 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
     }
 
+    /// The gap the composer keeps above the keyboard, so the capsule doesn't sit flush on
+    /// the key row the way Messages never does. Only applied when the keyboard is actually
+    /// up — at rest the composer sits on the safe-area edge with no extra gap.
+    private static let keyboardGap: CGFloat = 8
+
     @objc private func keyboardWillChange(_ note: Notification) {
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         // The safe-area inset is already accounted for by the constraint's anchor, so
         // subtract it or the bar floats above the keyboard by the home-indicator height.
-        let overlap = view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom
-        inputBarBottom.constant = -max(0, overlap)
+        keyboardOverlap = max(0, view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom)
+        composerBottom.constant = keyboardOverlap > 0 ? -(keyboardOverlap + Self.keyboardGap) : 0
+        // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
+        // runs `viewDidLayoutSubviews` → `updateBottomInset` against that fresh frame. So
+        // the inset isn't recomputed here — doing it before layout would read the old frame.
         view.layoutIfNeeded()
         scrollToBottom()
     }
 
     @objc private func keyboardWillHide() {
-        inputBarBottom.constant = 0
-        view.layoutIfNeeded()
+        keyboardOverlap = 0
+        composerBottom.constant = 0
+        view.layoutIfNeeded() // re-runs updateBottomInset via viewDidLayoutSubviews
+    }
+
+    /// Reserve room at the bottom of the conversation for the floating composer (and the
+    /// keyboard, when it's up), so the newest message scrolls to just above the composer
+    /// rather than behind it. This is the bottom counterpart to the automatic top inset the
+    /// nav bar gets — without it the table would run its content under the composer with no
+    /// way to see the last line.
+    ///
+    /// Measured from the composer's actual top rather than computed from its height, because
+    /// the keyboard moves the composer and shrinks the safe area, and a frame reads both at
+    /// once. The `- safeAreaInsets.bottom` cancels the safe-area inset the table's automatic
+    /// adjustment has already added, so the reservation isn't double-counted — get that
+    /// wrong and the last line sits half-under the composer.
+    ///
+    /// No composer (the read-only system buffer) means no reservation: content runs to the
+    /// safe-area edge as any full-height scroll view would.
+    private func updateBottomInset() {
+        let reserved = composer.isHidden
+            ? 0
+            : max(0, view.bounds.maxY - composer.frame.minY - view.safeAreaInsets.bottom)
+        tableView.contentInset.bottom = reserved
+        tableView.verticalScrollIndicatorInsets.bottom = reserved
     }
 
     // MARK: - UITableViewDataSource
@@ -628,17 +722,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return dividerCell()
         case .bubble(let message, let position):
             let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID) as! BubbleCell
-            cell.configure(message, position: position)
+            cell.configure(message, position: position, networkName: networkName(for: message))
             // Scrolled into view mid-drag: match the neighbors it's arriving next to.
             cell.setReveal(reveal)
             return cell
         case .line(let message):
             let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            // A system line names the network it's about; everything else ignores this.
-            let networkName = message.originNetworkId.flatMap { networks[$0]?.name }
-            cell.configure(MessageRenderer.render(message, networkName: networkName))
+            cell.configure(MessageRenderer.render(message), date: message.date)
+            cell.setReveal(reveal)
             return cell
         }
+    }
+
+    /// What to call the network a nick-less line belongs to.
+    ///
+    /// Two sources, because two different lines need it: a system line is app-scoped and
+    /// carries the network it's *about* in `originNetworkId`, while server text carries
+    /// nothing and simply belongs to whichever server buffer we're looking at.
+    private func networkName(for message: Message) -> String? {
+        (message.originNetworkId ?? buffer.networkId).flatMap { networks[$0]?.name }
     }
 
     private func dividerCell() -> UITableViewCell {
@@ -656,9 +758,3 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 }
 
-extension ChatViewController: UITextFieldDelegate {
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        send()
-        return false
-    }
-}

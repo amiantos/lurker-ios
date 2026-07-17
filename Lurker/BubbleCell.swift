@@ -125,15 +125,19 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    func configure(_ message: Message, position: RunPosition) {
+    /// `networkName` captions the lines that have no nick — a system line names the network
+    /// it's about, server text names the server it came from.
+    func configure(_ message: Message, position: RunPosition, networkName: String? = nil) {
         let isSelf = message.isSelf
         column.alignment = isSelf ? .trailing : .leading
         slidesAside = isSelf
 
-        // Our own runs need no nick — the side and the tint already say who sent it.
-        nickLabel.isHidden = isSelf || !position.isFirst
-        nickLabel.text = message.nick
-        nickLabel.textColor = MessageRenderer.nickColor(message)
+        // Our own runs need no nick — the side and the tint already say who sent it. Runs
+        // break on type, so a caption covers the whole run.
+        let caption = MessageRenderer.caption(message, networkName: networkName)
+        nickLabel.isHidden = isSelf || !position.isFirst || caption == nil
+        nickLabel.text = caption
+        nickLabel.textColor = MessageRenderer.captionColor(message, networkName: networkName)
         // Per message, not per run: once you've gone looking for a time, you want the one
         // for the line you're looking at.
         revealTime.text = MessageRenderer.timestamp(message.date)
@@ -156,7 +160,7 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         isAccessibilityElement = false
         // VoiceOver has no drag to make, so the time goes in the label rather than behind a
         // gesture it can't perform.
-        messageText.accessibilityLabel = [message.nick, message.text, revealTime.text]
+        messageText.accessibilityLabel = [caption, message.text, revealTime.text]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
