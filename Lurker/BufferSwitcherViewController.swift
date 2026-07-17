@@ -19,6 +19,8 @@ import UIKit
 /// screen swaps itself out.
 final class BufferSwitcherViewController: UITableViewController {
     private let viewModel: ChatViewModel
+    /// The buffer on screen behind this sheet, so it can be kept out of Recent.
+    private let current: BufferKey
     private var cancellables = Set<AnyCancellable>()
 
     /// Called with the picked buffer. The presenter owns hydrating it and dismissing this.
@@ -46,8 +48,9 @@ final class BufferSwitcherViewController: UITableViewController {
     private var state = ChatState()
     private var sections: [Section] = []
 
-    init(viewModel: ChatViewModel) {
+    init(viewModel: ChatViewModel, current: BufferKey) {
         self.viewModel = viewModel
+        self.current = current
         super.init(style: .insetGrouped)
     }
 
@@ -115,42 +118,66 @@ final class BufferSwitcherViewController: UITableViewController {
             compact: false
         )]))
 
-        let recents = recentRows(state)
+        // Everything promoted above is then held out of the roster below, so a buffer
+        // appears exactly once. Without this a recently-visited favorite printed three
+        // times over — twice promoted and once in its network — with badges updating in
+        // lockstep and a swipe-to-Leave on any one silently removing the other two.
+        var promoted = Set<String>()
+
+        let favorites = favoriteRows(state, promoted: &promoted)
+        let recents = recentRows(state, promoted: &promoted)
         if !recents.isEmpty { sections.append(Section(title: "Recent", rows: recents)) }
-        let favorites = favoriteRows(state)
         if !favorites.isEmpty { sections.append(Section(title: "Favorites", rows: favorites)) }
 
         let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
         var seen = Set<Int>()
         for network in networks {
             seen.insert(network.id)
-            let buffers = (byNetwork[network.id] ?? []).sorted(by: Self.order)
+            let buffers = (byNetwork[network.id] ?? [])
+                .filter { !promoted.contains($0.key.id) }
+                .sorted(by: Self.order)
             guard !buffers.isEmpty else { continue }
             sections.append(Section(title: header(for: network), rows: buffers.map(compactRow)))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
-            sections.append(Section(title: "network", rows: buffers.sorted(by: Self.order).map(compactRow)))
+            let rest = buffers.filter { !promoted.contains($0.key.id) }.sorted(by: Self.order)
+            guard !rest.isEmpty else { continue }
+            sections.append(Section(title: "network", rows: rest.map(compactRow)))
         }
         return sections
     }
 
     /// The buffers you've actually been in lately, newest first — the whole point of the
-    /// switcher. Keys that no longer resolve (a closed buffer, a left channel) just fall
-    /// out; the system buffer is excluded because it already has its own row above.
-    private func recentRows(_ state: ChatState) -> [Row] {
-        UserPreferences.standard.recentBufferKeys
+    /// switcher.
+    ///
+    /// The buffer you're *currently* in is excluded. Recency is recorded when a buffer
+    /// appears, so by the time this sheet can exist the current buffer is always the
+    /// newest entry — which would put the row you're already on at the top, where your
+    /// thumb lands, doing nothing. A switcher's first entry should be where you'd go next.
+    ///
+    /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
+    /// system buffer is excluded because it already has its own row above.
+    private func recentRows(_ state: ChatState, promoted: inout Set<String>) -> [Row] {
+        let rows = UserPreferences.standard.recentBufferKeys
+            .filter { $0 != current.id && !promoted.contains($0) }
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .prefix(Self.recentLimit)
             .map { promotedRow($0, state) }
+        promoted.formUnion(rows.map(\.buffer.key.id))
+        return Array(rows)
     }
 
-    private func favoriteRows(_ state: ChatState) -> [Row] {
-        UserPreferences.standard.favoriteBufferKeys
+    /// Pinned buffers, claimed before recents so a favorite you just visited stays in the
+    /// section you pinned it to rather than moving around under you.
+    private func favoriteRows(_ state: ChatState, promoted: inout Set<String>) -> [Row] {
+        let rows = UserPreferences.standard.favoriteBufferKeys
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .map { promotedRow($0, state) }
+        promoted.formUnion(rows.map(\.buffer.key.id))
+        return rows
     }
 
     private func promotedRow(_ buffer: Buffer, _ state: ChatState) -> Row {
@@ -189,16 +216,6 @@ final class BufferSwitcherViewController: UITableViewController {
         return lhs.target.lowercased() < rhs.target.lowercased()
     }
 
-    /// The system buffer is called "Lurker" wherever the user sees it — it's the app's own
-    /// buffer, and the pill it opens under says the same.
-    private func displayName(_ buffer: Buffer) -> String {
-        switch buffer.kind {
-        case .server: return "Server"
-        case .system: return "Lurker"
-        default: return buffer.target
-        }
-    }
-
     // MARK: - Table
 
     override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
@@ -221,7 +238,10 @@ final class BufferSwitcherViewController: UITableViewController {
         var content = row.subtitle == nil
             ? UIListContentConfiguration.cell()
             : UIListContentConfiguration.subtitleCell()
-        content.text = displayName(row.buffer)
+        // No `networkName` here, unlike the pill: every row already states its network — as
+        // a subtitle when promoted, as its section header otherwise — so resolving a server
+        // log to its network's name would just print "libera" above "libera".
+        content.text = row.buffer.displayName()
         content.secondaryText = row.subtitle
         if let light = row.light {
             content.image = Self.lightImage(light)

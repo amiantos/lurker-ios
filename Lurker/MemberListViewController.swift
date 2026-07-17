@@ -52,23 +52,28 @@ final class MemberListViewController: UITableViewController {
     private func apply(_ state: ChatState) {
         members = MemberPrefix.sorted(state.members[buffer.key.id] ?? [])
         title = members.isEmpty ? "Members" : "Members (\(members.count))"
-        tableView.backgroundView = members.isEmpty ? emptyView() : nil
+        tableView.backgroundView = members.isEmpty ? emptyLabel : nil
         tableView.reloadData()
     }
 
     /// Says which of the two reasons the list is empty, because they need different things
     /// from the user: a DM has nobody to list and never will, while a channel with no
     /// members means we haven't been told yet.
-    private func emptyView() -> UIView {
+    ///
+    /// Built once — the text depends only on this screen's buffer, and `apply` runs on
+    /// every state change that reaches us.
+    private lazy var emptyLabel: UILabel = {
         let label = UILabel()
-        label.text = buffer.kind == .channel
-            ? "No members yet."
-            : "\(buffer.kind == .dm ? "Direct messages" : "This buffer") have no member list."
+        switch buffer.kind {
+        case .channel: label.text = "No members yet."
+        case .dm: label.text = "Direct messages have no member list."
+        case .server, .system: label.text = "This buffer has no member list."
+        }
         label.textColor = .secondaryLabel
         label.textAlignment = .center
         label.numberOfLines = 0
         return label
-    }
+    }()
 
     // MARK: - Table
 

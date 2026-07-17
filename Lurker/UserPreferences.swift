@@ -15,14 +15,19 @@ enum UserPreferences {
         static let favoriteBufferKeys = "favoriteBufferKeys"
     }
 
-    static var standard: UserDefaults {
+    /// Registration happens once, when this is first touched, rather than on every access.
+    /// It used to be a computed property that re-registered the dictionary each time, which
+    /// was free when the only readers were the sign-in screen — but the buffer switcher
+    /// reaches through here several times per state change, and registering is idempotent
+    /// work done to reach the same answer.
+    static let standard: UserDefaults = {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [
             Key.lastServerURL: Backend.selfHosted.defaultURL,
             Key.lastBackend: Backend.selfHosted.rawValue,
         ])
         return defaults
-    }
+    }()
 }
 
 extension UserDefaults {

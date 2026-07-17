@@ -171,6 +171,29 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertFalse(BufferKind.server.hydratesOnDemand, "server: `if (target.startsWith(':server:')) return`")
     }
 
+    // MARK: - Naming
+
+    func testTheSystemBufferIsCalledLurkerNotItsSentinel() {
+        // `:system:` is a wire sentinel, not something to show anyone.
+        XCTAssertEqual(Buffer.system.displayName(), "Lurker")
+        XCTAssertEqual(Buffer.system.displayName(networkName: "libera"), "Lurker")
+    }
+
+    func testAServerLogPrefersItsNetworksName() {
+        // Two copies of this lived in two view controllers and disagreed: the switcher
+        // said "Server" while the pill it opened said "libera".
+        let log = Buffer(networkId: 1, target: ":server:libera", kind: .server)
+        XCTAssertEqual(log.displayName(networkName: "libera"), "libera")
+        XCTAssertEqual(log.displayName(), "Server", "…and falls back when the roster hasn't landed")
+    }
+
+    func testChannelsAndDmsAreJustTheirTarget() {
+        let channel = Buffer(networkId: 1, target: "#lurker", kind: .channel)
+        let dm = Buffer(networkId: 1, target: "alice", kind: .dm)
+        XCTAssertEqual(channel.displayName(networkName: "libera"), "#lurker")
+        XCTAssertEqual(dm.displayName(networkName: "libera"), "alice")
+    }
+
     // MARK: - The buffer itself
 
     func testTheSystemBufferIsConstructibleWithoutTheServer() {

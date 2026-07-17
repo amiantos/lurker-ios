@@ -55,6 +55,23 @@ public struct Buffer: Equatable, Sendable {
     /// exists, so the app can open it as its landing screen before any frame has arrived;
     /// the real one folds in over this when the backlog lands.
     public static let system = Buffer(networkId: nil, target: systemTarget, kind: .system)
+
+    /// What to call this buffer wherever the user sees it.
+    ///
+    /// Shared rather than per-screen: the title pill and the buffer switcher name the same
+    /// buffer one tap apart, and two copies of this drifted immediately — the switcher
+    /// called a server log "Server" while the pill it opened called it "libera".
+    ///
+    /// `networkName` is the network this buffer belongs to, when it's known; only a server
+    /// log uses it, and it falls back rather than requiring the caller to have resolved the
+    /// roster yet.
+    public func displayName(networkName: String? = nil) -> String {
+        switch kind {
+        case .system: "Lurker" // the app's own buffer, not a target you'd recognize
+        case .server: networkName ?? "Server"
+        case .channel, .dm: target
+        }
+    }
 }
 
 /// Stable identity for a buffer, plus its string form for use as a dictionary key.

@@ -61,6 +61,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         nickLabel.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
         nickLabel.adjustsFontForContentSizeCategory = true
         nickLabel.lineBreakMode = .byTruncatingTail
+        // The nick is spoken as part of the message's own label, which is the one that has
+        // to exist — it's also where the timestamp goes, since VoiceOver has no drag to
+        // make. Left addressable, it would be announced twice.
+        nickLabel.isAccessibilityElement = false
 
         // One font size app-wide; it recedes on color, the same way `MessageRenderer`
         // stamps full-width lines.

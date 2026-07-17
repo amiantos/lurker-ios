@@ -53,6 +53,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// recycled mid-drag comes back at the same offset as its neighbors.
     private var reveal: CGFloat = 0
     private var revealPan: UIPanGestureRecognizer!
+    /// Cleared once the buffer has been parked at its newest message.
+    ///
+    /// Opening a buffer has to land at the bottom, and neither obvious place to do it works
+    /// alone. `viewDidLoad` is too early — the table has no height yet, and `scrollToRow` on
+    /// a table with no height silently does nothing, which is exactly what happens for an
+    /// already-hydrated buffer whose messages are in `state` before the screen exists: it
+    /// asks once, is ignored, and nothing changes afterwards to ask again. And the first
+    /// `apply` is not enough either, because the backlog can just as easily arrive *after*
+    /// the first layout pass. So both paths ask and this makes it happen exactly once.
+    private var needsInitialScroll = true
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -169,15 +179,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         surface(viewModel.state.error)
     }
 
-    /// What the pill and the composer call this buffer. The system buffer is the app
-    /// itself, so it's "Lurker" — its connection state used to be spelled out here as the
-    /// title text ("Connecting…"), and is now the pill's light instead.
+    /// What the pill and the composer call this buffer. The system buffer's connection
+    /// state used to be spelled out here as the title text ("Connecting…"); it's the pill's
+    /// light now.
     private var displayName: String {
-        switch buffer.kind {
-        case .system: return "Lurker"
-        case .server: return buffer.networkId.flatMap { networks[$0]?.name } ?? "Server"
-        default: return buffer.target
-        }
+        buffer.displayName(networkName: buffer.networkId.flatMap { networks[$0]?.name })
     }
 
     private func apply(_ state: ChatState) {
@@ -220,6 +226,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // up to read, a new message lands below without yanking you down.
             if wasNearBottom { scrollToBottom() }
         }
+        landAtBottomIfNeeded()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // The other half of the initial scroll: this is where an already-hydrated buffer
+        // finally gets a height to scroll within.
+        landAtBottomIfNeeded()
+    }
+
+    /// The one-shot landing. Needs both rows to scroll to and a height to scroll within,
+    /// which arrive in either order.
+    private func landAtBottomIfNeeded() {
+        guard needsInitialScroll, !rows.isEmpty, tableView.bounds.height > 0 else { return }
+        needsInitialScroll = false
+        scrollToBottom()
     }
 
     /// Ask for history once the socket is up.
@@ -327,11 +349,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         top.present(alert, animated: true)
     }
 
+    /// Park the newest message at the bottom.
+    ///
+    /// Scrolled twice, on purpose. Rows are self-sizing, so the first pass positions using
+    /// *estimated* heights for the rows it hasn't laid out and stops short of the real
+    /// bottom — the "opens a scroll above the newest message" symptom. Laying out and asking
+    /// again lets the second pass use the heights the first one just made real.
+    ///
+    /// The height guard matters as much: `scrollToRow` against a table that has no bounds
+    /// yet does nothing at all, quietly.
     private func scrollToBottom() {
-        guard !rows.isEmpty else { return }
-        tableView.scrollToRow(
-            at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: false
-        )
+        guard !rows.isEmpty, tableView.bounds.height > 0 else { return }
+        let last = IndexPath(row: rows.count - 1, section: 0)
+        tableView.layoutIfNeeded()
+        tableView.scrollToRow(at: last, at: .bottom, animated: false)
+        tableView.layoutIfNeeded()
+        tableView.scrollToRow(at: last, at: .bottom, animated: false)
     }
 
     @objc private func send() {
@@ -431,10 +464,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let viewModel = self.viewModel
         let nav = navigationController
-        let list = BufferSwitcherViewController(viewModel: viewModel)
+        let current = buffer.key
+        let list = BufferSwitcherViewController(viewModel: viewModel, current: current)
         // `nav` weakly: it holds the sheet, which holds the list, which holds this
         // closure — a strong capture would close that loop for as long as the sheet is up.
         list.onSelect = { [weak nav] buffer in
+            // Picking the buffer you're already in means "close this", not "rebuild it".
+            // Swapping the root would re-latch the unread divider, re-request history, and
+            // throw away your scroll position to arrive back exactly where you started.
+            guard buffer.key != current else { return nav?.dismiss(animated: true) ?? () }
             // No `openBuffer` here: the new screen's own `hydrateIfNeeded` asks for the
             // history. Requesting it here too would double every buffer tap — the reply
             // hasn't landed by the time the new VC's first `apply` runs, so it would still
