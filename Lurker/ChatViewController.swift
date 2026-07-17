@@ -213,12 +213,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // A history page prepended older messages above the viewport: reload, then shift
         // the content offset by exactly the added height so the rows you were reading stay
         // put instead of jumping.
-        let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
+        //
+        // Only when you're actually reading up there. Scrolling up isn't the only thing
+        // that makes the first id smaller — so does hydration, when a backlog replaces the
+        // live events that outran it (your own echo, usually, which is why this looked like
+        // "the last message is mine"). Shifting by a whole history's height throws the
+        // offset clean past the end of the content, and a scroll view holds an out-of-range
+        // offset until something touches it: a black buffer that snaps into place when you
+        // poke it.
+        //
+        // Being at the bottom is what separates the two: preserving your position only
+        // means anything if you have one to preserve. At the bottom, the bottom is it.
+        let prepended = !wasNearBottom
+            && oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
         if prepended {
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
                 tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
+                clampToContent()
             }
         } else {
             tableView.reloadData()
@@ -242,6 +255,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard needsInitialScroll, !rows.isEmpty, tableView.bounds.height > 0 else { return }
         needsInitialScroll = false
         scrollToBottom()
+    }
+
+    /// Pull the offset back inside the content.
+    ///
+    /// A scroll view will hold an offset past the end of its content indefinitely and only
+    /// clamps it once a touch starts a scroll — so an offset put there by arithmetic reads
+    /// as an empty buffer that snaps into place the moment you poke it. Anything that moves
+    /// the offset by computing it, rather than by asking the table to scroll somewhere, has
+    /// to land back in range itself.
+    private func clampToContent() {
+        let insets = tableView.adjustedContentInset
+        let maxY = max(-insets.top, tableView.contentSize.height + insets.bottom - tableView.bounds.height)
+        if tableView.contentOffset.y > maxY {
+            tableView.contentOffset.y = maxY
+        }
     }
 
     /// Ask for history once the socket is up.
