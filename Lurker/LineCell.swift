@@ -63,7 +63,10 @@ final class LineCell: UITableViewCell, TimestampRevealing {
             messageText.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
             revealTime.leadingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: 12),
-            revealTime.firstBaselineAnchor.constraint(equalTo: messageText.topAnchor, constant: 18),
+            // Centered on the line rather than pinned a fixed distance below its top — a
+            // hard-coded offset drifts off the text as Dynamic Type grows the font. Matches
+            // how BubbleCell centers its own time.
+            revealTime.centerYAnchor.constraint(equalTo: messageText.centerYAnchor),
         ])
     }
 

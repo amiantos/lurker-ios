@@ -18,19 +18,17 @@ enum MessageRenderer {
 
     // MARK: - Bubbles
 
-    /// The body alone, for a bubble. On our own tinted bubble the default `.label` would
-    /// be near-black on blue, so the fallback flips to white — but an mIRC-colored run
-    /// still wins, because the sender chose that color on purpose.
-    /// One text color inside every bubble, whatever the line is. A bubble already says
-    /// what kind of line it is — by its caption, and by that caption's color — so tinting
-    /// the words too said it twice and left server text reading as permanently dimmed.
-    /// Severity still shows: it rides the caption, where `captionColor` puts it.
+    /// The body alone, for a bubble. On our own tinted bubble the default `.label` would be
+    /// near-black on blue, so the fallback flips to white — but an mIRC-colored run still
+    /// wins, because the sender chose that color on purpose.
+    ///
+    /// One color and one font inside every bubble, whatever the line is: the bubble already
+    /// says what kind of line it is by its caption and that caption's color, so tinting the
+    /// words too said it twice, and a per-type font (monospaced server text) was a second
+    /// type system to maintain. A customizable font is a later feature.
     static func renderBubble(_ message: Message) -> NSAttributedString {
         let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        // Server text stays monospaced inside its bubble: it's still terminal output, and
-        // the alignment is half of what it's saying.
-        let font = message.type == .motd ? mono(base) : base
-        return body(message, base: font, fallback: message.isSelf ? .white : .label)
+        return body(message, base: base, fallback: message.isSelf ? .white : .label)
     }
 
     /// What captions a bubble's run. Nil leaves it uncaptioned.
@@ -58,14 +56,6 @@ enum MessageRenderer {
         case .motd, .other: .secondaryLabel
         default: nickColor(message)
         }
-    }
-
-    // MARK: - Blocks
-
-    /// The same point size as everything else, in a monospaced face. A family change, not a
-    /// second type scale.
-    private static func mono(_ base: UIFont) -> UIFont {
-        UIFont.monospacedSystemFont(ofSize: base.pointSize, weight: .regular)
     }
 
     // MARK: - Full-width lines
