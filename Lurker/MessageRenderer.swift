@@ -54,7 +54,7 @@ enum MessageRenderer {
         // A network-tied system line hashes its network name through the same palette as
         // nicks, so each network gets a stable, distinguishable color — matching the web.
         // The app speaking in its own voice ("System", no network) stays muted.
-        case .system: networkName.map(hashedColor) ?? .secondaryLabel
+        case .system: networkName.map { hashedColor($0) } ?? .secondaryLabel
         case .motd, .other: .secondaryLabel
         default: nickColor(message)
         }
