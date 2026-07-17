@@ -18,6 +18,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// This is the same shape as `enterForeground`/`enterBackground`: the app observes the
     /// device and feeds facts in.
     private let reachability = ReachabilityMonitor()
+    /// Same shape again: the app owns the OS-facing bit (permission, APNs) and feeds the
+    /// resulting token into the view model.
+    private let push = PushRegistrar()
 
     func scene(
         _ scene: UIScene,
@@ -41,7 +44,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // sign-out and a mid-session 401 → back to sign-in (with an explanation).
         viewModel.sessionPublisher
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] session in self?.render(session, animated: true) }
+            .sink { [weak self] session in
+                self?.render(session, animated: true)
+                self?.enablePushOnSignIn(session)
+            }
             .store(in: &cancellables)
 
         // Drives the indicator light's red: the socket only ever reports
@@ -50,16 +56,63 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         reachability.start { [viewModel] reachable in
             viewModel.setReachable(reachable)
         }
+
+        AppDelegate.tapHandler = self
+        // A tap that cold-launched the app arrived before this scene existed, so the
+        // AppDelegate parked it. Drain it now that there's something to navigate with.
+        if let pending = AppDelegate.pendingTap {
+            AppDelegate.pendingTap = nil
+            open(pending)
+        }
+    }
+
+    /// Ask for push once we're signed in — never before. Notification permission is a
+    /// one-shot grant, and a prompt on the sign-in screen asks the user to authorize
+    /// notifications for an account they haven't named yet.
+    private func enablePushIfSignedIn() {
+        guard viewModel.session == .loggedIn else { return }
+        Task {
+            let outcome = await push.enable(serverSupportsAPNs: { [viewModel] in
+                await viewModel.serverSupportsAPNs()
+            })
+            switch outcome {
+            case .registering:
+                break // the token lands in AppDelegate.didRegister…
+            case .unsupportedByServer:
+                // Expected on a self-hosted server: it has no Apple key and never will.
+                // Not an error, and not the user's problem — the PWA is their push path.
+                NSLog("[push] server does not deliver APNs; skipping registration")
+            case .denied:
+                NSLog("[push] notification permission denied")
+            case .failed(let message):
+                NSLog("[push] could not enable: %@", message)
+            }
+        }
     }
 
     // A socket dies after a long background; the view model reconnects (and resumes from
-    // `?since=`) when we come back, and stops trying while we're away.
+    // `?since=`) when we come back, and stops trying while we're away. enterForeground
+    // also reports presence, which is what stops the server pushing to a phone whose
+    // owner is looking at it.
     func sceneDidBecomeActive(_ scene: UIScene) {
         viewModel.enterForeground()
+        // Re-run on every activation, not just the first: iOS can rotate a device token,
+        // and the user may have granted (or revoked) notifications in Settings while we
+        // were away. Cheap — the token is re-issued identically and the server upserts.
+        enablePushIfSignedIn()
     }
 
     func sceneDidEnterBackground(_ scene: UIScene) {
         viewModel.enterBackground()
+    }
+
+    /// Signing in is the moment push becomes askable — there's finally an account to
+    /// attach a device to. Driven off the session transition rather than sceneDidBecomeActive
+    /// alone, because the first sign-in happens while the scene is already active and would
+    /// otherwise wait for a background/foreground round trip to register.
+    private func enablePushOnSignIn(_ session: ChatViewModel.SessionState) {
+        guard session == .loggedIn else { return }
+        enablePushIfSignedIn()
     }
 
     /// The system reclaimed this scene. `NWPathMonitor` is retained by the dispatch source
@@ -72,6 +125,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// Idempotent: swaps the root only when the on-screen screen doesn't match the
     /// session state, so a replayed/duplicate value is a no-op.
+    ///
+    /// (See the `NotificationTapHandling` conformance below for the notification path.)
     ///
     /// Signing in lands on the system buffer rather than a list of buffers. It's the app's
     /// own buffer — always present, and constructible without waiting on a frame — so it's
@@ -100,5 +155,49 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .loggingIn:
             break // stay on the login screen; it shows its own spinner
         }
+    }
+}
+
+// MARK: - Notification taps (#15)
+
+extension SceneDelegate: NotificationTapHandling {
+
+    /// Open the buffer a tapped notification names. Same move as picking it in the
+    /// switcher — swap the navigation root — so a tap lands in exactly the state a manual
+    /// switch would, unread divider and history request included.
+    func open(_ tap: NotificationTap) {
+        guard let navigation, viewModel.session == .loggedIn else {
+            // Tapped while signed out (a push that outlived the session). Park it: if the
+            // user signs back in, `render` builds the stack and this is stale anyway, so
+            // dropping it is the honest outcome — better than bouncing them somewhere
+            // they didn't ask for.
+            return
+        }
+        let key = BufferKey(networkId: tap.networkId, target: tap.target)
+        // Look up by `key.id`, which lower-cases the target: IRC servers are inconsistent
+        // about case and the notification's target came from whatever the server said at
+        // send time. An exact-key match would miss `#Lurker` vs `#lurker`.
+        //
+        // Not in the store yet? Synthesize one. A push can beat its own backlog frame —
+        // the notification is what woke us — and the new screen's `hydrateIfNeeded` asks
+        // for the history regardless, so the buffer fills in a moment later.
+        let buffer = viewModel.state.buffers[key.id]
+            ?? Buffer(
+                networkId: tap.networkId,
+                target: tap.target,
+                kind: BufferKind.of(networkId: tap.networkId, target: tap.target)
+            )
+
+        // Anything presented (the buffer switcher, the nick list) would otherwise sit over
+        // the buffer we just navigated to.
+        navigation.dismiss(animated: false)
+        navigation.setViewControllers(
+            [ChatViewController(viewModel: viewModel, buffer: buffer)], animated: false
+        )
+    }
+
+    func registerPushToken(_ token: String) async {
+        let ok = await viewModel.registerPushDevice(token: token)
+        if !ok { NSLog("[push] server rejected this device token") }
     }
 }

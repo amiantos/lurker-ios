@@ -29,6 +29,10 @@ final class LurkerClient {
     /// Reset per socket; gates the "socket really opened" signal to the first frame that
     /// actually arrives, rather than optimistically on `resume()`.
     private var hasEmittedOpen = false
+    /// Last reported visibility, re-asserted on every new socket. The server starts each
+    /// socket at `visible: false` and waits for us to say otherwise, so this has to be
+    /// per-socket state rather than something sent once — see `setPresence`.
+    private var presenceVisible = true
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
@@ -165,6 +169,11 @@ final class LurkerClient {
             // First byte through = the upgrade actually succeeded. A refused upgrade never
             // reaches here — it lands in handleClose — so we never falsely report open.
             hasEmittedOpen = true
+            // Re-assert visibility: this is a NEW socket and the server starts every
+            // socket at `visible: false`. Without this, a reconnect while the user is
+            // reading would leave the server thinking nobody's home, and it would push a
+            // DM to the phone in their hand.
+            send(["type": "presence", "visible": presenceVisible])
             onFrame(.socketOpen)
         }
         if let text { onFrame(FrameParser.parseWs(text)) }
@@ -229,6 +238,76 @@ final class LurkerClient {
         send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
+    /// Report whether the user can actually SEE the app (#490).
+    ///
+    /// This is the gate the server's push decision hangs on: it suppresses push while any
+    /// of a user's clients is visible, and it only knows because we say so. An open socket
+    /// is deliberately NOT presence — a backgrounded app holds its socket and must still
+    /// receive push, which is exactly the case that makes push worth having.
+    ///
+    /// Granularity is per-user, not per-buffer: the server tracks "is any client visible",
+    /// never which buffer is focused. So this says nothing about *where* the user is
+    /// looking, and lurker-ios#15's "no push for a buffer you're actively looking at"
+    /// describes something the protocol can't express.
+    ///
+    /// Latched so a new socket can re-assert it (see `handleOpen`).
+    func setPresence(_ visible: Bool) {
+        presenceVisible = visible
+        send(["type": "presence", "visible": visible])
+    }
+
+    // MARK: - Push
+
+    /// Which push transports this server can actually deliver on (#490). A self-hosted
+    /// server holds no Apple key and answers `["webpush"]` — knowing that BEFORE asking for
+    /// notification permission is the difference between "this server doesn't support push"
+    /// and a permission prompt followed by silence forever.
+    func pushTransports() async -> [String] {
+        guard let token, let url = URL(string: baseURL + "/api/push/config") else { return [] }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (data, response) = try? await session.data(for: request),
+              (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [] }
+        // Absent (an older server that predates #490) reads the same as "no native push":
+        // both mean don't register, which is the safe answer either way.
+        return body["transports"] as? [String] ?? []
+    }
+
+    /// File this install's APNs device token against the signed-in account.
+    /// Returns false when the server won't take it, so the caller can stop pretending
+    /// push works.
+    @discardableResult
+    func registerDevice(token deviceToken: String) async -> Bool {
+        guard let token, let url = URL(string: baseURL + "/api/push/devices") else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "token": deviceToken,
+            "transport": "apns",
+        ])
+        guard let (_, response) = try? await session.data(for: request) else { return false }
+        return (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    /// Drop this device's registration. Called BEFORE sign-out revokes the session, since
+    /// it needs that session to authenticate. Takes an explicit token+base so sign-out can
+    /// fire it against the session it is about to destroy.
+    static func deregisterDevice(
+        session: URLSession, baseURL: String, sessionToken: String, deviceToken: String
+    ) async {
+        guard let url = URL(string: baseURL + "/api/push/devices") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["token": deviceToken])
+        _ = try? await session.data(for: request)
+    }
+
     private func send(_ verb: [String: Any]) {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
@@ -257,13 +336,25 @@ final class LurkerClient {
     /// feels instant even when the server is slow or unreachable. The revoke uses the
     /// captured token and never touches this client again, so a subsequent sign-in that
     /// mints a fresh session can't be clobbered by an in-flight revoke.
-    func logout() {
+    ///
+    /// `deviceToken` (when push is registered) is deregistered FIRST, in the same task and
+    /// against the same about-to-die session — a device deregistration needs a live
+    /// session to authenticate, so it cannot happen after the revoke. Best-effort: if it
+    /// fails (offline, crash, force-quit) the token stays filed against this account, and
+    /// the server's native rebind rule is what stops that stranding whoever signs in next
+    /// on this phone (#490).
+    func logout(deviceToken: String? = nil) {
         let revokeToken = token
         let base = baseURL
         close()
         guard let revokeToken, let url = URL(string: base + "/api/auth/logout") else { return }
         let session = self.session
         Task {
+            if let deviceToken {
+                await Self.deregisterDevice(
+                    session: session, baseURL: base, sessionToken: revokeToken, deviceToken: deviceToken
+                )
+            }
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
