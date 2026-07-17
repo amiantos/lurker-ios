@@ -82,15 +82,61 @@ public final class ChatViewModel {
 
     /// The deliberate sign-out. Local teardown is immediate — the client revokes
     /// server-side in the background — so the bounce to sign-in never waits on the network.
+    ///
+    /// The device token goes with it: this phone must stop receiving the departing user's
+    /// DMs. Handed to the client rather than deregistered here, because it has to happen
+    /// against the session being revoked and therefore before the revoke lands (#490).
     public func logout() {
         cancelReconnect()
-        client.logout()
+        client.logout(deviceToken: deviceToken)
+        deviceToken = nil
+        // The next sign-in may be against a different server, whose answer differs.
+        apnsSupported = nil
         sessions.clear()
         store.reset()
         loadingOlder.removeAll()
         lastMarked.removeAll()
         statusSubject.value = nil
         sessionSubject.value = .loggedOut
+    }
+
+    // MARK: - Push (#490)
+
+    /// This install's APNs device token, once the OS has issued one. Held so sign-out can
+    /// deregister it, and so a re-register after reconnect doesn't need the app layer to
+    /// remember.
+    private var deviceToken: String?
+
+    /// Cached answer to "does this server speak APNs". Fixed for a given server, and the
+    /// question is asked on every activation — without this that's an HTTP round trip every
+    /// time the user opens the app, to re-learn something that cannot have changed.
+    /// Only a real answer is cached: a failed ask stays unknown and is retried.
+    private var apnsSupported: Bool?
+
+    /// Does this server speak APNs at all? A self-hosted server holds no Apple key and
+    /// says so via `/api/push/config`, in which case asking the user for notification
+    /// permission would be a lie — we'd get the grant and never deliver anything.
+    ///
+    /// `nil` means we couldn't ask. Deliberately NOT folded into `false`: the two are one
+    /// wifi blip apart and would read identically at the call site, so collapsing them
+    /// makes a transient failure report a permanent fact about the server's configuration
+    /// — and sends whoever reads that line off auditing env vars on a box that was fine.
+    /// Only a real answer is cached, so an unreachable server is asked again next time.
+    public func serverSupportsAPNs() async -> Bool? {
+        if let apnsSupported { return apnsSupported }
+        guard let transports = await client.pushTransports() else { return nil }
+        let supported = transports.contains("apns")
+        apnsSupported = supported
+        return supported
+    }
+
+    /// Hand the OS-issued device token to the server. Idempotent — iOS re-issues the same
+    /// token on most launches, and the server upserts.
+    @discardableResult
+    public func registerPushDevice(token: String) async -> Bool {
+        deviceToken = token
+        guard session == .loggedIn else { return false }
+        return await client.registerDevice(token: token)
     }
 
     public func openBuffer(_ key: BufferKey) {
@@ -155,6 +201,11 @@ public final class ChatViewModel {
     public func enterForeground() {
         isForeground = true
         guard session == .loggedIn else { return }
+        // Tell the server we're looking, so it stops pushing (#490). Sent before the
+        // reconnect check below because the common case is a LIVE socket — we're back and
+        // nothing needs reopening — and that path returns early. A new socket re-asserts
+        // presence itself, so sending here too is at worst a duplicate the server folds.
+        client.setPresence(true)
         let stale = backgroundedAt.map { Date().timeIntervalSince($0) > Self.staleAfter } ?? false
         if store.state.connection == .connected, !stale { return }
         reconnectAttempt = 0
@@ -163,9 +214,25 @@ public final class ChatViewModel {
         doReconnect(force: true)
     }
 
-    public func enterBackground() {
+    /// `onFlush` fires once the presence frame is on the wire — the app holds a
+    /// background-task assertion until then, because this frame is sent in the one window
+    /// where iOS is actively trying to suspend us. Always called, including when there was
+    /// nothing to send, so the caller can't leak the assertion.
+    public func enterBackground(onFlush: (@Sendable () -> Void)? = nil) {
         isForeground = false
         backgroundedAt = Date()
+        // The moment that makes push work: until the server hears this it believes a
+        // client is watching and suppresses every notification. The socket usually
+        // survives backgrounding for a while, so waiting for it to drop would mean up to
+        // ~60s of silence (the server pings every 30s and reaps on the second miss).
+        //
+        // Not covered here: a force-quit or a tunnel, where nothing gets sent and that
+        // reaper IS the backstop. That gap is real and known — see #490.
+        guard session == .loggedIn else {
+            onFlush?()
+            return
+        }
+        client.setPresence(false, onFlush: onFlush)
     }
 
     /// The OS's network path came or went. Fed in from the app (which owns the
