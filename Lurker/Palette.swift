@@ -28,7 +28,11 @@ enum Palette {
     /// stays legible against both the system background and, later, anything behind glass.
     static let incomingBubble = UIColor.secondarySystemFill
 
-    /// Our own bubble. Tint, like every messenger, so the "who said this" axis reads
-    /// without needing a nick label on our own lines.
-    static let outgoingBubble = UIColor.tintColor
+    /// Our own bubble. A neutral gray clearly separated from the incoming fill rather than the
+    /// accent tint — a colored fill fought the in-body nick colors (a palette nick on the
+    /// accent was low-contrast or invisible). `.systemGray4` sits a couple steps off the
+    /// incoming `.secondarySystemFill`, so it reads as the more solid gray in both themes
+    /// (lighter than the near-black incoming in dark, darker than the light incoming in light)
+    /// and the trailing side confirms the line is ours. `.systemFill` was too close to tell.
+    static let outgoingBubble = UIColor.systemGray4
 }
