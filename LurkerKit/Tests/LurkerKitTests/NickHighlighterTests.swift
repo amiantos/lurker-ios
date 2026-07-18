@@ -80,7 +80,11 @@ final class NickPaletteTests: XCTestCase {
 
     func testEveryLightHexParses() {
         for hex in IRCPalette.nickLight + IRCPalette.mircLight.compactMap({ $0 }) {
-            XCTAssertTrue(hex.hasPrefix("#") && hex.count == 7, "malformed light hex: \(hex)")
+            let digits = hex.dropFirst()
+            XCTAssertTrue(
+                hex.hasPrefix("#") && digits.count == 6 && digits.allSatisfy(\.isHexDigit),
+                "malformed light hex: \(hex)"
+            )
         }
     }
 }

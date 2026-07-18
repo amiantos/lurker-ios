@@ -34,8 +34,10 @@ public struct NickHighlighter {
         regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 
-    /// Whether this highlighter can ever match — false when there are no known nicks, so the
-    /// caller can skip the work entirely.
+    /// Whether this highlighter can never produce a match, so the caller can skip the pass.
+    /// True when there are no candidate nicks — and also, defensively, if the alternation
+    /// couldn't be compiled; it doesn't distinguish the two, since either way there's nothing
+    /// to color.
     public var isEmpty: Bool { regex == nil }
 
     /// The ranges in `string` that name a known nick, in order. Empty when nothing matches.
