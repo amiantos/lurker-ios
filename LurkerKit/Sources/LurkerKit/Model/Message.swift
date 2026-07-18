@@ -72,9 +72,13 @@ public struct Message: Equatable, Sendable {
 
     /// Whether this event has anything to show.
     ///
-    /// An activity line (join/part/nick/mode/…) synthesizes its body from structured
-    /// fields — a join carries *no* `text` at all, yet renders "alice joined" — so it is
-    /// always renderable regardless of `text`.
+    /// An activity line (join/part/nick/mode/…) synthesizes its body from structured fields
+    /// — a join carries *no* `text` at all, yet renders "alice joined" — so its renderability
+    /// is whether the fields its line is built from are present, not whether `text` is. A
+    /// `nick` with no `newNick` or a `mode` with neither a change list nor text has nothing
+    /// to say: rendering it would produce a placeholder ("…is now someone", "chan set "), and
+    /// it would seed consolidation with an empty-nick identity. Those are filtered here rather
+    /// than papered over downstream.
     ///
     /// Everything else draws its body from `text`, so an event with no text is a blank row.
     /// The server streams state-only events to a buffer alongside its log lines — a
@@ -84,9 +88,22 @@ public struct Message: Equatable, Sendable {
     /// bubble. The web client either folds them into state or filters them; this is how
     /// the client keeps them off screen without modeling every one.
     public var isRenderable: Bool {
-        if type.isActivity { return true }
-        return !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        switch type {
+        // Built from the actor nick; a reason/topic is optional.
+        case .join, .part, .quit, .topic: hasNick
+        // Both ends of the rename are needed to say "alice is now bob".
+        case .nick: hasNick && !(newNick ?? "").isEmpty
+        case .kick: hasNick && !(kicked ?? "").isEmpty
+        case .invite: hasNick && !(invited ?? "").isEmpty
+        // A structured change list, or the raw mode string as a fallback.
+        case .mode: !modes.isEmpty || hasText
+        // Everything else draws its body from `text`.
+        default: hasText
+        }
     }
+
+    private var hasNick: Bool { !(nick ?? "").isEmpty }
+    private var hasText: Bool { !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }
 
 /// One entry from a `mode` event's change list, e.g. `+o` on `alice`. `param` is nil for

@@ -71,6 +71,26 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertTrue(join.isRenderable, "a text-less join still renders")
     }
 
+    /// An activity event with none of the fields its line is built from has nothing to
+    /// render, and would seed consolidation with an empty-nick identity — so it's filtered,
+    /// not papered over with placeholder text.
+    func testActivityWithoutItsRequiredFieldsIsNotRenderable() {
+        XCTAssertFalse(Message(id: 1, type: .join, nick: nil, text: nil).isRenderable, "join needs a nick")
+        XCTAssertFalse(
+            Message(id: 2, type: .nick, nick: "alice", text: nil, newNick: nil).isRenderable,
+            "a rename needs the new nick"
+        )
+        XCTAssertFalse(
+            Message(id: 3, type: .mode, nick: "chan", text: nil, modes: []).isRenderable,
+            "a mode needs a change list or raw text"
+        )
+        // But a mode with only the raw string (no structured list) still renders.
+        XCTAssertTrue(Message(id: 4, type: .mode, nick: "chan", text: "+nt", modes: []).isRenderable)
+        XCTAssertTrue(
+            Message(id: 5, type: .nick, nick: "alice", text: nil, newNick: "alice_afk").isRenderable
+        )
+    }
+
 
     // MARK: - Severity rides `level`, not `type`
 
