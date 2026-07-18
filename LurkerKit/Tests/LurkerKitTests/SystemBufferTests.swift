@@ -18,15 +18,21 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertFalse(EventType.system.isSpeech, "the type that IS the system buffer is not speech")
     }
 
-    func testChannelsAndDmsStillRenderOnlySpeech() {
-        // Deliberately no longer includes `.server` — lumping it in with conversations is
-        // what hid the entire server log. See below.
+    func testChannelsAndDmsRenderSpeechAndActivity() {
+        // A channel shows the conversation *and* its structural traffic — joins, modes, and
+        // the rest — which consolidate rather than spam (see ConsolidationTests). What it
+        // never carries is the app/server-scoped `system`/`motd` or the unmodeled `.other`
+        // state noise (usermode/lag/peer-presence), so those stay filtered out.
         for kind in [BufferKind.channel, .dm] {
             XCTAssertTrue(kind.renders(.message), "\(kind)")
             XCTAssertTrue(kind.renders(.action), "\(kind)")
             XCTAssertTrue(kind.renders(.notice), "\(kind)")
-            XCTAssertFalse(kind.renders(.join), "\(kind)")
+            for activity in [EventType.join, .part, .quit, .nick, .kick, .mode, .topic, .invite] {
+                XCTAssertTrue(kind.renders(activity), "\(kind) should render \(activity)")
+            }
             XCTAssertFalse(kind.renders(.system), "\(kind)")
+            XCTAssertFalse(kind.renders(.motd), "\(kind)")
+            XCTAssertFalse(kind.renders(.other), "\(kind)")
         }
     }
 
@@ -58,6 +64,31 @@ final class SystemBufferTests: XCTestCase {
 
         let motd = Message(id: 3, type: .motd, nick: nil, text: "- Welcome -")
         XCTAssertTrue(motd.isRenderable)
+
+        // An activity line is the exception: it synthesizes its body from structured fields,
+        // so a join renders "alice joined" despite carrying no `text` at all.
+        let join = Message(id: 4, type: .join, nick: "alice", text: nil)
+        XCTAssertTrue(join.isRenderable, "a text-less join still renders")
+    }
+
+    /// An activity event with none of the fields its line is built from has nothing to
+    /// render, and would seed consolidation with an empty-nick identity — so it's filtered,
+    /// not papered over with placeholder text.
+    func testActivityWithoutItsRequiredFieldsIsNotRenderable() {
+        XCTAssertFalse(Message(id: 1, type: .join, nick: nil, text: nil).isRenderable, "join needs a nick")
+        XCTAssertFalse(
+            Message(id: 2, type: .nick, nick: "alice", text: nil, newNick: nil).isRenderable,
+            "a rename needs the new nick"
+        )
+        XCTAssertFalse(
+            Message(id: 3, type: .mode, nick: "chan", text: nil, modes: []).isRenderable,
+            "a mode needs a change list or raw text"
+        )
+        // But a mode with only the raw string (no structured list) still renders.
+        XCTAssertTrue(Message(id: 4, type: .mode, nick: "chan", text: "+nt", modes: []).isRenderable)
+        XCTAssertTrue(
+            Message(id: 5, type: .nick, nick: "alice", text: nil, newNick: "alice_afk").isRenderable
+        )
     }
 
 

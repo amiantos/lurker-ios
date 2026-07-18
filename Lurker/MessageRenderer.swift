@@ -60,52 +60,194 @@ enum MessageRenderer {
 
     // MARK: - Full-width lines
 
-    /// A full-width line. Only actions reach this now — every other type renders as a
-    /// bubble (see `EventType.isBubble`) — so it renders the action and keeps a plain
-    /// fallback for the arm that no longer fires.
+    /// A full-width line. Two kinds reach it: an `action` (`/me`), and the structural
+    /// `isActivity` events — joins, parts, quits, nick changes, modes, kicks, topics,
+    /// invites. An action is tinted content; an activity line is muted narration with the
+    /// names it mentions in their nick colors.
     ///
     /// No timestamp. `LineCell` reserves a trailing gutter and the time slides into it on a
     /// drag, the same as a bubble; it used to be stamped inline down the left, which put a
     /// column of identical times beside a block of server text.
     static func render(_ message: Message) -> NSAttributedString {
         let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        let prefixText = NSMutableAttributedString()
-        let bodyText: NSAttributedString
+        return message.type == .action ? renderAction(message, base: base) : renderActivity(message, base: base)
+    }
 
-        if message.type == .action {
-            // An asterisk marker, then the actor's nick and what they did — the whole line
-            // in their color, italic. An action is content, not metadata: alice *did* this,
-            // so it's tinted like she said it. The tint is what separates it from a bubble.
-            let color = nickColor(message)
-            prefixText.append(asterisk(color: color, base: base))
-            prefixText.append(NSAttributedString(
-                string: " " + (message.nick ?? "*") + " ", attributes: [.font: base.italic, .foregroundColor: color]
-            ))
-            bodyText = body(message, base: base.italic, fallback: color)
-        } else {
-            // Unreachable while only actions are lines, but a line still has to render
-            // *something* if that split ever changes: the nick, then the body.
-            prefixText.append(NSAttributedString(
-                string: (message.nick ?? "*") + "  ",
-                attributes: [.font: base.bold, .foregroundColor: nickColor(message)]
-            ))
-            bodyText = body(message, base: base, fallback: .label)
-        }
+    /// "* alice waves" — an asterisk marker, then the actor and what they did, the whole
+    /// line in their color and italic. An action is content, not metadata: alice *did* this,
+    /// so it's tinted like she said it. The tint is what separates it from a bubble.
+    private static func renderAction(_ message: Message, base: UIFont) -> NSAttributedString {
+        let color = nickColor(message)
+        let prefixText = NSMutableAttributedString()
+        prefixText.append(asterisk(color: color, base: base))
+        prefixText.append(NSAttributedString(
+            string: " " + (message.nick ?? "*") + " ", attributes: [.font: base.italic, .foregroundColor: color]
+        ))
 
         let line = NSMutableAttributedString()
         line.append(prefixText)
-        line.append(bodyText)
+        line.append(body(message, base: base.italic, fallback: color))
 
         // Wrap continuation lines clear of the prefix rather than back under it — but capped
         // at a two-glyph column, so a long nick doesn't hang the wrap halfway across the
         // screen. The prefix is measured exactly (built as its own string) rather than found
         // by scanning the assembled line.
-        if prefixText.length > 0 {
-            let style = NSMutableParagraphStyle()
-            style.headIndent = min(ceil(prefixText.size().width), glyphColumnWidth(base))
-            line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
+        let style = NSMutableParagraphStyle()
+        style.headIndent = min(ceil(prefixText.size().width), glyphColumnWidth(base))
+        line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
+        return line
+    }
+
+    /// A structural line — "alice joined", "bob is now bob_afk", "chan set +o dave". The
+    /// actor and any nicks it names are colored; the connective words are muted, so the line
+    /// reads as narration about the room rather than something someone said in it.
+    private static func renderActivity(_ message: Message, base: UIFont) -> NSAttributedString {
+        let line = NSMutableAttributedString()
+        let actor = nickToken(message.nick, isSelf: message.isSelf, base: base)
+        switch message.type {
+        case .join:
+            line.append(actor)
+            line.append(muted(" joined", base: base))
+        case .part:
+            line.append(actor)
+            line.append(muted(" left", base: base))
+            appendReason(message.text, to: line, base: base)
+        case .quit:
+            line.append(actor)
+            line.append(muted(" quit", base: base))
+            appendReason(message.text, to: line, base: base)
+        case .nick:
+            line.append(actor)
+            line.append(muted(" is now ", base: base))
+            line.append(nickToken(message.newNick, isSelf: message.isSelf, base: base))
+        case .kick:
+            line.append(nickToken(message.kicked, base: base))
+            line.append(muted(" was kicked by ", base: base))
+            line.append(actor)
+            appendReason(message.text, to: line, base: base)
+        case .mode:
+            line.append(actor)
+            line.append(muted(" set ", base: base))
+            line.append(muted(modeDescription(message), base: base))
+        case .topic:
+            line.append(actor)
+            line.append(muted(" set the topic", base: base))
+            if let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                line.append(muted(": ", base: base))
+                line.append(body(message, base: base, fallback: .secondaryLabel))
+            }
+        case .invite:
+            line.append(actor)
+            line.append(muted(" invited ", base: base))
+            line.append(nickToken(message.invited, base: base))
+        default:
+            // render() only routes actions and activity types here, but a line still has to
+            // show *something* if that ever changes: the actor, then whatever text it has.
+            line.append(actor)
+            if let text = message.text, !text.isEmpty { line.append(muted(" " + text, base: base)) }
         }
         return line
+    }
+
+    /// A collapsed run — "alice, bob and 3 others joined; chan set +o dave". Nicks keep
+    /// their colors; the categories, connectives, and mode annotations are muted. Mirrors
+    /// how the web client colors its `NickRef`s and leaves the rest as meta text.
+    static func renderConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
+        let base = UIFont.preferredFont(forTextStyle: .subheadline)
+        var clauses = summary.groups.map { identityClause($0, base: base) }
+        clauses.append(contentsOf: summary.modeGroups.map { modeClause($0, base: base) })
+
+        let line = NSMutableAttributedString()
+        for (index, clause) in clauses.enumerated() {
+            if index > 0 { line.append(muted("; ", base: base)) }
+            line.append(clause)
+        }
+        return line
+    }
+
+    // MARK: - Line building blocks
+
+    /// A nick in its own color (or the tint, when it's you). Falls back to "someone" for the
+    /// nick-less event that shouldn't happen but mustn't render blank.
+    private static func nickToken(_ nick: String?, isSelf: Bool = false, base: UIFont) -> NSAttributedString {
+        let name = (nick?.isEmpty == false) ? nick! : "someone"
+        let color = isSelf ? UIColor.tintColor : hashedColor(nick ?? "")
+        return NSAttributedString(string: name, attributes: [.font: base, .foregroundColor: color])
+    }
+
+    private static func muted(_ text: String, base: UIFont) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: UIColor.secondaryLabel])
+    }
+
+    /// A part/quit reason in parentheses, or nothing when there isn't one.
+    private static func appendReason(_ text: String?, to line: NSMutableAttributedString, base: UIFont) {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        line.append(muted(" (" + text + ")", base: base))
+    }
+
+    /// The change list of a mode event as text — "+o alice", or "+o alice +nt". Prefers the
+    /// structured `modes` (so it stays clean); falls back to the raw `text` the server sends.
+    private static func modeDescription(_ message: Message) -> String {
+        guard !message.modes.isEmpty else { return message.text ?? "" }
+        return message.modes
+            .map { change in change.param.map { "\(change.mode) \($0)" } ?? change.mode }
+            .joined(separator: " ")
+    }
+
+    private static func identityClause(
+        _ group: ConsolidationSummary.IdentityGroup, base: UIFont
+    ) -> NSAttributedString {
+        let clause = NSMutableAttributedString()
+        for (index, entry) in group.visible.enumerated() {
+            if index > 0 {
+                // "and" before the final name only when the list isn't truncated; a
+                // truncated list ends "…, and N others" instead.
+                let isLast = index == group.visible.count - 1
+                clause.append(muted(isLast && group.hidden == 0 ? " and " : ", ", base: base))
+            }
+            clause.append(entryToken(entry, base: base))
+        }
+        if group.hidden > 0 {
+            clause.append(muted(", and \(group.hidden) other\(group.hidden == 1 ? "" : "s")", base: base))
+        }
+        clause.append(muted(verb(group.kind), base: base))
+        return clause
+    }
+
+    private static func entryToken(_ entry: ConsolidationSummary.Entry, base: UIFont) -> NSAttributedString {
+        switch entry {
+        case .nick(let nick):
+            return nickToken(nick, base: base)
+        case .renamed(let from, let to):
+            let token = NSMutableAttributedString()
+            token.append(nickToken(from, base: base))
+            token.append(muted(" → ", base: base))
+            token.append(nickToken(to, base: base))
+            return token
+        }
+    }
+
+    private static func modeClause(
+        _ mode: ConsolidationSummary.ModeSummary, base: UIFont
+    ) -> NSAttributedString {
+        let clause = NSMutableAttributedString()
+        clause.append(nickToken(mode.setter, base: base))
+        clause.append(muted(" set ", base: base))
+        let changes = mode.changes.map { change in
+            change.params.isEmpty ? change.mode : "\(change.mode) \(change.params.joined(separator: ", "))"
+        }
+        clause.append(muted(changes.joined(separator: ", "), base: base))
+        return clause
+    }
+
+    private static func verb(_ kind: ConsolidationSummary.IdentityGroup.Kind) -> String {
+        switch kind {
+        case .joined: " joined"
+        case .left: " left"
+        case .reconnected: " reconnected"
+        case .joinedAndLeft: " joined briefly"
+        case .renamed: "" // the → in the name conveys it
+        }
     }
 
     /// The width of a two-glyph prefix column at the current type size — the cap on how far

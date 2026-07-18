@@ -52,6 +52,34 @@ final class FrameParserTests: XCTestCase {
         XCTAssertTrue(message.matched)
     }
 
+    /// The server's `extractExtras` spreads one structured field onto each structural event
+    /// — `newNick` on nick, `kicked` on kick, `invited` on invite, `modes` on mode. The
+    /// renderer needs these to synthesize "bob is now bob_afk" etc., so the parser must lift
+    /// them off the flat frame.
+    func testStructuralEventsParseTheirExtraFields() {
+        guard case let .live(_, _, nick) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":1,"networkId":1,"target":"#lurker","type":"nick","nick":"bob","newNick":"bob_afk"}"##
+        ) else { return XCTFail("expected live nick event") }
+        XCTAssertEqual(nick.newNick, "bob_afk")
+
+        guard case let .live(_, _, kick) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":2,"networkId":1,"target":"#lurker","type":"kick","nick":"op","kicked":"troll","text":"bye"}"##
+        ) else { return XCTFail("expected live kick event") }
+        XCTAssertEqual(kick.kicked, "troll")
+
+        guard case let .live(_, _, invite) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":3,"networkId":1,"target":"#lurker","type":"invite","nick":"host","invited":"guest"}"##
+        ) else { return XCTFail("expected live invite event") }
+        XCTAssertEqual(invite.invited, "guest")
+
+        guard case let .live(_, _, mode) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":4,"networkId":1,"target":"#lurker","type":"mode","nick":"chan","text":"+o alice","modes":[{"mode":"+o","param":"alice"}]}"##
+        ) else { return XCTFail("expected live mode event") }
+        XCTAssertEqual(mode.modes.count, 1)
+        XCTAssertEqual(mode.modes.first?.mode, "+o")
+        XCTAssertEqual(mode.modes.first?.param, "alice")
+    }
+
     /// `channel-topic` rides `kind:"irc"` like an event, but it isn't one: no id, nothing
     /// to render, and its payload is in `topic` rather than `text`. Parsed as an event it
     /// would become an `.other` Message appended to the buffer with the topic in a field
