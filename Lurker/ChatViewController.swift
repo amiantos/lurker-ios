@@ -29,10 +29,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var titleButton: BufferTitleButton!
 
     /// A rendered row. A message is either dialogue (a bubble, carrying where it sits in
-    /// its run) or narration (a full-width line) — see `EventType.isBubble`.
+    /// its run) or narration (a full-width line) — see `EventType.isBubble`. A run of
+    /// consecutive membership churn collapses into a single `consolidated` summary line.
     private enum Row {
         case bubble(Message, RunPosition)
         case line(Message)
+        case consolidated(ConsolidationSummary)
         case unreadDivider
     }
 
@@ -196,6 +198,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom
         let oldContentHeight = tableView.contentSize.height
+        // Remember the line at the top of the viewport and exactly where it sits, *before*
+        // the rows change under us. If this turns out to be a history prepend, we put that
+        // same line back in the same place — which pins scroll position precisely, where the
+        // old "shift by the content-height delta" could only approximate it (off-screen rows
+        // self-size from an estimate, and consolidation can reshape the run at the boundary).
+        let anchor = wasNearBottom ? nil : topVisibleAnchor()
 
         messages = updated
         rows = buildRows(from: updated)
@@ -224,7 +232,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
-                tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
+                if let anchor, let index = rowIndex(containing: anchor.id) {
+                    // Put the anchored line back at the same screen offset it had before.
+                    let target = tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - anchor.offset
+                    tableView.contentOffset.y = target
+                } else {
+                    // No line to anchor to (or it vanished) — fall back to the height delta.
+                    tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
+                }
                 clampToContent()
             }
         } else {
@@ -304,36 +319,104 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
     }
 
-    /// Interleave the unread divider before the first message past the read boundary, and
-    /// work out where each message sits in its run. Only when there was a real read point
-    /// (`dividerAfterId > 0`) and something unread — a brand-new buffer with nothing
-    /// previously read shows no divider.
+    /// Turn the filtered message list into rows: collapse runs of membership churn into
+    /// summary lines, interleave the unread divider before the first message past the read
+    /// boundary, and work out where each surviving bubble sits in its run.
+    ///
+    /// The divider only shows when there was a real read point (`dividerAfterId > 0`) and
+    /// something unread — a brand-new buffer with nothing previously read shows none. It is
+    /// a hard break for *both* passes: consolidation must not span it (a run half-read and
+    /// half-new would hide the new arrivals inside a summary), and neither may a bubble run
+    /// (tightened corners across it would knit together the very messages it separates).
     private func buildRows(from messages: [Message]) -> [Row] {
-        // The divider is a hard run break: tightened corners across it would knit together
-        // the very messages it's there to separate.
         let boundary = dividerAfterId ?? 0
-        let dividerIndex = boundary > 0
+        let splitIndex = boundary > 0
             ? messages.firstIndex(where: { $0.id > boundary })
             : nil
 
-        func continuesRun(at index: Int) -> Bool {
-            guard index > 0, index != dividerIndex else { return false }
-            return MessageGrouping.continuesRun(messages[index], after: messages[index - 1])
-        }
+        // Consolidate each side of the divider independently so a run never straddles it.
+        let (before, after): ([Message], [Message]) = splitIndex.map {
+            (Array(messages[..<$0]), Array(messages[$0...]))
+        } ?? (messages, [])
 
-        var result: [Row] = []
-        for (index, message) in messages.enumerated() {
-            if index == dividerIndex { result.append(.unreadDivider) }
-            guard message.type.isBubble else {
-                result.append(.line(message))
-                continue
+        var rows: [Row] = []
+        func appendConsolidated(_ slice: [Message]) {
+            for row in Consolidation.consolidate(slice) {
+                switch row {
+                case .summary(let summary):
+                    rows.append(.consolidated(summary))
+                case .passthrough(let message):
+                    rows.append(message.type.isBubble ? .bubble(message, .solo) : .line(message))
+                }
             }
-            result.append(.bubble(message, RunPosition(
-                isFirst: !continuesRun(at: index),
-                isLast: index + 1 >= messages.count || !continuesRun(at: index + 1)
-            )))
         }
-        return result
+        appendConsolidated(before)
+        if splitIndex != nil { rows.append(.unreadDivider) }
+        appendConsolidated(after)
+
+        return withBubbleRuns(rows)
+    }
+
+    /// Second pass: fill in each bubble's `RunPosition` by looking at its neighbours. Only
+    /// consecutive bubble rows group; a line, a summary, or the divider between two bubbles
+    /// is a non-bubble neighbour and so breaks the run — exactly what we want.
+    private func withBubbleRuns(_ rows: [Row]) -> [Row] {
+        func bubble(at index: Int) -> Message? {
+            guard rows.indices.contains(index), case .bubble(let message, _) = rows[index] else { return nil }
+            return message
+        }
+        return rows.enumerated().map { index, row in
+            guard case .bubble(let message, _) = row else { return row }
+            let isFirst = !MessageGrouping.continuesRun(message, after: bubble(at: index - 1))
+            let isLast = bubble(at: index + 1).map { !MessageGrouping.continuesRun($0, after: message) } ?? true
+            return .bubble(message, RunPosition(isFirst: isFirst, isLast: isLast))
+        }
+    }
+
+    // MARK: - Scroll anchoring across a history prepend
+
+    /// The line at the top of the viewport and how far its top sits from the viewport's
+    /// top edge, captured from the *current* layout. Restoring both after a reload pins the
+    /// reading position, whatever the rows above re-estimate or re-consolidate to.
+    private func topVisibleAnchor() -> (id: Int, offset: CGFloat)? {
+        let viewportTop = tableView.contentOffset.y + tableView.adjustedContentInset.top
+        guard let visible = tableView.indexPathsForVisibleRows?.sorted() else { return nil }
+        for indexPath in visible {
+            guard rows.indices.contains(indexPath.row), let id = rowAnchorId(rows[indexPath.row]) else { continue }
+            let frame = tableView.rectForRow(at: indexPath)
+            // The first row still showing below the viewport top is the one being read.
+            if frame.maxY > viewportTop {
+                return (id, frame.minY - tableView.contentOffset.y)
+            }
+        }
+        return nil
+    }
+
+    /// A stable id to anchor a row by. A summary anchors on its *last* event, because a run
+    /// only ever grows upward as older history loads — so its bottom id doesn't move.
+    /// Ephemeral lines (id 0) can't be re-found after a reload, so they don't anchor.
+    private func rowAnchorId(_ row: Row) -> Int? {
+        let id: Int
+        switch row {
+        case .bubble(let message, _): id = message.id
+        case .line(let message): id = message.id
+        case .consolidated(let summary): id = summary.lastId
+        case .unreadDivider: return nil
+        }
+        return id > 0 ? id : nil
+    }
+
+    /// The row that now represents message `id` — its own row, or the summary whose span
+    /// covers it after a history page merged it into a consolidated run.
+    private func rowIndex(containing id: Int) -> Int? {
+        rows.firstIndex { row in
+            switch row {
+            case .bubble(let message, _): message.id == id
+            case .line(let message): message.id == id
+            case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
+            case .unreadDivider: false
+            }
+        }
     }
 
     /// Within ~80pt of the bottom — treated as "following the conversation".
@@ -728,9 +811,44 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return cell
         case .line(let message):
             let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            cell.configure(MessageRenderer.render(message), date: message.date)
+            // A `/me` action is conversation and keeps the tight default; a status line is
+            // narration and gets the block spacing that sets its run apart from the chat.
+            let spacing = message.type.isActivity ? statusBlockSpacing(at: indexPath.row) : (top: 4, bottom: 4)
+            cell.configure(MessageRenderer.render(message), date: message.date, topInset: spacing.top, bottomInset: spacing.bottom)
             cell.setReveal(reveal)
             return cell
+        case .consolidated(let summary):
+            // A collapsed run is a full-width meta line like any other activity line, so it
+            // rides the same cell — just rendered from the summary instead of one message.
+            let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
+            let spacing = statusBlockSpacing(at: indexPath.row)
+            cell.configure(MessageRenderer.renderConsolidation(summary), date: summary.date, topInset: spacing.top, bottomInset: spacing.bottom)
+            cell.setReveal(reveal)
+            return cell
+        }
+    }
+
+    /// Vertical padding for a status line, by where it sits in a run of consecutive status
+    /// rows. Like a bubble run, a status block opens a gap above its first line and below
+    /// its last, but sits tight internally — so a cluster of joins/modes/topics reads as one
+    /// block with air around it rather than as loose lines threaded through the conversation.
+    private func statusBlockSpacing(at index: Int) -> (top: CGFloat, bottom: CGFloat) {
+        let edge: CGFloat = 10, inner: CGFloat = 2
+        return (
+            top: isStatusRow(index - 1) ? inner : edge,
+            bottom: isStatusRow(index + 1) ? inner : edge
+        )
+    }
+
+    /// Whether the row at `index` is status narration — a consolidated summary or a
+    /// standalone activity line (a join, mode, topic, …), but *not* a `/me` action, which is
+    /// conversation and so breaks a status block rather than joining it.
+    private func isStatusRow(_ index: Int) -> Bool {
+        guard rows.indices.contains(index) else { return false }
+        switch rows[index] {
+        case .consolidated: return true
+        case .line(let message): return message.type.isActivity
+        case .bubble, .unreadDivider: return false
         }
     }
 

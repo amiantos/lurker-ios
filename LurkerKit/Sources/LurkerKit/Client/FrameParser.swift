@@ -177,7 +177,15 @@ enum FrameParser {
             // Gated like `level`, matching the server: `systemLineToEvent` is the only
             // producer of this field and only ever builds `type: "system"` events, so
             // reading it anywhere else would be inventing a meaning the wire doesn't have.
-            originNetworkId: type == .system ? event.intOrNull("originNetworkId") : nil
+            originNetworkId: type == .system ? event.intOrNull("originNetworkId") : nil,
+            // The server's `extractExtras` spreads these onto the event for exactly one
+            // type each — `newNick` on nick, `kicked` on kick, `invited` on invite, `modes`
+            // on mode. Reading them unconditionally is harmless (they're absent otherwise),
+            // and the renderer only reaches for the one its type implies.
+            newNick: event.stringOrNull("newNick"),
+            kicked: event.stringOrNull("kicked"),
+            invited: event.stringOrNull("invited"),
+            modes: event.objects("modes").map { ModeChange(mode: $0.string("mode"), param: $0.stringOrNull("param")) }
         )
     }
 }

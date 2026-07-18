@@ -121,8 +121,12 @@ public enum BufferKind: Sendable {
     /// This is per-kind and not a single global predicate because a buffer kind's content
     /// is not the same shape everywhere:
     ///
-    ///  - A **channel or DM** shows speech. The structural traffic (joins, modes) is noise
-    ///    against a conversation.
+    ///  - A **channel or DM** shows speech *and* its structural traffic — joins, parts,
+    ///    quits, nick changes, modes, kicks, topics, invites, and the odd inline error or
+    ///    encryption line. Consecutive membership churn collapses (see `Consolidation`), so
+    ///    showing it is signal, not noise. What a channel never carries is the app/server
+    ///    scoped `motd`/`system`, or the unmodeled `.other` state events (usermode, lag,
+    ///    peer-presence) that have no body — those are excluded here.
     ///  - The **system buffer**'s content is *entirely* `type: "system"` lines, which are
     ///    not speech — filtering it by `isSpeech` renders it permanently empty.
     ///  - A **server log** is a log: it shows everything. What the server actually sends
@@ -133,7 +137,11 @@ public enum BufferKind: Sendable {
         switch self {
         case .system: type == .system
         case .server: true
-        case .channel, .dm: type.isSpeech
+        case .channel, .dm:
+            switch type {
+            case .motd, .system, .other: false
+            default: true
+            }
         }
     }
 

@@ -18,15 +18,21 @@ final class SystemBufferTests: XCTestCase {
         XCTAssertFalse(EventType.system.isSpeech, "the type that IS the system buffer is not speech")
     }
 
-    func testChannelsAndDmsStillRenderOnlySpeech() {
-        // Deliberately no longer includes `.server` — lumping it in with conversations is
-        // what hid the entire server log. See below.
+    func testChannelsAndDmsRenderSpeechAndActivity() {
+        // A channel shows the conversation *and* its structural traffic — joins, modes, and
+        // the rest — which consolidate rather than spam (see ConsolidationTests). What it
+        // never carries is the app/server-scoped `system`/`motd` or the unmodeled `.other`
+        // state noise (usermode/lag/peer-presence), so those stay filtered out.
         for kind in [BufferKind.channel, .dm] {
             XCTAssertTrue(kind.renders(.message), "\(kind)")
             XCTAssertTrue(kind.renders(.action), "\(kind)")
             XCTAssertTrue(kind.renders(.notice), "\(kind)")
-            XCTAssertFalse(kind.renders(.join), "\(kind)")
+            for activity in [EventType.join, .part, .quit, .nick, .kick, .mode, .topic, .invite] {
+                XCTAssertTrue(kind.renders(activity), "\(kind) should render \(activity)")
+            }
             XCTAssertFalse(kind.renders(.system), "\(kind)")
+            XCTAssertFalse(kind.renders(.motd), "\(kind)")
+            XCTAssertFalse(kind.renders(.other), "\(kind)")
         }
     }
 
@@ -58,6 +64,11 @@ final class SystemBufferTests: XCTestCase {
 
         let motd = Message(id: 3, type: .motd, nick: nil, text: "- Welcome -")
         XCTAssertTrue(motd.isRenderable)
+
+        // An activity line is the exception: it synthesizes its body from structured fields,
+        // so a join renders "alice joined" despite carrying no `text` at all.
+        let join = Message(id: 4, type: .join, nick: "alice", text: nil)
+        XCTAssertTrue(join.isRenderable, "a text-less join still renders")
     }
 
 

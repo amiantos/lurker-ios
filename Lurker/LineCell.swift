@@ -73,7 +73,12 @@ final class LineCell: UITableViewCell, TimestampRevealing {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    func configure(_ attributed: NSAttributedString, date: Date?) {
+    /// `topInset`/`bottomInset` are set per row, not fixed, so a block of status lines can
+    /// open a gap above and below itself while staying tight internally — the same "run
+    /// reads as a block" rhythm `BubbleCell` uses. Callers that don't care (a `/me` action)
+    /// keep the conversational default.
+    func configure(_ attributed: NSAttributedString, date: Date?, topInset: CGFloat = 4, bottomInset: CGFloat = 4) {
+        messageText.textContainerInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 12)
         messageText.attributedText = attributed
         revealTime.text = MessageRenderer.timestamp(date)
         // VoiceOver has no drag to make, so the time is spoken as part of the line rather
