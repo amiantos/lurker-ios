@@ -127,7 +127,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
 
     /// `networkName` captions the lines that have no nick — a system line names the network
     /// it's about, server text names the server it came from.
-    func configure(_ message: Message, position: RunPosition, networkName: String? = nil) {
+    func configure(
+        _ message: Message, position: RunPosition, networkName: String? = nil,
+        highlighter: NickHighlighter? = nil
+    ) {
         let isSelf = message.isSelf
         column.alignment = isSelf ? .trailing : .leading
         slidesAside = isSelf
@@ -144,11 +147,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
 
         bubble.backgroundColor = isSelf ? Palette.outgoingBubble : Palette.incomingBubble
         bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
-        messageText.attributedText = MessageRenderer.renderBubble(message)
-        // On a tinted bubble the default link color is close to the fill; white keeps it
-        // readable, and the underline still marks it as a link.
+        messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
+        // Both bubbles are neutral now, so a link is the accent tint on either, underlined.
         messageText.linkTextAttributes = [
-            .foregroundColor: isSelf ? UIColor.white : UIColor.tintColor,
+            .foregroundColor: UIColor.tintColor,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
         ]
 

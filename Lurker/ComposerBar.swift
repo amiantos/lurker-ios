@@ -270,6 +270,9 @@ final class ComposerBar: UIView {
         if sendActive != hasText {
             sendActive = hasText
             sendGlass.effect = Self.glass(tint: hasText ? .tintColor : nil)
+            // White arrow on the accent tint when live, like Messages; back to `.label` on
+            // the clear glass when there's nothing to send.
+            sendButton.configuration?.baseForegroundColor = hasText ? .white : .label
         }
         placeholderLabel.isHidden = !textView.text.isEmpty
     }

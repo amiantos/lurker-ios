@@ -42,6 +42,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var rows: [Row] = [] // messages + the unread divider; what the table renders
     /// Network names, for labelling system lines with the network they're about.
     private var networks: [Int: Network] = [:]
+
+    /// Colors known nicks mentioned in message bodies. Rebuilt only when this buffer's
+    /// coloring set changes, since compiling the match regex is the costly part.
+    private var nickHighlighter = NickHighlighter(nicks: [])
+    private var highlighterNicks: [String] = []
     /// The read boundary, latched the first time the server tells us where it is and held
     /// fixed for the visit — the divider must not jump as we mark messages read live.
     ///
@@ -95,6 +100,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.separatorStyle = .none
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
+
+        // Nick and mIRC colors are trait-keyed and adapt in place when redrawn, but a `/me`
+        // marker is a baked image that can't — so on a light/dark switch, reconfigure the
+        // visible rows to rebuild those markers. Reconfigure, not reloadData: it keeps the
+        // scroll position instead of dropping the reader wherever a fresh reload lands.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.tableView.reconfigureRows(at: self.tableView.indexPathsForVisibleRows ?? [])
+        }
 
         composer.placeholder = "Message \(displayName)"
         composer.onSend = { [weak self] text in self?.send(text) }
@@ -174,6 +187,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         surface(viewModel.state.error)
     }
 
+    /// Rebuild the nick highlighter when this buffer's coloring set changes — the channel's
+    /// members (or the DM peer), minus our own nick, which a self-mention leaves in the body
+    /// color rather than a palette color, matching the web.
+    private func refreshHighlighter(_ state: ChatState) {
+        let ownNick = buffer.networkId.flatMap { networks[$0]?.nick }?.lowercased()
+        let candidates: [String]
+        switch buffer.kind {
+        case .channel: candidates = (state.members[buffer.key.id] ?? []).map(\.nick)
+        case .dm: candidates = [buffer.target]
+        default: candidates = []
+        }
+        let names = ownNick.map { own in candidates.filter { $0.lowercased() != own } } ?? candidates
+        guard names != highlighterNicks else { return }
+        highlighterNicks = names
+        nickHighlighter = NickHighlighter(nicks: names)
+    }
+
     /// What the pill and the composer call this buffer. The system buffer's connection
     /// state used to be spelled out here as the title text ("Connecting…"); it's the pill's
     /// light now.
@@ -183,6 +213,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func apply(_ state: ChatState) {
         networks = state.networks
+        refreshHighlighter(state)
         hydrateIfNeeded(state)
         // Latch the read boundary the first time the server tells us where it is, and
         // never again — marking messages read live must not move the divider under us.
@@ -805,7 +836,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return dividerCell()
         case .bubble(let message, let position):
             let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID) as! BubbleCell
-            cell.configure(message, position: position, networkName: networkName(for: message))
+            cell.configure(
+                message, position: position, networkName: networkName(for: message),
+                highlighter: nickHighlighter
+            )
             // Scrolled into view mid-drag: match the neighbors it's arriving next to.
             cell.setReveal(reveal)
             return cell
@@ -814,7 +848,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // A `/me` action is conversation and keeps the tight default; a status line is
             // narration and gets the block spacing that sets its run apart from the chat.
             let spacing = message.type.isActivity ? statusBlockSpacing(at: indexPath.row) : (top: 4, bottom: 4)
-            cell.configure(MessageRenderer.render(message), date: message.date, topInset: spacing.top, bottomInset: spacing.bottom)
+            cell.configure(MessageRenderer.render(message, traits: traitCollection), date: message.date, topInset: spacing.top, bottomInset: spacing.bottom)
             cell.setReveal(reveal)
             return cell
         case .consolidated(let summary):

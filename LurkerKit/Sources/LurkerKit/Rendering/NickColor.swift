@@ -11,11 +11,34 @@ public enum IRCPalette {
         "#ffd866", "#b3db82", "#78dce8", "#a0f1ff", "#7ba4ff", "#ff7494", nil, nil,
     ]
 
-    /// Per-nick colors (19), indexed by the weechat djb2 hash. All fixed hex.
+    /// Light-mode variants of `mirc`, same indices. Each chromatic slot is the light variant
+    /// of the same hex it maps to in `mirc` (all of which are drawn from `nick`), so a color
+    /// code and a nick that resolve to the same hue stay consistent. Theme slots stay `nil`.
+    public static let mircLight: [String?] = [
+        nil, nil, "#3163c0", "#5f9118", "#c40553", "#b52d55", "#7260b6", "#b95417",
+        "#a78500", "#688f2d", "#00919e", "#409ba9", "#4268c5", "#c12d5b", nil, nil,
+    ]
+
+    /// Per-nick colors (19), indexed by the weechat djb2 hash. All fixed hex. These are the
+    /// dark-mode variants — the web client's Monokai palette, matched exactly.
     public static let nick: [String] = [
         "#ff6188", "#fc9867", "#ffd866", "#a9dc76", "#78dce8", "#ab9df2", "#ed6c89",
         "#d4996e", "#f9d978", "#b3db82", "#91dae6", "#a99dec", "#ff7494", "#ffaf75",
         "#c4e29a", "#a0f1ff", "#b6aaff", "#7ba4ff", "#6799f3",
+    ]
+
+    /// Light-mode variants of `nick`, same order. The dark palette's pastels are tuned for a
+    /// dark canvas and wash out on a light one, so each is transformed in OKLCH: hue kept
+    /// exactly (so a nick's identity is unchanged), lightness compressed toward a legible band
+    /// (`L → 0.575 + (L−mean)·0.55`) rather than pinned — pinning would collapse the three
+    /// purples and two blues, which differ mostly in lightness, into near-duplicates. Chroma
+    /// held. Every entry clears WCAG's 3:1 large-text bar on the light canvas, which is the
+    /// right bar since nicks always render bold. Yellows unavoidably read as gold: a pure
+    /// yellow can't be both yellow and dark enough for a light background.
+    public static let nickLight: [String] = [
+        "#c40553", "#b95417", "#a78500", "#5f9118", "#00919e", "#7260b6", "#b52d55",
+        "#9a5f30", "#a68500", "#688f2d", "#3d8f9b", "#7061b1", "#c12d5b", "#b66621",
+        "#759247", "#409ba9", "#7767bd", "#4268c5", "#3163c0",
     ]
 }
 
