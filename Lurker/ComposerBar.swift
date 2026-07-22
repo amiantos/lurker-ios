@@ -37,6 +37,18 @@ final class ComposerBar: UIView {
         didSet { placeholderLabel.text = placeholder }
     }
 
+    /// Whether the paperclip shows. The system buffer composes commands, not messages —
+    /// there's nothing to attach — so it drops the pill and the field takes the width.
+    var showsAttach: Bool = true {
+        didSet {
+            guard showsAttach != oldValue else { return }
+            attachGlass.isHidden = !showsAttach
+            // Deactivate before activate, or the two leading constraints briefly conflict.
+            (showsAttach ? fieldFlushLeading : fieldAfterAttach)?.isActive = false
+            (showsAttach ? fieldAfterAttach : fieldFlushLeading)?.isActive = true
+        }
+    }
+
     private let container = UIVisualEffectView(effect: ComposerBar.containerEffect())
     private let attachGlass = UIVisualEffectView()
     private let fieldGlass = UIVisualEffectView()
@@ -56,19 +68,28 @@ final class ComposerBar: UIView {
     /// sits where the first typed character will, not merely somewhere near it.
     private static let textInset = UIEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
     /// The symbol size in the round buttons — small enough to read as an icon with air
-    /// around it, like Messages'.
-    private static let glyph = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+    /// around it, like Messages'. Internal because `JumpToLatestButton` draws its glyph
+    /// to the same metric, for the same reason it borrows `collapsedHeight`.
+    static let glyph = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
     /// The height of the collapsed field: exactly one line of body text plus its inset.
     /// Used as the field's floor *and* the round pills' size, so the empty bar and the
     /// one-line bar are the same height — otherwise the field would jump a couple of points
     /// the instant you typed, because a fixed floor never quite matches a real line.
-    private static var collapsedHeight: CGFloat {
+    ///
+    /// Internal rather than private: `JumpToLatestButton` floats directly above the send
+    /// button and matches its diameter through this — two circles a few points apart at
+    /// different sizes read as a mistake.
+    static var collapsedHeight: CGFloat {
         ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + textInset.top + textInset.bottom
     }
     private var textHeight: NSLayoutConstraint!
     /// The pills' width/height constraints, kept so a Dynamic Type change can resize them.
     private var pillSizeConstraints: [NSLayoutConstraint] = []
+    /// The field's two possible leading edges — beside the paperclip, or flush to the
+    /// container when `showsAttach` drops it. Exactly one is active at a time.
+    private var fieldAfterAttach: NSLayoutConstraint!
+    private var fieldFlushLeading: NSLayoutConstraint!
     /// Whether the send button is currently in its active (accent) state, so its glass
     /// effect is only rebuilt when that flips — not on every keystroke.
     private var sendActive: Bool?
@@ -96,7 +117,14 @@ final class ComposerBar: UIView {
         textView.adjustsFontForContentSizeCategory = true
         textView.textContainerInset = Self.textInset
         textView.textContainer.lineFragmentPadding = 0
-        textView.autocorrectionType = .no
+        // Correction on, capitalization off — the pairing the web client can't offer
+        // (Safari re-applies sentence caps whenever correction is on, which is why its
+        // settings couple the two; UIKit keeps them independent). IRC is lowercase-native
+        // — nicks, /commands, #channels — so forced caps mangle more than they fix, while
+        // correction still earns its keep in prose. `.default`, not `.yes`: the user's
+        // system-wide autocorrect preference stays the boss.
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .default
         textView.isScrollEnabled = false // until it hits the cap; see textViewDidChange
         textView.delegate = self
         textView.translatesAutoresizingMaskIntoConstraints = false
@@ -161,12 +189,17 @@ final class ComposerBar: UIView {
 
             fieldGlass.topAnchor.constraint(equalTo: content.topAnchor),
             fieldGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            fieldGlass.leadingAnchor.constraint(equalTo: attachGlass.trailingAnchor, constant: Self.gap),
 
             sendGlass.leadingAnchor.constraint(equalTo: fieldGlass.trailingAnchor, constant: Self.gap),
             sendGlass.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             sendGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
         ] + pillSizeConstraints)
+
+        fieldAfterAttach = fieldGlass.leadingAnchor.constraint(
+            equalTo: attachGlass.trailingAnchor, constant: Self.gap
+        )
+        fieldFlushLeading = fieldGlass.leadingAnchor.constraint(equalTo: content.leadingAnchor)
+        fieldAfterAttach.isActive = true
 
         // Keep the pills and the field's corner radius sized to one line as the text size
         // changes under us — without this the field's floor (recomputed live in

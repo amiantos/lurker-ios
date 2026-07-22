@@ -41,9 +41,12 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         // bubble edges rather than sitting a couple points inside them off its own inset.
         messageText.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 12)
         messageText.textContainer.lineFragmentPadding = 0
+        // Body-colored with a soft underline, matching the web's `--link` default and the
+        // bubbles' links (see BubbleCell) — the underline alone marks it.
         messageText.linkTextAttributes = [
-            .foregroundColor: UIColor.tintColor,
+            .foregroundColor: UIColor.label,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .underlineColor: UIColor.label.withAlphaComponent(0.4),
         ]
         messageText.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(messageText)

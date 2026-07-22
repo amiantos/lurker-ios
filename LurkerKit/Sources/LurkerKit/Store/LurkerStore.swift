@@ -82,6 +82,16 @@ final class LurkerStore {
 
     func clearError() { subject.value.error = nil }
 
+    /// Append a client-authored info line to a buffer — the app answering the user in
+    /// place, the web client's `localInfo`. Ephemeral by construction: id 0 never
+    /// persists, so resyncs and reloads drop it, exactly like the web's local lines.
+    func appendLocal(_ key: BufferKey, text: String) {
+        var next = subject.value
+        let line = Message(id: 0, type: .system, nick: nil, text: text, level: .info)
+        next.messages[key.id] = (next.messages[key.id] ?? []) + [line]
+        subject.value = next
+    }
+
     /// Mirror the OS's view of network reachability into the state. Not a `ServerFrame`
     /// because it isn't one — it comes from the device, not the server — so it sits
     /// alongside the other direct mutations rather than lying in `reduce`.
