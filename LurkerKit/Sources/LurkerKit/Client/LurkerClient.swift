@@ -49,7 +49,13 @@ final class LurkerClient {
 
     /// Exchange a password for a session token against `backend`.
     func login(backend: Backend, server: String, identifier: String, password: String) async -> LoginResult {
-        baseURL = Self.normalize(server)
+        baseURL = ServerAddress.normalize(server)
+        // The transport policy runs before any request so its verdict is sign-in copy,
+        // not a failed connect (#29). ATS would block a non-local http load anyway;
+        // this is the same rule stated legibly.
+        if let reason = ServerAddress.rejection(of: baseURL) {
+            return .failure(message: reason)
+        }
         guard let url = URL(string: baseURL + backend.loginPath) else {
             return .failure(message: "That server URL doesn't look right.")
         }
@@ -81,6 +87,13 @@ final class LurkerClient {
             token = minted
             return .success(token: minted)
         } catch {
+            // Backstop for the policy above: if ATS blocks a load our check let through
+            // (the two definitions of "local" should never drift, but Apple's can move),
+            // say what actually happened instead of surfacing NSURLError -1022's prose.
+            if (error as? URLError)?.code == .appTransportSecurityRequiresSecureConnection {
+                return .failure(message:
+                    "iOS blocked the connection because this server isn't using HTTPS.")
+            }
             return .failure(message: "Sign-in failed: \(error.localizedDescription)")
         }
     }
@@ -91,7 +104,7 @@ final class LurkerClient {
     /// If the token is stale, `start()`'s first authenticated call surfaces the 401 as
     /// `.unauthorized`.
     func restore(server: String, token: String) {
-        baseURL = Self.normalize(server)
+        baseURL = ServerAddress.normalize(server)
         self.token = token
     }
 
@@ -417,9 +430,4 @@ final class LurkerClient {
         base.replacingOccurrences(of: "^http", with: "ws", options: .regularExpression)
     }
 
-    private static func normalize(_ server: String) -> String {
-        var trimmed = server.trimmingCharacters(in: .whitespacesAndNewlines)
-        while trimmed.hasSuffix("/") { trimmed.removeLast() }
-        return trimmed
-    }
 }
