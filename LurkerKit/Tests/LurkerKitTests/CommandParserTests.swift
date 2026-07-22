@@ -39,6 +39,11 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(parse("hello", networkId: nil, target: ":system:"), .notCommand)
     }
 
+    func testBareSlashNudgesRatherThanEmittingAnEmptyRawLine() {
+        // A lone `/` must not reach the raw fallback and put "" on the wire.
+        guard case .info = effects("/").first else { return XCTFail("expected a nudge") }
+    }
+
     func testEscapedMessageInSystemBufferHasNowhereToGo() {
         // `//x` in the system buffer nudges rather than silently dropping (no network to send to).
         XCTAssertEqual(parse("//hello", networkId: nil, target: ":system:"), .notCommand)
@@ -180,6 +185,22 @@ final class CommandParserTests: XCTestCase {
     func testInviteDefaultsChannelToCurrentBuffer() {
         XCTAssertEqual(effects("/invite bob"), [.raw(line: "INVITE bob #chan")])
         XCTAssertEqual(effects("/invite bob #other"), [.raw(line: "INVITE bob #other")])
+    }
+
+    func testInviteOutsideAChannelIsRefused() {
+        // A bare /invite from a DM would otherwise emit "INVITE bob <peer-nick>".
+        guard case .info = effects("/invite bob", target: "alice").first else {
+            return XCTFail("expected a channel-context note")
+        }
+    }
+
+    func testCommandsRecognizeAmpersandChannels() {
+        // `&` is a valid channel sigil (BufferKind.of), so it must be honored as an explicit
+        // channel argument, not folded into a nick/reason/topic.
+        XCTAssertEqual(effects("/kick &local bob"), [.raw(line: "KICK &local bob")])
+        XCTAssertEqual(effects("/topic &local hi"), [.raw(line: "TOPIC &local :hi")])
+        XCTAssertEqual(effects("/op &local alice"), [.raw(line: "MODE &local +o alice")])
+        XCTAssertEqual(effects("/part &local bye"), [.part(channel: "&local", reason: "bye")])
     }
 
     // MARK: - Moderation

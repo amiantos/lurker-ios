@@ -53,6 +53,12 @@ public enum CommandParser {
         networkId: Int?,
         target: String
     ) -> [CommandEffect] {
+        // A lone `/` (or `/ `) has no verb — nudge rather than fall through to the raw
+        // default, which would put an empty line on the wire.
+        guard !verb.isEmpty else {
+            return [.info("Type a command after the slash — /commands lists what you can run.")]
+        }
+
         // Network-agnostic block: these run whether or not a network is active, so the
         // system buffer can issue them.
         switch verb {
@@ -112,12 +118,12 @@ public enum CommandParser {
             return [.join(channel: ChannelName.ensurePrefix(first), key: key)]
         case "part", "leave":
             // `/part [reason]` leaves the current channel; `/part <#chan> [reason]` leaves a
-            // named one. Consistent with /kick and /topic: a leading `#` is a channel,
-            // anything else is a parting reason for the current channel — so `/part heading
-            // out` says goodbye here rather than trying to part a channel named "heading".
+            // named one. Consistent with /kick and /topic: a leading channel sigil (`#`/`&`)
+            // marks a channel, anything else is a parting reason for the current channel — so
+            // `/part heading out` says goodbye here rather than parting a channel "heading".
             let partChannel: String?
             let partReason: String
-            if let first = rest.first, first.hasPrefix("#") {
+            if let first = rest.first, isChannelTarget(first) {
                 partChannel = first
                 partReason = body(after: first, in: argLine)
             } else {
@@ -144,7 +150,7 @@ public enum CommandParser {
             // `#chan` retargets. Interior spacing of the body is preserved by slicing.
             let channel: String
             let bodyText: String
-            if let first = rest.first, first.hasPrefix("#") {
+            if let first = rest.first, isChannelTarget(first) {
                 channel = first
                 bodyText = body(after: first, in: argLine)
             } else {
@@ -166,7 +172,12 @@ public enum CommandParser {
             return [.raw(line: "WHOIS \(who)")]
         case "invite":
             guard let who = rest.first else { return [.info("usage: /invite <nick> [channel]")] }
-            let channel = rest.count > 1 ? rest[1] : target
+            // The channel defaults to the current buffer, but only if that's a channel — an
+            // /invite from a DM with no explicit channel would otherwise aim at the peer nick.
+            let channel = rest.count > 1 ? rest[1] : (isChannelTarget(target) ? target : nil)
+            guard let channel else {
+                return [.info("usage: /invite <nick> [channel] — no channel context")]
+            }
             return [.raw(line: "INVITE \(who) \(channel)")]
 
         // Moderation
@@ -175,7 +186,7 @@ public enum CommandParser {
             let channel: String?
             let who: String?
             let reason: String
-            if let first = rest.first, first.hasPrefix("#") {
+            if let first = rest.first, isChannelTarget(first) {
                 channel = first
                 who = rest.count > 1 ? rest[1] : nil
                 reason = rest.dropFirst(2).joined(separator: " ")
@@ -243,7 +254,7 @@ public enum CommandParser {
     // MARK: - Helpers
 
     /// The mode-shortcut family (`/op`, `/ban`, …): one mode letter repeated once per target,
-    /// against a leading `#channel` arg or the current channel buffer. `/op a b` →
+    /// against a leading channel arg (`#`/`&`) or the current channel buffer. `/op a b` →
     /// `MODE #chan +oo a b`. Refuses outside a channel, rather than aiming a channel mode at
     /// a DM peer.
     private static func modeShortcut(
@@ -255,7 +266,7 @@ public enum CommandParser {
     ) -> [CommandEffect] {
         var channel: String? = isChannelTarget(target) ? target : nil
         var args = rest
-        if let first = args.first, first.hasPrefix("#") {
+        if let first = args.first, isChannelTarget(first) {
             channel = first
             args.removeFirst()
         }

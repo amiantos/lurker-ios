@@ -34,10 +34,12 @@ struct Suggestion: Equatable {
     }
 }
 
-/// The completion suggestions: up to four options floating above the composer as separate
-/// glass pills, best candidate at the bottom — likelihood equals proximity to the field, so
-/// the pill you almost certainly want is the shortest reach. (Discord stacks its panel the
-/// other way, but a panel has a selection cursor; loose pills don't.) Discrete pills rather
+/// The completion suggestions: the caller's best few candidates floating above the composer
+/// as separate glass pills, best candidate at the bottom — likelihood equals proximity to
+/// the field, so the pill you almost certainly want is the shortest reach. (Discord stacks
+/// its panel the other way, but a panel has a selection cursor; loose pills don't.) How many
+/// there are is the caller's call: nicks cap at four, command chips run a little longer.
+/// Discrete pills rather
 /// than one panel — everything down at the composer is already a family of floating glass
 /// capsules, and a flat list box would be the one flat thing among them.
 ///
