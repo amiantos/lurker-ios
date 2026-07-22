@@ -9,9 +9,12 @@ import UIKit
 /// itself (who, where, what), so you can catch up on mentions without opening each channel;
 /// tapping one jumps to that conversation.
 ///
-/// Styled the way Mail / Notification Center do a cross-conversation feed: inset-grouped
-/// cards, day-grouped sections, and a large title. Each row follows the web client's own
-/// shape — a `Network/#channel` + time metadata bar, then the match as `<nick> message`.
+/// Rendered in the app's own message-list language rather than a separate list style: each
+/// hit is a real `BubbleCell` (the message list's cell), so a highlight reads as a slice of
+/// the conversation — leading/filled for others, trailing for you, nicks and mIRC colors
+/// intact. Grouped by channel+day like iMessage search (`Network/#channel` left, day right),
+/// with a chevron for the jump. The highlight wash is suppressed here: every row matched, so
+/// it would only be a monotone wall — this is exactly the shape search and bookmarks reuse.
 ///
 /// Highlights are a REST read (`GET /api/highlights`), paginated by a `before` cursor rather
 /// than streamed — so this fetches on open and pages as you scroll, with pull-to-refresh to
@@ -25,10 +28,13 @@ final class HighlightsViewController: UITableViewController {
     /// exactly like the buffer switcher's `onSelect`.
     var onSelect: ((HighlightItem) -> Void)?
 
-    /// All rows, newest-first as the server returns them. `sections` is the day-bucketed
+    /// All rows, newest-first as the server returns them. `sections` is the channel+day-grouped
     /// view of this that the table renders; `items` stays flat so pagination just appends.
     private var items: [HighlightItem] = []
     private var sections: [Section] = []
+    /// The flat `items` index of each section's first row, so `willDisplay` can page in off the
+    /// global position regardless of how the channel+day runs happen to be sized.
+    private var sectionOffsets: [Int] = []
 
     /// The next-page cursor from the last response; nil once the server has no more.
     private var nextBefore: Int?
@@ -44,14 +50,22 @@ final class HighlightsViewController: UITableViewController {
     /// list extends before they hit the end rather than stalling on it.
     private static let prefetchThreshold = 8
 
+    /// One channel+day run: a header (`Network/#channel` + day) over the consecutive matches
+    /// that share it. Identity fields fold case and start-of-day so a run breaks exactly when
+    /// the channel or the day changes; `items` is `var` so the run can accrete as it's built.
     private struct Section {
-        let title: String
-        let items: [HighlightItem]
+        let networkId: Int?
+        let foldedTarget: String
+        let dayStart: Date?
+        let networkName: String?
+        let target: String
+        let dayLabel: String
+        var items: [HighlightItem]
     }
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        super.init(style: .insetGrouped)
+        super.init(style: .plain)
     }
 
     @available(*, unavailable)
@@ -64,9 +78,13 @@ final class HighlightsViewController: UITableViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
-        tableView.register(HighlightCell.self, forCellReuseIdentifier: HighlightCell.reuseID)
+        tableView.register(BubbleCell.self, forCellReuseIdentifier: BubbleCell.reuseID)
+        tableView.register(HighlightSectionHeader.self, forHeaderFooterViewReuseIdentifier: HighlightSectionHeader.reuseID)
         tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 84
+        tableView.estimatedRowHeight = 60
+        // The bubbles are the visual units; a full-width separator between them would read as
+        // a settings table, not a feed. The section headers carry the structure.
+        tableView.separatorStyle = .none
 
         refreshControl = UIRefreshControl()
         refreshControl?.addAction(UIAction { [weak self] _ in self?.reload() }, for: .valueChanged)
@@ -139,40 +157,67 @@ final class HighlightsViewController: UITableViewController {
         nextBefore = page.nextBefore
         reachedEnd = !page.hasMore
         rebuildSections()
-        // Day-bucketed sections mean an appended page can extend the last section *or* open
-        // new ones, so a targeted insert would have to reconcile section moves; a reload is
+        // Channel+day runs mean an appended page can extend the last section *or* open new
+        // ones, so a targeted insert would have to reconcile section moves; a reload is
         // simpler and, since the added rows are below the fold, invisible.
         tableView.reloadData()
     }
 
-    // MARK: - Sections (day buckets)
+    // MARK: - Sections (channel + day runs)
 
-    /// Bucket the flat, newest-first list into the day groups Mail and Notification Center
-    /// use. Items arrive newest-first and each bucket is strictly older than the last, so a
-    /// single pass keeps both the sections and the rows within them in order.
+    /// Group the flat, newest-first list into channel+day runs — a new section begins whenever
+    /// the channel or the local calendar day changes from the previous row, so a run of matches
+    /// in one channel on one day sits under a single header (iMessage's grouping, order kept).
     private func rebuildSections() {
         let calendar = Calendar.current
         let now = Date()
-        var buckets: [[HighlightItem]] = Array(repeating: [], count: Self.bucketTitles.count)
-        for item in items { buckets[Self.bucket(item.message.date, calendar: calendar, now: now)].append(item) }
-        sections = zip(Self.bucketTitles, buckets).compactMap { title, rows in
-            rows.isEmpty ? nil : Section(title: title, items: rows)
+        var built: [Section] = []
+        var offsets: [Int] = []
+        for (index, item) in items.enumerated() {
+            let dayStart = item.message.date.map { calendar.startOfDay(for: $0) }
+            let folded = item.target.lowercased()
+            if var last = built.last,
+               last.networkId == item.networkId, last.foldedTarget == folded, last.dayStart == dayStart {
+                last.items.append(item)
+                built[built.count - 1] = last
+            } else {
+                offsets.append(index)
+                built.append(Section(
+                    networkId: item.networkId,
+                    foldedTarget: folded,
+                    dayStart: dayStart,
+                    networkName: networkName(for: item),
+                    target: item.target,
+                    dayLabel: Self.dayLabel(dayStart, now: now, calendar: calendar),
+                    items: [item]
+                ))
+            }
         }
+        sections = built
+        sectionOffsets = offsets
     }
 
-    private static let bucketTitles = ["Today", "Yesterday", "Previous 7 Days", "Previous 30 Days", "Earlier"]
-
-    /// The index into `bucketTitles` for a date. A missing date (an event with no readable
-    /// time) sinks to "Earlier" rather than claiming to be recent.
-    private static func bucket(_ date: Date?, calendar: Calendar, now: Date) -> Int {
-        guard let date else { return bucketTitles.count - 1 }
-        if calendar.isDateInToday(date) { return 0 }
-        if calendar.isDateInYesterday(date) { return 1 }
-        let days = calendar.dateComponents([.day], from: date, to: now).day ?? .max
-        if days < 7 { return 2 }
-        if days < 30 { return 3 }
-        return 4
+    /// Today / Yesterday / a short date for the header's trailing day stamp. Nil-dated events
+    /// (no readable time) fall to "Earlier". Bucketed in the device's local time zone.
+    private static func dayLabel(_ dayStart: Date?, now: Date, calendar: Calendar) -> String {
+        guard let day = dayStart else { return "Earlier" }
+        if calendar.isDateInToday(day) { return "Today" }
+        if calendar.isDateInYesterday(day) { return "Yesterday" }
+        let formatter = calendar.isDate(day, equalTo: now, toGranularity: .year) ? sameYearFormatter : fullDateFormatter
+        return formatter.string(from: day)
     }
+
+    private static let sameYearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter
+    }()
+
+    private static let fullDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMdyyyy")
+        return formatter
+    }()
 
     // MARK: - Placeholder
 
@@ -212,25 +257,36 @@ final class HighlightsViewController: UITableViewController {
 
     override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
 
-    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        sections[section].title
-    }
-
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         sections[section].items.count
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: HighlightCell.reuseID, for: indexPath) as! HighlightCell
+        let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID, for: indexPath) as! BubbleCell
         let item = sections[indexPath.section].items[indexPath.row]
-        cell.configure(item, networkName: networkName(for: item))
+        // .solo — each match is its own run — and showsHighlight:false so the wash stays off
+        // (every row matched, so it would be a monotone wall). The chevron marks the jump.
+        cell.configure(item.message, position: .solo, networkName: item.networkName, showsHighlight: false)
+        cell.accessoryType = .disclosureIndicator
         return cell
     }
 
+    override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        let header = tableView.dequeueReusableHeaderFooterView(
+            withIdentifier: HighlightSectionHeader.reuseID
+        ) as! HighlightSectionHeader
+        let sec = sections[section]
+        let location = [sec.networkName, sec.target].compactMap { $0 }.joined(separator: "/")
+        header.configure(location: location, day: sec.dayLabel)
+        return header
+    }
+
     override func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-        // Page in when the last section's tail comes into view.
-        guard indexPath.section == sections.count - 1 else { return }
-        if indexPath.row >= sections[indexPath.section].items.count - Self.prefetchThreshold { loadMore() }
+        // Page in off the global position, so the threshold means "N rows from the true end"
+        // however the channel+day runs are sized.
+        guard indexPath.section < sectionOffsets.count else { return }
+        let globalIndex = sectionOffsets[indexPath.section] + indexPath.row
+        if globalIndex >= items.count - Self.prefetchThreshold { loadMore() }
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
@@ -238,127 +294,60 @@ final class HighlightsViewController: UITableViewController {
         onSelect?(sections[indexPath.section].items[indexPath.row])
     }
 
-    /// The network's name for the context line — the server-resolved one, falling back to the
-    /// client's own roster if the row didn't carry it (an older server).
+    /// The network's name for a row — the server-resolved one, falling back to the client's own
+    /// roster if the row didn't carry it (an older server).
     private func networkName(for item: HighlightItem) -> String? {
         item.networkName ?? item.networkId.flatMap { viewModel.state.networks[$0]?.name }
     }
 }
 
-/// One highlight, laid out the way the web client does it: a metadata top bar — the location
-/// (`Network/#channel`) on the left, the time on the right — then the matched line itself in
-/// IRC's own `<nick> message` form, the nick in its color and the body as it reads in-buffer
-/// (mIRC formatting and colors preserved).
-private final class HighlightCell: UITableViewCell {
-    static let reuseID = "highlight"
+/// A channel+day section header: `Network/#channel` on the leading edge, the day on the
+/// trailing edge, on one baseline — iMessage search's per-group header. A
+/// `UITableViewHeaderFooterView` (not a bare view) so its content margins track the table's,
+/// lining the text up with the bubbles' own leading margin.
+private final class HighlightSectionHeader: UITableViewHeaderFooterView {
+    static let reuseID = "highlightHeader"
 
     private let locationLabel = UILabel()
-    private let timeLabel = UILabel()
-    private let messageLabel = UILabel()
+    private let dayLabel = UILabel()
 
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
+    override init(reuseIdentifier: String?) {
+        super.init(reuseIdentifier: reuseIdentifier)
 
-        // Location and time are one metadata bar, so they share the font *and* the color —
-        // same caption, same muted tertiary — rather than reading as two different styles.
-        let caption = UIFont.preferredFont(forTextStyle: .caption1)
-        locationLabel.font = caption
-        locationLabel.textColor = .tertiaryLabel
-        styleLabel(locationLabel)
+        locationLabel.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
+        locationLabel.textColor = .label
+        locationLabel.adjustsFontForContentSizeCategory = true
         locationLabel.lineBreakMode = .byTruncatingTail
         locationLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        timeLabel.font = caption
-        timeLabel.textColor = .tertiaryLabel
-        styleLabel(timeLabel)
-        timeLabel.textAlignment = .right
-        timeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        timeLabel.setContentHuggingPriority(.required, for: .horizontal)
+        dayLabel.font = .preferredFont(forTextStyle: .subheadline)
+        dayLabel.textColor = .secondaryLabel
+        dayLabel.adjustsFontForContentSizeCategory = true
+        dayLabel.textAlignment = .right
+        dayLabel.setContentHuggingPriority(.required, for: .horizontal)
+        dayLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        messageLabel.font = .preferredFont(forTextStyle: .subheadline)
-        messageLabel.textColor = .label
-        styleLabel(messageLabel)
-        messageLabel.numberOfLines = 3 // the nick rides inline now, so give the body a line more
-
-        // Metadata bar: location grows, time hugs the trailing edge, both on one baseline.
-        let header = UIStackView(arrangedSubviews: [locationLabel, timeLabel])
-        header.axis = .horizontal
-        header.spacing = 8
-        header.alignment = .firstBaseline
-
-        let column = UIStackView(arrangedSubviews: [header, messageLabel])
-        column.axis = .vertical
-        column.spacing = 7
-        column.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(column)
+        let stack = UIStackView(arrangedSubviews: [locationLabel, dayLabel])
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .firstBaseline
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(stack)
 
         let margins = contentView.layoutMarginsGuide
         NSLayoutConstraint.activate([
-            column.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
-            column.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
-            column.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -6),
         ])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Common label setup: Dynamic Type + one line unless overridden.
-    private func styleLabel(_ label: UILabel) {
-        label.adjustsFontForContentSizeCategory = true
-        label.numberOfLines = 1
-    }
-
-    func configure(_ item: HighlightItem, networkName: String?) {
-        let message = item.message
-        timeLabel.text = Self.relativeTime(message.date)
-        // "Libera/#lurker" — the network then the buffer, matching the web's metadata bar.
-        // Falls back to the raw target if the network can't be named.
-        locationLabel.text = [networkName, item.target].compactMap { $0 }.joined(separator: "/")
-
-        // The matched line in IRC's `<nick> message` form, then the body as it reads
-        // in-buffer (mIRC formatting and colors preserved). Only the nick is colored — the
-        // `<>` delimiters stay muted so the name is what carries the color. A notice keeps its
-        // `-nick-` mark and an action its `* nick`, since those aren't `<nick>` lines.
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        let delimiter: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: UIColor.secondaryLabel]
-        let name: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: MessageRenderer.nickColor(message)]
-        let nick = message.nick ?? item.target
-        let (open, close): (String, String)
-        switch message.type {
-        case .notice: (open, close) = ("-", "- ")
-        case .action: (open, close) = ("* ", " ")
-        default: (open, close) = ("<", "> ")
-        }
-        let line = NSMutableAttributedString()
-        line.append(NSAttributedString(string: open, attributes: delimiter))
-        line.append(NSAttributedString(string: nick, attributes: name))
-        line.append(NSAttributedString(string: close, attributes: delimiter))
-        line.append(MessageRenderer.renderBubble(message))
-        messageLabel.attributedText = line
-
-        accessibilityLabel = [locationLabel.text, line.string, timeLabel.text]
-            .compactMap { $0 }
-            .joined(separator: ", ")
-    }
-
-    override func prepareForReuse() {
-        super.prepareForReuse()
-        messageLabel.attributedText = nil
-    }
-
-    /// A short "how long ago" for the header — a recent-mentions list reads better in
-    /// relative time ("8m ago") than a bare clock stamp with no date, since a highlight can
-    /// be days old. Nil dates (an event with no readable time) simply show nothing.
-    private static let relativeFormatter: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter
-    }()
-
-    private static func relativeTime(_ date: Date?) -> String? {
-        guard let date else { return nil }
-        return relativeFormatter.localizedString(for: date, relativeTo: Date())
+    func configure(location: String, day: String) {
+        locationLabel.text = location
+        dayLabel.text = day
     }
 }
