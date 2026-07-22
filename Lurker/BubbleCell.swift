@@ -148,10 +148,14 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         bubble.backgroundColor = isSelf ? Palette.outgoingBubble : Palette.incomingBubble
         bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
         messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
-        // Both bubbles are neutral now, so a link is the accent tint on either, underlined.
+        // A link is body-colored with a soft underline — matching the web client, whose
+        // `--link` defaults to the foreground with a 40%-opacity underline. The accent was
+        // wrong for this: it's the app's voice (send button, own-nick), not the sender's,
+        // and a pink link inside someone's message read as ours.
         messageText.linkTextAttributes = [
-            .foregroundColor: UIColor.tintColor,
+            .foregroundColor: UIColor.label,
             .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .underlineColor: UIColor.label.withAlphaComponent(0.4),
         ]
 
         // Open a gap around a run and hold the messages inside one tight together, so a run

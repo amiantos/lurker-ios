@@ -22,9 +22,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let tableView = UITableView()
     private let composer = ComposerBar()
     private var composerBottom: NSLayoutConstraint!
-    /// How far the keyboard currently intrudes into the view, above the safe area. Held so
-    /// `updateBottomInset` can add it to the composer's height without re-reading the last
-    /// keyboard notification.
+    /// The floating "back to the newest message" pill (see `JumpToLatestButton`), and the
+    /// count it badges: messages that landed while the reader was up in history. Reset the
+    /// moment they're back at the bottom, however they got there.
+    private let jumpButton = JumpToLatestButton()
+    private var newWhileDetached = 0
+    /// How far the keyboard currently intrudes into the view, above the safe area — i.e.
+    /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
+    /// only decides whether the breathing gap applies (see `keyboardWillChange`).
     private var keyboardOverlap: CGFloat = 0
     private var titleButton: BufferTitleButton!
 
@@ -98,6 +103,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "divider")
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
+        // The iMessage dismissal: drag down through the conversation and the keyboard
+        // tracks the finger once it reaches it, rather than snapping away. The composer
+        // rides along because it's constrained to `keyboardLayoutGuide` (below), which
+        // follows the keyboard through the interactive part of the gesture — the old
+        // notification-driven constant only ever heard about the endpoints.
+        tableView.keyboardDismissMode = .interactive
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
 
@@ -126,7 +137,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.isHidden = !composes
         view.addSubview(composer)
 
-        composerBottom = composer.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        // The bottom counterpart of the fade the nav bar's scroll-edge effect gives the
+        // top: declaring the composer as an element container over the table's bottom edge
+        // has the system draw the same soft Liquid Glass fade under it, sized to the
+        // composer's actual shape. Nothing to draw when the composer is hidden (the
+        // read-only system buffer), which is right — there's nothing floating to fade under.
+        let bottomEdge = UIScrollEdgeElementContainerInteraction()
+        bottomEdge.scrollView = tableView
+        bottomEdge.edge = .bottom
+        composer.addInteraction(bottomEdge)
+
+        jumpButton.onTap = { [weak self] in self?.jumpToLatest() }
+        jumpButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(jumpButton)
+
+        // To the keyboard layout guide, not the safe area: at rest the guide's top *is*
+        // the safe-area bottom, and with the keyboard up (or mid-drag — see
+        // `keyboardDismissMode` above) it's the keyboard's top edge. One anchor covers
+        // every position; the notifications below only add the breathing gap.
+        composerBottom = composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
         NSLayoutConstraint.activate([
             // Full height, under everything. The conversation scrolls beneath the floating
             // title pill at the top and the floating composer at the bottom, and off into
@@ -140,6 +169,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             composerBottom,
+
+            // Above the composer so it clears the newest message's landing zone, on the
+            // trailing edge where Messages and Slack put theirs. Anchored to the composer,
+            // so the keyboard carries both up together.
+            jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
         ])
 
         observeKeyboard()
@@ -236,6 +271,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // self-size from an estimate, and consolidation can reshape the run at the boundary).
         let anchor = wasNearBottom ? nil : topVisibleAnchor()
 
+        // What the jump pill badges: messages that landed below while the reader was up in
+        // history. Appends only — the first id moving means the reader pulled older pages,
+        // and a pure state change (connection, read counts, names) moves no count at all.
+        if !wasNearBottom, newFirstId == oldFirstId, updated.count > messages.count {
+            newWhileDetached += updated.count - messages.count
+        }
+
         messages = updated
         rows = buildRows(from: updated)
         updateTitle(state)
@@ -243,23 +285,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
 
-        // A history page prepended older messages above the viewport: reload, then shift
-        // the content offset by exactly the added height so the rows you were reading stay
-        // put instead of jumping.
-        //
-        // Only when you're actually reading up there. Scrolling up isn't the only thing
-        // that makes the first id smaller — so does hydration, when a backlog replaces the
-        // live events that outran it (your own echo, usually, which is why this looked like
-        // "the last message is mine"). Shifting by a whole history's height throws the
-        // offset clean past the end of the content, and a scroll view holds an out-of-range
-        // offset until something touches it: a black buffer that snaps into place when you
-        // poke it.
-        //
-        // Being at the bottom is what separates the two: preserving your position only
-        // means anything if you have one to preserve. At the bottom, the bottom is it.
-        let prepended = !wasNearBottom
-            && oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
-        if prepended {
+        // Being at the bottom decides everything here: preserving your position only means
+        // anything if you have one to preserve. At the bottom, the bottom is it — follow
+        // live traffic. Anywhere else, whatever changed (older pages prepended, live
+        // traffic appended, a run re-consolidated), the line being read goes back exactly
+        // where it was: a bare reload re-estimates off-screen row heights and shoves the
+        // viewport around, and that shove — on *appends*, not just prepends — is what made
+        // the list lurch mid-read.
+        if wasNearBottom {
+            tableView.reloadData()
+            scrollToBottom()
+        } else {
+            // The height-delta fallback is for prepends alone. The first id also gets
+            // smaller on hydration, when a backlog replaces the live events that outran it
+            // (your own echo, usually) — shifting by a whole history's height there throws
+            // the offset clean past the end of the content, and a scroll view holds an
+            // out-of-range offset until something touches it: a black buffer that snaps
+            // into place when you poke it.
+            let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
@@ -267,19 +310,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // Put the anchored line back at the same screen offset it had before.
                     let target = tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - anchor.offset
                     tableView.contentOffset.y = target
-                } else {
+                } else if prepended {
                     // No line to anchor to (or it vanished) — fall back to the height delta.
                     tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
                 }
                 clampToContent()
             }
-        } else {
-            tableView.reloadData()
-            // Follow live traffic only if you were already at the bottom; if you'd scrolled
-            // up to read, a new message lands below without yanking you down.
-            if wasNearBottom { scrollToBottom() }
         }
+        // After the landing, not before: the first apply reaches here with the offset
+        // still at the top, and the pill would flash in for the frame before
+        // `landAtBottomIfNeeded` parks the buffer at its newest message.
         landAtBottomIfNeeded()
+        updateJumpButton()
     }
 
     override func viewDidLayoutSubviews() {
@@ -288,6 +330,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // every pass, which also catches rotation and Dynamic Type. Setting a scroll view's
         // contentInset doesn't invalidate this view's layout, so there's no feedback loop.
         updateBottomInset()
+        // Extend the interactive-dismiss zone up past the composer: the drag should engage
+        // when the finger reaches the *bar*, the way Messages' does, not only once it
+        // touches the keyboard itself. Recomputed here because the bar grows with its text.
+        view.keyboardLayoutGuide.keyboardDismissPadding = composer.isHidden
+            ? 0
+            : composer.bounds.height + Self.keyboardGap
         // The other half of the initial scroll: this is where an already-hydrated buffer
         // finally gets a height to scroll within.
         landAtBottomIfNeeded()
@@ -456,13 +504,40 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return fromBottom < 80
     }
 
-    // MARK: - UITableViewDelegate (pagination)
+    // MARK: - UITableViewDelegate (pagination + the jump pill)
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        // Back at the bottom — however you got there — means caught up: the badge counts
+        // "new since you scrolled away", and you're not away anymore.
+        if isNearBottom { newWhileDetached = 0 }
+        updateJumpButton()
         // Near the top → pull older history. The view model guards `hasMoreOlder` and an
         // in-flight page, so firing this on every scroll tick is safe.
         guard !messages.isEmpty, scrollView.contentOffset.y < 300 else { return }
         viewModel.loadOlder(buffer.key)
+    }
+
+    /// The settle after `jumpToLatest`'s animated scroll: rows are self-sizing, so the
+    /// animated pass positions with estimated heights and can stop short of the real
+    /// bottom — the same reason `scrollToBottom` scrolls twice. Finish the job with it.
+    /// Unconditional, because that jump is the only animated scroll this screen makes.
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        scrollToBottom()
+    }
+
+    /// Visible whenever the reader is up in history; the badge only when something has
+    /// arrived below since. Both derived, so it can run on every tick and every reload.
+    private func updateJumpButton() {
+        jumpButton.setVisible(!isNearBottom && !rows.isEmpty, animated: true)
+        jumpButton.setNewCount(newWhileDetached)
+    }
+
+    /// Ride back down animated — it's a distance covered, not a teleport — then let
+    /// `scrollViewDidEndScrollingAnimation` correct for the estimated heights.
+    private func jumpToLatest() {
+        guard !rows.isEmpty else { return }
+        newWhileDetached = 0
+        tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
     }
 
     /// A failed send (`send-result` ok:false) or a server `error` frame lands in
@@ -783,12 +858,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// up — at rest the composer sits on the safe-area edge with no extra gap.
     private static let keyboardGap: CGFloat = 8
 
+    /// The guide tracks the keyboard's actual edge — appearance, height changes, and the
+    /// interactive drag the notifications never hear about — so this no longer moves the
+    /// composer. It reads the frame only to learn whether a docked keyboard is up, applies
+    /// the gap accordingly, and keeps the newest message above the arriving keyboard.
     @objc private func keyboardWillChange(_ note: Notification) {
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        // The safe-area inset is already accounted for by the constraint's anchor, so
-        // subtract it or the bar floats above the keyboard by the home-indicator height.
         keyboardOverlap = max(0, view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom)
-        composerBottom.constant = keyboardOverlap > 0 ? -(keyboardOverlap + Self.keyboardGap) : 0
+        composerBottom.constant = keyboardOverlap > 0 ? -Self.keyboardGap : 0
         // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
         // runs `viewDidLayoutSubviews` → `updateBottomInset` against that fresh frame. So
         // the inset isn't recomputed here — doing it before layout would read the old frame.
