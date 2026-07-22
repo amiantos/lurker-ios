@@ -86,11 +86,18 @@ final class NickCompletionTests: XCTestCase {
 
     func testAnAtTokenUnderTheCaretIsActive() {
         let token = NickCompletion.activeMention(in: "hey @al", caret: 7)
-        XCTAssertEqual(token, NickCompletion.MentionToken(start: 4, query: "al"))
+        XCTAssertEqual(token, NickCompletion.MentionToken(start: 4, end: 7, query: "al"))
     }
 
     func testABareAtOpensAnEmptyQuery() {
         XCTAssertEqual(NickCompletion.activeMention(in: "@", caret: 1)?.query, "")
+    }
+
+    /// Caret mid-word: the query answers what's typed so far, but the token spans the
+    /// whole word — completion replaces all of it, so `@al|ice` can't become "aliceice".
+    func testACaretMidWordFiltersToTheCaretButSpansTheWord() {
+        let token = NickCompletion.activeMention(in: "@alice more", caret: 3)
+        XCTAssertEqual(token, NickCompletion.MentionToken(start: 0, end: 6, query: "al"))
     }
 
     func testAnEmailShapedWordIsNotAMention() {
@@ -108,8 +115,9 @@ final class NickCompletionTests: XCTestCase {
 
     func testLineStartAddressesWithColonMidSentenceWithSpace() {
         XCTAssertEqual(NickCompletion.addressingSuffix(beforeTokenAt: 0, in: "@al"), ": ")
-        // Only spaces before the token still counts as line start…
+        // Any leading whitespace still counts as line start (web: /(^|\n)\s*$/)…
         XCTAssertEqual(NickCompletion.addressingSuffix(beforeTokenAt: 2, in: "  @al"), ": ")
+        XCTAssertEqual(NickCompletion.addressingSuffix(beforeTokenAt: 1, in: "\t@al"), ": ")
         // …and so does the start of a wrapped line.
         XCTAssertEqual(NickCompletion.addressingSuffix(beforeTokenAt: 6, in: "hello\n@al"), ": ")
         XCTAssertEqual(NickCompletion.addressingSuffix(beforeTokenAt: 4, in: "cc: @al"), " ")

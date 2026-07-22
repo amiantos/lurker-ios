@@ -51,8 +51,9 @@ public enum NickCompletion {
             out.append(nick)
         }
 
-        // Then everyone else who's here, alphabetically (house comparison, matching
-        // MemberPrefix's sort).
+        // Then everyone else who's here, in case-folded alphabetical order — the same
+        // nick tiebreaker MemberPrefix's sort uses (rank doesn't apply here: completion
+        // is about who you're addressing, not who has ops).
         for member in members.sorted(by: { $0.nick.lowercased() < $1.nick.lowercased() }) {
             guard out.count < limit else { return out }
             let lc = member.nick.lowercased()
@@ -70,7 +71,13 @@ public enum NickCompletion {
     public struct MentionToken: Equatable {
         /// Offset of the `@` itself.
         public let start: Int
-        /// What follows the `@`, up to the caret — the filter query.
+        /// One past the token's last character — the end of the whitespace-delimited
+        /// word, which runs *past* the caret when the caret sits mid-word. Completion
+        /// replaces `start..<end`: swallowing the tail is what keeps `@al|ice` from
+        /// completing to "aliceice".
+        public let end: Int
+        /// What follows the `@`, up to the caret — the filter query. Deliberately not the
+        /// whole word: the list should answer what's been typed so far.
         public let query: String
     }
 
@@ -89,8 +96,13 @@ public enum NickCompletion {
                 // The @ must open the word: start of text, or after whitespace. An @
                 // mid-word (user@host) disqualifies the whole word, so stop either way.
                 guard index == 0 || isWhitespace(chars[index - 1]) else { return nil }
-                let query = String(utf16CodeUnits: Array(chars[(index + 1)..<caret]), count: caret - index - 1)
-                return MentionToken(start: index, query: query)
+                var end = caret
+                while end < chars.count, !isWhitespace(chars[end]) { end += 1 }
+                return MentionToken(
+                    start: index,
+                    end: end,
+                    query: String(decoding: chars[(index + 1)..<caret], as: UTF16.self)
+                )
             }
             index -= 1
         }
@@ -99,7 +111,8 @@ public enum NickCompletion {
 
     /// What a completed nick carries after it: `": "` when the mention opens the line —
     /// the IRC addressing form — and a plain space mid-sentence. Same rule as the web's
-    /// `isAtLineStart`: only spaces may sit between the line's start and the token.
+    /// `isAtLineStart` (`/(^|\n)\s*$/`): any run of whitespace between the line's start
+    /// and the token still counts as the start of the line.
     public static func addressingSuffix(beforeTokenAt start: Int, in text: String) -> String {
         let chars = Array(text.utf16.prefix(max(0, start)))
         var index = chars.count - 1

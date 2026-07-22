@@ -248,7 +248,9 @@ final class ComposerBar: UIView {
               let token = NickCompletion.activeMention(in: textView.text, caret: selection.location)
         else { return }
         let replacement = nick + NickCompletion.addressingSuffix(beforeTokenAt: token.start, in: textView.text)
-        let range = NSRange(location: token.start, length: selection.location - token.start)
+        // The whole word, not just up to the caret — completing `@al|ice` must swallow
+        // the tail, not weld the pick onto it.
+        let range = NSRange(location: token.start, length: token.end - token.start)
         textView.text = (textView.text as NSString).replacingCharacters(in: range, with: replacement)
         textView.selectedRange = NSRange(location: token.start + (replacement as NSString).length, length: 0)
         // Programmatic edits don't fire the delegate; run it ourselves for the height,
