@@ -56,14 +56,19 @@ final class ComposerBar: UIView {
     /// sits where the first typed character will, not merely somewhere near it.
     private static let textInset = UIEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
     /// The symbol size in the round buttons — small enough to read as an icon with air
-    /// around it, like Messages'.
-    private static let glyph = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+    /// around it, like Messages'. Internal because `JumpToLatestButton` draws its glyph
+    /// to the same metric, for the same reason it borrows `collapsedHeight`.
+    static let glyph = UIImage.SymbolConfiguration(pointSize: 13, weight: .medium)
 
     /// The height of the collapsed field: exactly one line of body text plus its inset.
     /// Used as the field's floor *and* the round pills' size, so the empty bar and the
     /// one-line bar are the same height — otherwise the field would jump a couple of points
     /// the instant you typed, because a fixed floor never quite matches a real line.
-    private static var collapsedHeight: CGFloat {
+    ///
+    /// Internal rather than private: `JumpToLatestButton` floats directly above the send
+    /// button and matches its diameter through this — two circles a few points apart at
+    /// different sizes read as a mistake.
+    static var collapsedHeight: CGFloat {
         ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + textInset.top + textInset.bottom
     }
     private var textHeight: NSLayoutConstraint!

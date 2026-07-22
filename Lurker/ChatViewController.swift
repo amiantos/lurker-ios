@@ -871,6 +871,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the inset isn't recomputed here — doing it before layout would read the old frame.
         view.layoutIfNeeded()
         scrollToBottom()
+        // The keyboard's arrival just parked the conversation at the bottom, so the jump
+        // pill goes with it — stated here rather than left to the scroll's delegate tick,
+        // which doesn't fire when the offset was already close enough to need no change.
+        newWhileDetached = 0
+        updateJumpButton()
     }
 
     @objc private func keyboardWillHide() {

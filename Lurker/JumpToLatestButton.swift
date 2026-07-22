@@ -19,9 +19,9 @@ final class JumpToLatestButton: UIView {
     private let button = UIButton(type: .system)
     private let badge = UILabel()
     private let badgeBackground = UIView()
+    /// Width/height, kept so a Dynamic Type change can re-match the composer's pills.
+    private var pillSizeConstraints: [NSLayoutConstraint] = []
 
-    /// The pill's diameter — the minimum comfortable touch target.
-    private static let size: CGFloat = 44
     private static let badgeHeight: CGFloat = 18
 
     override init(frame: CGRect) {
@@ -33,11 +33,11 @@ final class JumpToLatestButton: UIView {
         glass.cornerConfiguration = .capsule()
         glass.translatesAutoresizingMaskIntoConstraints = false
 
+        // The send button's own glyph metric, so the two circles a few points apart draw
+        // their symbols at the same visual weight.
         var config = UIButton.Configuration.plain()
         config.image = UIImage(systemName: "chevron.down")
-        config.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(
-            pointSize: 15, weight: .semibold
-        )
+        config.preferredSymbolConfigurationForImage = ComposerBar.glyph
         config.baseForegroundColor = .label
         button.configuration = config
         button.accessibilityLabel = "Jump to latest"
@@ -60,9 +60,14 @@ final class JumpToLatestButton: UIView {
         badgeBackground.addSubview(badge)
         addSubview(badgeBackground)
 
-        NSLayoutConstraint.activate([
-            glass.widthAnchor.constraint(equalToConstant: Self.size),
-            glass.heightAnchor.constraint(equalToConstant: Self.size),
+        // The send button's exact diameter — it sits directly below this pill, and
+        // matching it is what makes the two read as one family (see `collapsedHeight`).
+        let pill = ComposerBar.collapsedHeight
+        pillSizeConstraints = [
+            glass.widthAnchor.constraint(equalToConstant: pill),
+            glass.heightAnchor.constraint(equalToConstant: pill),
+        ]
+        NSLayoutConstraint.activate(pillSizeConstraints + [
             glass.topAnchor.constraint(equalTo: topAnchor),
             glass.bottomAnchor.constraint(equalTo: bottomAnchor),
             glass.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -82,6 +87,12 @@ final class JumpToLatestButton: UIView {
             badge.trailingAnchor.constraint(equalTo: badgeBackground.trailingAnchor, constant: -5),
             badge.centerYAnchor.constraint(equalTo: badgeBackground.centerYAnchor),
         ])
+
+        // Track Dynamic Type the way the composer's pills do (`updateMetrics`), so the
+        // two stay the same size through a text-size change, not just at launch.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (pill: JumpToLatestButton, _) in
+            pill.pillSizeConstraints.forEach { $0.constant = ComposerBar.collapsedHeight }
+        }
 
         // Starts hidden; `setVisible` fades it in the first time the reader scrolls up.
         alpha = 0
