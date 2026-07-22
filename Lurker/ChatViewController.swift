@@ -27,11 +27,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// moment they're back at the bottom, however they got there.
     private let jumpButton = JumpToLatestButton()
     private var newWhileDetached = 0
-    /// The @‑mention pill strip and the query currently filtering it (nil = no active
-    /// mention under the caret). The composer reports the token; this screen owns the
-    /// candidates, because they come from state the bar never sees (messages, members).
-    private let mentionSuggestions = MentionSuggestionsView()
-    private var mentionQuery: String?
+    /// The completion pill strip and the context currently driving it (nil = nothing under
+    /// the caret). The composer reports what *kind* of completion is live; this screen owns
+    /// the candidates, because they come from state the bar never sees — the command table,
+    /// the network's channels, this buffer's members.
+    private let suggestions = SuggestionsView()
+    private var activeCompletion: ComposerBar.Completion?
     /// How far the keyboard currently intrudes into the view, above the safe area — i.e.
     /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
     /// only decides whether the breathing gap applies (see `keyboardWillChange`).
@@ -157,13 +158,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(jumpButton)
 
-        composer.onMentionQuery = { [weak self] query in
-            self?.mentionQuery = query
-            self?.updateMentionSuggestions()
+        composer.onCompletion = { [weak self] completion in
+            self?.activeCompletion = completion
+            self?.updateSuggestions()
         }
-        mentionSuggestions.onPick = { [weak self] nick in self?.composer.completeMention(with: nick) }
-        mentionSuggestions.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(mentionSuggestions)
+        // A pick means different things per context: a command inserts its verb, a channel
+        // or nick argument inserts that value, an `@`-mention inserts the nick with its
+        // addressing suffix. The composer owns each insertion; this only routes to it.
+        suggestions.onPick = { [weak self] suggestion in
+            guard let self else { return }
+            switch activeCompletion {
+            case .command: composer.completeCommand(name: suggestion.value)
+            case .channelArg, .nickArg: composer.completeArgument(value: suggestion.value)
+            case .mention: composer.completeMention(with: suggestion.value)
+            case nil: break
+            }
+        }
+        suggestions.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(suggestions)
 
         // To the keyboard layout guide, not the safe area: at rest the guide's top *is*
         // the safe-area bottom, and with the keyboard up (or mid-drag — see
@@ -190,14 +202,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
-            // The mention pills: centered over the field for tap reach (the jump pill
+            // The suggestion pills: centered over the field for tap reach (the jump pill
             // owns the trailing edge), riding the composer for the same
-            // keyboard-carries-both reason. The edge insets only bite on a nick long
+            // keyboard-carries-both reason. The edge insets only bite on a title long
             // enough to need truncating.
-            mentionSuggestions.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            mentionSuggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            mentionSuggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
-            mentionSuggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
+            suggestions.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            suggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            suggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            suggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
         observeKeyboard()
@@ -316,7 +328,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.placeholder = composerPlaceholder
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
         // the most recent speaker, and a leaver stops being offered.
-        updateMentionSuggestions()
+        updateSuggestions()
         surface(state.error)
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
@@ -617,23 +629,71 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func send(_ text: String) {
-        viewModel.send(buffer.key, text: text)
+        let outcome = viewModel.send(buffer.key, text: text)
         composer.clear()
+        // `/msg`/`/query` opened a DM and asked us to switch to it.
+        if case .activate(let key) = outcome { navigate(to: key) }
     }
 
-    /// Recompute the pill strip for the current query. Candidates are the web client's
-    /// exact ranking (`NickCompletion`): recent speakers newest-first, then the rest of
-    /// the member list alphabetically, never yourself — capped at four, with the best
-    /// candidate nearest the field (the strip reverses the list; see its doc).
-    private func updateMentionSuggestions() {
-        guard let mentionQuery else { return mentionSuggestions.show([]) }
-        mentionSuggestions.show(NickCompletion.candidates(
+    /// Switch the whole screen to another buffer — what `/msg` and `/query` ask for once the
+    /// DM is open. The same root-swap the buffer switcher does: no back chevron, no stack
+    /// growth. The target may not be in state yet (a brand-new DM whose `open-buffer` reply
+    /// is still in flight), so it's synthesized when absent, exactly like the system buffer.
+    private func navigate(to key: BufferKey) {
+        guard key != buffer.key else { return }
+        let target = viewModel.state.buffers[key.id]
+            ?? Buffer(networkId: key.networkId, target: key.target,
+                      kind: BufferKind.of(networkId: key.networkId, target: key.target))
+        navigationController?.setViewControllers(
+            [ChatViewController(viewModel: viewModel, buffer: target)], animated: true
+        )
+    }
+
+    /// Recompute the pill strip for the completion under the caret: command chips from the
+    /// table, channel chips from this network's buffers, or nick chips ranked the web
+    /// client's way (`NickCompletion`) — capped at four, best nearest the field (the strip
+    /// reverses the list; see its doc).
+    private func updateSuggestions() {
+        switch activeCompletion {
+        case .command(let query):
+            suggestions.show(CommandRegistry.matching(query).map { Suggestion.command($0) })
+        case .channelArg(let query):
+            suggestions.show(channelCandidates(matching: query).map { Suggestion.channel($0) })
+        case .nickArg(let query), .mention(let query):
+            suggestions.show(nickCandidates(matching: query).map { Suggestion.nick($0) })
+        case nil:
+            suggestions.show([])
+        }
+    }
+
+    /// Channels on this buffer's network whose name matches `query`, best-effort. Both sides
+    /// are compared with a leading channel sigil stripped, so `/join li` still finds
+    /// `#linux` — the `#` the user hasn't typed yet shouldn't hide it.
+    private func channelCandidates(matching query: String, limit: Int = 4) -> [String] {
+        let needle = channelNeedle(query)
+        return viewModel.state.buffers.values
+            .filter { $0.networkId == buffer.networkId && $0.kind == .channel }
+            .map(\.target)
+            .filter { channelNeedle($0).hasPrefix(needle) }
+            .sorted { $0.lowercased() < $1.lowercased() }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    private func channelNeedle(_ name: String) -> String {
+        var lowered = name.lowercased()
+        if let first = lowered.first, "#&+!".contains(first) { lowered.removeFirst() }
+        return lowered
+    }
+
+    private func nickCandidates(matching query: String) -> [String] {
+        NickCompletion.candidates(
             messages: messages,
             members: viewModel.state.members[buffer.key.id] ?? [],
             selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
-            query: mentionQuery,
+            query: query,
             isChannel: buffer.kind == .channel
-        ))
+        )
     }
 
     // MARK: - Navigation

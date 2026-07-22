@@ -143,16 +143,72 @@ public final class ChatViewModel {
         client.openBuffer(networkId: key.networkId, target: key.target)
     }
 
-    public func send(_ key: BufferKey, text: String) {
-        // The system buffer is the app's command console on the web (#355); this client
-        // doesn't run commands yet (#10). Until it does, answer any input with a local
-        // line — the web's own pattern for non-command input there — rather than silently
-        // dropping the one write the user made deliberately.
-        guard key.networkId != nil else {
-            store.appendLocal(key, text: "Commands haven't arrived in the app yet.")
-            return
+    /// What the UI should do after a line of input — almost always nothing, but `/msg` and
+    /// `/query` ask the composer's owner to switch to the DM they opened.
+    public enum SendOutcome: Equatable, Sendable {
+        case none
+        case activate(BufferKey)
+    }
+
+    /// Handle a line of composer input from `key`'s buffer: a plain message goes to the
+    /// current target; a slash command is parsed (`CommandParser`) and its effects carried
+    /// out. Returns the UI follow-up, if any.
+    @discardableResult
+    public func send(_ key: BufferKey, text: String) -> SendOutcome {
+        switch CommandParser.parse(text, networkId: key.networkId, target: key.target) {
+        case .message(let body):
+            client.sendMessage(networkId: key.networkId, target: key.target, text: body)
+            return .none
+        case .notCommand:
+            // System-buffer input with no network to send to — the web's own nudge, rather
+            // than dropping the one write the user made deliberately.
+            store.appendLocal(key, text: "Not a command — type /commands to see what you can run here.")
+            return .none
+        case .command(let effects):
+            return run(effects, in: key)
         }
-        client.sendMessage(networkId: key.networkId, target: key.target, text: text)
+    }
+
+    /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
+    /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network; `away`/
+    /// `back` are user-scoped and carry none; `info` prints a local line.
+    private func run(_ effects: [CommandEffect], in key: BufferKey) -> SendOutcome {
+        let networkId = key.networkId
+        var outcome: SendOutcome = .none
+        for effect in effects {
+            switch effect {
+            case .send(let target, let text):
+                client.sendMessage(networkId: networkId, target: target, text: text)
+            case .action(let target, let text):
+                client.sendAction(networkId: networkId, target: target, text: text)
+            case .notice(let target, let text):
+                client.sendNotice(networkId: networkId, target: target, text: text)
+            case .raw(let line):
+                client.sendRaw(networkId: networkId, line: line)
+            case .join(let channel, let joinKey):
+                if let networkId { client.joinChannel(networkId: networkId, channel: channel, key: joinKey) }
+            case .part(let channel, let reason):
+                client.part(networkId: networkId, channel: channel, reason: reason)
+            case .close(let target):
+                client.closeBuffer(networkId: networkId, target: target)
+            case .away(let message):
+                client.setAway(message)
+            case .back:
+                client.setBack()
+            case .ctcp(let target, let type, let args):
+                client.sendCTCP(networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args)
+            case .activate(let target):
+                // Mint/hydrate the DM row so the buffer exists to switch to. A brand-new
+                // /query target isn't in `state.buffers` yet, so the destination screen's own
+                // hydrate wouldn't fire — this `open-buffer` is what brings the row (and its
+                // backlog) into being.
+                client.openBuffer(networkId: networkId, target: target)
+                outcome = .activate(BufferKey(networkId: networkId, target: target))
+            case .info(let text):
+                store.appendLocal(key, text: text)
+            }
+        }
+        return outcome
     }
 
     /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an

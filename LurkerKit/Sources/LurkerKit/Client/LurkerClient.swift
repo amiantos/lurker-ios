@@ -220,8 +220,62 @@ final class LurkerClient {
         // The one write the user made deliberately, and the one with no resend behind it —
         // so a socket-level failure to deliver it is worth telling them about. A `send`
         // that reaches the server but is rejected comes back as a `send-result` instead;
-        // this only covers never getting it onto the wire.
+        // this only covers never getting it onto the wire. The server splits on newlines and
+        // byte-length, so the whole (possibly multi-line) body goes as one `send`.
         send(["type": "send", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
+    }
+
+    /// CTCP ACTION — `/me` and `/slap`. Surfaces a socket-level failure like `send`: it's a
+    /// deliberate line the user typed, with nothing behind it to retry.
+    func sendAction(networkId: Int?, target: String, text: String) {
+        guard let networkId else { return }
+        send(["type": "action", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
+    }
+
+    /// NOTICE — `/notice`. Same failure surfacing rationale as `send`.
+    func sendNotice(networkId: Int?, target: String, text: String) {
+        guard let networkId else { return }
+        send(["type": "notice", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
+    }
+
+    /// A raw IRC line — the escape hatch behind `/nick`, `/mode`, `/kick`, `/whois`, the
+    /// service messages, the server queries, and every unrecognized command.
+    func sendRaw(networkId: Int?, line: String) {
+        guard let networkId else { return }
+        send(["type": "raw", "networkId": networkId, "line": line], surfacesFailure: true)
+    }
+
+    /// Part a channel with an optional reason. The buffer survives (dimmed); `/close` drops it.
+    func part(networkId: Int?, channel: String, reason: String?) {
+        guard let networkId else { return }
+        var verb: [String: Any] = ["type": "part", "networkId": networkId, "channel": channel]
+        if let reason { verb["reason"] = reason }
+        send(verb)
+    }
+
+    /// A CTCP request aimed at a target — `/ctcp`, `/ping`. `issuingTarget` is the buffer the
+    /// command was run in, so a reply can be routed back to it.
+    func sendCTCP(networkId: Int?, target: String, issuingTarget: String, ctcpType: String, args: String) {
+        guard let networkId else { return }
+        send([
+            "type": "ctcp",
+            "networkId": networkId,
+            "target": target,
+            "issuingTarget": issuingTarget,
+            "ctcpType": ctcpType,
+            "args": args,
+        ])
+    }
+
+    /// Set yourself away on every network (`/away`), or clear it (`/back`, or `/away` with no
+    /// message). User-scoped, so neither verb carries a networkId — the server keys on the
+    /// account and fans out to all connections.
+    func setAway(_ message: String) {
+        send(["type": "away", "message": message])
+    }
+
+    func setBack() {
+        send(["type": "back"])
     }
 
     /// Page older history for a buffer, back from `before` (exclusive message id). The
@@ -248,10 +302,12 @@ final class LurkerClient {
         send(["type": "mark-all-read"])
     }
 
-    /// Join a channel on a network. The server sends its backlog once joined, which
-    /// materializes the buffer in the list.
-    func joinChannel(networkId: Int, channel: String) {
-        send(["type": "join", "networkId": networkId, "channel": channel])
+    /// Join a channel on a network, with an optional key for a `+k` channel. The server sends
+    /// its backlog once joined, which materializes the buffer in the list.
+    func joinChannel(networkId: Int, channel: String, key: String? = nil) {
+        var verb: [String: Any] = ["type": "join", "networkId": networkId, "channel": channel]
+        if let key { verb["key"] = key }
+        send(verb)
     }
 
     /// Close a buffer: parts a channel and stops tracking a DM. The server pseudo-buffer
