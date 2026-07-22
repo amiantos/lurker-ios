@@ -72,15 +72,19 @@ enum FrameParser {
         ChannelSnapshot(
             name: channel.string("name"),
             topic: channel.stringOrNull("topic"),
-            members: channel.objects("members").map { member in
-                Member(
-                    nick: member.string("nick"),
-                    modes: (member["modes"] as? [String]) ?? [],
-                    away: member.bool("away"),
-                    user: member.stringOrNull("user"),
-                    host: member.stringOrNull("host")
-                )
-            }
+            members: channel.objects("members").map(parseMember)
+        )
+    }
+
+    /// The server's `memberSnapshot` shape — identical on a snapshot channel, a `names`
+    /// broadcast, and a `member-update` patch, so all three parse through here.
+    private static func parseMember(_ member: [String: Any]) -> Member {
+        Member(
+            nick: member.string("nick"),
+            modes: (member["modes"] as? [String]) ?? [],
+            away: member.bool("away"),
+            user: member.stringOrNull("user"),
+            host: member.stringOrNull("host")
         )
     }
 
@@ -136,6 +140,27 @@ enum FrameParser {
                 networkId: obj.intOrNull("networkId"),
                 target: target,
                 topic: obj.stringOrNull("topic")
+            )
+        }
+        // `names` and `member-update` are state-only for the same reason as
+        // `channel-topic`: no id, nothing to render, payload in fields `parseEvent`
+        // doesn't read. Left to fall through they'd become `.other` Messages that
+        // carry the member data in no field at all.
+        if obj.string("type") == "names" {
+            return .channelMembers(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                members: obj.objects("members").map(parseMember)
+            )
+        }
+        if obj.string("type") == "member-update" {
+            // A patch with no nick has nobody to apply to.
+            guard let member = obj["member"] as? [String: Any], !member.string("nick").isEmpty
+            else { return .ignored }
+            return .memberUpdate(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                member: parseMember(member)
             )
         }
         return .live(networkId: obj.intOrNull("networkId"), target: target, message: parseEvent(obj))

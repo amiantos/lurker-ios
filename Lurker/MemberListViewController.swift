@@ -8,13 +8,11 @@ import UIKit
 /// The nick list, summoned by a swipe in from the right edge.
 ///
 /// Deliberately a placeholder for the real member list (#12): it shows who's here, ranked,
-/// with away state — and nothing else. No whois, no per-member actions, no live join/part
-/// updates beyond what the snapshot already gives us.
+/// with away state — and nothing else. No whois, no per-member actions.
 ///
-/// That last one is the honest limitation to know about: `ChatState.members` is populated
-/// only from the `snapshot` frame's joined channels and is never updated by live join/part
-/// events, so this list is accurate as of the last connect and drifts from there. Fixing
-/// that is member-list work proper, not something to fake here.
+/// The list is live (#30): the store folds join/part/quit/kick/nick into
+/// `ChatState.members` and applies the server's `names`/`member-update` broadcasts, so
+/// what renders here tracks the channel, not the last connect. This view just observes.
 final class MemberListViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private let buffer: Buffer

@@ -107,6 +107,10 @@ final class LurkerStore {
             return applyLive(state, networkId: networkId, target: target, message: message)
         case .channelTopic(let networkId, let target, let topic):
             return applyChannelTopic(state, networkId: networkId, target: target, topic: topic)
+        case .channelMembers(let networkId, let target, let members):
+            return applyChannelMembers(state, networkId: networkId, target: target, members: members)
+        case .memberUpdate(let networkId, let target, let member):
+            return applyMemberUpdate(state, networkId: networkId, target: target, member: member)
         case .history(let networkId, let target, let events, let mode, let hasMoreOlder, _):
             return applyHistory(
                 state, networkId: networkId, target: target,
@@ -250,9 +254,61 @@ final class LurkerStore {
         // reverting the channel's topic to whatever it was at replay time. The Vue client
         // hit this first and its handler carries the same warning.
         if message.type == .topic { next.buffers[key]?.topic = message.text }
+        // Membership churn folds into the member list here, and only here — the same
+        // seat below the id de-dupe the topic needs, and for the same reason: a
+        // replayed join must not resurrect a member who has since parted. Backlog and
+        // history replays deliberately don't fold — the snapshot/`names` list is the
+        // authoritative baseline those events predate.
+        next.members[key] = foldMembership(next.members[key], message)
         next.messages[key] = existing + [message]
         next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
         return next
+    }
+
+    /// One live membership event applied to a channel's member list. Nicks match
+    /// case-insensitively throughout: servers echo inconsistent casing, and `toLowerCase`
+    /// matching is house style (see `BufferKey`).
+    ///
+    /// A join can seed a list from nil — our own join precedes the `names` broadcast, so
+    /// the list briefly holds just us until the full roster lands. Removals against nil
+    /// stay nil: a quit fans out to DM buffers too, which have no list to edit.
+    private static func foldMembership(_ members: [Member]?, _ message: Message) -> [Member]? {
+        switch message.type {
+        case .join:
+            guard let nick = message.nick, !nick.isEmpty else { return members }
+            let list = members ?? []
+            // Already present (e.g. the list arrived via `names` before our fold ran):
+            // keep the existing entry and whatever modes/away it carries.
+            guard !list.contains(where: { $0.nick.lowercased() == nick.lowercased() })
+            else { return members }
+            return list + [Member(nick: nick)]
+        case .part, .quit:
+            return removingMember(members, nick: message.nick)
+        case .kick:
+            // `kicked` is who left; `nick` is the actor doing the kicking.
+            return removingMember(members, nick: message.kicked)
+        case .nick:
+            guard let old = message.nick?.lowercased(), let new = message.newNick, !new.isEmpty
+            else { return members }
+            return members.map { list in
+                list.map { member in
+                    guard member.nick.lowercased() == old else { return member }
+                    return Member(
+                        nick: new, modes: member.modes, away: member.away,
+                        user: member.user, host: member.host
+                    )
+                }
+            }
+        default:
+            return members
+        }
+    }
+
+    private static func removingMember(_ members: [Member]?, nick: String?) -> [Member]? {
+        guard let nick, !nick.isEmpty else { return members }
+        return members.map { list in
+            list.filter { $0.nick.lowercased() != nick.lowercased() }
+        }
     }
 
     /// RPL_TOPIC on join. Unlike a `topic` event this carries no id, so there's nothing to
@@ -269,6 +325,43 @@ final class LurkerStore {
     ) -> ChatState {
         var next = state
         next.buffers[BufferKey(networkId: networkId, target: target).id]?.topic = topic
+        return next
+    }
+
+    /// A `names` broadcast: replace the member list wholesale — it IS the list, the same
+    /// authority the snapshot carries. Stored even if no buffer row exists yet: `members`
+    /// is a side table keyed like the buffers, so an early entry creates nothing visible,
+    /// and the row that makes it visible is on its way (our own join precedes `names`).
+    private static func applyChannelMembers(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        members: [Member]
+    ) -> ChatState {
+        var next = state
+        next.members[BufferKey(networkId: networkId, target: target).id] = members
+        return next
+    }
+
+    /// A `member-update` patch: replace the matching member with the server's snapshot.
+    /// Wholesale replace is safe because the server always sends the complete member
+    /// (its `memberSnapshot`), never a partial. Resolve, never create — an attribute
+    /// patch for a nick we don't hold has nothing to attach to (matching the web
+    /// client's `updateMember`), and matching is case-insensitive because a CHGHOST
+    /// echoes the nick as the server holds it, which needn't match what NAMES gave us.
+    private static func applyMemberUpdate(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        member: Member
+    ) -> ChatState {
+        var next = state
+        let key = BufferKey(networkId: networkId, target: target).id
+        guard var list = next.members[key],
+              let index = list.firstIndex(where: { $0.nick.lowercased() == member.nick.lowercased() })
+        else { return next }
+        list[index] = member
+        next.members[key] = list
         return next
     }
 

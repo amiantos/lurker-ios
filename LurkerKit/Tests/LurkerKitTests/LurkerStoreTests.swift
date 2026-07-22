@@ -211,6 +211,150 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(state.members[chanKey]!.map(\.nick), ["alice", "bob"])
     }
 
+    // MARK: - Members (#30)
+    //
+    // The snapshot seeds the list (above); live join/part/quit/kick/nick churn folds into
+    // it, `names` replaces it wholesale, and `member-update` patches one entry. Before
+    // this the list was accurate as of the last connect and rotted from there.
+
+    private func seedMembers(_ store: LurkerStore, _ members: [Member]) {
+        store.apply(.snapshot([
+            NetworkSnapshot(
+                id: 1, state: .connected, nick: "me",
+                channels: [ChannelSnapshot(name: "#lurker", topic: nil, members: members)]
+            ),
+        ]))
+    }
+
+    func testAJoinAddsAMemberAndAPartRemovesThem() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice")])
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .join, nick: "bob", text: nil)))
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["alice", "bob"])
+
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 11, type: .part, nick: "alice", text: nil)))
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["bob"])
+    }
+
+    /// The one the id de-dupe exists for: a backlog/live overlap replaying an old join
+    /// must not resurrect a member who has since left — so the membership fold sits
+    /// below the de-dupe, exactly like the topic mutation.
+    func testAReplayedJoinDoesNotResurrectAPartedMember() {
+        let store = LurkerStore()
+        seedMembers(store, [])
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .join, nick: "bob", text: nil)))
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 11, type: .quit, nick: "bob", text: nil)))
+
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .join, nick: "bob", text: nil)))
+
+        XCTAssertEqual(store.state.members[chanKey], [], "a replay must not re-add bob")
+    }
+
+    func testMembershipMatchesNicksCaseInsensitively() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "Alice"), Member(nick: "bob")])
+        // The server echoes the part with different casing than NAMES gave us.
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .part, nick: "ALICE", text: nil)))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["bob"])
+    }
+
+    func testAJoinForANickAlreadyListedKeepsTheExistingEntry() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice", modes: ["o"])])
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .join, nick: "ALICE", text: nil)))
+
+        let members = store.state.members[chanKey]!
+        XCTAssertEqual(members.count, 1, "must not duplicate")
+        XCTAssertEqual(members[0].modes, ["o"], "and must not wipe what we know")
+    }
+
+    func testAKickRemovesTheKickedNotTheKicker() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice"), Member(nick: "bob")])
+        // alice kicks bob: `nick` is the actor, `kicked` is who left.
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 10, type: .kick, nick: "alice", text: nil, kicked: "bob")
+        ))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["alice"])
+    }
+
+    func testANickEventRenamesInPlacePreservingModesAndAway() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice", modes: ["o"], away: true, user: "al", host: "example.org")])
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 10, type: .nick, nick: "alice", text: nil, newNick: "alicia")
+        ))
+
+        let member = store.state.members[chanKey]![0]
+        XCTAssertEqual(member.nick, "alicia")
+        XCTAssertEqual(member.modes, ["o"])
+        XCTAssertTrue(member.away)
+        XCTAssertEqual(member.host, "example.org")
+    }
+
+    /// Our own join precedes the `names` broadcast, so a join must be able to seed a
+    /// list from nothing — the roster lands a moment later and replaces it.
+    func testAJoinSeedsAListWhereNoneExistsYet() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .join, nick: "me", text: nil, isSelf: true)))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["me"])
+    }
+
+    /// A quit fans out to every shared buffer, including DMs — which have no member
+    /// list. Removing from nothing must stay nothing, not conjure an empty list.
+    func testAQuitAgainstABufferWithNoListStaysListless() {
+        let store = LurkerStore()
+        store.apply(.live(networkId: 1, target: "bob", message: msg(7, "hey")))
+        store.apply(.live(networkId: 1, target: "bob", message: Message(id: 8, type: .quit, nick: "bob", text: nil)))
+
+        XCTAssertNil(store.state.members["1::bob"])
+    }
+
+    func testANamesBroadcastReplacesTheListWholesale() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice"), Member(nick: "bob")])
+        // A prefix-mode change re-broadcasts the whole roster: alice is now opped, bob gone.
+        store.apply(.channelMembers(
+            networkId: 1, target: "#lurker",
+            members: [Member(nick: "alice", modes: ["o"]), Member(nick: "carol")]
+        ))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["alice", "carol"])
+        XCTAssertEqual(store.state.members[chanKey]![0].modes, ["o"])
+        XCTAssertEqual(store.state.messages[chanKey] ?? [], [], "names is silent — it prints nothing")
+    }
+
+    func testAMemberUpdatePatchesTheMatchingMemberInPlace() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice"), Member(nick: "Bob", modes: ["v"])])
+        // A chghost snapshot for bob — matched case-insensitively, replaced wholesale.
+        store.apply(.memberUpdate(
+            networkId: 1, target: "#lurker",
+            member: Member(nick: "Bob", modes: ["v"], away: true, user: "rob", host: "new.example.org")
+        ))
+
+        let members = store.state.members[chanKey]!
+        XCTAssertEqual(members.map(\.nick), ["alice", "Bob"], "patched in place, not re-appended")
+        XCTAssertTrue(members[1].away)
+        XCTAssertEqual(members[1].host, "new.example.org")
+    }
+
+    func testAMemberUpdateForAnUnknownMemberOrBufferCreatesNothing() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice")])
+        store.apply(.memberUpdate(networkId: 1, target: "#lurker", member: Member(nick: "nobody")))
+        store.apply(.memberUpdate(networkId: 1, target: "#nowhere", member: Member(nick: "alice")))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["alice"], "resolve, never create")
+        XCTAssertNil(store.state.buffers["1::#nowhere"], "no row should be conjured for a patch alone")
+    }
+
     // MARK: - Topic
     //
     // The server has three ways of saying what a channel's topic is, and the client needs
