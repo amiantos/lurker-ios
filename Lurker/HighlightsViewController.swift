@@ -71,7 +71,7 @@ final class HighlightsViewController: UITableViewController {
         refreshControl = UIRefreshControl()
         refreshControl?.addAction(UIAction { [weak self] _ in self?.reload() }, for: .valueChanged)
 
-        renderPlaceholder(.loading)
+        // reload() shows the loading placeholder itself while items is empty (it always is here).
         reload()
     }
 
@@ -79,7 +79,9 @@ final class HighlightsViewController: UITableViewController {
 
     /// (Re)fetch from the newest page. Used on first appearance and by pull-to-refresh.
     private func reload() {
-        guard !isLoading else { return }
+        // A pull-to-refresh that lands while a page is already loading is dropped — but its
+        // refresh control is already spinning, so end it here or it spins forever.
+        guard !isLoading else { refreshControl?.endRefreshing(); return }
         isLoading = true
         loadFailed = false
         // Only show the full-screen spinner on a cold load; a refresh keeps the list up with
