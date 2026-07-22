@@ -263,6 +263,18 @@ public final class ChatViewModel {
             sessionSubject.value = .loggedOut
             return
         }
+        // A session persisted before the transport policy (#29) can name a server the
+        // policy now rejects — a non-local http:// address the old blanket ATS exemption
+        // allowed. Restoring it would go loggedIn and then spin ATS-blocked reconnects
+        // forever. Bounce to sign-in with the same copy login would give, and drop the
+        // session: its token belongs to a server we can no longer talk to. The server
+        // field still prefills from preferences, so the address stays visible to fix.
+        if let reason = ServerAddress.rejection(of: ServerAddress.normalize(saved.server)) {
+            sessions.clear()
+            statusSubject.value = reason
+            sessionSubject.value = .loggedOut
+            return
+        }
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
         Task { await client.start() }
