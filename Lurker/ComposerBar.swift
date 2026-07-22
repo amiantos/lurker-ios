@@ -34,10 +34,23 @@ final class ComposerBar: UIView {
     /// re-inset the conversation under the grown bar.
     var onHeightChange: (() -> Void)?
 
-    /// Fired when the caret's @‑mention context changes: the text after the `@` while one
-    /// is under the caret, nil when there isn't one. The owner floats the suggestion
-    /// pills; the bar only knows there's a token.
-    var onMentionQuery: ((String?) -> Void)?
+    /// What kind of completion is live under the caret. The composer detects the *shape*
+    /// (`CommandCompletion` for a slash line, `NickCompletion` for an `@`) and reports the
+    /// query; the owner turns that into candidates and floats the pills.
+    enum Completion: Equatable {
+        /// Typing the command verb — `/jo|`. `query` excludes the slash.
+        case command(query: String)
+        /// Typing a channel argument of a command — `/join #li|`, `/part #|`.
+        case channelArg(query: String)
+        /// Typing a nick argument of a command — `/msg al|`, `/whois b|`.
+        case nickArg(query: String)
+        /// An `@`-mention anywhere free text is allowed, including inside `/me …`.
+        case mention(query: String)
+    }
+
+    /// Fired when the completion context under the caret changes, nil when there isn't one.
+    /// The owner floats the suggestion pills; the bar only reports the token.
+    var onCompletion: ((Completion?) -> Void)?
 
     var placeholder: String = "" {
         didSet { placeholderLabel.text = placeholder }
@@ -99,9 +112,10 @@ final class ComposerBar: UIView {
     /// Whether the send button is currently in its active (accent) state, so its glass
     /// effect is only rebuilt when that flips — not on every keystroke.
     private var sendActive: Bool?
-    /// The last mention query handed to `onMentionQuery`, so keystrokes and caret moves
-    /// that don't change the answer don't re-fire it.
-    private var lastMentionQuery: String?
+    /// The last completion context handed to `onCompletion`, so keystrokes and caret moves
+    /// that don't change the answer don't re-fire it. Wrapped in an extra optional to
+    /// distinguish "not computed yet" from "computed, and it's nil".
+    private var lastCompletion: Completion??
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -250,11 +264,36 @@ final class ComposerBar: UIView {
         let replacement = nick + NickCompletion.addressingSuffix(beforeTokenAt: token.start, in: textView.text)
         // The whole word, not just up to the caret — completing `@al|ice` must swallow
         // the tail, not weld the pick onto it.
-        let range = NSRange(location: token.start, length: token.end - token.start)
+        replaceToken(NSRange(location: token.start, length: token.end - token.start), with: replacement)
+    }
+
+    /// Replace the verb under the caret with the picked command, trailing a space so the
+    /// caret lands where the first argument goes — picking `/join` leaves `/join |`, and the
+    /// owner immediately floats channel chips for the empty slot.
+    func completeCommand(name: String) {
+        let selection = textView.selectedRange
+        guard selection.length == 0,
+              case .command(_, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
+        else { return }
+        replaceToken(range, with: "/\(name) ")
+    }
+
+    /// Replace the channel/nick argument under the caret with the pick, trailing a space so
+    /// the next argument (a key, a message, another nick) can follow.
+    func completeArgument(value: String) {
+        let selection = textView.selectedRange
+        guard selection.length == 0,
+              case .argument(_, _, _, _, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
+        else { return }
+        replaceToken(range, with: "\(value) ")
+    }
+
+    /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits
+    /// don't fire the delegate, so this runs it by hand for the height, the send button, and
+    /// the completion emit (now recomputed against the spliced text).
+    private func replaceToken(_ range: NSRange, with replacement: String) {
         textView.text = (textView.text as NSString).replacingCharacters(in: range, with: replacement)
-        textView.selectedRange = NSRange(location: token.start + (replacement as NSString).length, length: 0)
-        // Programmatic edits don't fire the delegate; run it ourselves for the height,
-        // the send button, and the mention emit (now nil — the token is gone).
+        textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
         textViewDidChange(textView)
     }
 
@@ -340,27 +379,45 @@ final class ComposerBar: UIView {
 }
 
 extension ComposerBar: UITextViewDelegate {
-    /// Caret moves matter as much as keystrokes: arrowing out of an `@token` (or into
-    /// one) changes the mention context without changing the text.
+    /// Caret moves matter as much as keystrokes: arrowing out of a token (or into one)
+    /// changes the completion context without changing the text.
     func textViewDidChangeSelection(_ textView: UITextView) {
-        emitMentionQuery()
+        emitCompletion()
     }
 
-    /// Hand the owner the current mention context, only when it changed. A selection
-    /// (length > 0) is never mid-mention — that's editing, not typing.
-    private func emitMentionQuery() {
+    /// Hand the owner the current completion context, only when it changed. A slash line is
+    /// classified first (`CommandCompletion`); a channel/nick argument or the verb itself
+    /// wins, and anything else — free text, an unknown command — falls through to `@`-mention
+    /// detection, so `/me @al|` still completes a nick. A selection (length > 0) is editing,
+    /// never mid-token.
+    private func emitCompletion() {
         let selection = textView.selectedRange
-        let query: String? = selection.length == 0
-            ? NickCompletion.activeMention(in: textView.text, caret: selection.location)?.query
-            : nil
-        guard query != lastMentionQuery else { return }
-        lastMentionQuery = query
-        onMentionQuery?(query)
+        let completion = activeCompletion(text: textView.text, caret: selection.location, isCollapsed: selection.length == 0)
+        // Two optionals: the outer tracks "computed yet", the inner is the answer.
+        guard lastCompletion == nil || lastCompletion! != completion else { return }
+        lastCompletion = .some(completion)
+        onCompletion?(completion)
+    }
+
+    private func activeCompletion(text: String, caret: Int, isCollapsed: Bool) -> Completion? {
+        guard isCollapsed else { return nil }
+        if let context = CommandCompletion.context(in: text, caret: caret) {
+            switch context {
+            case .command(let query, _):
+                return .command(query: query)
+            case .argument(_, _, let kind, let query, _):
+                return kind == .channel ? .channelArg(query: query) : .nickArg(query: query)
+            }
+        }
+        if let token = NickCompletion.activeMention(in: text, caret: caret) {
+            return .mention(query: token.query)
+        }
+        return nil
     }
 
     func textViewDidChange(_ textView: UITextView) {
         updateSendEnabled()
-        emitMentionQuery()
+        emitCompletion()
 
         // Grow to fit the text, up to the cap; past it, hold the height and let the text
         // scroll inside. The floor is one line's height, the same value the pills use, so a
