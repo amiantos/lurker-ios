@@ -908,6 +908,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             nav?.dismiss(animated: true)
         }
         let sheet = UINavigationController(rootViewController: highlights)
+        sheet.navigationBar.prefersLargeTitles = true
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         nav?.present(sheet, animated: true)
     }
