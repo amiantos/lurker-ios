@@ -9,50 +9,65 @@ import XCTest
 final class BufferPlaceholderTests: XCTestCase {
 
     func testMessagesPresentMeansNoPlaceholder() {
-        // Whatever the connection is doing, if there are lines to show, show them.
+        // Whatever else is true, if there are lines to show, show them.
         XCTAssertEqual(
-            BufferPlaceholder.of(hasMessages: true, hydrated: false, hydratesOnDemand: true, connection: .connecting),
+            BufferPlaceholder.of(hasMessages: true, hydrated: false, hydratesOnDemand: true, bufferExists: false),
             .none
         )
         XCTAssertEqual(
-            BufferPlaceholder.of(hasMessages: true, hydrated: true, hydratesOnDemand: false, connection: .connected),
+            BufferPlaceholder.of(hasMessages: true, hydrated: true, hydratesOnDemand: false, bufferExists: true),
             .none
         )
     }
 
-    // MARK: - On-demand buffers (channels, DMs)
+    // MARK: - On-demand buffers (channels, DMs) — key off `hydrated`
 
     func testOnDemandBufferLoadsUntilHydrated() {
-        // A channel/DM arrives as a shell and isn't read until its open-buffer reply lands.
+        // A channel/DM arrives as a shell (the row exists!) and isn't read until its
+        // open-buffer reply lands — so row-existence can't tell them apart, only hydration.
         XCTAssertEqual(
-            BufferPlaceholder.of(hasMessages: false, hydrated: false, hydratesOnDemand: true, connection: .connected),
+            BufferPlaceholder.of(hasMessages: false, hydrated: false, hydratesOnDemand: true, bufferExists: true),
             .loading
         )
     }
 
     func testOnDemandBufferHydratedButEmptyIsEmpty() {
         // The server read the history and there was none — a just-joined channel. Real, not
-        // a failure. Note the socket can even be down by now; hydration is a fact we keep.
+        // a failure.
         XCTAssertEqual(
-            BufferPlaceholder.of(hasMessages: false, hydrated: true, hydratesOnDemand: true, connection: .reconnecting),
+            BufferPlaceholder.of(hasMessages: false, hydrated: true, hydratesOnDemand: true, bufferExists: true),
             .empty
         )
     }
 
-    // MARK: - Off-demand buffers (system, server logs)
+    // MARK: - Off-demand buffers (system, server logs) — key off row existence
 
-    func testOffDemandBufferLoadsUntilSocketUp() {
-        // System/server history rides the connect backlog, so before the socket is up
-        // "empty" would be a lie — it just hasn't arrived.
+    func testOffDemandBufferLoadsUntilItsRowMaterializes() {
+        // The system/server row is created BY its connect backlog. Before that the row is
+        // absent — and the socket can already read `.connected`, so keying off the socket
+        // would flash `.empty` on the launch screen in the gap. Row absent → still loading.
         XCTAssertEqual(
-            BufferPlaceholder.of(hasMessages: false, hydrated: false, hydratesOnDemand: false, connection: .connecting),
+            BufferPlaceholder.of(hasMessages: false, hydrated: false, hydratesOnDemand: false, bufferExists: false),
             .loading
         )
     }
 
-    func testOffDemandBufferEmptyOnceConnected() {
+    func testOffDemandBufferEmptyOnceItsRowExists() {
+        // Backlog landed and the row is here. An empty system buffer looks exactly like
+        // this.
         XCTAssertEqual(
-            BufferPlaceholder.of(hasMessages: false, hydrated: false, hydratesOnDemand: false, connection: .connected),
+            BufferPlaceholder.of(hasMessages: false, hydrated: true, hydratesOnDemand: false, bufferExists: true),
+            .empty
+        )
+    }
+
+    func testEmptyServerLogIsEmptyNotStuckLoading() {
+        // The regression guard: an empty `:server:` backlog never sets `hydrated` (the
+        // server omits `hasMoreOlder`, the parser defaults it true) and `:server:` can't
+        // hydrate on demand to fix that — so a `hydrated`-keyed rule would spin forever.
+        // Row existence is what saves it.
+        XCTAssertEqual(
+            BufferPlaceholder.of(hasMessages: false, hydrated: false, hydratesOnDemand: false, bufferExists: true),
             .empty
         )
     }

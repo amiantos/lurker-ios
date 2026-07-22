@@ -351,7 +351,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Connection trouble spelled out (#19) — the loud counterpart to the title dot —
         // and, behind an empty list, whether we're still loading or genuinely have nothing.
         connectionBanner.update(ConnectionBannerState.of(reachable: state.reachable, connection: state.connection))
-        updatePlaceholder(hasMessages: !updated.isEmpty, known: state.buffers[buffer.key.id], connection: state.connection)
+        updatePlaceholder(hasMessages: !updated.isEmpty, known: state.buffers[buffer.key.id])
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
 
@@ -460,12 +460,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Show a loading spinner or an empty-state placeholder behind an empty message list,
     /// or nothing when there are messages. Set as the table's `backgroundView`, so it sits
     /// behind the cells and the table hides it the instant there's a row to draw.
-    private func updatePlaceholder(hasMessages: Bool, known: Buffer?, connection: SocketStatus) {
+    private func updatePlaceholder(hasMessages: Bool, known: Buffer?) {
         let placeholder = BufferPlaceholder.of(
             hasMessages: hasMessages,
             hydrated: known?.hydrated ?? false,
             hydratesOnDemand: buffer.kind.hydratesOnDemand,
-            connection: connection
+            bufferExists: known != nil
         )
         guard placeholder != shownPlaceholder else { return }
         shownPlaceholder = placeholder
