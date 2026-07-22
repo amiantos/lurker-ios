@@ -54,6 +54,11 @@ final class JumpToLatestButton: UIView {
         badge.textColor = .white
         badge.textAlignment = .center
         badge.translatesAutoresizingMaskIntoConstraints = false
+        // The count already speaks through the button's accessibilityValue; left as
+        // elements of their own, the badge views would announce it a second time as a
+        // separate focus stop.
+        badge.isAccessibilityElement = false
+        badgeBackground.isAccessibilityElement = false
 
         glass.contentView.addSubview(button)
         addSubview(glass)

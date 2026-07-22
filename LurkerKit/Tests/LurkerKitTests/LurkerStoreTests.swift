@@ -173,10 +173,11 @@ final class LurkerStoreTests: XCTestCase {
     /// backlog replace drops it like any other unpersisted line.
     func testAppendLocalAddsAnEphemeralSystemLine() {
         let store = LurkerStore()
-        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
-        store.appendLocal(BufferKey(networkId: 1, target: "#lurker"), text: "not yet")
+        // The production scenario: answering the system buffer's composer, which may not
+        // even have a messages entry yet — appendLocal must create one.
+        store.appendLocal(Buffer.system.key, text: "not yet")
 
-        let appended = store.state.messages[chanKey]!.last!
+        let appended = store.state.messages[Buffer.system.key.id]!.last!
         XCTAssertEqual(appended.id, 0, "local lines never claim a persisted id")
         XCTAssertEqual(appended.type, .system)
         XCTAssertEqual(appended.text, "not yet")

@@ -141,8 +141,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The bottom counterpart of the fade the nav bar's scroll-edge effect gives the
         // top: declaring the composer as an element container over the table's bottom edge
         // has the system draw the same soft Liquid Glass fade under it, sized to the
-        // composer's actual shape. Nothing to draw when the composer is hidden (the
-        // read-only system buffer), which is right — there's nothing floating to fade under.
+        // composer's actual shape — and every buffer has a composer now, so every buffer
+        // gets the fade.
         let bottomEdge = UIScrollEdgeElementContainerInteraction()
         bottomEdge.scrollView = tableView
         bottomEdge.edge = .bottom
