@@ -5,9 +5,12 @@ import LurkerKit
 import UIKit
 
 /// The @‑mention suggestions: up to four nicks floating above the composer as separate
-/// glass pills, most recent speaker at the top. Discrete pills rather than one panel —
-/// everything down at the composer is already a family of floating glass capsules, and
-/// a flat list box would be the one flat thing among them.
+/// glass pills, best candidate at the bottom — likelihood equals proximity to the field,
+/// so the pill you almost certainly want is the shortest reach. (Discord stacks its
+/// panel the other way, but a panel has a selection cursor; loose pills don't.)
+/// Discrete pills rather than one panel — everything down at the composer is already a
+/// family of floating glass capsules, and a flat list box would be the one flat thing
+/// among them.
 ///
 /// Dumb by design: the owner computes candidates (`NickCompletion`) and hands them to
 /// `show`; this view only draws pills and reports taps.
@@ -39,11 +42,13 @@ final class MentionSuggestionsView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Rebuild the pills. Empty hides the strip. Rebuilt wholesale rather than diffed —
-    /// it's at most four small views, and a keystroke replaces the whole answer anyway.
+    /// Rebuild the pills from a best-first list; the reversal here is what puts the best
+    /// candidate nearest the composer. Empty hides the strip. Rebuilt wholesale rather
+    /// than diffed — it's at most four small views, and a keystroke replaces the whole
+    /// answer anyway.
     func show(_ nicks: [String]) {
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for nick in nicks {
+        for nick in nicks.reversed() {
             stack.addArrangedSubview(pill(for: nick))
         }
         isHidden = nicks.isEmpty

@@ -623,8 +623,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// Recompute the pill strip for the current query. Candidates are the web client's
     /// exact ranking (`NickCompletion`): recent speakers newest-first, then the rest of
-    /// the member list alphabetically, never yourself — capped at four, most recent on
-    /// top, per the Discord-style compact strip this is.
+    /// the member list alphabetically, never yourself — capped at four, with the best
+    /// candidate nearest the field (the strip reverses the list; see its doc).
     private func updateMentionSuggestions() {
         guard let mentionQuery else { return mentionSuggestions.show([]) }
         mentionSuggestions.show(NickCompletion.candidates(
