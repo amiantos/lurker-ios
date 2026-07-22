@@ -28,6 +28,13 @@ enum Palette {
     /// stays legible against both the system background and, later, anything behind glass.
     static let incomingBubble = UIColor.secondarySystemFill
 
+    /// The fill behind a line a highlight rule matched (#13). A warm wash of `warn` — the
+    /// same `--warn` gold the web client tints `.line.highlight` with — rather than a solid
+    /// fill, so the sender's mIRC colors and in-body nick colors still read over it. The web
+    /// uses 12% (18% on its alt-striped rows); this list has no striping, so it sits between
+    /// at a single value that reads in both themes without fighting the text.
+    static let highlightBubble = warn.withAlphaComponent(0.16)
+
     /// Our own bubble. A neutral gray clearly separated from the incoming fill rather than the
     /// accent tint — a colored fill fought the in-body nick colors (a palette nick on the
     /// accent was low-contrast or invisible). `.systemGray4` sits a couple steps off the

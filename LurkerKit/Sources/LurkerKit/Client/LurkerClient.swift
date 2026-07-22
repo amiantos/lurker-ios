@@ -365,6 +365,32 @@ final class LurkerClient {
         return body["transports"] as? [String] ?? []
     }
 
+    /// Fetch a page of recent highlights (`GET /api/highlights`). `before` is the cursor
+    /// from a prior page's `nextBefore` (nil for the first, newest page); the server pages
+    /// backward by message id. Returns nil on any failure so the caller can show an error
+    /// state — a 401 additionally bounces the session, matching `fetchNetworks`.
+    func fetchHighlights(before: Int? = nil, limit: Int = 50) async -> HighlightsPage? {
+        guard let token, var components = URLComponents(string: baseURL + "/api/highlights") else { return nil }
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        components.queryItems = query
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return nil
+            }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
+            return FrameParser.parseHighlights(text)
+        } catch {
+            return nil
+        }
+    }
+
     /// File this install's APNs device token against the signed-in account.
     /// Returns false when the server won't take it, so the caller can stop pretending
     /// push works.

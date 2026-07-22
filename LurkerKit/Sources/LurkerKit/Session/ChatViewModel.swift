@@ -143,6 +143,15 @@ public final class ChatViewModel {
         client.openBuffer(networkId: key.networkId, target: key.target)
     }
 
+    /// Fetch a page of recent highlights (#13). `before` is the previous page's
+    /// `nextBefore` cursor, nil for the first page. Returns nil on failure (a 401 also
+    /// bounces the session); the caller renders an error state. This is a REST read that
+    /// returns straight to the caller rather than folding into `state` — highlights span
+    /// every buffer and are shown in their own list, not merged into any one buffer's log.
+    public func fetchHighlights(before: Int? = nil) async -> HighlightsPage? {
+        await client.fetchHighlights(before: before)
+    }
+
     /// What the UI should do after a line of input — almost always nothing, but `/msg` and
     /// `/query` ask the composer's owner to switch to the DM they opened.
     public enum SendOutcome: Equatable, Sendable {

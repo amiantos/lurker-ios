@@ -145,7 +145,13 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         // for the line you're looking at.
         revealTime.text = MessageRenderer.timestamp(message.date)
 
-        bubble.backgroundColor = isSelf ? Palette.outgoingBubble : Palette.incomingBubble
+        // A matched line wins the fill regardless of side: the warm wash is the whole point,
+        // and a highlight in your own message (a rule firing on something you said) is worth
+        // the same mark as one in someone else's. Mirrors the web, which tints `.line.highlight`
+        // without regard to author.
+        bubble.backgroundColor = message.matched
+            ? Palette.highlightBubble
+            : (isSelf ? Palette.outgoingBubble : Palette.incomingBubble)
         bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
         messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
         // A link is body-colored with a soft underline — matching the web client, whose
