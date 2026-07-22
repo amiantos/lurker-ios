@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import LurkerKit
 import UIKit
 
 /// The message composer, in the shape Messages uses: a glass field that grows with the
@@ -32,6 +33,11 @@ final class ComposerBar: UIView {
     /// Fired when the intrinsic height changes (a line added or removed), so the owner can
     /// re-inset the conversation under the grown bar.
     var onHeightChange: (() -> Void)?
+
+    /// Fired when the caret's @‑mention context changes: the text after the `@` while one
+    /// is under the caret, nil when there isn't one. The owner floats the suggestion
+    /// pills; the bar only knows there's a token.
+    var onMentionQuery: ((String?) -> Void)?
 
     var placeholder: String = "" {
         didSet { placeholderLabel.text = placeholder }
@@ -93,6 +99,9 @@ final class ComposerBar: UIView {
     /// Whether the send button is currently in its active (accent) state, so its glass
     /// effect is only rebuilt when that flips — not on every keystroke.
     private var sendActive: Bool?
+    /// The last mention query handed to `onMentionQuery`, so keystrokes and caret moves
+    /// that don't change the answer don't re-fire it.
+    private var lastMentionQuery: String?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -230,6 +239,23 @@ final class ComposerBar: UIView {
         textViewDidChange(textView)
     }
 
+    /// Replace the active @token with the picked nick plus its addressing suffix — the
+    /// web picker's exact insertion, so both clients send the same line. The `@` itself
+    /// goes: IRC addresses by bare nick, and the sent line highlights by containing it.
+    func completeMention(with nick: String) {
+        let selection = textView.selectedRange
+        guard selection.length == 0,
+              let token = NickCompletion.activeMention(in: textView.text, caret: selection.location)
+        else { return }
+        let replacement = nick + NickCompletion.addressingSuffix(beforeTokenAt: token.start, in: textView.text)
+        let range = NSRange(location: token.start, length: selection.location - token.start)
+        textView.text = (textView.text as NSString).replacingCharacters(in: range, with: replacement)
+        textView.selectedRange = NSRange(location: token.start + (replacement as NSString).length, length: 0)
+        // Programmatic edits don't fire the delegate; run it ourselves for the height,
+        // the send button, and the mention emit (now nil — the token is gone).
+        textViewDidChange(textView)
+    }
+
     @discardableResult
     override func becomeFirstResponder() -> Bool { textView.becomeFirstResponder() }
 
@@ -312,8 +338,27 @@ final class ComposerBar: UIView {
 }
 
 extension ComposerBar: UITextViewDelegate {
+    /// Caret moves matter as much as keystrokes: arrowing out of an `@token` (or into
+    /// one) changes the mention context without changing the text.
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        emitMentionQuery()
+    }
+
+    /// Hand the owner the current mention context, only when it changed. A selection
+    /// (length > 0) is never mid-mention — that's editing, not typing.
+    private func emitMentionQuery() {
+        let selection = textView.selectedRange
+        let query: String? = selection.length == 0
+            ? NickCompletion.activeMention(in: textView.text, caret: selection.location)?.query
+            : nil
+        guard query != lastMentionQuery else { return }
+        lastMentionQuery = query
+        onMentionQuery?(query)
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         updateSendEnabled()
+        emitMentionQuery()
 
         // Grow to fit the text, up to the cap; past it, hold the height and let the text
         // scroll inside. The floor is one line's height, the same value the pills use, so a

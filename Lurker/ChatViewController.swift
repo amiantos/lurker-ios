@@ -27,6 +27,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// moment they're back at the bottom, however they got there.
     private let jumpButton = JumpToLatestButton()
     private var newWhileDetached = 0
+    /// The @‑mention pill strip and the query currently filtering it (nil = no active
+    /// mention under the caret). The composer reports the token; this screen owns the
+    /// candidates, because they come from state the bar never sees (messages, members).
+    private let mentionSuggestions = MentionSuggestionsView()
+    private var mentionQuery: String?
     /// How far the keyboard currently intrudes into the view, above the safe area — i.e.
     /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
     /// only decides whether the breathing gap applies (see `keyboardWillChange`).
@@ -152,6 +157,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(jumpButton)
 
+        composer.onMentionQuery = { [weak self] query in
+            self?.mentionQuery = query
+            self?.updateMentionSuggestions()
+        }
+        mentionSuggestions.onPick = { [weak self] nick in self?.composer.completeMention(with: nick) }
+        mentionSuggestions.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(mentionSuggestions)
+
         // To the keyboard layout guide, not the safe area: at rest the guide's top *is*
         // the safe-area bottom, and with the keyboard up (or mid-drag — see
         // `keyboardDismissMode` above) it's the keyboard's top edge. One anchor covers
@@ -176,6 +189,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // so the keyboard carries both up together.
             jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
+
+            // The mention pills: leading side (the jump pill owns the trailing), riding
+            // the composer for the same keyboard-carries-both reason.
+            mentionSuggestions.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            mentionSuggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            mentionSuggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
         observeKeyboard()
@@ -292,6 +311,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         rows = buildRows(from: updated)
         updateTitle(state)
         composer.placeholder = composerPlaceholder
+        // A strip left open across new traffic re-ranks live: whoever just spoke is now
+        // the most recent speaker, and a leaver stops being offered.
+        updateMentionSuggestions()
         surface(state.error)
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
@@ -594,6 +616,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func send(_ text: String) {
         viewModel.send(buffer.key, text: text)
         composer.clear()
+    }
+
+    /// Recompute the pill strip for the current query. Candidates are the web client's
+    /// exact ranking (`NickCompletion`): recent speakers newest-first, then the rest of
+    /// the member list alphabetically, never yourself — capped at four, most recent on
+    /// top, per the Discord-style compact strip this is.
+    private func updateMentionSuggestions() {
+        guard let mentionQuery else { return mentionSuggestions.show([]) }
+        mentionSuggestions.show(NickCompletion.candidates(
+            messages: messages,
+            members: viewModel.state.members[buffer.key.id] ?? [],
+            selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
+            query: mentionQuery,
+            isChannel: buffer.kind == .channel
+        ))
     }
 
     // MARK: - Navigation
