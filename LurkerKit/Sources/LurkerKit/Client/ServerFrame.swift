@@ -43,6 +43,17 @@ enum ServerFrame: Equatable, Sendable {
     /// message, because it's also something the channel said.
     case channelTopic(networkId: Int?, target: String, topic: String?)
 
+    /// A `names` event: the channel's full member list, replacing whatever we hold. The
+    /// server sends it on our own join and re-broadcasts it whenever it re-learns the
+    /// list wholesale (a prefix-mode change, a WHO ident/host backfill, an away flip via
+    /// away-notify). Ephemeral and silent, like `channelTopic` — state, not a line.
+    case channelMembers(networkId: Int?, target: String, members: [Member])
+
+    /// A `member-update` event: one member's current snapshot, patched onto the list in
+    /// place. The server's incremental alternative to re-broadcasting `names` for a
+    /// one-nick edit (a chghost, an account change). Also ephemeral and silent.
+    case memberUpdate(networkId: Int?, target: String, member: Member)
+
     /// WS `read-state`: server-authoritative read counts for a buffer, broadcast to all of
     /// the user's devices (after a mark-read, or any countable event). The client mirrors
     /// these onto the buffer — it never derives unread/highlight counts locally.

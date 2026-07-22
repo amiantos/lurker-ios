@@ -106,6 +106,47 @@ final class FrameParserTests: XCTestCase {
         XCTAssertNil(topic)
     }
 
+    /// `names` is lifted out of `irc` for the same reason as `channel-topic`: state, not
+    /// a line, with its payload in `members` where `parseEvent` never looks.
+    func testANamesEventParsesToChannelMembersNotALine() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"names","members":[{"nick":"alice","modes":["o"],"away":false,"user":"al","host":"example.org"},{"nick":"bob","modes":[],"away":true}]}"##
+        )
+        guard case let .channelMembers(networkId, target, members) = frame else {
+            return XCTFail("expected channelMembers, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 1)
+        XCTAssertEqual(target, "#lurker")
+        XCTAssertEqual(members.map(\.nick), ["alice", "bob"])
+        XCTAssertEqual(members[0].modes, ["o"])
+        XCTAssertEqual(members[0].host, "example.org")
+        XCTAssertTrue(members[1].away)
+    }
+
+    func testAMemberUpdateParsesItsMemberSnapshot() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"member-update","member":{"nick":"bob","modes":["v"],"away":true,"user":"rob","host":"new.example.org"}}"##
+        )
+        guard case let .memberUpdate(networkId, target, member) = frame else {
+            return XCTFail("expected memberUpdate, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 1)
+        XCTAssertEqual(target, "#lurker")
+        XCTAssertEqual(member.nick, "bob")
+        XCTAssertEqual(member.modes, ["v"])
+        XCTAssertTrue(member.away)
+        XCTAssertEqual(member.host, "new.example.org")
+    }
+
+    func testAMemberUpdateWithoutANickIsIgnoredNotAppliedToNobody() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"member-update","member":{"away":true}}"##
+        )
+        guard case .ignored = frame else {
+            return XCTFail("expected ignored, got \(frame)")
+        }
+    }
+
     func testSnapshotParsesNetworksChannelsAndMembersButNoName() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":1,"state":"connected","nick":"me","channels":[{"name":"#lurker","topic":"hi","members":[{"nick":"alice","modes":["o"],"away":false},{"nick":"bob","modes":[],"away":true}]}]}]}"##
