@@ -117,7 +117,14 @@ final class ComposerBar: UIView {
         textView.adjustsFontForContentSizeCategory = true
         textView.textContainerInset = Self.textInset
         textView.textContainer.lineFragmentPadding = 0
-        textView.autocorrectionType = .no
+        // Correction on, capitalization off — the pairing the web client can't offer
+        // (Safari re-applies sentence caps whenever correction is on, which is why its
+        // settings couple the two; UIKit keeps them independent). IRC is lowercase-native
+        // — nicks, /commands, #channels — so forced caps mangle more than they fix, while
+        // correction still earns its keep in prose. `.default`, not `.yes`: the user's
+        // system-wide autocorrect preference stays the boss.
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .default
         textView.isScrollEnabled = false // until it hits the cap; see textViewDidChange
         textView.delegate = self
         textView.translatesAutoresizingMaskIntoConstraints = false
