@@ -50,17 +50,14 @@ final class HighlightsViewController: UITableViewController {
     /// list extends before they hit the end rather than stalling on it.
     private static let prefetchThreshold = 8
 
-    /// One channel+day run: a header (`Network/#channel` + day) over the consecutive matches
-    /// that share it. Identity fields fold case and start-of-day so a run breaks exactly when
-    /// the channel or the day changes; `items` is `var` so the run can accrete as it's built.
+    /// A rendered channel+day run: the resolved header text (network name + target + day) over
+    /// the matches that share it. The run boundaries and day classification are computed by
+    /// `HighlightGrouping` in LurkerKit; this only carries what the table draws.
     private struct Section {
-        let networkId: Int?
-        let foldedTarget: String
-        let dayStart: Date?
         let networkName: String?
         let target: String
         let dayLabel: String
-        var items: [HighlightItem]
+        let items: [HighlightItem]
     }
 
     init(viewModel: ChatViewModel) {
@@ -165,46 +162,34 @@ final class HighlightsViewController: UITableViewController {
 
     // MARK: - Sections (channel + day runs)
 
-    /// Group the flat, newest-first list into channel+day runs — a new section begins whenever
-    /// the channel or the local calendar day changes from the previous row, so a run of matches
-    /// in one channel on one day sits under a single header (iMessage's grouping, order kept).
+    /// Fold the flat, newest-first list into the channel+day runs the table draws. The run
+    /// boundaries and day classification live in `HighlightGrouping` (pure + tested in
+    /// LurkerKit); this maps each group to its rendered header — the roster-resolved network
+    /// name, the target, and the formatted day.
     private func rebuildSections() {
-        let calendar = Calendar.current
-        let now = Date()
-        var built: [Section] = []
-        var offsets: [Int] = []
-        for (index, item) in items.enumerated() {
-            let dayStart = item.message.date.map { calendar.startOfDay(for: $0) }
-            let folded = item.target.lowercased()
-            if var last = built.last,
-               last.networkId == item.networkId, last.foldedTarget == folded, last.dayStart == dayStart {
-                last.items.append(item)
-                built[built.count - 1] = last
-            } else {
-                offsets.append(index)
-                built.append(Section(
-                    networkId: item.networkId,
-                    foldedTarget: folded,
-                    dayStart: dayStart,
-                    networkName: networkName(for: item),
-                    target: item.target,
-                    dayLabel: Self.dayLabel(dayStart, now: now, calendar: calendar),
-                    items: [item]
-                ))
-            }
+        let groups = HighlightGrouping.group(items, now: Date())
+        sections = groups.map { group in
+            Section(
+                networkName: networkName(for: group.items[0]),
+                target: group.target,
+                dayLabel: Self.dayLabel(group.day),
+                items: group.items
+            )
         }
-        sections = built
-        sectionOffsets = offsets
+        sectionOffsets = groups.map(\.offset)
     }
 
-    /// Today / Yesterday / a short date for the header's trailing day stamp. Nil-dated events
-    /// (no readable time) fall to "Earlier". Bucketed in the device's local time zone.
-    private static func dayLabel(_ dayStart: Date?, now: Date, calendar: Calendar) -> String {
-        guard let day = dayStart else { return "Earlier" }
-        if calendar.isDateInToday(day) { return "Today" }
-        if calendar.isDateInYesterday(day) { return "Yesterday" }
-        let formatter = calendar.isDate(day, equalTo: now, toGranularity: .year) ? sameYearFormatter : fullDateFormatter
-        return formatter.string(from: day)
+    /// Format a `HighlightDay` for the header's trailing stamp — Today / Yesterday / a short
+    /// date (with the year only when it isn't the current one) / "Earlier" for undated rows.
+    private static func dayLabel(_ day: HighlightDay) -> String {
+        switch day {
+        case .today: return "Today"
+        case .yesterday: return "Yesterday"
+        case .undated: return "Earlier"
+        case .on(let date):
+            let sameYear = Calendar.current.isDate(date, equalTo: Date(), toGranularity: .year)
+            return (sameYear ? sameYearFormatter : fullDateFormatter).string(from: date)
+        }
     }
 
     private static let sameYearFormatter: DateFormatter = {
@@ -263,10 +248,13 @@ final class HighlightsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID, for: indexPath) as! BubbleCell
-        let item = sections[indexPath.section].items[indexPath.row]
+        let section = sections[indexPath.section]
+        let item = section.items[indexPath.row]
         // .solo — each match is its own run — and showsHighlight:false so the wash stays off
         // (every row matched, so it would be a monotone wall). The chevron marks the jump.
-        cell.configure(item.message, position: .solo, networkName: item.networkName, showsHighlight: false)
+        // `section.networkName` is the roster-resolved name, so a system/motd highlight on an
+        // older server (no networkName on the row) still captions its network.
+        cell.configure(item.message, position: .solo, networkName: section.networkName, showsHighlight: false)
         cell.accessoryType = .disclosureIndicator
         return cell
     }
