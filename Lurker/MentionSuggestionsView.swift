@@ -19,14 +19,18 @@ final class MentionSuggestionsView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         stack.axis = .vertical
-        stack.alignment = .leading
+        // Centered, not leading-aligned: the pills hang in the middle of the screen over
+        // the field, so each is a thumb's reach from either hand rather than a stretch
+        // to the left edge — and mixed-width nicks read as one centered group.
+        stack.alignment = .center
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
             stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
         ])
         isHidden = true

@@ -190,9 +190,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
-            // The mention pills: leading side (the jump pill owns the trailing), riding
-            // the composer for the same keyboard-carries-both reason.
-            mentionSuggestions.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            // The mention pills: centered over the field for tap reach (the jump pill
+            // owns the trailing edge), riding the composer for the same
+            // keyboard-carries-both reason. The edge insets only bite on a nick long
+            // enough to need truncating.
+            mentionSuggestions.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            mentionSuggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
             mentionSuggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             mentionSuggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
