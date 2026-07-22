@@ -38,14 +38,14 @@ public enum CommandParser {
             ? []
             : argLine.split(whereSeparator: { $0.isWhitespace }).map(String.init)
 
-        return .command(resolve(verb: verb, body: body, argLine: argLine, rest: rest, networkId: networkId, target: target))
+        return .command(resolve(verb: verb, fullBody: body, argLine: argLine, rest: rest, networkId: networkId, target: target))
     }
 
     // MARK: - Dispatch
 
     private static func resolve(
         verb: String,
-        body: String,
+        fullBody: String,
         argLine: String,
         rest: [String],
         networkId: Int?,
@@ -86,16 +86,20 @@ public enum CommandParser {
             effects.append(.activate(target: who))
             return effects
         case "notice":
-            guard let who = rest.first else { return [.info("usage: /notice <target> <message>")] }
-            let bodyText = rest.dropFirst().joined(separator: " ")
-            guard !bodyText.isEmpty else { return [.info("usage: /notice <target> <message>")] }
+            guard let who = rest.first else { return [.info("usage: /notice <target> <text>")] }
+            // Slice the body past the target so interior spacing survives (mirrors /topic),
+            // rather than re-joining the whitespace-split tokens.
+            let bodyText = body(after: who, in: argLine)
+            guard !bodyText.isEmpty else { return [.info("usage: /notice <target> <text>")] }
             return [.notice(target: who, text: bodyText)]
         case "ctcp":
             guard rest.count >= 2 else { return [.info("usage: /ctcp <target> <type> [args]")] }
             let ctcpArgs = rest.dropFirst(2).joined(separator: " ")
             return [.ctcp(target: rest[0], type: rest[1].uppercased(), args: ctcpArgs)]
         case "ping":
-            guard let who = rest.first else { return [.info("usage: /ping <nick>")] }
+            // A bare /ping in a DM pings the peer.
+            let who = rest.first ?? (isNickTarget(target) ? target : "")
+            guard !who.isEmpty else { return [.info("usage: /ping <nick>")] }
             return [.ctcp(target: who, type: "PING", args: "")]
 
         // Channels & buffers
@@ -111,12 +115,32 @@ public enum CommandParser {
             let reason = rest.dropFirst().joined(separator: " ")
             return [.part(channel: channel, reason: reason.isEmpty ? nil : reason)]
         case "cycle", "hop":
-            let channel = rest.first ?? target
-            return [.part(channel: channel, reason: nil), .join(channel: ensureChannelPrefix(channel), key: nil)]
+            // Part and rejoin the CURRENT channel; the whole arg line is an optional part
+            // reason (not a channel). Both legs use the structured verbs so the persisted
+            // `joined` flag flips false and back, keeping reconnect auto-join intact.
+            guard isChannelTarget(target) else {
+                return [.info("usage: /cycle [reason] — run inside a channel")]
+            }
+            return [.part(channel: target, reason: argLine.isEmpty ? nil : argLine),
+                    .join(channel: target, key: nil)]
         case "close":
             return [.close(target: target)]
         case "topic":
-            let line = argLine.isEmpty ? "TOPIC \(target)" : "TOPIC \(target) :\(argLine)"
+            // `/topic` reads the current channel's topic; `/topic text` sets it; a leading
+            // `#chan` retargets. Interior spacing of the body is preserved by slicing.
+            let channel: String
+            let bodyText: String
+            if let first = rest.first, first.hasPrefix("#") {
+                channel = first
+                bodyText = body(after: first, in: argLine)
+            } else {
+                guard isChannelTarget(target) else {
+                    return [.info("usage: /topic [#chan] [text] — no channel context")]
+                }
+                channel = target
+                bodyText = argLine
+            }
+            let line = bodyText.isEmpty ? "TOPIC \(channel)" : "TOPIC \(channel) :\(bodyText)"
             return [.raw(line: line)]
         case "nick":
             guard let newNick = rest.first else { return [.info("usage: /nick <newnick>")] }
@@ -133,12 +157,32 @@ public enum CommandParser {
 
         // Moderation
         case "kick":
-            guard let who = rest.first else { return [.info("usage: /kick <nick> [reason]")] }
-            let reason = rest.dropFirst().joined(separator: " ")
+            // `/kick <nick> [reason]` in a channel, or `/kick <#chan> <nick> [reason]` anywhere.
+            let channel: String?
+            let who: String?
+            let reason: String
+            if let first = rest.first, first.hasPrefix("#") {
+                channel = first
+                who = rest.count > 1 ? rest[1] : nil
+                reason = rest.dropFirst(2).joined(separator: " ")
+            } else {
+                channel = isChannelTarget(target) ? target : nil
+                who = rest.first
+                reason = rest.dropFirst().joined(separator: " ")
+            }
+            guard let channel else {
+                return [.info("usage: /kick [#chan] <nick> [reason] — no channel context")]
+            }
+            guard let who else { return [.info("usage: /kick [#chan] <nick> [reason]")] }
             let trailer = reason.isEmpty ? "" : " :\(reason)"
-            return [.raw(line: "KICK \(target) \(who)\(trailer)")]
+            return [.raw(line: "KICK \(channel) \(who)\(trailer)")]
         case "mode":
-            guard !argLine.isEmpty else { return [.info("usage: /mode <modes>")] }
+            // `/mode <flags>` applies to the current channel; `/mode <target> <flags…>` is
+            // explicit. A leading `+`/`-` in a channel buffer is the flags-only form.
+            guard let first = rest.first else { return [.info("usage: /mode [target] <flags> [args]")] }
+            if (first.hasPrefix("+") || first.hasPrefix("-")), isChannelTarget(target) {
+                return [.raw(line: "MODE \(target) \(rest.joined(separator: " "))")]
+            }
             return [.raw(line: "MODE \(argLine)")]
         case "op": return modeShortcut("o", adding: true, rest: rest, target: target)
         case "deop": return modeShortcut("o", adding: false, rest: rest, target: target)
@@ -176,37 +220,45 @@ public enum CommandParser {
             return [.info("Connecting and disconnecting networks isn't in the app yet — it's coming with network management.")]
 
         default:
-            // Server-query verbs (WHO, NAMES, MOTD, …) and anything unrecognized go raw,
-            // exactly as the web's `default`. The original casing is preserved: `line.slice(1)`.
-            return [.raw(line: body.trimmingCharacters(in: .whitespaces))]
+            // Anything unrecognized goes raw, exactly as the web's `default`. The original
+            // casing is preserved: `line.slice(1)`.
+            return [.raw(line: fullBody.trimmingCharacters(in: .whitespaces))]
         }
     }
 
     // MARK: - Helpers
 
     /// The mode-shortcut family (`/op`, `/ban`, …): one mode letter repeated once per target,
-    /// against a leading channel arg or the current buffer. `/op a b` → `MODE #chan +oo a b`.
+    /// against a leading `#channel` arg or the current channel buffer. `/op a b` →
+    /// `MODE #chan +oo a b`. Refuses outside a channel, rather than aiming a channel mode at
+    /// a DM peer.
     private static func modeShortcut(
         _ letter: Character,
         adding: Bool,
         rest: [String],
         target: String
     ) -> [CommandEffect] {
+        var channel: String? = isChannelTarget(target) ? target : nil
         var args = rest
-        // An explicit leading channel overrides the current buffer.
-        let channel: String
-        if let first = args.first, isChannelTarget(first) {
+        if let first = args.first, first.hasPrefix("#") {
             channel = first
             args.removeFirst()
-        } else {
-            channel = target
+        }
+        guard let channel else {
+            return [.info("usage: /\(adding ? "" : "de")\(letter) [#chan] <nick>… — no channel context")]
         }
         guard !args.isEmpty else {
-            return [.info("usage: /\(adding ? "" : "de")\(letter) <nick>…")]
+            return [.info("usage: /\(adding ? "" : "de")\(letter) [#chan] <nick>…")]
         }
         let sign = adding ? "+" : "-"
         let letters = String(repeating: letter, count: args.count)
         return [.raw(line: "MODE \(channel) \(sign)\(letters) \(args.joined(separator: " "))")]
+    }
+
+    /// The body of a command after its first token, interior spacing preserved — the web's
+    /// `argLine.slice(first.length).trim()`. `argLine` begins with `first`.
+    private static func body(after first: String, in argLine: String) -> String {
+        String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
     }
 
     /// Prefix a bare channel name with `#`, leaving an already-prefixed one alone — the web's

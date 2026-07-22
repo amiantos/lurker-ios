@@ -77,6 +77,11 @@ final class CommandParserTests: XCTestCase {
         guard case .info = effects("/notice bob").first else { return XCTFail("expected usage info") }
     }
 
+    func testNoticePreservesInteriorSpacing() {
+        // The body is sliced past the target, not re-joined from split tokens (mirrors /me).
+        XCTAssertEqual(effects("/notice bob heads   up"), [.notice(target: "bob", text: "heads   up")])
+    }
+
     // MARK: - Channels
 
     func testJoinPrefixesABareChannel() {
@@ -100,9 +105,21 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/leave"), [.part(channel: "#chan", reason: nil)])
     }
 
-    func testCycleIsPartThenJoin() {
+    func testCycleIsPartThenJoinOfTheCurrentChannel() {
         XCTAssertEqual(effects("/cycle"),
                        [.part(channel: "#chan", reason: nil), .join(channel: "#chan", key: nil)])
+    }
+
+    func testCycleArgumentIsAReasonNotAChannel() {
+        // Both legs stay on the current channel; the arg line is the part reason.
+        XCTAssertEqual(effects("/cycle back soon"),
+                       [.part(channel: "#chan", reason: "back soon"), .join(channel: "#chan", key: nil)])
+    }
+
+    func testCycleOutsideAChannelIsRefused() {
+        guard case .info = effects("/cycle", target: "bob").first else {
+            return XCTFail("expected a channel-context note")
+        }
     }
 
     func testCloseTargetsTheCurrentBuffer() {
@@ -112,6 +129,16 @@ final class CommandParserTests: XCTestCase {
     func testTopicQueriesWhenEmptyAndSetsOtherwise() {
         XCTAssertEqual(effects("/topic"), [.raw(line: "TOPIC #chan")])
         XCTAssertEqual(effects("/topic hello world"), [.raw(line: "TOPIC #chan :hello world")])
+    }
+
+    func testTopicRetargetsWithALeadingChannel() {
+        XCTAssertEqual(effects("/topic #other new topic"), [.raw(line: "TOPIC #other :new topic")])
+    }
+
+    func testModeShortcutRefusedInADm() {
+        guard case .info = effects("/op alice", target: "bob").first else {
+            return XCTFail("expected a channel-context note for a mode shortcut in a DM")
+        }
     }
 
     func testNickIsARawLine() {
@@ -138,6 +165,16 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/kick bob"), [.raw(line: "KICK #chan bob")])
     }
 
+    func testKickTakesAnExplicitLeadingChannel() {
+        XCTAssertEqual(effects("/kick #other bob spam"), [.raw(line: "KICK #other bob :spam")])
+    }
+
+    func testKickOutsideAChannelWithoutAChannelArgIsRefused() {
+        guard case .info = effects("/kick bob", target: "alice").first else {
+            return XCTFail("expected a channel-context note")
+        }
+    }
+
     func testOpRepeatsTheModeLetterPerNick() {
         XCTAssertEqual(effects("/op alice bob"), [.raw(line: "MODE #chan +oo alice bob")])
     }
@@ -151,8 +188,14 @@ final class CommandParserTests: XCTestCase {
                        [.raw(line: "MODE #other +b *!*@spam.host")])
     }
 
-    func testModePassesThrough() {
+    func testModeExplicitTargetPassesThrough() {
         XCTAssertEqual(effects("/mode #chan +m"), [.raw(line: "MODE #chan +m")])
+    }
+
+    func testModeFlagsOnlyPrependsTheCurrentChannel() {
+        // `/mode +m` in a channel targets that channel, not a bogus target "+m".
+        XCTAssertEqual(effects("/mode +m"), [.raw(line: "MODE #chan +m")])
+        XCTAssertEqual(effects("/mode +b *!*@x"), [.raw(line: "MODE #chan +b *!*@x")])
     }
 
     // MARK: - Server / services
