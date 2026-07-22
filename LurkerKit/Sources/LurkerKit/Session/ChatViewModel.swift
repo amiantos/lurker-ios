@@ -144,6 +144,14 @@ public final class ChatViewModel {
     }
 
     public func send(_ key: BufferKey, text: String) {
+        // The system buffer is the app's command console on the web (#355); this client
+        // doesn't run commands yet (#10). Until it does, answer any input with a local
+        // line — the web's own pattern for non-command input there — rather than silently
+        // dropping the one write the user made deliberately.
+        guard key.networkId != nil else {
+            store.appendLocal(key, text: "Commands haven't arrived in the app yet.")
+            return
+        }
         client.sendMessage(networkId: key.networkId, target: key.target, text: text)
     }
 

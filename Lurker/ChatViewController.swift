@@ -120,7 +120,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             self.tableView.reconfigureRows(at: self.tableView.indexPathsForVisibleRows ?? [])
         }
 
-        composer.placeholder = "Message \(displayName)"
+        composer.placeholder = composerPlaceholder
         composer.onSend = { [weak self] text in self?.send(text) }
         // A grown composer reserves more space (via viewDidLayoutSubviews after this forces
         // the pass), and should carry the newest message up with it rather than letting the
@@ -132,9 +132,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if wasNearBottom { scrollToBottom() }
         }
         composer.translatesAutoresizingMaskIntoConstraints = false
-        // The system buffer is read-only — there's nowhere to send it.
-        let composes = buffer.networkId != nil
-        composer.isHidden = !composes
+        // Every buffer composes — the system buffer too, as the app's command console
+        // (#355 on the web; commands themselves are #10 here). It just has nothing to
+        // attach, so the paperclip goes and the field takes the width.
+        composer.showsAttach = buffer.networkId != nil
         view.addSubview(composer)
 
         // The bottom counterpart of the fade the nav bar's scroll-edge effect gives the
@@ -239,11 +240,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         nickHighlighter = NickHighlighter(nicks: names)
     }
 
-    /// What the pill and the composer call this buffer. The system buffer's connection
-    /// state used to be spelled out here as the title text ("Connecting…"); it's the pill's
-    /// light now.
+    /// What the pill calls this buffer. The system buffer's connection state used to be
+    /// spelled out here as the title text ("Connecting…"); it's the pill's light now.
     private var displayName: String {
         buffer.displayName(networkName: buffer.networkId.flatMap { networks[$0]?.name })
+    }
+
+    /// What the empty field says: the network's name — the transport, the way iMessage
+    /// captions its field "iMessage" or "Text Message" rather than the recipient, who is
+    /// already named by the title pill. Re-read on every `apply`, because the snapshot
+    /// creates networks as "network" and the REST roster fills real names in later.
+    /// The system buffer is the app's own command console, so it invites one.
+    private var composerPlaceholder: String {
+        guard let networkId = buffer.networkId else { return "Type a command…" }
+        return networks[networkId]?.name ?? "Message"
     }
 
     private func apply(_ state: ChatState) {
@@ -281,6 +291,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         messages = updated
         rows = buildRows(from: updated)
         updateTitle(state)
+        composer.placeholder = composerPlaceholder
         surface(state.error)
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
@@ -333,9 +344,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Extend the interactive-dismiss zone up past the composer: the drag should engage
         // when the finger reaches the *bar*, the way Messages' does, not only once it
         // touches the keyboard itself. Recomputed here because the bar grows with its text.
-        view.keyboardLayoutGuide.keyboardDismissPadding = composer.isHidden
-            ? 0
-            : composer.bounds.height + Self.keyboardGap
+        view.keyboardLayoutGuide.keyboardDismissPadding = composer.bounds.height + Self.keyboardGap
         // The other half of the initial scroll: this is where an already-hydrated buffer
         // finally gets a height to scroll within.
         landAtBottomIfNeeded()
@@ -903,13 +912,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// once. The `- safeAreaInsets.bottom` cancels the safe-area inset the table's automatic
     /// adjustment has already added, so the reservation isn't double-counted — get that
     /// wrong and the last line sits half-under the composer.
-    ///
-    /// No composer (the read-only system buffer) means no reservation: content runs to the
-    /// safe-area edge as any full-height scroll view would.
     private func updateBottomInset() {
-        let reserved = composer.isHidden
-            ? 0
-            : max(0, view.bounds.maxY - composer.frame.minY - view.safeAreaInsets.bottom)
+        let reserved = max(0, view.bounds.maxY - composer.frame.minY - view.safeAreaInsets.bottom)
         tableView.contentInset.bottom = reserved
         tableView.verticalScrollIndicatorInsets.bottom = reserved
     }
