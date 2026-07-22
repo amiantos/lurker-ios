@@ -20,6 +20,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var cancellables = Set<AnyCancellable>()
 
     private let tableView = UITableView()
+    /// The floating "your connection is unhappy" capsule at the top — offline/connecting/
+    /// reconnecting in words, the loud counterpart to the title pill's dot (#19).
+    private let connectionBanner = ConnectionBanner()
+    /// The empty/loading placeholder drawn behind an empty message list — the difference
+    /// between "still fetching" and "genuinely nothing here", which a blank list conflates.
+    private let placeholderView = StateView()
     private let composer = ComposerBar()
     private var composerBottom: NSLayoutConstraint!
     /// The floating "back to the newest message" pill (see `JumpToLatestButton`), and the
@@ -118,6 +124,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
 
+        // Floats over the conversation just under the nav bar; touches pass through to the
+        // messages beneath it (see `ConnectionBanner`).
+        connectionBanner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(connectionBanner)
+
         // Nick and mIRC colors are trait-keyed and adapt in place when redrawn, but a `/me`
         // marker is a baked image that can't — so on a light/dark switch, reconfigure the
         // visible rows to rebuild those markers. Reconfigure, not reloadData: it keeps the
@@ -191,6 +202,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            // Centered just below the nav bar — the safe-area top sits right under it, so
+            // the capsule drops into the gap between the title pill and the conversation.
+            connectionBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            connectionBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            connectionBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
 
             composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -330,6 +348,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the most recent speaker, and a leaver stops being offered.
         updateSuggestions()
         surface(state.error)
+        // Connection trouble spelled out (#19) — the loud counterpart to the title dot —
+        // and, behind an empty list, whether we're still loading or genuinely have nothing.
+        connectionBanner.update(ConnectionBannerState.of(reachable: state.reachable, connection: state.connection))
+        updatePlaceholder(hasMessages: !updated.isEmpty, known: state.buffers[buffer.key.id])
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
 
@@ -429,6 +451,52 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard !openRequested, let known = state.buffers[buffer.key.id], !known.hydrated else { return }
         openRequested = true
         viewModel.openBuffer(buffer.key)
+    }
+
+    /// The placeholder currently installed, so a fresh `apply` on every live message
+    /// doesn't rebuild the same `StateView` and reassign `backgroundView` unchanged.
+    private var shownPlaceholder: BufferPlaceholder?
+
+    /// Show a loading spinner or an empty-state placeholder behind an empty message list,
+    /// or nothing when there are messages. Set as the table's `backgroundView`, so it sits
+    /// behind the cells and the table hides it the instant there's a row to draw.
+    private func updatePlaceholder(hasMessages: Bool, known: Buffer?) {
+        let placeholder = BufferPlaceholder.of(
+            hasMessages: hasMessages,
+            hydrated: known?.hydrated ?? false,
+            hydratesOnDemand: buffer.kind.hydratesOnDemand,
+            bufferExists: known != nil
+        )
+        guard placeholder != shownPlaceholder else { return }
+        shownPlaceholder = placeholder
+        switch placeholder {
+        case .none:
+            tableView.backgroundView = nil
+        case .loading:
+            placeholderView.configure(.init(title: "Loading messages…", isLoading: true))
+            tableView.backgroundView = placeholderView
+        case .empty:
+            placeholderView.configure(emptyStateModel)
+            tableView.backgroundView = placeholderView
+        }
+    }
+
+    /// The empty-state copy, per buffer kind — a just-joined channel and a fresh DM are
+    /// different invitations, and the system/server buffers aren't conversations at all.
+    private var emptyStateModel: StateView.Model {
+        switch buffer.kind {
+        case .channel:
+            return .init(symbol: "text.bubble", title: "No messages yet",
+                         subtitle: "Messages in \(buffer.target) will show up here.")
+        case .dm:
+            return .init(symbol: "text.bubble", title: "No messages yet",
+                         subtitle: "Say hello to \(buffer.target).")
+        case .server:
+            return .init(symbol: "server.rack", title: "Nothing from the server yet")
+        case .system:
+            return .init(symbol: "sparkles", title: "Welcome to Lurker",
+                         subtitle: "Run /commands to see what you can do.")
+        }
     }
 
     private func updateTitle(_ state: ChatState) {
