@@ -113,13 +113,31 @@ final class CommandCompletionTests: XCTestCase {
         XCTAssertEqual(CommandRegistry.matching("j").map(\.name), ["join"])
     }
 
-    func testMatchingEmptyReturnsCappedList() {
-        XCTAssertEqual(CommandRegistry.matching("").count, 6)
+    func testMatchingEmptyReturnsTheFeaturedStarterSet() {
+        // A bare `/` shows a cross-category starter set, not just the first table block.
+        let names = CommandRegistry.matching("").map(\.name)
+        XCTAssertEqual(names, CommandRegistry.featured)
+        XCTAssertTrue(names.contains("join"), "discovery must surface /join, not only Messaging")
     }
 
     func testAliasesResolveToOneSpec() {
         // `/query` is an alias of `/msg`; the chips shouldn't offer both.
         XCTAssertEqual(CommandRegistry.spec(for: "query")?.name, "msg")
         XCTAssertFalse(CommandRegistry.matching("q").contains { $0.name == "query" })
+    }
+
+    // MARK: - ChannelName
+
+    func testChannelFoldMatchesRegardlessOfSigil() {
+        // The `#` a user hasn't typed yet shouldn't hide a channel: `li` and `#li` both fold
+        // to the same needle that prefix-matches `#linux`.
+        XCTAssertEqual(ChannelName.fold("#Linux"), "linux")
+        XCTAssertTrue(ChannelName.fold("#linux").hasPrefix(ChannelName.fold("li")))
+        XCTAssertTrue(ChannelName.fold("#linux").hasPrefix(ChannelName.fold("#li")))
+    }
+
+    func testChannelEnsurePrefix() {
+        XCTAssertEqual(ChannelName.ensurePrefix("linux"), "#linux")
+        XCTAssertEqual(ChannelName.ensurePrefix("&local"), "&local")
     }
 }

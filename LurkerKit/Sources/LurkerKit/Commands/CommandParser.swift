@@ -22,7 +22,9 @@ public enum CommandParser {
         let raw = input
 
         if raw.hasPrefix("//") {
-            return .message(String(raw.dropFirst()))
+            // A `//`-escaped literal only has somewhere to go in a real buffer; in the system
+            // buffer it's non-command input like any other, so nudge rather than swallow it.
+            return networkId == nil ? .notCommand : .message(String(raw.dropFirst()))
         }
         guard raw.hasPrefix("/") else {
             return networkId == nil ? .notCommand : .message(raw)
@@ -107,7 +109,7 @@ public enum CommandParser {
             // A bare `/join` is a no-op, like the web (it just keeps the buffer you're in).
             guard let first = rest.first else { return [] }
             let key = rest.count > 1 ? rest[1] : nil
-            return [.join(channel: ensureChannelPrefix(first), key: key)]
+            return [.join(channel: ChannelName.ensurePrefix(first), key: key)]
         case "part", "leave":
             // The web does NOT prefix here: `channel = rest[0] || target`. So `/part foo`
             // parts "foo" literally; a bare `/part` parts the current buffer. Ported as-is.
@@ -184,16 +186,16 @@ public enum CommandParser {
                 return [.raw(line: "MODE \(target) \(rest.joined(separator: " "))")]
             }
             return [.raw(line: "MODE \(argLine)")]
-        case "op": return modeShortcut("o", adding: true, rest: rest, target: target)
-        case "deop": return modeShortcut("o", adding: false, rest: rest, target: target)
-        case "voice": return modeShortcut("v", adding: true, rest: rest, target: target)
-        case "devoice": return modeShortcut("v", adding: false, rest: rest, target: target)
-        case "halfop": return modeShortcut("h", adding: true, rest: rest, target: target)
-        case "dehalfop": return modeShortcut("h", adding: false, rest: rest, target: target)
-        case "ban": return modeShortcut("b", adding: true, rest: rest, target: target)
-        case "unban": return modeShortcut("b", adding: false, rest: rest, target: target)
-        case "quiet": return modeShortcut("q", adding: true, rest: rest, target: target)
-        case "unquiet": return modeShortcut("q", adding: false, rest: rest, target: target)
+        case "op": return modeShortcut(verb, letter: "o", adding: true, rest: rest, target: target)
+        case "deop": return modeShortcut(verb, letter: "o", adding: false, rest: rest, target: target)
+        case "voice": return modeShortcut(verb, letter: "v", adding: true, rest: rest, target: target)
+        case "devoice": return modeShortcut(verb, letter: "v", adding: false, rest: rest, target: target)
+        case "halfop": return modeShortcut(verb, letter: "h", adding: true, rest: rest, target: target)
+        case "dehalfop": return modeShortcut(verb, letter: "h", adding: false, rest: rest, target: target)
+        case "ban": return modeShortcut(verb, letter: "b", adding: true, rest: rest, target: target)
+        case "unban": return modeShortcut(verb, letter: "b", adding: false, rest: rest, target: target)
+        case "quiet": return modeShortcut(verb, letter: "q", adding: true, rest: rest, target: target)
+        case "unquiet": return modeShortcut(verb, letter: "q", adding: false, rest: rest, target: target)
 
         // Server / services
         case "raw", "quote":
@@ -233,7 +235,8 @@ public enum CommandParser {
     /// `MODE #chan +oo a b`. Refuses outside a channel, rather than aiming a channel mode at
     /// a DM peer.
     private static func modeShortcut(
-        _ letter: Character,
+        _ verb: String,
+        letter: Character,
         adding: Bool,
         rest: [String],
         target: String
@@ -245,10 +248,10 @@ public enum CommandParser {
             args.removeFirst()
         }
         guard let channel else {
-            return [.info("usage: /\(adding ? "" : "de")\(letter) [#chan] <nick>… — no channel context")]
+            return [.info("usage: /\(verb) [#chan] <nick>… — no channel context")]
         }
         guard !args.isEmpty else {
-            return [.info("usage: /\(adding ? "" : "de")\(letter) [#chan] <nick>…")]
+            return [.info("usage: /\(verb) [#chan] <nick>…")]
         }
         let sign = adding ? "+" : "-"
         let letters = String(repeating: letter, count: args.count)
@@ -259,13 +262,6 @@ public enum CommandParser {
     /// `argLine.slice(first.length).trim()`. `argLine` begins with `first`.
     private static func body(after first: String, in argLine: String) -> String {
         String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
-    }
-
-    /// Prefix a bare channel name with `#`, leaving an already-prefixed one alone — the web's
-    /// `ensureChannelPrefix`.
-    private static func ensureChannelPrefix(_ name: String) -> String {
-        guard let first = name.first else { return name }
-        return "#&+!".contains(first) ? name : "#\(name)"
     }
 
     private static func isChannelTarget(_ target: String) -> Bool {

@@ -670,20 +670,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// are compared with a leading channel sigil stripped, so `/join li` still finds
     /// `#linux` — the `#` the user hasn't typed yet shouldn't hide it.
     private func channelCandidates(matching query: String, limit: Int = 4) -> [String] {
-        let needle = channelNeedle(query)
+        let needle = ChannelName.fold(query)
         return viewModel.state.buffers.values
             .filter { $0.networkId == buffer.networkId && $0.kind == .channel }
             .map(\.target)
-            .filter { channelNeedle($0).hasPrefix(needle) }
+            .filter { ChannelName.fold($0).hasPrefix(needle) }
             .sorted { $0.lowercased() < $1.lowercased() }
             .prefix(limit)
             .map { $0 }
-    }
-
-    private func channelNeedle(_ name: String) -> String {
-        var lowered = name.lowercased()
-        if let first = lowered.first, "#&+!".contains(first) { lowered.removeFirst() }
-        return lowered
     }
 
     private func nickCandidates(matching query: String) -> [String] {

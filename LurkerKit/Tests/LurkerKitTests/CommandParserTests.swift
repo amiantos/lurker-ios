@@ -39,6 +39,13 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(parse("hello", networkId: nil, target: ":system:"), .notCommand)
     }
 
+    func testEscapedMessageInSystemBufferHasNowhereToGo() {
+        // `//x` in the system buffer nudges rather than silently dropping (no network to send to).
+        XCTAssertEqual(parse("//hello", networkId: nil, target: ":system:"), .notCommand)
+        // But in a real buffer it's a literal message with the slash stripped.
+        XCTAssertEqual(parse("//hello"), .message("/hello"))
+    }
+
     // MARK: - Messaging
 
     func testMeIsAnAction() {
@@ -139,6 +146,12 @@ final class CommandParserTests: XCTestCase {
         guard case .info = effects("/op alice", target: "bob").first else {
             return XCTFail("expected a channel-context note for a mode shortcut in a DM")
         }
+    }
+
+    func testModeShortcutUsageNamesTheActualCommand() {
+        // The usage hint must say /deop, not a letter-derived "/deo".
+        guard case .info(let text) = effects("/deop").first else { return XCTFail("expected usage") }
+        XCTAssertTrue(text.contains("/deop"), "usage should name the command, got: \(text)")
     }
 
     func testNickIsARawLine() {

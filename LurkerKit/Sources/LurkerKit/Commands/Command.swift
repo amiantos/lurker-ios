@@ -269,13 +269,20 @@ public enum CommandRegistry {
         return all.first { $0.names.contains(needle) }
     }
 
-    /// Specs whose canonical name starts with `query` (case-insensitive), best first. An
-    /// empty query returns them all, in table order. Only the canonical name is matched, not
-    /// aliases — the chips shouldn't offer `/query` and `/msg` as two separate things.
+    /// A bare `/` can't rank by likelihood, so it shows a hand-picked starter set that spans
+    /// categories rather than the first N of the table (which would be one category's block).
+    /// Most useful first — the completer puts the head of the list nearest the composer.
+    public static let featured = ["join", "msg", "me", "nick", "topic", "away"]
+
+    /// Specs whose canonical name starts with `query` (case-insensitive), best first, capped
+    /// at `limit`. An empty query returns the `featured` starter set. Only the canonical name
+    /// is matched, not aliases — the chips shouldn't offer `/query` and `/msg` as two things.
     public static func matching(_ query: String, limit: Int = 6) -> [CommandSpec] {
+        guard !query.isEmpty else {
+            return Array(featured.compactMap { name in all.first { $0.name == name } }.prefix(limit))
+        }
         let needle = query.lowercased()
-        let hits = all.filter { $0.name.hasPrefix(needle) }
-        return Array(hits.prefix(limit))
+        return Array(all.filter { $0.name.hasPrefix(needle) }.prefix(limit))
     }
 
     /// The `/commands` cheatsheet as one multi-line block, grouped by category.
