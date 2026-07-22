@@ -870,6 +870,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // runs `viewDidLayoutSubviews` → `updateBottomInset` against that fresh frame. So
         // the inset isn't recomputed here — doing it before layout would read the old frame.
         view.layoutIfNeeded()
+        // Everything below is for the keyboard's ARRIVAL. This notification also fires at
+        // the tail of a dismissal with the end frame off-screen — and scrolling there
+        // yanks a reader who dragged the keyboard away mid-history back to the bottom.
+        guard keyboardOverlap > 0 else { return clampToContent() }
         scrollToBottom()
         // The keyboard's arrival just parked the conversation at the bottom, so the jump
         // pill goes with it — stated here rather than left to the scroll's delegate tick,
@@ -882,6 +886,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         keyboardOverlap = 0
         composerBottom.constant = 0
         view.layoutIfNeeded() // re-runs updateBottomInset via viewDidLayoutSubviews
+        // The composer's reservation just shrank. At the bottom that can strand the offset
+        // past the new maximum — held there indefinitely, per `clampToContent` — while
+        // mid-history it's a no-op. Never a scroll: position survives the dismissal.
+        clampToContent()
     }
 
     /// Reserve room at the bottom of the conversation for the floating composer (and the
