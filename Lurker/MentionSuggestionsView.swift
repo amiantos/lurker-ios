@@ -67,7 +67,9 @@ final class MentionSuggestionsView: UIView {
         var config = UIButton.Configuration.plain()
         config.title = nick
         config.baseForegroundColor = MessageRenderer.hashedColor(nick)
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
+        // Generous on purpose: these are one-shot tap targets mid-typing, not persistent
+        // chrome — roughly the composer pills' height, with wider shoulders for the thumb.
+        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 18, bottom: 10, trailing: 18)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
             var attrs = attrs
             attrs.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
