@@ -103,9 +103,20 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/join"), [])
     }
 
-    func testPartDefaultsToCurrentBufferWithReason() {
+    func testPartDefaultsToCurrentBufferAndRetargetsWithALeadingChannel() {
         XCTAssertEqual(effects("/part"), [.part(channel: "#chan", reason: nil)])
         XCTAssertEqual(effects("/part #other so long"), [.part(channel: "#other", reason: "so long")])
+    }
+
+    func testPartReasonOnlyLeavesTheCurrentChannel() {
+        // A non-channel first word is a parting reason, not a channel named "heading".
+        XCTAssertEqual(effects("/part heading out"), [.part(channel: "#chan", reason: "heading out")])
+    }
+
+    func testPartOutsideAChannelIsRefused() {
+        guard case .info = effects("/part", target: "bob").first else {
+            return XCTFail("expected a channel-context note when parting from a DM")
+        }
     }
 
     func testLeaveIsAnAliasOfPart() {

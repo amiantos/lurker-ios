@@ -111,11 +111,23 @@ public enum CommandParser {
             let key = rest.count > 1 ? rest[1] : nil
             return [.join(channel: ChannelName.ensurePrefix(first), key: key)]
         case "part", "leave":
-            // The web does NOT prefix here: `channel = rest[0] || target`. So `/part foo`
-            // parts "foo" literally; a bare `/part` parts the current buffer. Ported as-is.
-            let channel = rest.first ?? target
-            let reason = rest.dropFirst().joined(separator: " ")
-            return [.part(channel: channel, reason: reason.isEmpty ? nil : reason)]
+            // `/part [reason]` leaves the current channel; `/part <#chan> [reason]` leaves a
+            // named one. Consistent with /kick and /topic: a leading `#` is a channel,
+            // anything else is a parting reason for the current channel — so `/part heading
+            // out` says goodbye here rather than trying to part a channel named "heading".
+            let partChannel: String?
+            let partReason: String
+            if let first = rest.first, first.hasPrefix("#") {
+                partChannel = first
+                partReason = body(after: first, in: argLine)
+            } else {
+                partChannel = isChannelTarget(target) ? target : nil
+                partReason = argLine
+            }
+            guard let partChannel else {
+                return [.info("usage: /part [#chan] [reason] — no channel context")]
+            }
+            return [.part(channel: partChannel, reason: partReason.isEmpty ? nil : partReason)]
         case "cycle", "hop":
             // Part and rejoin the CURRENT channel; the whole arg line is an optional part
             // reason (not a channel). Both legs use the structured verbs so the persisted
