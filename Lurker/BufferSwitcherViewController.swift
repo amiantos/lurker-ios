@@ -61,10 +61,10 @@ final class BufferSwitcherViewController: UITableViewController {
         super.viewDidLoad()
         title = "Buffers"
         navigationItem.leftBarButtonItem = accountItem()
-        // The trailing "+" is set by `apply`, since what it does depends on how many
-        // networks there are. No Done button: "+" has taken that slot, and the sheet
-        // already dismisses three ways — the grabber, a swipe down, and picking a buffer,
-        // which is what you opened it to do.
+        // No Done button: "+" has taken that slot, and the sheet already dismisses three
+        // ways — the grabber, a swipe down, and picking a buffer, which is what you opened
+        // it to do.
+        navigationItem.rightBarButtonItem = joinItem
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         // The list depends on networks, buffers, and connection state — a message arriving
@@ -114,76 +114,55 @@ final class BufferSwitcherViewController: UITableViewController {
         return item
     }
 
-    /// The part of a network the "+" menu actually shows. Optional so the first `apply`
-    /// always builds — an account with no networks would otherwise compare equal to the
-    /// initial state and never get an item at all.
-    private var joinChoices: [JoinChoice]?
-
-    private struct JoinChoice: Equatable {
-        let id: Int
-        let name: String
-    }
-
     /// Join, promoted out of the chat screen's menu into the one place you already go to
     /// change which conversation you're in. A channel you haven't joined is a buffer you
     /// don't have, so the buffer list is where its absence is felt.
     ///
-    /// Rebuilt from state rather than mutated in place, so all three cases below are one
-    /// expression and none of them can leave the item half-configured from the last one:
-    ///
-    ///  - **One network** — a plain tap straight to the channel prompt. A menu of one is a
-    ///    tap spent to learn nothing.
-    ///  - **Several** — a menu to pick which network to join on, decided before you commit
-    ///    to the tap rather than by an action sheet after it.
-    ///  - **None** — disabled. There is nothing the user could do from this sheet to make
-    ///    it work, and a "+" that opens a prompt with nowhere to send it is worse than a
-    ///    grey one.
-    ///
-    /// Rebuilding is therefore gated on the choices actually changing. `apply` runs on
-    /// every unread-count change too, and replacing a bar button item closes any menu it is
-    /// currently showing — so an unrebuilt item is not an optimization here, it's the
-    /// difference between the menu staying open and it vanishing when a message arrives.
-    private func refreshJoinItem(_ state: ChatState) {
-        let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        // Only what the menu renders: a network reconnecting changes `Network` but not a
-        // single row here.
-        let choices = networks.map { JoinChoice(id: $0.id, name: $0.name) }
-        guard choices != joinChoices else { return }
-        joinChoices = choices
-
-        let icon = UIImage(systemName: "plus")
-        let item: UIBarButtonItem
-        if networks.count > 1 {
-            item = UIBarButtonItem(title: nil, image: icon, primaryAction: nil, menu: UIMenu(
-                title: "Join Channel",
-                children: networks.map { network in
-                    UIAction(title: network.name) { [weak self] _ in
-                        self?.presentJoinAlert(network: network)
-                    }
-                }
-            ))
-        } else {
-            item = UIBarButtonItem(title: nil, image: icon, primaryAction: networks.first.map { only in
-                UIAction(image: icon) { [weak self] _ in self?.presentJoinAlert(network: only) }
-            }, menu: nil)
-            item.isEnabled = !networks.isEmpty
-        }
+    /// A plain button, not a menu: it always does the same thing, so the only state that
+    /// reaches it is whether there's anywhere to join at all. That matters more than it
+    /// sounds — `apply` runs on every unread count, and a *menu* here would have to be
+    /// rebuilt as networks came and went, swapping the item out from under itself while
+    /// open. `isEnabled` on a stable item has no such failure mode.
+    private lazy var joinItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(
+            title: nil, image: UIImage(systemName: "plus"),
+            primaryAction: UIAction { [weak self] _ in self?.presentJoin() }, menu: nil
+        )
         item.accessibilityLabel = "Join Channel"
-        navigationItem.rightBarButtonItem = item
+        return item
+    }()
+
+    /// Disabled with no networks: there is nothing the user could do from this sheet to
+    /// make it work, and a "+" that opens a form with nowhere to send it is worse than a
+    /// grey one.
+    private func refreshJoinItem(_ state: ChatState) {
+        joinItem.isEnabled = !state.networks.isEmpty
     }
 
-    private func presentJoinAlert(network: Network) {
-        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
-        alert.addTextField {
-            $0.placeholder = "#channel"
-            $0.autocapitalizationType = .none
-            $0.autocorrectionType = .no
+    /// Joining is also switching: you asked for a channel, so land in it. The buffer won't
+    /// exist yet — the row arrives with the server's `channel-joined` — so hand over a
+    /// synthesized one exactly as a notification tap does, and let the chat screen's
+    /// `hydrateIfNeeded` fill it in when the join completes.
+    private func presentJoin() {
+        let form = JoinChannelViewController(networks: Array(state.networks.values))
+        form.onJoin = { [weak self] network, channel in
+            guard let self else { return }
+            viewModel.joinChannel(networkId: network.id, channel: channel)
+            let buffer = Buffer(networkId: network.id, target: channel, kind: .channel)
+            // Dismissed through `self`, not through the form — the form owns this closure,
+            // so capturing it here would be a cycle. (A view controller dismisses whatever
+            // it presented, which is the form's sheet.)
+            //
+            // And dismissed *before* reporting: `onSelect` tears down the sheet this form
+            // is presented from, and dismissing a presenter out from under its own
+            // presented controller drops the animation on the floor.
+            dismiss(animated: true) { [weak self] in self?.onSelect?(buffer) }
         }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
-            self?.viewModel.joinChannel(networkId: network.id, channel: alert?.textFields?.first?.text ?? "")
-        })
-        present(alert, animated: true)
+        let sheet = UINavigationController(rootViewController: form)
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        // Medium: it's two fields over the list you were just reading, not a place to be.
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
     }
 
     // MARK: - Sections

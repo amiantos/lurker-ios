@@ -510,6 +510,36 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.connection, .reconnecting)
     }
 
+    /// `snapshotApplied` is what lets a *missing* channel row mean something. Restoring
+    /// into the buffer you last read has to tell "you left this channel elsewhere" from
+    /// "the snapshot hasn't arrived yet", and those look identical in `buffers`.
+    func testSnapshotAppliedMarksWhenAMissingChannelRowBecomesProof() {
+        let store = LurkerStore()
+        XCTAssertFalse(store.state.snapshotApplied, "nothing has been proven before the first snapshot")
+
+        store.apply(.snapshot([
+            NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [
+                ChannelSnapshot(name: "#lurker", topic: nil, members: []),
+            ]),
+        ]))
+        XCTAssertTrue(store.state.snapshotApplied)
+        XCTAssertNotNil(store.state.buffers[chanKey], "a joined channel is in the snapshot")
+        XCTAssertNil(store.state.buffers["1::#gone"], "one you left is not — and now that is provable")
+    }
+
+    /// A reconnect re-sends the snapshot, so the window before it lands is the "not told
+    /// yet" state again — otherwise a mid-session drop would briefly make every channel
+    /// look abandoned.
+    func testSnapshotAppliedIsClearedWhenTheSocketDrops() {
+        let store = LurkerStore()
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])]))
+        store.apply(.socketClosed(reason: "bye", code: 1000))
+        XCTAssertFalse(store.state.snapshotApplied)
+
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])]))
+        XCTAssertTrue(store.state.snapshotApplied, "the next snapshot re-proves it")
+    }
+
     func testADropBeforeTheFirstOpenStaysConnectingNotReconnecting() {
         let store = LurkerStore()
         store.apply(.socketClosed(reason: "refused", code: nil))

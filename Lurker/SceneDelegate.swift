@@ -222,19 +222,58 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// Synthesized rather than waiting for the snapshot and swapping the root then, which
     /// would put a system buffer on screen for as long as the connect takes and then yank
-    /// it away under a reader. The cost of going early is the case where the buffer is
-    /// *gone* — a channel parted from another client since — which lands on an empty room
-    /// that never hydrates (no row in state, so nothing to open). One tap on the buffer
-    /// list from there, and it's the rarer half of a trade the common case wins outright.
+    /// it away under a reader. Going early costs nothing in the common case and is undone
+    /// by `verifyRestore` in the one case it's wrong.
     private func launchBuffer() -> Buffer {
         guard let key = UserPreferences.standard.lastBufferKey else { return .system }
-        return viewModel.state.buffers[key.id]
-            ?? Buffer(
-                networkId: key.networkId,
-                target: key.target,
-                kind: BufferKind.of(networkId: key.networkId, target: key.target)
-            )
+        if let known = viewModel.state.buffers[key.id] { return known }
+        let buffer = Buffer(
+            networkId: key.networkId,
+            target: key.target,
+            kind: BufferKind.of(networkId: key.networkId, target: key.target)
+        )
+        verifyRestore(buffer)
+        return buffer
     }
+
+    /// Watches for the snapshot to disprove a restored channel.
+    ///
+    /// A channel left from another client is still in `lastBufferKey`, and landing in it
+    /// gives you a room that can never fill: no row in the store means `hydrateIfNeeded`
+    /// never asks, so the "Loading messages…" spinner is permanent and a lie. Sending
+    /// `open-buffer` anyway is not the fix — the server treats an `open-buffer` for a
+    /// channel with no row as a request to **JOIN** it (`wsHub.handleOpenBuffer`), so
+    /// probing would silently re-join a channel you deliberately left.
+    ///
+    /// So wait for the snapshot, which carries every channel you *are* in, and if the row
+    /// still isn't there, fall back to the system buffer and forget the key.
+    ///
+    /// Channels only. DM rows arrive in their own backlog shells rather than the snapshot,
+    /// so a missing DM row proves nothing at this point — a stale DM restore still lands on
+    /// the spinner. Tracked as its own thing rather than guessed at here.
+    private func verifyRestore(_ restored: Buffer) {
+        guard restored.kind == .channel else { return }
+        restoreCheck = viewModel.statePublisher
+            .first { $0.snapshotApplied }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
+                guard let self, let navigation else { return }
+                self.restoreCheck = nil
+                guard state.buffers[restored.key.id] == nil else { return }
+                // Only if we're still the screen we put there. A buffer picked, tapped from
+                // a notification, or joined in the meantime replaced this root, and yanking
+                // *that* away would be the very thing going early was meant to avoid.
+                guard let root = navigation.viewControllers.first as? ChatViewController,
+                      root.bufferKey == restored.key else { return }
+                UserPreferences.standard.forgetLastBuffer()
+                navigation.setViewControllers(
+                    [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
+                )
+            }
+    }
+
+    /// Held only until the snapshot answers; see `verifyRestore`.
+    private var restoreCheck: AnyCancellable?
 }
 
 // MARK: - Notification taps (#15)

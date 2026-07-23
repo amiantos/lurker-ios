@@ -19,6 +19,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
 
+    /// Which buffer this screen was built for. Exposed so the scene delegate can tell
+    /// whether the root is still the screen it installed (see `verifyRestore`) — the key
+    /// alone, because that's the identity question, not the buffer's mutable contents.
+    var bufferKey: BufferKey { buffer.key }
+
     private let tableView = UITableView()
     /// The floating "your connection is unhappy" capsule at the top — offline/connecting/
     /// reconnecting in words, the loud counterpart to the title pill's dot (#19).

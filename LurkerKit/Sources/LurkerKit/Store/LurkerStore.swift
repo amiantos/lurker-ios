@@ -31,6 +31,21 @@ public struct ChatState: Sendable {
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
     public var error: String?
+    /// Whether a `snapshot` has been folded in on the current connection.
+    ///
+    /// It exists to make an *absence* provable. The snapshot carries every joined channel
+    /// and `applySnapshot` materializes a row for each, so once this is true a channel with
+    /// no row is definitively one you are not in — where before the snapshot the same
+    /// missing row means only "not told yet". Nothing else can stand in for it:
+    /// `connection == .connected` is reported before the backlog is applied, and `networks`
+    /// is populated by the REST roster too, so neither distinguishes the two.
+    ///
+    /// Cleared when the socket drops, because a reconnect re-sends the snapshot and the
+    /// window before it arrives is exactly the "not told yet" state again.
+    ///
+    /// True only of **channels**. DM rows arrive in their own `backlog` shells rather than
+    /// in the snapshot, so this says nothing about whether a DM exists.
+    public var snapshotApplied: Bool = false
 
     public init() {}
 
@@ -146,6 +161,9 @@ final class LurkerStore {
             return next
         case .socketClosed:
             var next = state
+            // The next connection re-sends the snapshot; until it lands, a missing row is
+            // "not told yet" again rather than proof of anything.
+            next.snapshotApplied = false
             // Once we've been connected, a drop is a reconnect; a drop before the first
             // open is still the initial connect.
             switch next.connection {
@@ -177,6 +195,7 @@ final class LurkerStore {
 
     private static func applySnapshot(_ state: ChatState, _ networks: [NetworkSnapshot]) -> ChatState {
         var next = state
+        next.snapshotApplied = true
         for snapshot in networks {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state
