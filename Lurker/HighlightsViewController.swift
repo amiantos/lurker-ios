@@ -105,7 +105,7 @@ final class HighlightsViewController: UITableViewController {
         Task { [weak self] in
             guard let self else { return }
             let page = await viewModel.fetchHighlights(before: nil)
-            await handleFirstPage(page)
+            handleFirstPage(page)
         }
     }
 
@@ -116,7 +116,7 @@ final class HighlightsViewController: UITableViewController {
         Task { [weak self] in
             guard let self else { return }
             let page = await viewModel.fetchHighlights(before: cursor)
-            await appendPage(page)
+            appendPage(page)
         }
     }
 
