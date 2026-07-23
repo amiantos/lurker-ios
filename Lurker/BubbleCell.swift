@@ -199,6 +199,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         super.prepareForReuse()
         // A cell recycled mid-drag would otherwise come back still slid over.
         setReveal(0)
+        // Cancel an in-flight jump flash (#42) and clear its wash, so a cell recycled mid-pulse
+        // doesn't carry the warm background onto an unrelated message.
+        contentView.layer.removeAllAnimations()
+        contentView.backgroundColor = .clear
     }
 
     /// Round the outside of a run and tighten the side it's stacked along, so a run reads

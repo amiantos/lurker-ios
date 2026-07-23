@@ -108,7 +108,9 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         super.prepareForReuse()
         // A cell recycled mid-drag would otherwise come back with its time still pulled in.
         setReveal(0)
-        // The highlight wash isn't reset here: configure() always reassigns
-        // contentView.backgroundColor on dequeue, so a stale wash never survives.
+        // configure() always reassigns contentView.backgroundColor on dequeue, so a stale
+        // matched-line wash never survives — but an in-flight jump-flash animation (#42) would,
+        // so cancel it here rather than let it pulse an unrelated message.
+        contentView.layer.removeAllAnimations()
     }
 }

@@ -34,30 +34,24 @@ public struct NotificationTap: Equatable, Sendable {
     /// app on whatever screen it would have shown anyway — never crash, and never guess at
     /// a destination the user didn't ask for.
     public static func parse(_ userInfo: [AnyHashable: Any]) -> NotificationTap? {
-        // APNs sends networkId as a JSON number, which arrives as NSNumber — but `as? Int`
-        // bridges that, so no NSNumber arm is needed here (verified; an explicit one is
-        // dead code).
-        //
-        // The String arm is NOT redundant: FCM's data dictionary is all-strings, and the
-        // two payload shapes are one mistake apart. Routing is the wrong place to be
-        // strict about which of our own servers sent this.
-        let networkId: Int? = switch userInfo["networkId"] {
-        case let value as Int: value
-        case let value as String: Int(value)
-        default: nil
-        }
-        guard let networkId,
+        guard let networkId = intField(userInfo["networkId"]),
               let target = userInfo["target"] as? String,
               !target.isEmpty
         else { return nil }
-        // Same dual-shape read as networkId: APNs sends a JSON number (NSNumber → Int), FCM a
-        // string. Absent or unparseable → nil, and the tap simply opens the buffer at its
-        // bottom rather than jumping.
-        let messageId: Int? = switch userInfo["messageId"] {
+        // `messageId` reads the same way — absent or unparseable → nil, and the tap simply opens
+        // the buffer at its bottom rather than jumping.
+        return NotificationTap(networkId: networkId, target: target, messageId: intField(userInfo["messageId"]))
+    }
+
+    /// An id field off a push payload, coping with either shape it can arrive in: APNs sends a
+    /// JSON number (an NSNumber that `as? Int` bridges), FCM's data dictionary sends a string.
+    /// The String arm is NOT redundant — the two payloads are one mistake apart, and routing is
+    /// the wrong place to be strict about which of our own servers sent this.
+    private static func intField(_ value: Any?) -> Int? {
+        switch value {
         case let value as Int: value
         case let value as String: Int(value)
         default: nil
         }
-        return NotificationTap(networkId: networkId, target: target, messageId: messageId)
     }
 }

@@ -106,6 +106,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// it from the pre-existing connect backlog (unchanged) or a live append (keeps them), either
     /// of which used to be mistaken for the slice and make the jump give up early.
     private var aroundBaselineIds: Set<Int> = []
+    /// Whether the buffer was already hydrated when the `around` fetch was sent. A history reply
+    /// always flips a buffer hydrated, so a not-yet-hydrated buffer becoming hydrated is itself
+    /// proof the response landed — which is how an empty `anchorMissing` reply (nothing to
+    /// replace, no anchor to appear) is still recognized instead of hanging on the spinner.
+    private var aroundWasHydrated = false
     /// True while the jump is converging on its anchor across runloops (see `convergeJump`), so
     /// a second `landInitialIfNeeded` (from an intervening apply or layout) doesn't start a
     /// competing chain.
@@ -399,7 +404,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             let currentIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
             let replaced = !aroundBaselineIds.isEmpty && !aroundBaselineIds.isSubset(of: currentIds)
             let anchorPresent = pendingJumpId.map { currentIds.contains($0) } ?? false
-            if replaced || anchorPresent { aroundSliceArrived = true }
+            // A fresh (unhydrated) buffer flipping hydrated is the reply landing even when it's
+            // empty (anchorMissing) — otherwise that case never resolves and hangs the spinner.
+            let becameHydrated = !aroundWasHydrated && state.buffers[buffer.key.id]?.hydrated == true
+            if replaced || anchorPresent || becameHydrated { aroundSliceArrived = true }
         }
 
         if pendingJumpId != nil || needsInitialScroll {
@@ -598,6 +606,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
         aroundRequested = true
         aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
+        aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
         viewModel.loadAround(buffer.key, anchorId: anchor)
     }
 
@@ -808,12 +817,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard !rows.isEmpty else { return }
         newWhileDetached = 0
         if isDetached {
-            // Re-arm the one-shot landing (and drop any stale jump state) so
-            // `landInitialIfNeeded` parks us at the tail when the replacement slice lands.
+            // Re-arm the one-shot landing (and drop any stale jump state, including a converge
+            // that would otherwise leave `jumpConverging` stuck) so `landInitialIfNeeded` parks
+            // us at the tail when the replacement slice lands.
             needsInitialScroll = true
             pendingJumpId = nil
             aroundRequested = false
             aroundSliceArrived = false
+            jumpConverging = false
             viewModel.loadLatest(buffer.key)
         } else {
             tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
