@@ -416,10 +416,17 @@ final class LurkerStore {
             next.messages[key] = events.filter { $0.id == 0 || !held.contains($0.id) } + existing
         case .after:
             next.messages[key] = appendMerged(existing, events)
-        case .latest, .around:
-            // Replace, but keep live events newer than this slice's tail (no hole).
+        case .latest:
+            // Return-to-live: replace, but keep live events newer than this slice's tail so a
+            // message that outran the fetch isn't dropped (the slice is at the tail, so there's
+            // no gap).
             let tail = events.map(\.id).max() ?? 0
             next.messages[key] = events + existing.filter { $0.id > tail }
+        case .around:
+            // A jump slice is centered on an arbitrary (possibly old) message, so anything
+            // already held is on the far side of a gap — keeping it would splice the old window
+            // onto unrelated newer messages. Replace outright, like the web's applyAroundSlice.
+            next.messages[key] = events
         }
         if var buffer = next.buffers[key] {
             buffer.hydrated = true

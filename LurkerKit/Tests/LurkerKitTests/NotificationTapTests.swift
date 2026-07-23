@@ -28,14 +28,37 @@ final class NotificationTapTests: XCTestCase {
 
     func testParsesADMPush() {
         let tap = NotificationTap.parse(dmPayload())
-        XCTAssertEqual(tap, NotificationTap(networkId: 7, target: "bob"))
+        XCTAssertEqual(tap, NotificationTap(networkId: 7, target: "bob", messageId: 42))
     }
 
     func testParsesAChannelHighlight() {
         var payload = dmPayload()
         payload["target"] = "#lurker"
         payload["kind"] = "highlight"
-        XCTAssertEqual(NotificationTap.parse(payload), NotificationTap(networkId: 7, target: "#lurker"))
+        XCTAssertEqual(NotificationTap.parse(payload), NotificationTap(networkId: 7, target: "#lurker", messageId: 42))
+    }
+
+    func testParsesTheMessageIdForTheJumpTarget() {
+        // The server stamps `messageId: decorated.id`; the tap carries it so it can land on
+        // the exact line (#42), and it survives arriving as an NSNumber off real JSON.
+        XCTAssertEqual(NotificationTap.parse(dmPayload())?.messageId, 42)
+        var nsNumberPayload = dmPayload()
+        nsNumberPayload["messageId"] = NSNumber(value: 99)
+        XCTAssertEqual(NotificationTap.parse(nsNumberPayload)?.messageId, 99)
+        // FCM's all-strings shape.
+        var stringPayload = dmPayload()
+        stringPayload["messageId"] = "1234"
+        XCTAssertEqual(NotificationTap.parse(stringPayload)?.messageId, 1234)
+    }
+
+    func testAMissingMessageIdIsNilNotAFailure() {
+        // A friend-online push names a buffer but no message; the tap still routes, without a
+        // jump target.
+        var payload = dmPayload()
+        payload.removeValue(forKey: "messageId")
+        let tap = NotificationTap.parse(payload)
+        XCTAssertNotNil(tap)
+        XCTAssertNil(tap?.messageId)
     }
 
     func testParsesAFriendOnlinePush() {
@@ -69,7 +92,7 @@ final class NotificationTapTests: XCTestCase {
         let decoded = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(json.utf8)) as? [AnyHashable: Any]
         )
-        XCTAssertEqual(NotificationTap.parse(decoded), NotificationTap(networkId: 7, target: "#lurker"))
+        XCTAssertEqual(NotificationTap.parse(decoded), NotificationTap(networkId: 7, target: "#lurker", messageId: 42))
     }
 
     func testParsesNetworkIdArrivingAsString() {

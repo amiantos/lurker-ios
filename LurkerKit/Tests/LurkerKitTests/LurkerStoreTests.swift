@@ -147,6 +147,20 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreOlder, "hasMoreOlder:false stops paging")
     }
 
+    func testHistoryAroundReplacesRatherThanSplicingOntoFarNewerMessages() {
+        let store = LurkerStore()
+        // The buffer holds recent messages; a jump to an OLD message fetches a slice centered
+        // far below them. Keeping the recent ones would render a hole — around replaces.
+        store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent1"), msg(501, "recent2")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker",
+            events: [msg(9, "old1"), msg(10, "anchor"), msg(11, "old2")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["old1", "anchor", "old2"])
+        XCTAssertTrue(store.state.buffers[chanKey]!.hydrated)
+    }
+
     func testHistoryTracksHasMoreOlderForThePagingGate() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e")]))

@@ -286,6 +286,18 @@ final class LurkerClient {
         send(["type": "history", "networkId": networkId, "target": target, "before": before, "limit": limit])
     }
 
+    /// Request a history slice centered on `anchorId` — the message to jump to (#42). The
+    /// reply is a `history` frame (mode `around`) with the anchor included in the middle, which
+    /// the store applies by replacing the buffer's slice. No `open-buffer` first: the server
+    /// serves this straight from the DB. `limit` is per side, so up to `2*limit + 1` events.
+    func loadAround(networkId: Int?, target: String, anchorId: Int, limit: Int = 100) {
+        guard let networkId else { return }
+        send([
+            "type": "history", "mode": "around",
+            "networkId": networkId, "target": target, "anchorId": anchorId, "limit": limit,
+        ])
+    }
+
     /// Mark a buffer read up to `messageId`. The server MAX-clamps, so re-sending a lower
     /// id is a safe no-op. The system buffer sends `networkId: null` (hence NSNull, not a
     /// dropped key), so this can't reuse the `guard let networkId` shortcut.

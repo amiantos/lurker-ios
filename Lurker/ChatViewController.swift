@@ -90,9 +90,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the first layout pass. So both paths ask and this makes it happen exactly once.
     private var needsInitialScroll = true
 
-    init(viewModel: ChatViewModel, buffer: Buffer) {
+    /// The message to open *at* rather than the bottom (#42) — a tapped highlight (later a
+    /// notification, a search hit). The initial landing scrolls to it instead of the tail, and
+    /// if it isn't already held the screen fetches an `around` slice centered on it first.
+    /// Consumed once the landing scrolls to it, so it's a one-shot like `needsInitialScroll`.
+    private var pendingJumpId: Int?
+    /// Whether the `around` slice for `pendingJumpId` has been requested on this connection —
+    /// same one-shot-per-connection shape as `openRequested`.
+    private var aroundRequested = false
+    /// Set once the requested `around` slice has landed, so the initial scroll can give up on
+    /// a missing anchor (`anchorMissing`) and fall back to the bottom instead of waiting forever.
+    private var aroundSliceArrived = false
+
+    init(viewModel: ChatViewModel, buffer: Buffer, jumpTo: Int? = nil) {
         self.viewModel = viewModel
         self.buffer = buffer
+        self.pendingJumpId = jumpTo
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -312,6 +325,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         networks = state.networks
         refreshHighlighter(state)
         hydrateIfNeeded(state)
+        requestAroundIfNeeded(state)
         // Latch the read boundary the first time the server tells us where it is, and
         // never again — marking messages read live must not move the divider under us.
         if dividerAfterId == nil, let known = state.buffers[buffer.key.id] {
@@ -362,7 +376,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // where it was: a bare reload re-estimates off-screen row heights and shoves the
         // viewport around, and that shove — on *appends*, not just prepends — is what made
         // the list lurch mid-read.
-        if wasNearBottom {
+        // A jump landed the around slice: remember it so the landing can give up on a missing
+        // anchor rather than wait forever.
+        if aroundRequested, !updated.isEmpty { aroundSliceArrived = true }
+
+        if pendingJumpId != nil {
+            // A jump is pending — don't auto-scroll to the bottom; `landInitialIfNeeded` lands
+            // on the anchor once its row exists (or falls back if the anchor never arrives).
+            tableView.reloadData()
+        } else if wasNearBottom {
             tableView.reloadData()
             scrollToBottom()
         } else {
@@ -389,8 +411,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         // After the landing, not before: the first apply reaches here with the offset
         // still at the top, and the pill would flash in for the frame before
-        // `landAtBottomIfNeeded` parks the buffer at its newest message.
-        landAtBottomIfNeeded()
+        // `landInitialIfNeeded` parks the buffer at its newest message.
+        landInitialIfNeeded()
         updateJumpButton()
     }
 
@@ -406,15 +428,56 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         view.keyboardLayoutGuide.keyboardDismissPadding = composer.bounds.height + Self.keyboardGap
         // The other half of the initial scroll: this is where an already-hydrated buffer
         // finally gets a height to scroll within.
-        landAtBottomIfNeeded()
+        landInitialIfNeeded()
     }
 
-    /// The one-shot landing. Needs both rows to scroll to and a height to scroll within,
-    /// which arrive in either order.
-    private func landAtBottomIfNeeded() {
-        guard needsInitialScroll, !rows.isEmpty, tableView.bounds.height > 0 else { return }
+    /// The one-shot landing. Needs both rows to scroll to and a height to scroll within, which
+    /// arrive in either order. Lands at the bottom normally, or — for a jump (#42) — on the
+    /// target message, waiting for its `around` slice to bring the row in before consuming the
+    /// one-shot. If the slice comes back without the anchor (`anchorMissing`), it gives up and
+    /// lands at the bottom rather than hanging at the top.
+    private func landInitialIfNeeded() {
+        guard needsInitialScroll, tableView.bounds.height > 0 else { return }
+        if let anchor = pendingJumpId {
+            if let index = rowIndex(containing: anchor) {
+                needsInitialScroll = false
+                pendingJumpId = nil
+                scrollToRow(index)
+            } else if aroundSliceArrived, !rows.isEmpty {
+                // The slice landed but the anchor isn't in it — fall back to the bottom.
+                needsInitialScroll = false
+                pendingJumpId = nil
+                scrollToBottom()
+            }
+            // else: still waiting for the around slice to arrive.
+            return
+        }
+        guard !rows.isEmpty else { return }
         needsInitialScroll = false
         scrollToBottom()
+    }
+
+    /// Scroll a jumped-to message into the middle of the viewport and give it a brief warm
+    /// pulse so the eye finds it among similar bubbles. Scrolls twice for the same reason
+    /// `scrollToBottom` does — self-sizing rows settle their real heights on the first pass.
+    private func scrollToRow(_ index: Int) {
+        guard rows.indices.contains(index), tableView.bounds.height > 0 else { return }
+        let path = IndexPath(row: index, section: 0)
+        tableView.layoutIfNeeded()
+        tableView.scrollToRow(at: path, at: .middle, animated: false)
+        tableView.layoutIfNeeded()
+        tableView.scrollToRow(at: path, at: .middle, animated: false)
+        flashRow(at: path)
+    }
+
+    /// A gentle warm pulse behind the row, fading out — the "here it is" after a jump. The
+    /// wash reuses the highlight color; it fades to clear (these cells never carry a fill).
+    private func flashRow(at path: IndexPath) {
+        guard let cell = tableView.cellForRow(at: path) else { return }
+        cell.contentView.backgroundColor = Palette.highlightBubble
+        UIView.animate(withDuration: 1.1, delay: 0.4, options: [.curveEaseOut]) {
+            cell.contentView.backgroundColor = .clear
+        }
     }
 
     /// Pull the offset back inside the content.
@@ -444,6 +507,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// that can never be answered and wedge the screen waiting on it.
     private func hydrateIfNeeded(_ state: ChatState) {
         guard buffer.kind.hydratesOnDemand else { return }
+        // A pending jump hydrates via an `around` slice centered on the target (see
+        // `requestAroundIfNeeded`), not `open-buffer`'s latest backlog — asking for both would
+        // double-fetch and the latest slice would fight the jump. Once the around slice lands
+        // the buffer reads hydrated, so this stays a no-op afterwards.
+        guard pendingJumpId == nil else { return }
         guard state.connection == .connected else {
             openRequested = false // a reconnect resyncs buffers, so ask again on the next one
             return
@@ -451,6 +519,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard !openRequested, let known = state.buffers[buffer.key.id], !known.hydrated else { return }
         openRequested = true
         viewModel.openBuffer(buffer.key)
+    }
+
+    /// Fetch the `around` slice a jump needs (#42): a history window centered on `pendingJumpId`,
+    /// so the target and its context land even when it's older than any backlog. Skipped when
+    /// the message is already held (the fast path — a highlight in an open buffer just scrolls),
+    /// and re-armed on reconnect like `hydrateIfNeeded`. Only channel/DM buffers hydrate on
+    /// demand; a `:server:`/system jump has nothing to fetch and falls through to a plain scroll.
+    private func requestAroundIfNeeded(_ state: ChatState) {
+        guard let anchor = pendingJumpId, buffer.kind.hydratesOnDemand else { return }
+        guard state.connection == .connected else {
+            aroundRequested = false
+            return
+        }
+        guard !aroundRequested else { return }
+        // Already have the target? No fetch — the landing scrolls straight to it.
+        if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
+        aroundRequested = true
+        viewModel.loadAround(buffer.key, anchorId: anchor)
     }
 
     /// The placeholder currently installed, so a fresh `apply` on every live message
@@ -890,20 +976,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let viewModel = self.viewModel
         let nav = navigationController
-        let current = buffer.key
         let highlights = HighlightsViewController(viewModel: viewModel)
         highlights.onSelect = { [weak nav] item in
             let key = item.bufferKey
-            // Already here → just close, don't rebuild (same reasoning as the switcher).
-            guard key != current else { return nav?.dismiss(animated: true) ?? () }
-            // The buffer may not be in state (a channel since closed, or one whose row never
-            // materialized), so synthesize it exactly like `navigate(to:)` — the new screen's
-            // own hydrate fetches the history.
+            // Root-swap to the buffer and jump to the matched line (#42) — even when it's the
+            // buffer already on screen, since the point is to move to that message. The buffer
+            // may not be in state (a channel since closed, or one whose row never materialized),
+            // so synthesize it exactly like `navigate(to:)`; the new screen fetches an `around`
+            // slice centered on the match and scrolls to it.
             let target = viewModel.state.buffers[key.id]
                 ?? Buffer(networkId: key.networkId, target: key.target,
                           kind: BufferKind.of(networkId: key.networkId, target: key.target))
             nav?.setViewControllers(
-                [ChatViewController(viewModel: viewModel, buffer: target)], animated: false
+                [ChatViewController(viewModel: viewModel, buffer: target, jumpTo: item.message.id)], animated: false
             )
             nav?.dismiss(animated: true)
         }

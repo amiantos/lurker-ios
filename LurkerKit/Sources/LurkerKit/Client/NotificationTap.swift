@@ -12,10 +12,15 @@ import Foundation
 public struct NotificationTap: Equatable, Sendable {
     public let networkId: Int
     public let target: String
+    /// The message that triggered the push, when it names one — a message/highlight/DM push
+    /// carries it (server stamps `messageId: decorated.id`), a friend-online push doesn't. Lets
+    /// a tap land on that exact line (#42), not just the buffer bottom.
+    public let messageId: Int?
 
-    public init(networkId: Int, target: String) {
+    public init(networkId: Int, target: String, messageId: Int? = nil) {
         self.networkId = networkId
         self.target = target
+        self.messageId = messageId
     }
 
     /// Read the routing keys off a push payload.
@@ -45,6 +50,14 @@ public struct NotificationTap: Equatable, Sendable {
               let target = userInfo["target"] as? String,
               !target.isEmpty
         else { return nil }
-        return NotificationTap(networkId: networkId, target: target)
+        // Same dual-shape read as networkId: APNs sends a JSON number (NSNumber → Int), FCM a
+        // string. Absent or unparseable → nil, and the tap simply opens the buffer at its
+        // bottom rather than jumping.
+        let messageId: Int? = switch userInfo["messageId"] {
+        case let value as Int: value
+        case let value as String: Int(value)
+        default: nil
+        }
+        return NotificationTap(networkId: networkId, target: target, messageId: messageId)
     }
 }
