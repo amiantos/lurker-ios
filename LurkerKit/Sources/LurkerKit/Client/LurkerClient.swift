@@ -520,6 +520,83 @@ final class LurkerClient {
         }
     }
 
+    // MARK: - Uploads
+
+    /// Upload a prepared file to `POST /api/uploads` and return the stored object's URL.
+    /// The body is streamed from a disk-backed multipart file (see `MultipartBody`), so the
+    /// phone never holds the whole payload; `onProgress` reports the device→server leg.
+    ///
+    /// `filename`/`mime` are advisory — the server re-derives both from the magic bytes — so
+    /// a wrong guess here at worst mislabels the history row, never routes around the image
+    /// pipeline or the metadata scrub. The caller is responsible for having already
+    /// compressed video to fit; a file over the instance cap comes back as `.tooLarge`.
+    func upload(
+        fileURL: URL,
+        filename: String,
+        mime: String,
+        progressToken: String,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async throws -> UploadResponse {
+        guard let token, let url = URL(string: baseURL + "/api/uploads") else {
+            throw UploadError.notSignedIn
+        }
+
+        let body = try MultipartBody.assemble(
+            token: progressToken, fileURL: fileURL, filename: filename, mime: mime
+        )
+        defer { try? FileManager.default.removeItem(at: body.fileURL) }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(body.contentType, forHTTPHeaderField: "Content-Type")
+        // A large body plus the server's own processing (re-encode / scrub / forward to the
+        // provider) can outlast the 60 s default while the connection sits idle waiting for
+        // the response. Give an upload real headroom so a big-but-fine file isn't killed.
+        request.timeoutInterval = 300
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.upload(
+                for: request,
+                fromFile: body.fileURL,
+                delegate: UploadProgressDelegate(onProgress: onProgress)
+            )
+        } catch {
+            let ns = error as NSError
+            NSLog("[upload] transport error domain=%@ code=%d desc=%@", ns.domain, ns.code, ns.localizedDescription)
+            throw UploadError.transport(error.localizedDescription)
+        }
+
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 401 {
+            // A dead session on an upload is the same fact `fetchNetworks` reports — bounce
+            // to sign-in — but also throw so the in-flight flow stops rather than "succeeding".
+            onFrame(.unauthorized)
+            throw UploadError.unauthorized
+        }
+        if code == 413 { throw UploadError.tooLarge }
+        guard (200..<300).contains(code) else {
+            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            throw UploadError.server(message ?? "Upload failed (HTTP \(code))")
+        }
+
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = object["id"] as? Int,
+              let storedURL = object["url"] as? String
+        else {
+            throw UploadError.server("The server accepted the upload but its reply was unreadable.")
+        }
+        return UploadResponse(
+            id: id,
+            url: storedURL,
+            mime: object["mime"] as? String,
+            canDelete: object["can_delete"] as? Bool ?? false,
+            thumbnailUrl: object["thumbnail_url"] as? String
+        )
+    }
+
     // MARK: - Helpers
 
     private static func sinceQuery(_ since: Int) -> String {

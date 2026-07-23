@@ -26,9 +26,12 @@ final class ComposerBar: UIView {
     /// itself — the owner does, once the send is accepted, via `clear()`.
     var onSend: ((String) -> Void)?
 
-    /// Tapped the paperclip. Unset for now — the attach button reserves its place in the
-    /// layout ahead of the image-upload feature, and does nothing until this is wired.
+    /// Tapped the paperclip.
     var onAttach: (() -> Void)?
+
+    /// Pasted an image into the field (#14) — original bytes, mime, filename. The owner
+    /// uploads it; the composer never drops the image inline.
+    var onPasteImage: ((Data, String, String) -> Void)?
 
     /// Fired when the intrinsic height changes (a line added or removed), so the owner can
     /// re-inset the conversation under the grown bar.
@@ -72,7 +75,7 @@ final class ComposerBar: UIView {
     private let attachGlass = UIVisualEffectView()
     private let fieldGlass = UIVisualEffectView()
     private let sendGlass = UIVisualEffectView()
-    private let textView = UITextView()
+    private let textView = ComposerTextView()
     private let placeholderLabel = UILabel()
     private let attachButton = UIButton(type: .system)
     private let sendButton = UIButton(type: .system)
@@ -150,6 +153,7 @@ final class ComposerBar: UIView {
         textView.autocorrectionType = .default
         textView.isScrollEnabled = false // until it hits the cap; see textViewDidChange
         textView.delegate = self
+        textView.onPasteImage = { [weak self] data, mime, name in self?.onPasteImage?(data, mime, name) }
         textView.translatesAutoresizingMaskIntoConstraints = false
 
         // A UITextView has no placeholder of its own, so it's a label pinned inside — at the
@@ -286,6 +290,27 @@ final class ComposerBar: UIView {
               case .argument(_, _, _, _, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
         else { return }
         replaceToken(range, with: "\(value) ")
+    }
+
+    /// Drop `text` in at the caret — how a finished upload's URL lands in the field (#14). A
+    /// space is added before it when it would otherwise weld onto the preceding word, and one
+    /// after it so the caret sits ready for a caption. The user then edits and sends: the
+    /// upload produces a link, it doesn't send one, which keeps send-control where IRC wants
+    /// it (a message is a URL plus whatever you say about it).
+    func insert(_ text: String) {
+        let range = textView.selectedRange
+        let current = textView.text as NSString
+        var payload = text
+        if range.location > 0 {
+            let prev = current.substring(with: NSRange(location: range.location - 1, length: 1))
+            if let scalar = prev.unicodeScalars.first,
+               !CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                payload = " " + payload
+            }
+        }
+        payload += " "
+        replaceToken(range, with: payload)
+        becomeFirstResponder()
     }
 
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits

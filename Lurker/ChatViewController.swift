@@ -28,6 +28,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let placeholderView = StateView()
     private let composer = ComposerBar()
     private var composerBottom: NSLayoutConstraint!
+    /// The in-flight upload readout above the composer (#14) — phase, progress, and a cancel.
+    private let uploadStatus = UploadStatusView()
+    /// Retained across the async pick→compress→upload flow (the picker delegates need it kept
+    /// alive) and, by living in a single slot, it enforces one attachment at a time.
+    private var attachmentPicker: AttachmentPicker?
+    /// The running upload, so the status view's cancel can tear it down.
+    private var uploadTask: Task<Void, Never>?
     /// The floating "back to the newest message" pill (see `JumpToLatestButton`), and the
     /// count it badges: messages that landed while the reader was up in history. Reset the
     /// moment they're back at the bottom, however they got there.
@@ -180,12 +187,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             view.layoutIfNeeded()
             if wasNearBottom { scrollToBottom() }
         }
+        composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
+        composer.onPasteImage = { [weak self] data, mime, name in
+            self?.uploadPastedImage(data: data, mime: mime, filename: name)
+        }
         composer.translatesAutoresizingMaskIntoConstraints = false
         // Every buffer composes — the system buffer too, as the app's command console
         // (#355 on the web; commands themselves are #10 here). It just has nothing to
         // attach, so the paperclip goes and the field takes the width.
         composer.showsAttach = buffer.networkId != nil
         view.addSubview(composer)
+
+        uploadStatus.onCancel = { [weak self] in self?.cancelUpload() }
+        uploadStatus.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(uploadStatus)
 
         // The bottom counterpart of the fade the nav bar's scroll-edge effect gives the
         // top: declaring the composer as an element container over the table's bottom edge
@@ -260,6 +275,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             suggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
             suggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
             suggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
+
+            // Centered just above the composer, riding it up with the keyboard — the same
+            // slot the suggestion pills use, which is fine because an upload and mid-token
+            // completion never run at once.
+            uploadStatus.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            uploadStatus.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            uploadStatus.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            uploadStatus.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
         observeKeyboard()
@@ -895,6 +918,208 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         navigationController?.setViewControllers(
             [ChatViewController(viewModel: viewModel, buffer: target)], animated: true
         )
+    }
+
+    // MARK: - Attachments (#14)
+
+    /// Whether an attachment is mid-flight — either being staged by the picker (`preparing`,
+    /// before `uploadTask` exists) or actively compressing/uploading. Gates every entry point
+    /// so a second pick or paste can't start atop the first.
+    private var isUploadBusy: Bool { uploadTask != nil || attachmentPicker != nil }
+
+    /// The paperclip: offer the two sources and, on a pick, run the upload. One at a time —
+    /// the status readout and `viewModel.upload`'s single-flight both assume it.
+    private func presentAttachmentSources() {
+        guard !isUploadBusy else { return }
+        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
+        sheet.addAction(UIAlertAction(title: "Photo Library", style: .default) { [weak self] _ in
+            self?.pick { $0.pickFromPhotoLibrary(completion: $1) }
+        })
+        sheet.addAction(UIAlertAction(title: "Files", style: .default) { [weak self] _ in
+            self?.pick { $0.pickFromFiles(completion: $1) }
+        })
+        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        // iPad presents an action sheet as a popover, which needs an anchor — the composer's
+        // leading edge, roughly where the paperclip sits.
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = composer
+            popover.sourceRect = CGRect(x: 24, y: 0, width: 1, height: 1)
+            popover.permittedArrowDirections = .down
+        }
+        present(sheet, animated: true)
+    }
+
+    /// Build the picker and start it — but only once a source is actually chosen. Setting
+    /// `attachmentPicker` HERE, not before presenting the sheet, means a dismissed sheet
+    /// (Cancel, or an iPad outside-tap that fires no handler) never leaves `attachmentPicker`
+    /// set — which would wedge `isUploadBusy` true and disable the paperclip for the session.
+    private func pick(
+        _ start: (AttachmentPicker, @escaping (Result<AttachmentPicker.Picked, AttachmentPicker.PickError>) -> Void) -> Void
+    ) {
+        guard !isUploadBusy else { return }
+        let picker = AttachmentPicker(presenter: self)
+        // The export/copy is a silent multi-second stretch for a large or iCloud video —
+        // raise the readout the moment an item is committed so it isn't a dead pause.
+        picker.onPreparing = { [weak self] in self?.uploadStatus.present(.preparing) }
+        attachmentPicker = picker
+        start(picker) { [weak self] in self?.handlePick($0) }
+    }
+
+    private func handlePick(_ result: Result<AttachmentPicker.Picked, AttachmentPicker.PickError>) {
+        attachmentPicker = nil
+        switch result {
+        case .success(let picked):
+            beginUpload(picked)
+        case .failure(.cancelled):
+            // A cancel never raised the "Preparing…" readout (it's shown only once an item is
+            // committed), but dismiss defensively in case staging began then bailed.
+            uploadStatus.dismiss()
+        case .failure(.failed(let message)):
+            uploadStatus.dismiss()
+            presentUploadAlert(message)
+        }
+    }
+
+    /// Upload an image pasted into the composer (#14). Reuses the whole pick→upload path by
+    /// staging the pasteboard bytes to a temp file, so it flows through the same progress,
+    /// URL-insert, and cleanup. Images never need compression, so `isVideo` is always false.
+    private func uploadPastedImage(data: Data, mime: String, filename: String) {
+        guard !isUploadBusy else { return }
+        let ext = (filename as NSString).pathExtension.isEmpty ? "png" : (filename as NSString).pathExtension
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lurker-paste-\(UUID().uuidString).\(ext)")
+        do {
+            try data.write(to: url)
+        } catch {
+            presentUploadAlert("Couldn't read the pasted image.")
+            return
+        }
+        beginUpload(AttachmentPicker.Picked(url: url, filename: filename, mime: mime, isVideo: false))
+    }
+
+    /// Where a completed upload lands, and where a failure is a `case`, not an exception.
+    private enum UploadOutcome {
+        case inserted(String)
+        case failed(UploadError)
+        case cancelled
+    }
+
+    private func beginUpload(_ picked: AttachmentPicker.Picked) {
+        uploadStatus.present(picked.isVideo ? .compressing(0) : .uploading(0))
+        let token = UUID().uuidString
+        // Strong `self`: the upload must run to completion even if the user leaves this buffer
+        // mid-flight (which replaces the root VC). Setting `uploadTask = nil` below breaks the
+        // resulting retain cycle, so this VC is released the moment the upload ends.
+        uploadTask = Task {
+            let outcome = await self.performUpload(picked, token: token)
+            self.uploadTask = nil
+            self.uploadStatus.dismiss()
+            switch outcome {
+            case .inserted(let url):
+                // Deliver to whatever buffer is on screen NOW: the user may have switched away
+                // since starting the upload, and the link should land where their cursor is,
+                // not in a torn-down composer (this is what the web client does too).
+                Self.activeChat()?.composer.insert(url)
+            case .failed(let error):
+                self.presentUploadAlert(error.userMessage)
+            case .cancelled:
+                break
+            }
+        }
+    }
+
+    private static func keyWindow() -> UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)
+    }
+
+    /// The ChatViewController currently on screen. Buffers live one-deep under the nav
+    /// controller, so it's the nav's top VC — resolved from the active window rather than
+    /// `self`, so it finds the CURRENT buffer even when the originating VC is offscreen.
+    private static func activeChat() -> ChatViewController? {
+        (keyWindow()?.rootViewController as? UINavigationController)?.topViewController as? ChatViewController
+    }
+
+    /// The frontmost presented VC, for presenting over whatever is currently up (a sheet, the
+    /// buffer switcher). Mirrors `surface(_:)`'s reasoning: presenting on a covered or
+    /// offscreen `self` is silently dropped by UIKit.
+    private static func topMostViewController() -> UIViewController? {
+        guard var top = keyWindow()?.rootViewController else { return nil }
+        while let presented = top.presentedViewController { top = presented }
+        return top
+    }
+
+    /// Compress (video only) then upload, reporting each phase to the status view. Returns an
+    /// outcome rather than throwing so `beginUpload`'s completion stays a flat switch, and
+    /// treats a cancel as its own case so a user-initiated stop never pops an error alert.
+    private func performUpload(_ picked: AttachmentPicker.Picked, token: String) async -> UploadOutcome {
+        // The picker's copy and any on-device derivative (transcode / HEIC→JPEG) are ours to
+        // clean up on every exit.
+        defer { try? FileManager.default.removeItem(at: picked.url) }
+        var fileURL = picked.url
+        var filename = picked.filename
+        var mime = picked.mime
+        var derivedTemp: URL?
+        defer { if let derivedTemp { try? FileManager.default.removeItem(at: derivedTemp) } }
+
+        if picked.isVideo {
+            uploadStatus.update(.compressing(0))
+            do {
+                let prepared = try await VideoCompressor.prepare(source: picked.url) { fraction in
+                    Task { @MainActor [weak self] in self?.uploadStatus.update(.compressing(fraction)) }
+                }
+                if prepared.isTemporary {
+                    derivedTemp = prepared.url
+                    fileURL = prepared.url
+                    filename = (filename as NSString).deletingPathExtension + ".mp4"
+                    mime = "video/mp4"
+                }
+            } catch is CancellationError {
+                return .cancelled
+            } catch let error as UploadError {
+                return .failed(error)
+            } catch {
+                return .failed(.compressionFailed(error.localizedDescription))
+            }
+        } else if let jpeg = await ImageConverter.jpegIfProblematicHEIC(source: fileURL, mime: mime) {
+            // A HEIC the server's libheif can't decode → hand it a JPEG instead.
+            derivedTemp = jpeg
+            fileURL = jpeg
+            filename = (filename as NSString).deletingPathExtension + ".jpg"
+            mime = "image/jpeg"
+        }
+
+        if Task.isCancelled { return .cancelled }
+        uploadStatus.update(.uploading(0))
+        let result = await viewModel.upload(
+            fileURL: fileURL, filename: filename, mime: mime, progressToken: token
+        ) { fraction in
+            Task { @MainActor [weak self] in self?.uploadStatus.update(.uploading(fraction)) }
+        }
+        if Task.isCancelled { return .cancelled }
+        switch result {
+        case .success(let response): return .inserted(response.url)
+        case .failure(let error): return .failed(error)
+        }
+    }
+
+    /// Cancel button on the status view. Cancels the task (the upload leg aborts promptly; an
+    /// in-progress transcode is abandoned at the next await) and dismisses the readout now so
+    /// the tap feels instant — the task's own unwind clears `uploadTask`.
+    private func cancelUpload() {
+        uploadTask?.cancel()
+        uploadStatus.dismiss()
+    }
+
+    private func presentUploadAlert(_ message: String) {
+        // Top-most, not `self`: an upload can finish while the buffer switcher is up or after
+        // this VC went offscreen, and presenting on `self` then is dropped by UIKit.
+        guard let top = Self.topMostViewController() else { return }
+        let alert = UIAlertController(title: "Upload failed", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        top.present(alert, animated: true)
     }
 
     /// Recompute the pill strip for the completion under the caret: command chips from the

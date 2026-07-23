@@ -152,6 +152,31 @@ public final class ChatViewModel {
         await client.fetchHighlights(before: before)
     }
 
+    /// Upload a prepared file and return the stored object's URL for the composer to paste
+    /// (#14). The caller has already picked the file and — for video — compressed it to fit
+    /// the instance cap; this layer only speaks to the server. `onProgress` reports the
+    /// device→server leg as a 0…1 fraction. UIKit-free by design: the picker and the video
+    /// transcode live in the app target, so this package stays platform-light.
+    public func upload(
+        fileURL: URL,
+        filename: String,
+        mime: String,
+        progressToken: String,
+        onProgress: @escaping @Sendable (Double) -> Void
+    ) async -> Result<UploadResponse, UploadError> {
+        do {
+            let response = try await client.upload(
+                fileURL: fileURL, filename: filename, mime: mime,
+                progressToken: progressToken, onProgress: onProgress
+            )
+            return .success(response)
+        } catch let error as UploadError {
+            return .failure(error)
+        } catch {
+            return .failure(.transport(error.localizedDescription))
+        }
+    }
+
     /// What the UI should do after a line of input — almost always nothing, but `/msg` and
     /// `/query` ask the composer's owner to switch to the DM they opened.
     public enum SendOutcome: Equatable, Sendable {
