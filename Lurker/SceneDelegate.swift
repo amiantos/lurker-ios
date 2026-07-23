@@ -247,8 +247,10 @@ extension SceneDelegate: NotificationTapHandling {
         // Anything presented (the buffer switcher, the nick list) would otherwise sit over
         // the buffer we just navigated to.
         navigation.dismiss(animated: false)
+        // Jump to the message that triggered the push, when it named one (#42) — a message/
+        // highlight/DM does; a friend-online push lands at the buffer bottom (nil jump).
         navigation.setViewControllers(
-            [ChatViewController(viewModel: viewModel, buffer: buffer)], animated: false
+            [ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: tap.messageId)], animated: false
         )
     }
 

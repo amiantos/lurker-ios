@@ -251,10 +251,14 @@ final class HighlightsViewController: UITableViewController {
         let section = sections[indexPath.section]
         let item = section.items[indexPath.row]
         // .solo — each match is its own run — and showsHighlight:false so the wash stays off
-        // (every row matched, so it would be a monotone wall). The chevron marks the jump.
-        // `section.networkName` is the roster-resolved name, so a system/motd highlight on an
-        // older server (no networkName on the row) still captions its network.
-        cell.configure(item.message, position: .solo, networkName: section.networkName, showsHighlight: false)
+        // (every row matched, so it would be a monotone wall). `interactive:false` so a tap on
+        // the bubble triggers the row's jump instead of the text view swallowing it. The chevron
+        // marks the jump. `section.networkName` is the roster-resolved name, so a system/motd
+        // highlight on an older server (no networkName on the row) still captions its network.
+        cell.configure(
+            item.message, position: .solo, networkName: section.networkName,
+            showsHighlight: false, interactive: false
+        )
         cell.accessoryType = .disclosureIndicator
         return cell
     }

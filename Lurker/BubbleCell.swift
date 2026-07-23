@@ -133,11 +133,18 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
     /// highlights, later search/bookmarks) turns it off: there every row matched, so the wash
     /// is a monotone wall that only erases the side/fill distinction — the screen title
     /// already says they're all highlights.
+    ///
+    /// `interactive` keeps the body's text view live for tappable links and copy in the message
+    /// list. A results list turns it off so a tap anywhere on the bubble reaches the row's own
+    /// selection (the jump) instead of being swallowed by the text view — there you're picking a
+    /// result, not reading links in place.
     func configure(
         _ message: Message, position: RunPosition, networkName: String? = nil,
-        highlighter: NickHighlighter? = nil, showsHighlight: Bool = true
+        highlighter: NickHighlighter? = nil, showsHighlight: Bool = true, interactive: Bool = true
     ) {
         let isSelf = message.isSelf
+        // Display-only in a results list: let taps fall through to the row.
+        messageText.isUserInteractionEnabled = interactive
         column.alignment = isSelf ? .trailing : .leading
         slidesAside = isSelf
 
@@ -199,6 +206,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         super.prepareForReuse()
         // A cell recycled mid-drag would otherwise come back still slid over.
         setReveal(0)
+        // Cancel an in-flight jump flash (#42) and clear its wash, so a cell recycled mid-pulse
+        // doesn't carry the warm background onto an unrelated message.
+        contentView.layer.removeAllAnimations()
+        contentView.backgroundColor = .clear
     }
 
     /// Round the outside of a run and tighten the side it's stacked along, so a run reads
