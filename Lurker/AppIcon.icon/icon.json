@@ -3,9 +3,19 @@
     {
       "value" : {
         "linear-gradient" : [
-          "display-p3:1.00000,1.00000,1.00000,1.00000",
-          "display-p3:0.77892,0.87003,1.00000,1.00000"
-        ]
+          "display-p3:0.00000,0.00000,0.00000,1.00000",
+          "display-p3:0.04036,0.13993,0.26689,1.00000"
+        ],
+        "orientation" : {
+          "start" : {
+            "x" : 0.5,
+            "y" : 0
+          },
+          "stop" : {
+            "x" : 0.5,
+            "y" : 0.7
+          }
+        }
       }
     },
     {
@@ -31,6 +41,22 @@
               "value" : "normal"
             }
           ],
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.90178,0.90858,0.94994,1.00000",
+              "extended-gray:1.00000,1.00000"
+            ],
+            "orientation" : {
+              "start" : {
+                "x" : 0.5,
+                "y" : 1
+              },
+              "stop" : {
+                "x" : 0.5,
+                "y" : 0.30151290400577546
+              }
+            }
+          },
           "glass" : true,
           "hidden" : false,
           "image-name" : "Frame 9.png",
@@ -48,12 +74,29 @@
               "value" : 1
             }
           ]
+        },
+        {
+          "glass" : true,
+          "hidden" : true,
+          "image-name" : "Frame 9-eyes.png",
+          "name" : "Frame 9-eyes",
+          "opacity" : 0
+        },
+        {
+          "blend-mode" : "normal",
+          "fill" : {
+            "solid" : "display-p3:0.96841,0.92147,0.71301,1.00000"
+          },
+          "glass" : false,
+          "image-name" : "Frame 9-stars.png",
+          "name" : "Frame 9-stars",
+          "opacity" : 0.8
         }
       ],
       "name" : "Dark Mode",
       "opacity-specializations" : [
         {
-          "value" : 0
+          "value" : 1
         },
         {
           "appearance" : "dark",
@@ -78,6 +121,7 @@
       "layers" : [
         {
           "glass" : true,
+          "hidden" : true,
           "image-name" : "Frame 9-Black.png",
           "name" : "Frame 9-Black",
           "opacity-specializations" : [
