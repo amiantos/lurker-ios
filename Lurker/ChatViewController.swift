@@ -101,6 +101,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Set once the requested `around` slice has landed, so the initial scroll can give up on
     /// a missing anchor (`anchorMissing`) and fall back to the bottom instead of waiting forever.
     private var aroundSliceArrived = false
+    /// The message ids held when the `around` fetch was sent. The response *replaces* the slice,
+    /// so the response has arrived once these are gone (or the anchor appears) — distinguishing
+    /// it from the pre-existing connect backlog (unchanged) or a live append (keeps them), either
+    /// of which used to be mistaken for the slice and make the jump give up early.
+    private var aroundBaselineIds: Set<Int> = []
+    /// True while the jump is converging on its anchor across runloops (see `convergeJump`), so
+    /// a second `landInitialIfNeeded` (from an intervening apply or layout) doesn't start a
+    /// competing chain.
+    private var jumpConverging = false
+    private var jumpConvergePass = 0
+    /// How many runloops to re-scroll before settling. The first scroll usually lands the anchor
+    /// already; a couple of extra passes correct the rare case where estimated off-screen heights
+    /// left it slightly off.
+    private static let jumpConvergePasses = 3
 
     init(viewModel: ChatViewModel, buffer: Buffer, jumpTo: Int? = nil) {
         self.viewModel = viewModel
@@ -376,9 +390,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // where it was: a bare reload re-estimates off-screen row heights and shoves the
         // viewport around, and that shove — on *appends*, not just prepends — is what made
         // the list lurch mid-read.
-        // A jump landed the around slice: remember it so the landing can give up on a missing
-        // anchor rather than wait forever.
-        if aroundRequested, !updated.isEmpty { aroundSliceArrived = true }
+        // The around response has landed once the messages we held at request time are gone
+        // (it replaces the slice) or the anchor itself shows up — NOT merely because the buffer
+        // has *some* messages (a pre-existing connect backlog would trip that and make the jump
+        // give up before its real slice arrives). A live append keeps the baseline, so it
+        // doesn't count either.
+        if aroundRequested, !aroundSliceArrived {
+            let currentIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
+            let replaced = !aroundBaselineIds.isEmpty && !aroundBaselineIds.isSubset(of: currentIds)
+            let anchorPresent = pendingJumpId.map { currentIds.contains($0) } ?? false
+            if replaced || anchorPresent { aroundSliceArrived = true }
+        }
 
         if pendingJumpId != nil || needsInitialScroll {
             // A landing is pending — an initial open, a jump to an anchor (#42), or a re-attach
@@ -434,23 +456,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The one-shot landing. Needs both rows to scroll to and a height to scroll within, which
     /// arrive in either order. Lands at the bottom normally, or — for a jump (#42) — on the
-    /// target message, waiting for its `around` slice to bring the row in before consuming the
-    /// one-shot. If the slice comes back without the anchor (`anchorMissing`), it gives up and
-    /// lands at the bottom rather than hanging at the top.
+    /// target message.
     private func landInitialIfNeeded() {
         guard needsInitialScroll, tableView.bounds.height > 0 else { return }
-        if let anchor = pendingJumpId {
-            if let index = rowIndex(containing: anchor) {
-                needsInitialScroll = false
-                pendingJumpId = nil
-                scrollToRow(index)
-            } else if aroundSliceArrived, !rows.isEmpty {
-                // The slice landed but the anchor isn't in it — fall back to the bottom.
-                needsInitialScroll = false
-                pendingJumpId = nil
-                scrollToBottom()
-            }
-            // else: still waiting for the around slice to arrive.
+        if pendingJumpId != nil {
+            beginJumpLanding()
             return
         }
         guard !rows.isEmpty else { return }
@@ -458,25 +468,75 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToBottom()
     }
 
-    /// Scroll a jumped-to message into the middle of the viewport and give it a brief warm
-    /// pulse so the eye finds it among similar bubbles. Scrolls twice for the same reason
-    /// `scrollToBottom` does — self-sizing rows settle their real heights on the first pass.
-    private func scrollToRow(_ index: Int) {
-        guard rows.indices.contains(index), tableView.bounds.height > 0 else { return }
-        let path = IndexPath(row: index, section: 0)
-        tableView.layoutIfNeeded()
-        tableView.scrollToRow(at: path, at: .middle, animated: false)
-        tableView.layoutIfNeeded()
-        tableView.scrollToRow(at: path, at: .middle, animated: false)
-        flashRow(at: path)
+    /// Start converging on the jump anchor, once. Waits (returns, leaving the jump pending) if
+    /// its row isn't loaded yet — unless the `around` slice already came back without it
+    /// (`anchorMissing`), in which case it gives up and lands at the bottom.
+    private func beginJumpLanding() {
+        guard let anchor = pendingJumpId, !jumpConverging else { return }
+        guard rowIndex(containing: anchor) != nil else {
+            if aroundSliceArrived, !rows.isEmpty {
+                // The slice came back without the anchor (`anchorMissing`) — land at the bottom.
+                needsInitialScroll = false
+                pendingJumpId = nil
+                scrollToBottom()
+            }
+            return // else: still waiting for the around response.
+        }
+        jumpConverging = true
+        jumpConvergePass = 0
+        convergeJump(anchor: anchor)
     }
 
-    /// A gentle warm pulse behind the row, fading out — the "here it is" after a jump. The
-    /// wash reuses the highlight color; it fades to clear (these cells never carry a fill).
-    private func flashRow(at path: IndexPath) {
-        guard let cell = tableView.cellForRow(at: path) else { return }
+    /// Scroll the anchor to the middle of the viewport (clamped near an edge — a recent anchor
+    /// with little below it lands lower than centre, as centred as it can be), re-checking over
+    /// a couple of runloops.
+    ///
+    /// Two things make the naive version wrong, and this fixes both: (1) it re-resolves the row
+    /// by message *id* every pass rather than caching an index, so a row rebuild between passes
+    /// (a live message, a read-state update) can't slide the scroll onto the wrong message; and
+    /// (2) the jump stays *pending* until the last pass, so an intervening `apply` reloads
+    /// without stealing the scroll to the bottom. Off-screen rows self-size from an estimate, so
+    /// a lone scroll can land approximately — a couple of passes correct as real heights render —
+    /// then it flashes and releases the jump.
+    private func convergeJump(anchor: Int) {
+        guard let index = rowIndex(containing: anchor) else { return finishJump(flashing: nil) }
+        tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .middle, animated: false)
+        jumpConvergePass += 1
+        guard jumpConvergePass < Self.jumpConvergePasses else { return finishJump(flashing: anchor) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.pendingJumpId == anchor else { return } // superseded / torn down
+            self.convergeJump(anchor: anchor)
+        }
+    }
+
+    /// Release the jump and pulse the anchor's (re-resolved) row. A vanished anchor just lands
+    /// at the bottom.
+    private func finishJump(flashing anchor: Int?) {
+        needsInitialScroll = false
+        pendingJumpId = nil
+        jumpConverging = false
+        jumpConvergePass = 0
+        guard let anchor, let index = rowIndex(containing: anchor) else {
+            if !rows.isEmpty { scrollToBottom() }
+            return
+        }
+        flashRow(at: IndexPath(row: index, section: 0))
+    }
+
+    /// A warm pulse behind the row, fading out — the "here it is" after a jump. The wash reuses
+    /// the highlight color and fades to clear (these cells never carry a fill).
+    ///
+    /// `cellForRow` is nil for a row that hasn't rendered yet, which is exactly the frame after
+    /// a jump scroll — so retry across a couple of runloops rather than silently skipping the
+    /// glow (the bug where a jump landed with no pulse).
+    private func flashRow(at path: IndexPath, retries: Int = 3) {
+        guard let cell = tableView.cellForRow(at: path) else {
+            guard retries > 0 else { return }
+            DispatchQueue.main.async { [weak self] in self?.flashRow(at: path, retries: retries - 1) }
+            return
+        }
         cell.contentView.backgroundColor = Palette.highlightBubble
-        UIView.animate(withDuration: 1.1, delay: 0.4, options: [.curveEaseOut]) {
+        UIView.animate(withDuration: 1.2, delay: 0.5, options: [.curveEaseOut]) {
             cell.contentView.backgroundColor = .clear
         }
     }
@@ -523,10 +583,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// Fetch the `around` slice a jump needs (#42): a history window centered on `pendingJumpId`,
-    /// so the target and its context land even when it's older than any backlog. Skipped when
-    /// the message is already held (the fast path — a highlight in an open buffer just scrolls),
-    /// and re-armed on reconnect like `hydrateIfNeeded`. Only channel/DM buffers hydrate on
-    /// demand; a `:server:`/system jump has nothing to fetch and falls through to a plain scroll.
+    /// so the anchor and its context land even when it's older than any backlog. Skipped when
+    /// the message is already held — the landing scrolls straight to it — and re-armed on
+    /// reconnect like `hydrateIfNeeded`. Only channel/DM buffers hydrate on demand; a
+    /// `:server:`/system jump has nothing to fetch and the landing places against what's loaded.
     private func requestAroundIfNeeded(_ state: ChatState) {
         guard let anchor = pendingJumpId, buffer.kind.hydratesOnDemand else { return }
         guard state.connection == .connected else {
@@ -534,9 +594,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         guard !aroundRequested else { return }
-        // Already have the target? No fetch — the landing scrolls straight to it.
+        // Already held? No fetch — land against what's loaded.
         if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
         aroundRequested = true
+        aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
         viewModel.loadAround(buffer.key, anchorId: anchor)
     }
 
