@@ -380,9 +380,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // anchor rather than wait forever.
         if aroundRequested, !updated.isEmpty { aroundSliceArrived = true }
 
-        if pendingJumpId != nil {
-            // A jump is pending — don't auto-scroll to the bottom; `landInitialIfNeeded` lands
-            // on the anchor once its row exists (or falls back if the anchor never arrives).
+        if pendingJumpId != nil || needsInitialScroll {
+            // A landing is pending — an initial open, a jump to an anchor (#42), or a re-attach
+            // to the tail. Don't auto-scroll here; `landInitialIfNeeded` does the placement once
+            // the rows and a height exist.
             tableView.reloadData()
         } else if wasNearBottom {
             tableView.reloadData()
@@ -728,16 +729,34 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Visible whenever the reader is up in history; the badge only when something has
     /// arrived below since. Both derived, so it can run on every tick and every reload.
     private func updateJumpButton() {
-        jumpButton.setVisible(!isNearBottom && !rows.isEmpty, animated: true)
+        // Also shown when detached (#42): a jump parked us on an older slice, and the pill is
+        // the way back to live — even at the bottom *of the slice* (where near-bottom is true).
+        jumpButton.setVisible((isDetached || !isNearBottom) && !rows.isEmpty, animated: true)
         jumpButton.setNewCount(newWhileDetached)
     }
 
+    /// The buffer is showing an `around` slice below the live tail (#42): live events are held
+    /// back, and the jump-to-latest pill re-attaches rather than just scrolling.
+    private var isDetached: Bool { viewModel.state.buffers[buffer.key.id]?.hasMoreNewer == true }
+
     /// Ride back down animated — it's a distance covered, not a teleport — then let
-    /// `scrollViewDidEndScrollingAnimation` correct for the estimated heights.
+    /// `scrollViewDidEndScrollingAnimation` correct for the estimated heights. When detached,
+    /// there's no tail on screen to ride to: re-attach by fetching the latest slice (#42) and
+    /// land at its bottom once it arrives.
     private func jumpToLatest() {
         guard !rows.isEmpty else { return }
         newWhileDetached = 0
-        tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
+        if isDetached {
+            // Re-arm the one-shot landing (and drop any stale jump state) so
+            // `landInitialIfNeeded` parks us at the tail when the replacement slice lands.
+            needsInitialScroll = true
+            pendingJumpId = nil
+            aroundRequested = false
+            aroundSliceArrived = false
+            viewModel.loadLatest(buffer.key)
+        } else {
+            tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
+        }
     }
 
     /// A failed send (`send-result` ok:false) or a server `error` frame lands in

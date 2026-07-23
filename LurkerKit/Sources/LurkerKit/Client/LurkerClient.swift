@@ -298,6 +298,14 @@ final class LurkerClient {
         ])
     }
 
+    /// Re-attach a detached buffer to the live tail (#42): fetch the latest slice after a jump
+    /// left the screen parked on an older `around` window. The reply is a `history` frame (mode
+    /// `latest`) the store applies by replacing the slice and clearing `hasMoreNewer`.
+    func loadLatest(networkId: Int?, target: String, limit: Int = 100) {
+        guard let networkId else { return }
+        send(["type": "history", "mode": "latest", "networkId": networkId, "target": target, "limit": limit])
+    }
+
     /// Mark a buffer read up to `messageId`. The server MAX-clamps, so re-sending a lower
     /// id is a safe no-op. The system buffer sends `networkId: null` (hence NSNull, not a
     /// dropped key), so this can't reuse the `guard let networkId` shortcut.

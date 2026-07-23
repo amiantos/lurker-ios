@@ -121,10 +121,10 @@ final class LurkerStore {
             return applyChannelMembers(state, networkId: networkId, target: target, members: members)
         case .memberUpdate(let networkId, let target, let member):
             return applyMemberUpdate(state, networkId: networkId, target: target, member: member)
-        case .history(let networkId, let target, let events, let mode, let hasMoreOlder, _):
+        case .history(let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer):
             return applyHistory(
                 state, networkId: networkId, target: target,
-                events: events, mode: mode, hasMoreOlder: hasMoreOlder
+                events: events, mode: mode, hasMoreOlder: hasMoreOlder, hasMoreNewer: hasMoreNewer
             )
         case .readState(let networkId, let target, let lastReadId, let unread, let highlights):
             return applyReadState(
@@ -213,10 +213,12 @@ final class LurkerStore {
         let alreadyHydrated = next.buffers[key]?.hydrated == true
         var buffer = frameBuffer
         buffer.hydrated = hydrated || alreadyHydrated
-        // A resync shell (hasMoreOlder defaults true) must not reset the paging state of
-        // a buffer we've already paged into.
+        // A resync shell (hasMoreOlder defaults true) must not reset the paging or detach
+        // state of a buffer we've already paged into or jumped within (#42) — only a real
+        // (hydrated) backlog, which is the latest tail, re-attaches.
         if !hydrated, let prior = next.buffers[key], prior.hydrated {
             buffer.hasMoreOlder = prior.hasMoreOlder
+            buffer.hasMoreNewer = prior.hasMoreNewer
         }
         next.buffers[key] = buffer
 
@@ -270,6 +272,15 @@ final class LurkerStore {
         // history replays deliberately don't fold — the snapshot/`names` list is the
         // authoritative baseline those events predate.
         next.members[key] = foldMembership(next.members[key], message)
+        // A detached buffer (showing an `around` slice below the live tail, #42) holds live
+        // events out of the log — appending them would splice a hole past the slice. Member
+        // and topic state above stays current; only the message log waits, and re-attaching
+        // (jump-to-latest → loadLatest) fetches the true latest. `maxEventId` still advances so
+        // the resume cursor doesn't re-request an event the client has already seen.
+        if next.buffers[key]?.hasMoreNewer == true {
+            next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
+            return next
+        }
         next.messages[key] = existing + [message]
         next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
         return next
@@ -405,7 +416,8 @@ final class LurkerStore {
         target: String,
         events: [Message],
         mode: HistoryMode,
-        hasMoreOlder: Bool
+        hasMoreOlder: Bool,
+        hasMoreNewer: Bool
     ) -> ChatState {
         var next = state
         let key = BufferKey(networkId: networkId, target: target).id
@@ -431,6 +443,14 @@ final class LurkerStore {
         if var buffer = next.buffers[key] {
             buffer.hydrated = true
             if mode != .after { buffer.hasMoreOlder = hasMoreOlder } // `after` pages newer
+            // Detach state (#42): an `around` slice may sit below the tail → detached; `latest`
+            // is the tail → re-attached; `after` carries whether newer remains. `before` pages
+            // older within whatever attachment we already have, so it's left untouched.
+            switch mode {
+            case .around, .after: buffer.hasMoreNewer = hasMoreNewer
+            case .latest: buffer.hasMoreNewer = false
+            case .before: break
+            }
             next.buffers[key] = buffer
         }
         next.maxEventId = maxEventId(next.maxEventId, networkId, events)

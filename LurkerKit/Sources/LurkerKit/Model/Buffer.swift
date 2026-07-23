@@ -23,6 +23,12 @@ public struct Buffer: Equatable, Sendable {
     /// Whether more history exists above what's loaded — gates the scroll-up pagination
     /// (#6). Defaults true (an unopened buffer has all its history still to fetch).
     public var hasMoreOlder: Bool
+    /// Whether the loaded slice sits *below* the live tail — true only after a jump lands an
+    /// `around` slice centered on an older message (#42). While set, the buffer is "detached":
+    /// live events are held out of the log (they'd splice a hole past the slice), and the
+    /// jump-to-latest pill re-attaches by fetching the latest. A normal (latest) buffer is at
+    /// the tail, so this defaults false.
+    public var hasMoreNewer: Bool
     /// A channel's topic, when it has one. Nil on a channel with no topic set *and* on
     /// every other kind — nothing but a channel has one.
     ///
@@ -41,6 +47,7 @@ public struct Buffer: Equatable, Sendable {
         joined: Bool = false,
         hydrated: Bool = false,
         hasMoreOlder: Bool = true,
+        hasMoreNewer: Bool = false,
         topic: String? = nil
     ) {
         self.networkId = networkId
@@ -52,6 +59,7 @@ public struct Buffer: Equatable, Sendable {
         self.joined = joined
         self.hydrated = hydrated
         self.hasMoreOlder = hasMoreOlder
+        self.hasMoreNewer = hasMoreNewer
         self.topic = topic
     }
 

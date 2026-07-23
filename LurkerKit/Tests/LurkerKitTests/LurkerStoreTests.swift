@@ -161,6 +161,40 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertTrue(store.state.buffers[chanKey]!.hydrated)
     }
 
+    func testAroundBelowTheTailDetachesAndHoldsBackLiveEvents() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
+        // Jump to an old message: the slice reports newer messages remain → detached.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer, "an around slice below the tail detaches")
+        // A live message must NOT splice onto the old slice.
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(999, "live")))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["anchor"], "live is held back while detached")
+        XCTAssertEqual(store.state.maxEventId, 999, "but the resume cursor still advances past it")
+    }
+
+    func testLoadingLatestReattachesAndResumesLiveAppends() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "old")],
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+        ))
+        XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer)
+        // Return to live: the latest slice re-attaches (clears the detached flag).
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(500, "latest")],
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer, "latest re-attaches to the tail")
+        // Live appends resume now that we're attached.
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(501, "live")))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["latest", "live"])
+    }
+
     func testHistoryTracksHasMoreOlderForThePagingGate() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e")]))

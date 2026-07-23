@@ -241,6 +241,13 @@ public final class ChatViewModel {
         client.loadAround(networkId: key.networkId, target: key.target, anchorId: anchorId)
     }
 
+    /// Re-attach a detached buffer to the live tail (#42) — the "return to live" a jump-to-
+    /// latest tap makes after a jump parked the screen on an older `around` slice. The reply
+    /// replaces the slice with the latest and clears the buffer's detached flag.
+    public func loadLatest(_ key: BufferKey) {
+        client.loadLatest(networkId: key.networkId, target: key.target)
+    }
+
     /// Mark a buffer read up to its latest loaded message. Server-authoritative and
     /// MAX-clamped, and deduped here, so calling it on every state change while viewing a
     /// buffer is cheap. The `read-state` echo updates the counts.
