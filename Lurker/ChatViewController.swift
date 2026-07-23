@@ -482,11 +482,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func beginJumpLanding() {
         guard let anchor = pendingJumpId, !jumpConverging else { return }
         guard rowIndex(containing: anchor) != nil else {
-            if aroundSliceArrived, !rows.isEmpty {
-                // The slice came back without the anchor (`anchorMissing`) — land at the bottom.
+            if aroundSliceArrived {
+                // The response landed without the anchor (`anchorMissing`). Release the jump so
+                // the screen isn't stuck "landing" forever — land at the bottom if there's
+                // anything to land on, otherwise just let go (an empty buffer shows its empty
+                // state, and a later message follows the normal near-bottom path).
                 needsInitialScroll = false
                 pendingJumpId = nil
-                scrollToBottom()
+                if !rows.isEmpty { scrollToBottom() }
             }
             return // else: still waiting for the around response.
         }
