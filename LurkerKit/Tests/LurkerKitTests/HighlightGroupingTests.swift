@@ -90,4 +90,22 @@ final class HighlightGroupingTests: XCTestCase {
     func testEmptyInputIsNoGroups() {
         XCTAssertTrue(HighlightGrouping.group([], now: now, calendar: calendar).isEmpty)
     }
+
+    func testDayIsClassifiedAgainstPassedNowNotTheDeviceDate() {
+        // A fixed `now` that is emphatically not the day this test runs. Today/yesterday must
+        // be measured against it, not the real clock — the earlier `isDateInToday` version
+        // would have classified all three as `.on(...)`.
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let items = [
+            item(3, networkId: 1, "#a", date: fixedNow),
+            item(2, networkId: 1, "#a", date: fixedNow.addingTimeInterval(-24 * 3600)),
+            item(1, networkId: 1, "#a", date: fixedNow.addingTimeInterval(-5 * 24 * 3600)),
+        ]
+        let groups = HighlightGrouping.group(items, now: fixedNow, calendar: calendar)
+        XCTAssertEqual(groups.map(\.day), [
+            .today,
+            .yesterday,
+            .on(calendar.startOfDay(for: fixedNow.addingTimeInterval(-5 * 24 * 3600))),
+        ])
+    }
 }

@@ -14,14 +14,20 @@ public enum HighlightDay: Equatable, Sendable {
 
     /// Classify a date against `now` in `calendar`'s time zone. A nil date (an event with no
     /// readable time) is `.undated`.
+    ///
+    /// "Today"/"yesterday" are measured against the passed-in `now`, NOT the device's current
+    /// date — `Calendar.isDateInToday`/`isDateInYesterday` consult the real clock, which would
+    /// make the result depend on when it runs (breaking tests, previews, and any as-of caller).
     public init(date: Date?, now: Date, calendar: Calendar) {
         guard let date else { self = .undated; return }
-        if calendar.isDateInToday(date) {
+        let dayStart = calendar.startOfDay(for: date)
+        let todayStart = calendar.startOfDay(for: now)
+        if dayStart == todayStart {
             self = .today
-        } else if calendar.isDateInYesterday(date) {
+        } else if dayStart == calendar.date(byAdding: .day, value: -1, to: todayStart) {
             self = .yesterday
         } else {
-            self = .on(calendar.startOfDay(for: date))
+            self = .on(dayStart)
         }
     }
 }
