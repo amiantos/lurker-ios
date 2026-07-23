@@ -183,10 +183,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// (See the `NotificationTapHandling` conformance below for the notification path.)
     ///
-    /// Signing in lands on the system buffer rather than a list of buffers. It's the app's
-    /// own buffer — always present, and constructible without waiting on a frame — so it's
-    /// somewhere to *be* while the snapshot arrives, and it's where Lurker says what it's
-    /// doing. The buffer list is a sheet off the title pill from there.
+    /// Signing in lands on the buffer you were last reading (#49), falling back to the
+    /// system buffer. It's the app's own buffer — always present, and constructible without
+    /// waiting on a frame — so it's somewhere to *be* while the snapshot arrives, and it's
+    /// where Lurker says what it's doing. The buffer list is a sheet off the title pill.
     private func render(_ session: ChatViewModel.SessionState, animated: Bool) {
         guard let navigation else { return }
         switch session {
@@ -195,11 +195,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // with another ChatViewController, and re-rendering must not throw that away.
             if !(navigation.viewControllers.first is ChatViewController) {
                 navigation.setViewControllers(
-                    [ChatViewController(viewModel: viewModel, buffer: .system)], animated: animated
+                    [ChatViewController(viewModel: viewModel, buffer: launchBuffer())], animated: animated
                 )
             }
         case .loggedOut:
             if !(navigation.viewControllers.last is LoginViewController) {
+                // The next sign-in may be somebody else; see `forgetLastBuffer`.
+                UserPreferences.standard.forgetLastBuffer()
                 // Drop anything presented first. The buffer-list sheet is presented by the
                 // navigation controller, so swapping its stack doesn't take the sheet with
                 // it — a mid-session 401 with the list open would leave it sitting over the
@@ -210,6 +212,28 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .loggingIn:
             break // stay on the login screen; it shows its own spinner
         }
+    }
+
+    /// Where a launch lands. The store is empty at this point — the socket hasn't opened,
+    /// let alone delivered a snapshot — so the remembered buffer is *synthesized* from its
+    /// key rather than looked up, exactly like the notification-tap path. The screen's own
+    /// `hydrateIfNeeded` asks for the history once the buffer's row arrives, so it fills in
+    /// a moment later.
+    ///
+    /// Synthesized rather than waiting for the snapshot and swapping the root then, which
+    /// would put a system buffer on screen for as long as the connect takes and then yank
+    /// it away under a reader. The cost of going early is the case where the buffer is
+    /// *gone* — a channel parted from another client since — which lands on an empty room
+    /// that never hydrates (no row in state, so nothing to open). One tap on the buffer
+    /// list from there, and it's the rarer half of a trade the common case wins outright.
+    private func launchBuffer() -> Buffer {
+        guard let key = UserPreferences.standard.lastBufferKey else { return .system }
+        return viewModel.state.buffers[key.id]
+            ?? Buffer(
+                networkId: key.networkId,
+                target: key.target,
+                kind: BufferKind.of(networkId: key.networkId, target: key.target)
+            )
     }
 }
 

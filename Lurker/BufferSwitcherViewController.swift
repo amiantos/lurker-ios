@@ -60,11 +60,11 @@ final class BufferSwitcherViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Buffers"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .done, primaryAction: UIAction { [weak self] _ in
-                self?.dismiss(animated: true)
-            }
-        )
+        navigationItem.leftBarButtonItem = accountItem()
+        // The trailing "+" is set by `apply`, since what it does depends on how many
+        // networks there are. No Done button: "+" has taken that slot, and the sheet
+        // already dismisses three ways — the grabber, a swipe down, and picking a buffer,
+        // which is what you opened it to do.
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         // The list depends on networks, buffers, and connection state — a message arriving
@@ -86,8 +86,104 @@ final class BufferSwitcherViewController: UITableViewController {
 
     private func apply(_ state: ChatState) {
         self.state = state
+        refreshJoinItem(state)
         sections = buildSections(state)
         tableView.reloadData()
+    }
+
+    // MARK: - Bar items
+
+    /// Account, not buffer: the things that outlast whichever conversation you're reading.
+    /// It lives here rather than on the chat screen's "…" because that one is a list of
+    /// *views* — and because sign-out sitting next to "Members" put the end of your session
+    /// one slipped thumb from a nick list.
+    ///
+    /// Settings (#20) lands here too, which is why it's an ellipsis and not a door.
+    private func accountItem() -> UIBarButtonItem {
+        let signOut = UIAction(
+            title: "Sign Out",
+            image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+            attributes: .destructive
+        ) { [weak self] _ in
+            // Revokes server-side + clears the Keychain; SceneDelegate dismisses this sheet
+            // and returns us to sign-in.
+            self?.viewModel.logout()
+        }
+        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [signOut]))
+        item.accessibilityLabel = "Account"
+        return item
+    }
+
+    /// The part of a network the "+" menu actually shows. Optional so the first `apply`
+    /// always builds — an account with no networks would otherwise compare equal to the
+    /// initial state and never get an item at all.
+    private var joinChoices: [JoinChoice]?
+
+    private struct JoinChoice: Equatable {
+        let id: Int
+        let name: String
+    }
+
+    /// Join, promoted out of the chat screen's menu into the one place you already go to
+    /// change which conversation you're in. A channel you haven't joined is a buffer you
+    /// don't have, so the buffer list is where its absence is felt.
+    ///
+    /// Rebuilt from state rather than mutated in place, so all three cases below are one
+    /// expression and none of them can leave the item half-configured from the last one:
+    ///
+    ///  - **One network** — a plain tap straight to the channel prompt. A menu of one is a
+    ///    tap spent to learn nothing.
+    ///  - **Several** — a menu to pick which network to join on, decided before you commit
+    ///    to the tap rather than by an action sheet after it.
+    ///  - **None** — disabled. There is nothing the user could do from this sheet to make
+    ///    it work, and a "+" that opens a prompt with nowhere to send it is worse than a
+    ///    grey one.
+    ///
+    /// Rebuilding is therefore gated on the choices actually changing. `apply` runs on
+    /// every unread-count change too, and replacing a bar button item closes any menu it is
+    /// currently showing — so an unrebuilt item is not an optimization here, it's the
+    /// difference between the menu staying open and it vanishing when a message arrives.
+    private func refreshJoinItem(_ state: ChatState) {
+        let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        // Only what the menu renders: a network reconnecting changes `Network` but not a
+        // single row here.
+        let choices = networks.map { JoinChoice(id: $0.id, name: $0.name) }
+        guard choices != joinChoices else { return }
+        joinChoices = choices
+
+        let icon = UIImage(systemName: "plus")
+        let item: UIBarButtonItem
+        if networks.count > 1 {
+            item = UIBarButtonItem(title: nil, image: icon, primaryAction: nil, menu: UIMenu(
+                title: "Join Channel",
+                children: networks.map { network in
+                    UIAction(title: network.name) { [weak self] _ in
+                        self?.presentJoinAlert(network: network)
+                    }
+                }
+            ))
+        } else {
+            item = UIBarButtonItem(title: nil, image: icon, primaryAction: networks.first.map { only in
+                UIAction(image: icon) { [weak self] _ in self?.presentJoinAlert(network: only) }
+            }, menu: nil)
+            item.isEnabled = !networks.isEmpty
+        }
+        item.accessibilityLabel = "Join Channel"
+        navigationItem.rightBarButtonItem = item
+    }
+
+    private func presentJoinAlert(network: Network) {
+        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
+        alert.addTextField {
+            $0.placeholder = "#channel"
+            $0.autocapitalizationType = .none
+            $0.autocorrectionType = .no
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
+            self?.viewModel.joinChannel(networkId: network.id, channel: alert?.textFields?.first?.text ?? "")
+        })
+        present(alert, animated: true)
     }
 
     // MARK: - Sections

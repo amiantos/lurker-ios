@@ -325,6 +325,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // appear rather than on the pick, so the launch buffer counts too and a buffer
         // reached any other way can't slip past the bookkeeping.
         UserPreferences.standard.recordRecentBuffer(buffer.key.id)
+        // …and it's where a relaunch should land (#49). Same moment, same reason: whatever
+        // route brought you here, this is the buffer you were last looking at.
+        UserPreferences.standard.recordLastBuffer(buffer.key)
         // An error that landed before we had a window — or while the buffer list was
         // covering us — has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
@@ -1359,31 +1362,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return item
     }
 
-    /// The overflow button, balancing the buffer list across the pill. A bare "…" means
-    /// "there's a menu here" on iOS, so nothing in it fires on tap — sign-out least of
-    /// all, since an unlabelled button that ends your session on one touch is a trap.
-    /// It's also where the rest of Settings (#20) lands, which is why it's an ellipsis
-    /// and not a door.
+    /// The views menu, balancing the buffer list across the pill: the surfaces you *look
+    /// at*, as against the buffer you're in. Highlights today; search, bookmarks and
+    /// uploads land here as they're built, which is the set the desktop client keeps in
+    /// its bottom toolbar (#49).
     ///
-    /// Deferred rather than built once here, because what belongs in it moves after
-    /// `viewDidLoad`: networks connect and disconnect. A menu assembled at launch would
-    /// still be offering the networks that existed then.
+    /// Nothing account-scoped lives here. Sign-out sits in the buffer sheet's own menu,
+    /// where the things that outlast the buffer you happen to be reading belong — and
+    /// where it isn't one slip of the thumb from "Members".
+    ///
+    /// A bare "…" means "there's a menu here" on iOS, so nothing in it fires on tap.
     private func overflowItem() -> UIBarButtonItem {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "ellipsis"),
-            menu: UIMenu(children: [
-                UIDeferredMenuElement.uncached { [weak self] completion in
-                    completion(self?.overflowElements() ?? [])
-                },
-            ])
-        )
-        item.accessibilityLabel = "More"
-        return item
-    }
-
-    private func overflowElements() -> [UIMenuElement] {
         var actions: [UIMenuElement] = []
-        if let join = joinElement() { actions.append(join) }
         // Channels only. A DM has nobody to list and never will, and the system buffer
         // isn't even on a network — the list would open empty by construction. The
         // right-edge swipe stays unconditional: a gesture you have to go looking for can
@@ -1398,59 +1388,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         actions.append(UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
             self?.showHighlights()
         })
-        let signOut = UIAction(
-            title: "Sign Out",
-            image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
-            attributes: .destructive
-        ) { [weak self] _ in
-            // Revokes server-side + clears the Keychain; SceneDelegate returns us to
-            // sign-in.
-            self?.viewModel.logout()
-        }
-        // Inline sections, so sign-out sits below a divider instead of one slip of the
-        // thumb away from "Members".
-        guard !actions.isEmpty else { return [signOut] }
-        return [
-            UIMenu(options: .displayInline, children: actions),
-            UIMenu(options: .displayInline, children: [signOut]),
-        ]
-    }
-
-    /// Join lands here from the menu rather than owning a "+" of its own: it's a rare,
-    /// deliberate act that was holding the most valuable slot on the bar.
-    ///
-    /// One network makes it a plain item, several make it a submenu, none omits it — the
-    /// same three cases the old action sheet decided at tap time, now visible before you
-    /// commit to a tap. Omitted rather than disabled on none, because there's nothing the
-    /// user could do from here to make a greyed-out row work.
-    private func joinElement() -> UIMenuElement? {
-        let networks = viewModel.networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        let icon = UIImage(systemName: "plus.bubble")
-        guard let only = networks.first else { return nil }
-        guard networks.count > 1 else {
-            return UIAction(title: "Join Channel…", image: icon) { [weak self] _ in
-                self?.presentJoinAlert(network: only)
-            }
-        }
-        return UIMenu(title: "Join Channel…", image: icon, children: networks.map { network in
-            UIAction(title: network.name) { [weak self] _ in
-                self?.presentJoinAlert(network: network)
-            }
-        })
-    }
-
-    private func presentJoinAlert(network: Network) {
-        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
-        alert.addTextField {
-            $0.placeholder = "#channel"
-            $0.autocapitalizationType = .none
-            $0.autocorrectionType = .no
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
-            self?.viewModel.joinChannel(networkId: network.id, channel: alert?.textFields?.first?.text ?? "")
-        })
-        present(alert, animated: true)
+        // Built once, not deferred: every entry is fixed by this buffer's kind, which
+        // can't change under a screen that was constructed for it. (Join moved to the
+        // buffer sheet precisely because *its* contents do move — networks connect and
+        // disconnect — and it's deferred there.)
+        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: actions))
+        item.accessibilityLabel = "More"
+        return item
     }
 
     // MARK: - Keyboard
