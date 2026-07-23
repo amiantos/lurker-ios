@@ -255,6 +255,44 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(networks.map(\.name), ["Libera", "OFTC"])
     }
 
+    func testHighlightsPageParsesItemsWithBufferAddressAndCursor() {
+        let page = FrameParser.parseHighlights(##"""
+        {"items":[
+          {"id":91,"networkId":1,"target":"#lurker","networkName":"Libera","type":"message","nick":"alice","text":"hey @you","self":false,"matched":true,"time":"2026-07-22T20:00:00.000Z"},
+          {"id":88,"networkId":2,"target":"bob","networkName":"OFTC","type":"message","nick":"bob","text":"ping","self":false,"matched":true}
+        ],"nextBefore":88}
+        """##)
+        XCTAssertEqual(page.items.count, 2)
+        XCTAssertEqual(page.items[0].message.id, 91)
+        XCTAssertEqual(page.items[0].message.nick, "alice")
+        XCTAssertEqual(page.items[0].message.text, "hey @you")
+        XCTAssertTrue(page.items[0].message.matched)
+        XCTAssertNotNil(page.items[0].message.date, "the ISO time is parsed at the wire boundary")
+        XCTAssertEqual(page.items[0].networkId, 1)
+        XCTAssertEqual(page.items[0].target, "#lurker")
+        XCTAssertEqual(page.items[0].networkName, "Libera")
+        XCTAssertEqual(page.items[0].bufferKey, BufferKey(networkId: 1, target: "#lurker"))
+        // A DM highlight resolves its buffer the same way, keyed on the nick target.
+        XCTAssertEqual(page.items[1].bufferKey, BufferKey(networkId: 2, target: "bob"))
+        XCTAssertEqual(page.nextBefore, 88)
+        XCTAssertTrue(page.hasMore)
+    }
+
+    func testHighlightsLastPageHasNoCursor() {
+        // The server drops `nextBefore` (null) once a page doesn't fill the limit — that's
+        // the end signal, and it must read as "no more" rather than a cursor of 0.
+        let page = FrameParser.parseHighlights(##"{"items":[{"id":5,"networkId":1,"target":"#c","type":"message","nick":"a","text":"hi"}],"nextBefore":null}"##)
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertNil(page.nextBefore)
+        XCTAssertFalse(page.hasMore)
+    }
+
+    func testHighlightsMalformedBodyIsAnEmptyPageNotACrash() {
+        let page = FrameParser.parseHighlights("not json")
+        XCTAssertTrue(page.items.isEmpty)
+        XCTAssertNil(page.nextBefore)
+    }
+
     func testAnUnknownFrameKindIsIgnoredNotAnError() {
         XCTAssertEqual(FrameParser.parseWs(##"{"kind":"draft-snapshot","drafts":{}}"##), .ignored)
         XCTAssertEqual(FrameParser.parseWs("not json at all"), .ignored)

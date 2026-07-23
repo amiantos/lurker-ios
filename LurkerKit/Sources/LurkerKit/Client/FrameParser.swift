@@ -47,6 +47,24 @@ enum FrameParser {
         return .networks(networks)
     }
 
+    /// Parse REST `GET /api/highlights` into a page. Each item is a `MessageEvent` spread
+    /// flat (so `parseEvent` reads it, same as a backlog line) plus the buffer address
+    /// (`networkId`/`target`) and a resolved `networkName`. `nextBefore` is the cursor for
+    /// the next older page, null at the end — carried through as `Int?` so `hasMore` can
+    /// distinguish "no more" from "more, cursor 0".
+    static func parseHighlights(_ body: String) -> HighlightsPage {
+        guard let obj = object(from: body) else { return HighlightsPage(items: [], nextBefore: nil) }
+        let items = obj.objects("items").map { item in
+            HighlightItem(
+                message: parseEvent(item),
+                networkId: item.intOrNull("networkId"),
+                target: item.string("target"),
+                networkName: item.stringOrNull("networkName")
+            )
+        }
+        return HighlightsPage(items: items, nextBefore: obj.intOrNull("nextBefore"))
+    }
+
     // MARK: - Private
 
     private static func object(from text: String) -> [String: Any]? {

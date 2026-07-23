@@ -127,9 +127,15 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
 
     /// `networkName` captions the lines that have no nick — a system line names the network
     /// it's about, server text names the server it came from.
+    ///
+    /// `showsHighlight` gates the warm matched-line wash. On by default for the message list,
+    /// where the wash marks the one highlighted line among many. A results list (recent
+    /// highlights, later search/bookmarks) turns it off: there every row matched, so the wash
+    /// is a monotone wall that only erases the side/fill distinction — the screen title
+    /// already says they're all highlights.
     func configure(
         _ message: Message, position: RunPosition, networkName: String? = nil,
-        highlighter: NickHighlighter? = nil
+        highlighter: NickHighlighter? = nil, showsHighlight: Bool = true
     ) {
         let isSelf = message.isSelf
         column.alignment = isSelf ? .trailing : .leading
@@ -145,7 +151,13 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         // for the line you're looking at.
         revealTime.text = MessageRenderer.timestamp(message.date)
 
-        bubble.backgroundColor = isSelf ? Palette.outgoingBubble : Palette.incomingBubble
+        // A matched line wins the fill regardless of side: the warm wash is the whole point,
+        // and a highlight in your own message (a rule firing on something you said) is worth
+        // the same mark as one in someone else's. Mirrors the web, which tints `.line.highlight`
+        // without regard to author.
+        bubble.backgroundColor = (showsHighlight && message.matched)
+            ? Palette.highlightBubble
+            : (isSelf ? Palette.outgoingBubble : Palette.incomingBubble)
         bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
         messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
         // A link is body-colored with a soft underline — matching the web client, whose

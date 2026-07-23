@@ -80,9 +80,17 @@ final class LineCell: UITableViewCell, TimestampRevealing {
     /// open a gap above and below itself while staying tight internally — the same "run
     /// reads as a block" rhythm `BubbleCell` uses. Callers that don't care (a `/me` action)
     /// keep the conversational default.
-    func configure(_ attributed: NSAttributedString, date: Date?, topInset: CGFloat = 4, bottomInset: CGFloat = 4) {
+    /// `highlighted` washes the whole row in the warm highlight fill — for a `/me` action a
+    /// rule matched. It's a full-bleed band rather than a bubble because a line has no bubble;
+    /// this mirrors the web's `.line.highlight`. Only actions ever pass true — status
+    /// narration and consolidated runs carry no rule match — so it defaults off.
+    func configure(
+        _ attributed: NSAttributedString, date: Date?,
+        topInset: CGFloat = 4, bottomInset: CGFloat = 4, highlighted: Bool = false
+    ) {
         messageText.textContainerInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 12)
         messageText.attributedText = attributed
+        contentView.backgroundColor = highlighted ? Palette.highlightBubble : .clear
         revealTime.text = MessageRenderer.timestamp(date)
         // VoiceOver has no drag to make, so the time is spoken as part of the line rather
         // than left behind a gesture it can't perform.
@@ -100,5 +108,7 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         super.prepareForReuse()
         // A cell recycled mid-drag would otherwise come back with its time still pulled in.
         setReveal(0)
+        // The highlight wash isn't reset here: configure() always reassigns
+        // contentView.backgroundColor on dequeue, so a stale wash never survives.
     }
 }

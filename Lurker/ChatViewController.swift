@@ -880,6 +880,39 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         nav?.present(sheet, animated: true)
     }
 
+    /// The recent-highlights list. A full-height sheet — it's a reading surface, not a
+    /// glance — presented from the navigation controller like the buffer switcher, because
+    /// picking a highlight replaces this screen and a presenter deallocated mid-swap would
+    /// take the sheet down with it. Tapping a highlight jumps to its buffer the same
+    /// root-swap way `/msg` and the switcher do; landing at the bottom of that conversation
+    /// (scrolling to the exact matched line is deferred to #42).
+    private func showHighlights() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let viewModel = self.viewModel
+        let nav = navigationController
+        let current = buffer.key
+        let highlights = HighlightsViewController(viewModel: viewModel)
+        highlights.onSelect = { [weak nav] item in
+            let key = item.bufferKey
+            // Already here → just close, don't rebuild (same reasoning as the switcher).
+            guard key != current else { return nav?.dismiss(animated: true) ?? () }
+            // The buffer may not be in state (a channel since closed, or one whose row never
+            // materialized), so synthesize it exactly like `navigate(to:)` — the new screen's
+            // own hydrate fetches the history.
+            let target = viewModel.state.buffers[key.id]
+                ?? Buffer(networkId: key.networkId, target: key.target,
+                          kind: BufferKind.of(networkId: key.networkId, target: key.target))
+            nav?.setViewControllers(
+                [ChatViewController(viewModel: viewModel, buffer: target)], animated: false
+            )
+            nav?.dismiss(animated: true)
+        }
+        let sheet = UINavigationController(rootViewController: highlights)
+        sheet.navigationBar.prefersLargeTitles = true
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        nav?.present(sheet, animated: true)
+    }
+
     /// What the pill opens: this buffer's own info, not a picker for a different one.
     /// Medium-height first, like the nick list — it's a glance about the conversation
     /// behind it, so it leaves that conversation on screen.
@@ -956,6 +989,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self?.showMemberList()
             })
         }
+        // App-scoped, not buffer-scoped: recent highlights span every network, so it belongs
+        // here on every buffer rather than gated like Members.
+        actions.append(UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+            self?.showHighlights()
+        })
         let signOut = UIAction(
             title: "Sign Out",
             image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
@@ -1104,7 +1142,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // A `/me` action is conversation and keeps the tight default; a status line is
             // narration and gets the block spacing that sets its run apart from the chat.
             let spacing = message.type.isActivity ? statusBlockSpacing(at: indexPath.row) : (top: 4, bottom: 4)
-            cell.configure(MessageRenderer.render(message, traits: traitCollection), date: message.date, topInset: spacing.top, bottomInset: spacing.bottom)
+            cell.configure(
+                MessageRenderer.render(message, traits: traitCollection), date: message.date,
+                topInset: spacing.top, bottomInset: spacing.bottom, highlighted: message.matched
+            )
             cell.setReveal(reveal)
             return cell
         case .consolidated(let summary):
