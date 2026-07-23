@@ -19,11 +19,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
 
-    /// Which buffer this screen was built for. Exposed so the scene delegate can tell
-    /// whether the root is still the screen it installed (see `verifyRestore`) — the key
-    /// alone, because that's the identity question, not the buffer's mutable contents.
-    var bufferKey: BufferKey { buffer.key }
-
     private let tableView = UITableView()
     /// The floating "your connection is unhappy" capsule at the top — offline/connecting/
     /// reconnecting in words, the loud counterpart to the title pill's dot (#19).
@@ -1309,11 +1304,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // Root-swap to the buffer and jump to the matched line (#42) — even when it's the
             // buffer already on screen, since the point is to move to that message. The buffer
             // may not be in state (a channel since closed, or one whose row never materialized),
-            // so synthesize it exactly like `navigate(to:)`; the new screen fetches an `around`
+            // which is what `buffer(for:)` synthesizes for; the new screen fetches an `around`
             // slice centered on the match and scrolls to it.
-            let target = viewModel.state.buffers[key.id]
-                ?? Buffer(networkId: key.networkId, target: key.target,
-                          kind: BufferKind.of(networkId: key.networkId, target: key.target))
+            let target = viewModel.state.buffer(for: key)
             nav?.setViewControllers(
                 [ChatViewController(viewModel: viewModel, buffer: target, jumpTo: item.message.id)], animated: false
             )
@@ -1394,9 +1387,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             self?.showHighlights()
         })
         // Built once, not deferred: every entry is fixed by this buffer's kind, which
-        // can't change under a screen that was constructed for it. (Join moved to the
-        // buffer sheet precisely because *its* contents do move — networks connect and
-        // disconnect — and it's deferred there.)
+        // can't change under a screen that was constructed for it. (The deferral this used
+        // to need was for Join, whose networks come and go; that's the buffer sheet's "+"
+        // now, and a form rather than a menu, so nothing there needs deferring either.)
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: actions))
         item.accessibilityLabel = "More"
         return item

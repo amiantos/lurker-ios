@@ -144,11 +144,18 @@ final class BufferSwitcherViewController: UITableViewController {
     /// synthesized one exactly as a notification tap does, and let the chat screen's
     /// `hydrateIfNeeded` fill it in when the join completes.
     private func presentJoin() {
-        let form = JoinChannelViewController(networks: Array(state.networks.values))
+        // Same guard as every other present site in this app: a second tap while the sheet
+        // is coming up would otherwise be dropped by UIKit with a console warning.
+        guard presentedViewController == nil else { return }
+        guard let form = JoinChannelViewController(networks: Array(state.networks.values)) else { return }
         form.onJoin = { [weak self] network, channel in
             guard let self else { return }
             viewModel.joinChannel(networkId: network.id, channel: channel)
-            let buffer = Buffer(networkId: network.id, target: channel, kind: .channel)
+            // `buffer(for:)` rather than a hand-built one: `ensurePrefix` accepts the full
+            // RFC-1459 sigil set, of which `BufferKind.of` classifies only `#` and `&` as
+            // channels — so hardcoding `.channel` here would hand the chat screen a member
+            // list its store row disagrees with.
+            let buffer = state.buffer(for: BufferKey(networkId: network.id, target: channel))
             // Dismissed through `self`, not through the form — the form owns this closure,
             // so capturing it here would be a cycle. (A view controller dismisses whatever
             // it presented, which is the form's sheet.)

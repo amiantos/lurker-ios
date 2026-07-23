@@ -510,34 +510,33 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.connection, .reconnecting)
     }
 
-    /// `snapshotApplied` is what lets a *missing* channel row mean something. Restoring
-    /// into the buffer you last read has to tell "you left this channel elsewhere" from
-    /// "the snapshot hasn't arrived yet", and those look identical in `buffers`.
-    func testSnapshotAppliedMarksWhenAMissingChannelRowBecomesProof() {
+    func testBufferForKeyReturnsTheStoredRowWhenThereIsOne() {
         let store = LurkerStore()
-        XCTAssertFalse(store.state.snapshotApplied, "nothing has been proven before the first snapshot")
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
 
-        store.apply(.snapshot([
-            NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [
-                ChannelSnapshot(name: "#lurker", topic: nil, members: []),
-            ]),
-        ]))
-        XCTAssertTrue(store.state.snapshotApplied)
-        XCTAssertNotNil(store.state.buffers[chanKey], "a joined channel is in the snapshot")
-        XCTAssertNil(store.state.buffers["1::#gone"], "one you left is not — and now that is provable")
+        let found = store.state.buffer(for: BufferKey(networkId: 1, target: "#LURKER"))
+        XCTAssertTrue(found.hydrated, "the real row, not a fresh synthetic one")
     }
 
-    /// A reconnect re-sends the snapshot, so the window before it lands is the "not told
-    /// yet" state again — otherwise a mid-session drop would briefly make every channel
-    /// look abandoned.
-    func testSnapshotAppliedIsClearedWhenTheSocketDrops() {
-        let store = LurkerStore()
-        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])]))
-        store.apply(.socketClosed(reason: "bye", code: 1000))
-        XCTAssertFalse(store.state.snapshotApplied)
+    /// The divergence that motivated pulling this out of its four call sites: `!foo` carries
+    /// a channel sigil for *input* (`ChannelName.sigils`, which the join form prefixes with)
+    /// but is not one of the two sigils a buffer is classified by. A site that hardcoded
+    /// `.channel` gave its screen a member list the store row would never agree with.
+    func testBufferForKeySynthesizesWithTheSameKindClassificationTheStoreUses() {
+        let state = ChatState()
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "#lurker")).kind, .channel)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "&local")).kind, .channel)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "!foo")).kind, .dm)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "bob")).kind, .dm)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: nil, target: Buffer.systemTarget)).kind, .system)
+    }
 
-        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])]))
-        XCTAssertTrue(store.state.snapshotApplied, "the next snapshot re-proves it")
+    /// A synthesized buffer must be unhydrated, or the screen built from it would skip
+    /// asking for history and sit empty forever.
+    func testASynthesizedBufferIsUnhydratedSoItsScreenStillFetches() {
+        let buffer = ChatState().buffer(for: BufferKey(networkId: 1, target: "#lurker"))
+        XCTAssertFalse(buffer.hydrated)
+        XCTAssertEqual(buffer.target, "#lurker", "case is preserved, unlike BufferKey.id")
     }
 
     func testADropBeforeTheFirstOpenStaysConnectingNotReconnecting() {

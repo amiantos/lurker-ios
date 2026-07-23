@@ -36,12 +36,17 @@ final class JoinChannelViewController: UIViewController {
         return item
     }()
 
-    init(networks: [Network]) {
+    /// Fails on an empty network list rather than rendering a form with nowhere to send
+    /// anything. Failable rather than trusting the caller: the "+" that opens this is
+    /// disabled when there are no networks, but that guard lives in another file and a
+    /// second entry point (a slash command, an empty-state affordance) would turn a UI
+    /// regression into a launch crash.
+    init?(networks: [Network]) {
         // Same order as everywhere else this app lists networks.
-        self.networks = networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
-        // Force-unwrapped deliberately: an empty list is a programming error here, not a
-        // state to render. See the doc comment.
-        selected = self.networks[0]
+        let sorted = networks.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        guard let first = sorted.first else { return nil }
+        self.networks = sorted
+        selected = first
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -96,13 +101,27 @@ final class JoinChannelViewController: UIViewController {
     private func networkView() -> UIView {
         guard networks.count > 1 else {
             let label = UILabel()
-            label.text = "on \(selected.name)"
+            label.text = "on \(Self.label(for: selected))"
             label.font = .preferredFont(forTextStyle: .subheadline)
             label.adjustsFontForContentSizeCategory = true
             label.textColor = .secondaryLabel
             return label
         }
         return picker
+    }
+
+    /// A network that isn't connected says so. Joining on one goes nowhere — the JOIN has
+    /// no socket to travel down, and no channel-joined ever comes back — and an unmarked
+    /// row here is the only place the user would find that out afterwards rather than
+    /// before. (Offered anyway rather than hidden: the network is still theirs, and hiding
+    /// it would just make the list look wrong.)
+    private static func label(for network: Network) -> String {
+        switch network.state {
+        case .connected: return network.name
+        case .connecting: return "\(network.name) — connecting…"
+        case .reconnecting: return "\(network.name) — reconnecting…"
+        case .disconnected: return "\(network.name) — offline"
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -123,8 +142,17 @@ final class JoinChannelViewController: UIViewController {
         return ChannelName.isPrefixed(typed) ? String(typed.dropFirst()) : typed
     }
 
+    /// Latched, because there are two ways in — the Join button and the Return key, and the
+    /// field keeps first responder across a submit so both stay live. Firing twice sends a
+    /// second JOIN *and* dismisses twice: the second `dismiss` finds nothing presented and
+    /// forwards up to tear down the buffer sheet itself, then reports a second time and
+    /// root-swaps away the chat screen the first one just built, latched unread divider and
+    /// in-flight `open-buffer` included.
+    private var submitted = false
+
     private func submit() {
-        guard !typedChannel.isEmpty else { return }
+        guard !submitted, !typedChannel.isEmpty else { return }
+        submitted = true
         // `ensurePrefix` on what the user actually typed, not on `typedChannel` — the
         // latter has had its sigil stripped for the empty check, and re-prefixing it would
         // turn `&local` into `#local`.
@@ -153,7 +181,7 @@ extension JoinChannelViewController: UIPickerViewDataSource, UIPickerViewDelegat
     }
 
     func pickerView(_ pickerView: UIPickerView, titleForRow row: Int, forComponent component: Int) -> String? {
-        networks[row].name
+        Self.label(for: networks[row])
     }
 
     func pickerView(_ pickerView: UIPickerView, didSelectRow row: Int, inComponent component: Int) {

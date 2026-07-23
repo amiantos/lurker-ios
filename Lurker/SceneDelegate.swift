@@ -222,58 +222,30 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// Synthesized rather than waiting for the snapshot and swapping the root then, which
     /// would put a system buffer on screen for as long as the connect takes and then yank
-    /// it away under a reader. Going early costs nothing in the common case and is undone
-    /// by `verifyRestore` in the one case it's wrong.
+    /// it away under a reader.
+    ///
+    /// Going early costs the case where the buffer is *gone* — a channel parted from
+    /// another client since — which lands on a room that can never fill: with no row in the
+    /// store `hydrateIfNeeded` never asks, so the "Loading messages…" spinner is permanent
+    /// and a lie. That is not fixable from here and is deliberately not attempted:
+    ///
+    ///  - Probing with `open-buffer` makes it worse. The server reads one for a `#channel`
+    ///    with no row as a request to **JOIN** it (`wsHub.handleOpenBuffer`), so a probe
+    ///    would silently re-join a channel you left on purpose.
+    ///  - Nor can a missing row be *proven* client-side. Rows arrive as per-buffer backlog
+    ///    shells, not in the snapshot — `ircManager.snapshotForUser` ships `channels: []`
+    ///    outright for any network without a live connection — and the connect sequence has
+    ///    no frame that says the shells are all sent. So "no row yet" and "no such buffer"
+    ///    are the same observation, and a client that guesses between them yanks people out
+    ///    of channels they are still in.
+    ///
+    /// The honest fix is a server-side end-of-backlog marker, and it belongs with the
+    /// broader "a buffer with no row spins forever" problem — which also swallows
+    /// notification taps and failed joins — rather than in this one screen's launch path.
     private func launchBuffer() -> Buffer {
         guard let key = UserPreferences.standard.lastBufferKey else { return .system }
-        if let known = viewModel.state.buffers[key.id] { return known }
-        let buffer = Buffer(
-            networkId: key.networkId,
-            target: key.target,
-            kind: BufferKind.of(networkId: key.networkId, target: key.target)
-        )
-        verifyRestore(buffer)
-        return buffer
+        return viewModel.state.buffer(for: key)
     }
-
-    /// Watches for the snapshot to disprove a restored channel.
-    ///
-    /// A channel left from another client is still in `lastBufferKey`, and landing in it
-    /// gives you a room that can never fill: no row in the store means `hydrateIfNeeded`
-    /// never asks, so the "Loading messages…" spinner is permanent and a lie. Sending
-    /// `open-buffer` anyway is not the fix — the server treats an `open-buffer` for a
-    /// channel with no row as a request to **JOIN** it (`wsHub.handleOpenBuffer`), so
-    /// probing would silently re-join a channel you deliberately left.
-    ///
-    /// So wait for the snapshot, which carries every channel you *are* in, and if the row
-    /// still isn't there, fall back to the system buffer and forget the key.
-    ///
-    /// Channels only. DM rows arrive in their own backlog shells rather than the snapshot,
-    /// so a missing DM row proves nothing at this point — a stale DM restore still lands on
-    /// the spinner. Tracked as its own thing rather than guessed at here.
-    private func verifyRestore(_ restored: Buffer) {
-        guard restored.kind == .channel else { return }
-        restoreCheck = viewModel.statePublisher
-            .first { $0.snapshotApplied }
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                guard let self, let navigation else { return }
-                self.restoreCheck = nil
-                guard state.buffers[restored.key.id] == nil else { return }
-                // Only if we're still the screen we put there. A buffer picked, tapped from
-                // a notification, or joined in the meantime replaced this root, and yanking
-                // *that* away would be the very thing going early was meant to avoid.
-                guard let root = navigation.viewControllers.first as? ChatViewController,
-                      root.bufferKey == restored.key else { return }
-                UserPreferences.standard.forgetLastBuffer()
-                navigation.setViewControllers(
-                    [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-                )
-            }
-    }
-
-    /// Held only until the snapshot answers; see `verifyRestore`.
-    private var restoreCheck: AnyCancellable?
 }
 
 // MARK: - Notification taps (#15)
@@ -297,15 +269,10 @@ extension SceneDelegate: NotificationTapHandling {
         // about case and the notification's target came from whatever the server said at
         // send time. An exact-key match would miss `#Lurker` vs `#lurker`.
         //
-        // Not in the store yet? Synthesize one. A push can beat its own backlog frame —
-        // the notification is what woke us — and the new screen's `hydrateIfNeeded` asks
-        // for the history regardless, so the buffer fills in a moment later.
-        let buffer = viewModel.state.buffers[key.id]
-            ?? Buffer(
-                networkId: tap.networkId,
-                target: tap.target,
-                kind: BufferKind.of(networkId: tap.networkId, target: tap.target)
-            )
+        // Not in the store yet? `buffer(for:)` synthesizes one. A push can beat its own
+        // backlog frame — the notification is what woke us — and the new screen's
+        // `hydrateIfNeeded` asks for the history regardless, so it fills in a moment later.
+        let buffer = viewModel.state.buffer(for: key)
 
         // Anything presented (the buffer switcher, the nick list) would otherwise sit over
         // the buffer we just navigated to.
