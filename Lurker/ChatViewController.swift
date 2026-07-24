@@ -1278,34 +1278,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         showMemberList()
     }
 
-    /// The recent-highlights list. A full-height sheet — it's a reading surface, not a
-    /// glance — presented from the navigation controller rather than from `self`, because
-    /// picking a highlight replaces this screen and a presenter deallocated mid-swap would
-    /// take the sheet down with it. Tapping a highlight jumps to its buffer the same way
-    /// `/msg` and the list do.
-    private func showHighlights() {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
-        let viewModel = self.viewModel
-        let nav = navigationController
-        let highlights = HighlightsViewController(viewModel: viewModel)
-        highlights.onSelect = { [weak nav] item in
-            let key = item.bufferKey
-            // Navigate and jump to the matched line (#42) — even when it's the buffer already
-            // on screen, since the point is to move to that message. The buffer may not be in
-            // state (a channel since closed, or one whose row never materialized), which is
-            // what `buffer(for:)` synthesizes for; the new screen fetches an `around` slice
-            // centered on the match and scrolls to it.
-            nav?.showBuffer(
-                viewModel.state.buffer(for: key), viewModel: viewModel,
-                jumpTo: item.message.id, animated: false
-            )
-            nav?.dismiss(animated: true)
-        }
-        let sheet = UINavigationController(rootViewController: highlights)
-        sheet.navigationBar.prefersLargeTitles = true
-        sheet.sheetPresentationController?.prefersGrabberVisible = true
-        nav?.present(sheet, animated: true)
-    }
 
     /// What the pill opens: this buffer's own info, not a picker for a different one.
     /// Medium-height first, like the nick list — it's a glance about the conversation
@@ -1361,7 +1333,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // App-scoped, not buffer-scoped: recent highlights span every network, so it belongs
         // here on every buffer rather than gated like Members.
         actions.append(UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
-            self?.showHighlights()
+            guard let self else { return }
+            showHighlights(viewModel: viewModel)
         })
         // Built once, not deferred: every entry is fixed by this buffer's kind, which
         // can't change under a screen that was constructed for it. (The deferral this used

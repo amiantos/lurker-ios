@@ -76,7 +76,10 @@ final class BufferListViewController: UITableViewController {
         // Set once here and never replaced: `apply` runs on every unread-count change, and
         // swapping a bar button item out closes any menu it happens to be showing.
         navigationItem.leftBarButtonItem = accountItem()
-        navigationItem.rightBarButtonItem = joinItem
+        // First element is the *trailing-most*, so this reads "+ then …" left to right —
+        // the views menu sits in the same corner it occupies on the chat screen, so the one
+        // button that means the same thing on both screens is in the same place on both.
+        navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         // The list depends on networks, buffers, and connection state — a message arriving
@@ -129,12 +132,15 @@ final class BufferListViewController: UITableViewController {
 
     // MARK: - Bar items
 
-    /// Account, not buffer: the things that outlast whichever conversation you're reading.
+    /// Account and settings: the things that outlast whichever conversation you're reading.
     /// It lives here rather than on the chat screen's "…" because that one is a list of
     /// *views* — and because sign-out sitting next to "Members" put the end of your session
     /// one slipped thumb from a nick list.
     ///
-    /// Settings (#20) lands here too, which is why it's an ellipsis and not a door.
+    /// A cog rather than a second ellipsis, now that this screen has a real views menu of its
+    /// own on the trailing side: two identical "…" on one bar would be two buttons that look
+    /// like the same button. It's where Settings (#20) lands, so the icon is also honest
+    /// about where it's going.
     private func accountItem() -> UIBarButtonItem {
         let signOut = UIAction(
             title: "Sign Out",
@@ -144,8 +150,26 @@ final class BufferListViewController: UITableViewController {
             // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
             self?.viewModel.logout()
         }
-        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [signOut]))
-        item.accessibilityLabel = "Account"
+        let item = UIBarButtonItem(image: UIImage(systemName: "gearshape"), menu: UIMenu(children: [signOut]))
+        item.accessibilityLabel = "Settings"
+        return item
+    }
+
+    /// The same views menu the chat screen carries, minus the entries that need a buffer.
+    ///
+    /// Highlights is app-scoped — it spans every network — so being able to reach it only
+    /// from inside some arbitrary conversation was an artifact of the chat screen having once
+    /// been the only screen. Search, bookmarks and uploads land here as they're built, which
+    /// is the set the desktop client keeps in its bottom toolbar (#49).
+    ///
+    /// Members is deliberately absent: it describes a channel, and there isn't one here.
+    private func viewsItem() -> UIBarButtonItem {
+        let highlights = UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+            guard let self else { return }
+            showHighlights(viewModel: viewModel)
+        }
+        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [highlights]))
+        item.accessibilityLabel = "More"
         return item
     }
 
