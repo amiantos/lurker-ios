@@ -6,11 +6,15 @@ import UIKit
 
 /// The floating title pill: an indicator light and the buffer's name.
 ///
-/// It goes in `navigationItem.titleView` rather than being floated over the content in a
-/// container of our own. An iOS 26 navigation bar is *already* a glass layer with no
+/// It goes *inside* the navigation bar rather than being floated over the content in a
+/// container of our own. An iOS 26 navigation bar is already a glass layer with no
 /// background that content scrolls under — hand-floating a pill would mean reimplementing
 /// safe-area placement, the scroll edge effect, Dynamic Type, and glass's automatic
 /// light/dark contrast switching, and would land further from Messages, not closer.
+///
+/// It is not a `titleView`, though: one pill is shared by every screen and owned by
+/// `NavigationPill`, so that navigating doesn't slide one pill out and another in. See there
+/// for why that can't be solved by joining the bar buttons' morph instead.
 ///
 /// No chevron. It carried a `chevron.down` while the pill *was* the way to the buffer
 /// list; that list has its own button on the leading side now, so the glyph was left
@@ -22,6 +26,22 @@ final class BufferTitleButton: UIButton {
     /// re-flowed or re-tinted by the title's text attributes.
     private let light = UIView()
     private static let lightSize: CGFloat = 9
+
+    /// Dynamic Type, but bounded — the navigation bar does not grow with text size.
+    ///
+    /// Measured on iPhone 17 Pro / iOS 26: the bar is 54pt tall and UIKit's own bar buttons
+    /// are a fixed 44pt in *every* orientation and content size. An unbounded subheadline
+    /// took the pill to 70.7pt at AccessibilityXXXL — 13pt of it above the bar's top edge,
+    /// in the status bar, and 3pt below it over the message list, because `UINavigationBar`
+    /// doesn't clip its subviews. The cap keeps the capsule inside the row it sits in;
+    /// beyond it the name truncates, which the pill already does horizontally.
+    ///
+    /// Not a stored constant: it has to be re-read whenever the content size category
+    /// changes, which is what the trait registration in `init` is for.
+    private static var titleFont: UIFont {
+        let base = UIFont.systemFont(ofSize: 15, weight: .semibold)  // subheadline's own size
+        return UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: base, maximumPointSize: 22)
+    }
 
     init(onTap: @escaping () -> Void) {
         super.init(frame: .zero)
@@ -50,6 +70,21 @@ final class BufferTitleButton: UIButton {
             light.widthAnchor.constraint(equalToConstant: Self.lightSize),
             light.heightAnchor.constraint(equalToConstant: Self.lightSize),
         ])
+
+        // The font is baked into `configuration.attributedTitle`, so it doesn't rescale
+        // itself when the reader changes text size — and `update` early-returns when the
+        // title hasn't changed, so nothing else would notice either. One pill now lives for
+        // the app's whole life, so "it'll be rebuilt on the next screen" isn't true any more.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (pill: BufferTitleButton, _) in
+            pill.reapplyTitleFont()
+        }
+    }
+
+    private func reapplyTitleFont() {
+        guard var attributed = configuration?.attributedTitle else { return }
+        attributed.font = Self.titleFont
+        configuration?.attributedTitle = attributed
+        invalidateIntrinsicContentSize()
     }
 
     @available(*, unavailable)
@@ -59,19 +94,53 @@ final class BufferTitleButton: UIButton {
     /// belongs to the buttons either side of it.
     private static let maxWidthFraction: CGFloat = 0.5
 
-    /// A `titleView` is laid out from its intrinsic size, so left alone a long channel
-    /// name asks for more width than the bar has and crowds the buttons flanking it. Cap
-    /// the ask; `titleLineBreakMode` truncates the name inside whatever's granted.
+    /// The window width the cap was last measured against, so a change can be noticed.
+    private var cappedAgainst: CGFloat?
+
+    /// The pill is laid out from its intrinsic size, so left alone a long channel name asks
+    /// for more width than the bar has and crowds the buttons flanking it. Cap the ask;
+    /// `titleLineBreakMode` truncates the name inside whatever's granted.
+    ///
+    /// Half the window leaves room for the bar items either side: measured on iPhone 17 Pro,
+    /// a fully-capped pill on the chat screen ends at x=301.7 with the trailing item starting
+    /// at x=346. That margin only holds because the cap tracks the *current* width — hence
+    /// `layoutSubviews` below.
     override var intrinsicContentSize: CGSize {
         var size = super.intrinsicContentSize
-        if let available = window?.bounds.width {
-            size.width = min(size.width, available * Self.maxWidthFraction)
-        }
+        guard let available = window?.bounds.width else { return size }
+        cappedAgainst = available
+        size.width = min(size.width, available * Self.maxWidthFraction)
         return size
+    }
+
+    /// Re-measure when the window's width changes under us.
+    ///
+    /// This used to come for free: each screen built its own pill, so the cap was recomputed
+    /// on the next navigation. One pill now lives for the whole stack's life and `update`
+    /// early-returns unless the title actually changed, so a rotation would otherwise leave
+    /// the cap computed for the old width — verified on the simulator, where a name capped at
+    /// 201pt for portrait stayed 201pt in landscape instead of taking the 437pt it was owed,
+    /// truncating for no reason. The reverse is worse: measured in landscape first, the pill
+    /// comes back into portrait too wide and overhangs the bar buttons.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Guarded by the comparison, which re-measuring immediately satisfies — one extra
+        // layout pass, not a loop.
+        if let available = window?.bounds.width, available != cappedAgainst {
+            invalidateIntrinsicContentSize()
+        }
     }
 
     /// What's currently rendered, so an unchanged update costs nothing.
     private var shown: (title: String, status: StatusLight, hint: String)?
+
+    /// Whether `update` with these values would actually change anything.
+    ///
+    /// Lets a caller skip wrapping a no-op in a cross-fade, which would still snapshot the
+    /// view twice to dissolve it into an identical copy of itself.
+    func wouldChange(title: String, status: StatusLight, hint: String) -> Bool {
+        shown?.title != title || shown?.status != status || shown?.hint != hint
+    }
 
     func update(title: String, status: StatusLight, hint: String = "Shows this buffer's info and settings") {
         // This is called from every state change — i.e. once per arriving message on a busy
@@ -80,12 +149,12 @@ final class BufferTitleButton: UIButton {
         // reconfiguration and the invalidate below relayouts the whole navigation bar, so
         // without this guard each message would pay for a bar relayout that changes nothing.
         // `hint` is part of the identity so a caller that varies it isn't silently ignored.
-        guard shown?.title != title || shown?.status != status || shown?.hint != hint else { return }
+        guard wouldChange(title: title, status: status, hint: hint) else { return }
         shown = (title, status, hint)
 
         // One font size app-wide; the pill earns its emphasis with weight, not size.
         var attributed = AttributedString(title)
-        attributed.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
+        attributed.font = Self.titleFont
         attributed.foregroundColor = UIColor.label
         configuration?.attributedTitle = attributed
         // The name drives the pill's width, and the cap above is applied on measure.

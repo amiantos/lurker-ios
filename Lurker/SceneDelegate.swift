@@ -29,9 +29,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
-        let nav = UINavigationController()
-        // The buffer list wears a large title; the chat screen sets its own `titleView`, so
-        // it's unaffected by this.
+        // Pilled, so the status pill belongs to the stack rather than to either screen — see
+        // NavigationPill. Its `viewDidLoad` installs the pill, which the `showBufferList`
+        // below triggers.
+        let nav = PilledNavigationController()
+        // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
         nav.navigationBar.prefersLargeTitles = true
         navigation = nav
 

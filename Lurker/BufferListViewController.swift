@@ -36,12 +36,6 @@ final class BufferListViewController: UICollectionViewController {
     /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
-    /// The floating title pill, shared with the chat screen. Here it names "Lurker" and
-    /// carries the socket light, and taps through to the system buffer — it stands in for the
-    /// Lurker row this list used to carry, moving that status off a row (which read oddly
-    /// above the grids) and into the bar, where the chat screen already keeps the same pill.
-    private var titleButton: BufferTitleButton!
-
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
     /// just the roster again — this is a display cap, not a limit on what's remembered. Four,
     /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
@@ -106,13 +100,22 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = "Buffers"
+        // `largeTitle`, NOT `title` — the two are separate on iOS 26, and `title` would also
+        // render in the *small-title row*, which is exactly where the shared pill sits. The
+        // pill used to be this screen's `titleView`, and a `titleView` suppresses the inline
+        // title; now that it belongs to the bar instead, nothing does, and "Buffers" draws
+        // underneath it as soon as the large title collapses on scroll.
+        navigationItem.largeTitle = "Buffers"
+        // `title` is what the back button would have borrowed, so name it explicitly — it
+        // still feeds the back button's long-press menu and VoiceOver.
+        navigationItem.backButtonTitle = "Buffers"
+        // …but only there. Setting `backButtonTitle` alone *promotes* the back button from
+        // iOS 26's bare chevron to a 95pt "‹ Buffers" pill, which is not what this screen
+        // looked like before and crowds the bar. `.minimal` keeps the title for the
+        // long-press menu while drawing the indicator alone — measured identical to the
+        // original: a 44pt button with no label.
+        navigationItem.backButtonDisplayMode = .minimal
         navigationItem.largeTitleDisplayMode = .always
-        // The same pill the chat screen wears, in the same centre spot — the one control that
-        // means "Lurker, and how it's doing" is in one place on both screens. Its tap opens
-        // the system buffer rather than a buffer-info sheet, which is what this screen has.
-        titleButton = BufferTitleButton(onTap: { [weak self] in self?.openSystemBuffer() })
-        navigationItem.titleView = titleButton
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
@@ -182,12 +185,9 @@ final class BufferListViewController: UICollectionViewController {
     private func apply(_ state: ChatState) {
         self.state = state
         // The pill is in the bar, not the list, so it tracks connection regardless of whether
-        // the roster below is worth rebuilding — `update` no-ops when nothing it shows moved.
-        titleButton.update(
-            title: Buffer.system.displayName(),
-            status: StatusLight.of(reachable: state.reachable, connection: state.connection, network: nil),
-            hint: "Opens the Lurker buffer"
-        )
+        // the roster below is worth rebuilding — and `refresh` no-ops both when this screen
+        // isn't the one on top and when nothing the pill shows has moved.
+        navigationPill?.refresh(from: self)
         guard isOnScreen else { return }
         rebuild()
     }
@@ -825,5 +825,30 @@ final class BufferListViewController: UICollectionViewController {
             self?.viewModel.deleteContact(id: contact.id)
         })
         present(alert, animated: true)
+    }
+}
+
+// MARK: - The shared title pill
+
+/// The same pill the chat screen wears, in the same centre spot — literally the same view,
+/// owned by `NavigationPill`. The one control that means "Lurker, and how it's doing" is in
+/// one place on both screens. It stands in for the Lurker row this list used to carry, moving
+/// that status off a row (which read oddly above the grids) and into the bar.
+extension BufferListViewController: PillPresenting {
+
+    /// Fixed except for the light: this screen is the app, not a buffer, so it always reads
+    /// "Lurker" and follows the socket rather than any one network.
+    var pillContent: PillContent {
+        PillContent(
+            title: Buffer.system.displayName(),
+            status: StatusLight.of(reachable: state.reachable, connection: state.connection, network: nil),
+            hint: "Opens the Lurker buffer"
+        )
+    }
+
+    /// Opens the system buffer rather than a buffer-info sheet, which is what the chat screen's
+    /// tap does — this screen *is* the app, so there's no one buffer to describe.
+    func pillTapped() {
+        openSystemBuffer()
     }
 }
