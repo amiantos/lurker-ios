@@ -180,9 +180,9 @@ final class BufferListViewController: UICollectionViewController {
 
     // MARK: - Layout
 
-    /// One scroll view, section by section: the system and per-network rosters lay out as
-    /// grouped lists (with swipe-to-leave), and Favorites/Recent lay out as a two-column grid
-    /// of cards. Every titled section gets a header; the untitled Lurker section doesn't.
+    /// One scroll view, section by section: the per-network rosters lay out as grouped lists
+    /// (with swipe-to-leave, under a native list header), and Favorites/Recent lay out as a
+    /// two-column grid of cards (under a boundary header). Every section carries a title.
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] index, environment in
             guard let self, index < self.sections.count else { return nil }

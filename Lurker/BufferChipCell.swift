@@ -125,6 +125,12 @@ final class BufferChipCell: UICollectionViewCell {
             row.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -8),
             card.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
         ])
+
+        // One element, not three: the whole card is a single button so VoiceOver reads
+        // "#general, libera, 3 unread" and activates the tap, rather than landing on the name,
+        // the network, and the badge one at a time. The label is synthesized in `configure`.
+        isAccessibilityElement = true
+        accessibilityTraits = .button
     }
 
     @available(*, unavailable)
@@ -150,5 +156,11 @@ final class BufferChipCell: UICollectionViewCell {
         } else {
             badgeContainer.isHidden = true
         }
+
+        var summary = network.map { "\(name), \($0)" } ?? name
+        if unread > 0 {
+            summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"
+        }
+        accessibilityLabel = summary
     }
 }
