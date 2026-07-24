@@ -173,9 +173,45 @@ final class BufferListViewController: UICollectionViewController {
         onSelect?(state.buffers[Buffer.system.key.id] ?? .system)
     }
 
+    /// Rebuild the section model, then touch the view as narrowly as the change allows.
+    ///
+    /// A message arriving anywhere bumps an unread count, which lands here — but the buffers,
+    /// their order, and the section headers are all unchanged, so only some cells' numbers
+    /// moved. Reconfiguring just those cells reuses them in place; a full `reloadData` drops
+    /// the whole layout, and mid-scroll that shows as a hitch. A genuinely structural change
+    /// (a buffer opened or closed, a network connecting, favorites reordered) still reloads.
     private func rebuild() {
+        let previous = sections
         sections = buildSections(state)
-        collectionView.reloadData()
+        guard Self.sameStructure(previous, sections) else {
+            collectionView.reloadData()
+            return
+        }
+        let changed = previous.indices.flatMap { section in
+            sections[section].rows.indices.compactMap { row in
+                previous[section].rows[row].buffer != sections[section].rows[row].buffer
+                    ? IndexPath(item: row, section: section)
+                    : nil
+            }
+        }
+        if !changed.isEmpty { collectionView.reconfigureItems(at: changed) }
+    }
+
+    /// Whether two section models place the same buffers in the same order under the same
+    /// headers — i.e. nothing but per-buffer contents (unread, highlights) could have moved,
+    /// never the shape of the list. Compares buffer *keys*, not the buffers themselves, since
+    /// a count change is exactly what we want to fall through to a reconfigure.
+    private static func sameStructure(_ a: [Section], _ b: [Section]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (x, y) in zip(a, b) {
+            guard x.title == y.title, x.layout == y.layout, x.rows.count == y.rows.count else {
+                return false
+            }
+            for (rx, ry) in zip(x.rows, y.rows) where rx.buffer.key != ry.buffer.key {
+                return false
+            }
+        }
+        return true
     }
 
     // MARK: - Layout
