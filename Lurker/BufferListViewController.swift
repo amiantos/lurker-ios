@@ -14,37 +14,55 @@ import UIKit
 /// to summon it, an edge swipe wired by hand, and a chat screen that could never be left.
 ///
 /// Not a directory: the buffers you actually move between are a handful you keep returning
-/// to, so recents and pins come first at a size you can hit without looking, and the full
-/// grouped roster sits underneath, denser, for the times you want something you haven't
-/// touched in a week.
+/// to, so Favorites and Recent come first as a two-across grid of cards you can hit without
+/// looking, and the full grouped roster sits underneath. The grids are *shortcuts* — a
+/// favorite or recent buffer also keeps its ordinary row in its network's section below, so
+/// the roster stays a complete list rather than one with holes punched in it. Only the roster
+/// rows carry swipe-to-leave, so the two never read as the same control.
 ///
-/// "Denser" is spacing, not type size — one font size app-wide. The hierarchy is row
-/// height, a network subtitle on the promoted rows, and order.
+/// A `UICollectionView` with a compositional layout rather than a table, because one scroll
+/// view has to hold both full-width rows and a two-up grid — the layout is chosen per section
+/// (`.list` vs. a grid group), which a table can't do and a hand-rolled scroll view would
+/// have to reinvent.
+///
+/// "Denser" is spacing, not type size — one font size app-wide. The hierarchy is the card,
+/// a network line on the grid chips, weight, and order.
 ///
 /// It reports the pick through `onSelect` and doesn't know what happens next.
-final class BufferListViewController: UITableViewController {
+final class BufferListViewController: UICollectionViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
 
     /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
+    /// The floating title pill, shared with the chat screen. Here it names "Lurker" and
+    /// carries the socket light, and taps through to the system buffer — it stands in for the
+    /// Lurker row this list used to carry, moving that status off a row (which read oddly
+    /// above the grids) and into the bar, where the chat screen already keeps the same pill.
+    private var titleButton: BufferTitleButton!
+
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
-    /// just the roster again — this is a display cap, not a limit on what's remembered.
-    private static let recentLimit = 5
+    /// just the roster again — this is a display cap, not a limit on what's remembered. Four,
+    /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
+    private static let recentLimit = 4
+
+    private enum Layout {
+        case list
+        case grid
+    }
 
     private struct Row {
         let buffer: Buffer
-        /// Which network this buffer is on, shown on promoted rows where the row has been
-        /// lifted out of its network's section and would otherwise be ambiguous.
+        /// The network name, shown on grid chips where the buffer has been lifted out of its
+        /// section and would otherwise be ambiguous across networks. Nil on roster rows,
+        /// which already sit under their network's header.
         let subtitle: String?
-        /// Only the Lurker row carries a light; see `buildSections`.
-        let light: StatusLight?
-        let compact: Bool
     }
 
     private struct Section {
         let title: String?
+        let layout: Layout
         let rows: [Row]
     }
 
@@ -53,12 +71,14 @@ final class BufferListViewController: UITableViewController {
     /// Whether this screen is actually on screen, as against merely alive under a chat screen.
     /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
     /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
-    /// this, each one rebuilds every section and reloads a table nobody can see.
+    /// this, each one rebuilds every section and reloads a list nobody can see.
     private var isOnScreen = false
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        super.init(style: .insetGrouped)
+        // The real layout needs `self` to read `sections`, which isn't available until after
+        // `super.init`; it's swapped in from `viewDidLoad`.
+        super.init(collectionViewLayout: UICollectionViewFlowLayout())
     }
 
     @available(*, unavailable)
@@ -68,6 +88,22 @@ final class BufferListViewController: UITableViewController {
         super.viewDidLoad()
         title = "Buffers"
         navigationItem.largeTitleDisplayMode = .always
+        // The same pill the chat screen wears, in the same centre spot — the one control that
+        // means "Lurker, and how it's doing" is in one place on both screens. Its tap opens
+        // the system buffer rather than a buffer-info sheet, which is what this screen has.
+        titleButton = BufferTitleButton(onTap: { [weak self] in self?.openSystemBuffer() })
+        navigationItem.titleView = titleButton
+        collectionView.backgroundColor = .systemGroupedBackground
+        collectionView.setCollectionViewLayout(makeLayout(), animated: false)
+
+        // Force the lazy registrations to instantiate here, up front. UIKit throws if a
+        // registration is first *created* inside `cellForItemAt` — a lazy var is created
+        // once, but "once" is on first access, and its first access would otherwise be the
+        // dequeue itself. Touching them here moves creation out of that call.
+        _ = listRegistration
+        _ = chipRegistration
+        _ = headerRegistration
+
         // Both in the navigation bar, and deliberately not in a bottom toolbar. A toolbar
         // would be a second floating bar over a scrolling list, and it can't persist across
         // the push into a chat screen — whose bottom is a composer — so it has to leave and
@@ -80,7 +116,6 @@ final class BufferListViewController: UITableViewController {
         // the views menu sits in the same corner it occupies on the chat screen, so the one
         // button that means the same thing on both screens is in the same place on both.
         navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         // The list depends on networks, buffers, and connection state — a message arriving
         // in some channel shouldn't rebuild it (badge counts arrive as read-state updates,
@@ -121,14 +156,174 @@ final class BufferListViewController: UITableViewController {
     /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
+        // The pill is in the bar, not the list, so it tracks connection regardless of whether
+        // the roster below is worth rebuilding — `update` no-ops when nothing it shows moved.
+        titleButton.update(
+            title: Buffer.system.displayName(),
+            status: StatusLight.of(reachable: state.reachable, connection: state.connection, network: nil),
+            hint: "Opens the Lurker buffer"
+        )
         guard isOnScreen else { return }
         rebuild()
     }
 
-    private func rebuild() {
-        sections = buildSections(state)
-        tableView.reloadData()
+    /// The system buffer is app-scoped and always exists, so fall back to the synthetic one
+    /// if its row hasn't arrived from the server yet — the same fallback its list row used.
+    private func openSystemBuffer() {
+        onSelect?(state.buffers[Buffer.system.key.id] ?? .system)
     }
+
+    /// Rebuild the section model, then touch the view as narrowly as the change allows.
+    ///
+    /// A message arriving anywhere bumps an unread count, which lands here — but the buffers,
+    /// their order, and the section headers are all unchanged, so only some cells' numbers
+    /// moved. Reconfiguring just those cells reuses them in place; a full `reloadData` drops
+    /// the whole layout, and mid-scroll that shows as a hitch. A genuinely structural change
+    /// (a buffer opened or closed, a network connecting, favorites reordered) still reloads.
+    private func rebuild() {
+        let previous = sections
+        sections = buildSections(state)
+        guard Self.sameStructure(previous, sections) else {
+            collectionView.reloadData()
+            return
+        }
+        let changed = previous.indices.flatMap { section in
+            sections[section].rows.indices.compactMap { row in
+                previous[section].rows[row].buffer != sections[section].rows[row].buffer
+                    ? IndexPath(item: row, section: section)
+                    : nil
+            }
+        }
+        if !changed.isEmpty { collectionView.reconfigureItems(at: changed) }
+    }
+
+    /// Whether two section models place the same buffers in the same order under the same
+    /// headers — i.e. nothing but per-buffer contents (unread, highlights) could have moved,
+    /// never the shape of the list. Compares buffer *keys*, not the buffers themselves, since
+    /// a count change is exactly what we want to fall through to a reconfigure.
+    private static func sameStructure(_ a: [Section], _ b: [Section]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (x, y) in zip(a, b) {
+            guard x.title == y.title, x.layout == y.layout, x.rows.count == y.rows.count else {
+                return false
+            }
+            for (rx, ry) in zip(x.rows, y.rows) where rx.buffer.key != ry.buffer.key {
+                return false
+            }
+        }
+        return true
+    }
+
+    // MARK: - Layout
+
+    /// One scroll view, section by section: the per-network rosters lay out as grouped lists
+    /// (with swipe-to-leave, under a native list header), and Favorites/Recent lay out as a
+    /// two-column grid of cards (under a boundary header). Every section carries a title.
+    private func makeLayout() -> UICollectionViewLayout {
+        UICollectionViewCompositionalLayout { [weak self] index, environment in
+            guard let self, index < self.sections.count else { return nil }
+            let section = self.sections[index]
+            let layoutSection: NSCollectionLayoutSection
+
+            switch section.layout {
+            case .list:
+                var config = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
+                // The list's *own* header, not a manual boundary item: the native grouped
+                // header sits tight to the first row, whereas a hand-added header stacks on
+                // top of the list's top inset and leaves an oversized gap.
+                config.headerMode = section.title != nil ? .supplementary : .none
+                config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
+                    self?.trailingSwipe(at: indexPath)
+                }
+                layoutSection = .list(using: config, layoutEnvironment: environment)
+
+            case .grid:
+                let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(
+                    widthDimension: .fractionalWidth(1),
+                    heightDimension: .fractionalHeight(1)
+                ))
+                // `subitem:count:` (deprecated) rather than its `repeatingSubitem:count:`
+                // rename: the rename is documented as equivalent but does *not* divide the row
+                // here — it lets each `.fractionalWidth(1)` item take the full width, so the
+                // first chip fills the row and the second is pushed off. The old form divides
+                // the group into two equal columns (accounting for the interitem gutter), which
+                // is exactly what a two-up grid needs.
+                let group = NSCollectionLayoutGroup.horizontal(
+                    layoutSize: NSCollectionLayoutSize(
+                        widthDimension: .fractionalWidth(1),
+                        // Estimated, not absolute: the chip's `card` floors at 64 but grows
+                        // with its text, so at accessibility sizes the row expands to fit
+                        // rather than clipping the name/network stack.
+                        heightDimension: .estimated(64)
+                    ),
+                    subitem: item,
+                    count: 2
+                )
+                group.interItemSpacing = .fixed(10)
+                let grid = NSCollectionLayoutSection(group: group)
+                grid.interGroupSpacing = 10
+                // 16 matches the horizontal inset the insetGrouped list draws its cards at (and
+                // the nav-bar buttons), so a chip's edge lines up with a row's edge; the extra
+                // bottom inset spaces the grid off the section under it.
+                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 16, bottom: 18, trailing: 16)
+                // A grid has no list header of its own, so it carries a boundary one — the
+                // small gap this leaves reads fine above cards.
+                if section.title != nil {
+                    let header = NSCollectionLayoutBoundarySupplementaryItem(
+                        layoutSize: NSCollectionLayoutSize(
+                            widthDimension: .fractionalWidth(1),
+                            heightDimension: .estimated(30)
+                        ),
+                        elementKind: UICollectionView.elementKindSectionHeader,
+                        alignment: .top
+                    )
+                    grid.boundarySupplementaryItems = [header]
+                }
+                layoutSection = grid
+            }
+            return layoutSection
+        }
+    }
+
+    // MARK: - Cell & header registrations
+
+    private lazy var listRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Row> {
+        cell, _, row in
+        var content = UIListContentConfiguration.cell()
+        // No `networkName` here, unlike the pill: every roster row already states its network
+        // as its section header, so resolving a server log to its network's name would just
+        // print "libera" above "libera".
+        content.text = row.buffer.displayName()
+        cell.contentConfiguration = content
+
+        // The unread pill *replaces* the disclosure chevron, as the table did — a row either
+        // says how much is waiting or it says "there's more inside", never both.
+        if let badge = makeUnreadBadge(unread: row.buffer.unread, highlights: row.buffer.highlights) {
+            cell.accessories = [.customView(configuration: .init(customView: badge, placement: .trailing()))]
+        } else {
+            cell.accessories = [.disclosureIndicator()]
+        }
+    }
+
+    private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
+        cell, _, row in
+        cell.configure(
+            name: row.buffer.displayName(),
+            network: row.subtitle,
+            unread: row.buffer.unread,
+            highlights: row.buffer.highlights
+        )
+    }
+
+    private lazy var headerRegistration = UICollectionView
+        .SupplementaryRegistration<UICollectionViewListCell>(
+            elementKind: UICollectionView.elementKindSectionHeader
+        ) { [weak self] view, _, indexPath in
+            guard let self, indexPath.section < self.sections.count else { return }
+            var content = UIListContentConfiguration.header()
+            content.text = self.sections[indexPath.section].title
+            view.contentConfiguration = content
+        }
 
     // MARK: - Bar items
 
@@ -267,56 +462,38 @@ final class BufferListViewController: UITableViewController {
 
     private func buildSections(_ state: ChatState) -> [Section] {
         var byNetwork: [Int: [Buffer]] = [:]
-        var system: Buffer?
         for buffer in state.buffers.values {
+            // The system buffer has no network and no row of its own here anymore — it's the
+            // title pill in the bar — so it's simply not collected into a section.
             if let networkId = buffer.networkId {
                 byNetwork[networkId, default: []].append(buffer)
-            } else {
-                system = buffer
             }
         }
 
         var sections: [Section] = []
 
-        // The Lurker row, carrying the socket light — the same signal the title pill shows
-        // on the system buffer. It has to live here too: the pill is on the chat screen,
-        // which isn't on screen while you're here, so without this row a socket drop while
-        // you're picking a buffer would be invisible. (The web client's list keeps a LURKER
-        // row for the same reason.) The buffer may not have arrived yet, so fall back to the
-        // synthetic one — it's app-scoped and always exists.
-        sections.append(Section(title: nil, rows: [Row(
-            buffer: system ?? .system,
-            subtitle: nil,
-            light: StatusLight.of(reachable: state.reachable, connection: state.connection, network: nil),
-            compact: false
-        )]))
-
-        // Everything promoted above is then held out of the roster below, so a buffer
-        // appears exactly once. Without this a recently-visited favorite printed three
-        // times over — twice promoted and once in its network — with badges updating in
-        // lockstep and a swipe-to-Leave on any one silently removing the other two.
-        var promoted = Set<String>()
-
-        let favorites = favoriteRows(state, promoted: &promoted)
-        let recents = recentRows(state, promoted: &promoted)
-        if !recents.isEmpty { sections.append(Section(title: "Recent", rows: recents)) }
-        if !favorites.isEmpty { sections.append(Section(title: "Favorites", rows: favorites)) }
+        // Favorites and Recent are shortcuts, not a relocation: a buffer here also keeps its
+        // ordinary row in its network section below. The grid chip and the roster row read as
+        // different things — a card vs. a row, and only the row leaves the channel on a swipe —
+        // so the duplication is a quick way in, not a buffer printed twice by accident.
+        let favorites = favoriteRows(state)
+        let recents = recentRows(state)
+        if !favorites.isEmpty { sections.append(Section(title: "Favorites", layout: .grid, rows: favorites)) }
+        if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
 
         let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
         var seen = Set<Int>()
         for network in networks {
             seen.insert(network.id)
-            let buffers = (byNetwork[network.id] ?? [])
-                .filter { !promoted.contains($0.key.id) }
-                .sorted(by: Self.order)
+            let buffers = (byNetwork[network.id] ?? []).sorted(by: Self.order)
             guard !buffers.isEmpty else { continue }
-            sections.append(Section(title: header(for: network), rows: buffers.map(compactRow)))
+            sections.append(Section(title: header(for: network), layout: .list, rows: buffers.map(rosterRow)))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
-            let rest = buffers.filter { !promoted.contains($0.key.id) }.sorted(by: Self.order)
+            let rest = buffers.sorted(by: Self.order)
             guard !rest.isEmpty else { continue }
-            sections.append(Section(title: "network", rows: rest.map(compactRow)))
+            sections.append(Section(title: "network", layout: .list, rows: rest.map(rosterRow)))
         }
         return sections
     }
@@ -331,39 +508,39 @@ final class BufferListViewController: UITableViewController {
     ///
     /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
     /// system buffer is excluded because it already has its own row above.
-    private func recentRows(_ state: ChatState, promoted: inout Set<String>) -> [Row] {
-        let rows = UserPreferences.standard.recentBufferKeys
-            .filter { !promoted.contains($0) }
+    private func recentRows(_ state: ChatState) -> [Row] {
+        // Favorites claim a buffer before Recent does, so a favorite you just opened stays a
+        // single Favorites chip rather than printing a second, identical chip in the Recent
+        // grid right beside it. (Both still keep their ordinary roster row below — this only
+        // dedups between the two grids.)
+        let favorites = Set(UserPreferences.standard.favoriteBufferKeys)
+        return UserPreferences.standard.recentBufferKeys
+            .filter { !favorites.contains($0) }
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .prefix(Self.recentLimit)
-            .map { promotedRow($0, state) }
-        promoted.formUnion(rows.map(\.buffer.key.id))
-        return Array(rows)
+            .map { chipRow($0, state) }
     }
 
-    /// Pinned buffers, claimed before recents so a favorite you just visited stays in the
-    /// section you pinned it to rather than moving around under you.
-    private func favoriteRows(_ state: ChatState, promoted: inout Set<String>) -> [Row] {
-        let rows = UserPreferences.standard.favoriteBufferKeys
+    /// Pinned buffers, in the order they were pinned. Local to the device (UserDefaults),
+    /// which is why they're app-level and span networks freely — unlike the web client's
+    /// server pins, which are per-network.
+    private func favoriteRows(_ state: ChatState) -> [Row] {
+        UserPreferences.standard.favoriteBufferKeys
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
-            .map { promotedRow($0, state) }
-        promoted.formUnion(rows.map(\.buffer.key.id))
-        return rows
+            .map { chipRow($0, state) }
     }
 
-    private func promotedRow(_ buffer: Buffer, _ state: ChatState) -> Row {
+    private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer,
-            subtitle: buffer.networkId.flatMap { state.networks[$0]?.name },
-            light: nil,
-            compact: false
+            subtitle: buffer.networkId.flatMap { state.networks[$0]?.name }
         )
     }
 
-    private func compactRow(_ buffer: Buffer) -> Row {
-        Row(buffer: buffer, subtitle: nil, light: nil, compact: true)
+    private func rosterRow(_ buffer: Buffer) -> Row {
+        Row(buffer: buffer, subtitle: nil)
     }
 
     private func header(for network: Network) -> String {
@@ -376,6 +553,10 @@ final class BufferListViewController: UITableViewController {
     }
 
     /// Channels, then DMs, then the server log; alphabetical within each.
+    ///
+    /// Matches the web client's ordering: the alphabetical key strips leading channel sigils
+    /// (`##anime` sorts as "anime", not before `#aardvark`), so the two clients list the same
+    /// network the same way.
     private nonisolated static func order(_ lhs: Buffer, _ rhs: Buffer) -> Bool {
         func rank(_ kind: BufferKind) -> Int {
             switch kind {
@@ -386,67 +567,59 @@ final class BufferListViewController: UITableViewController {
             }
         }
         if rank(lhs.kind) != rank(rhs.kind) { return rank(lhs.kind) < rank(rhs.kind) }
-        return lhs.target.lowercased() < rhs.target.lowercased()
+        return sortKey(lhs.target).localizedCaseInsensitiveCompare(sortKey(rhs.target)) == .orderedAscending
     }
 
-    // MARK: - Table
-
-    override func numberOfSections(in tableView: UITableView) -> Int { sections.count }
-
-    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
-        sections[section].title
+    private nonisolated static func sortKey(_ target: String) -> String {
+        var name = Substring(target)
+        while let first = name.first, first == "#" || first == "&" { name = name.dropFirst() }
+        return String(name)
     }
 
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+    // MARK: - Collection view data source
+
+    override func numberOfSections(in collectionView: UICollectionView) -> Int { sections.count }
+
+    override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
         sections[section].rows.count
     }
 
-    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "buffer", for: indexPath)
-        let row = sections[indexPath.section].rows[indexPath.row]
-
-        // `subtitleCell()` explicitly, not `cell.defaultContentConfiguration()`: the cells
-        // are registered as plain `UITableViewCell`, whose default style has no secondary
-        // label at all, so the network name would silently never appear.
-        var content = row.subtitle == nil
-            ? UIListContentConfiguration.cell()
-            : UIListContentConfiguration.subtitleCell()
-        // No `networkName` here, unlike the pill: every row already states its network — as
-        // a subtitle when promoted, as its section header otherwise — so resolving a server
-        // log to its network's name would just print "libera" above "libera".
-        content.text = row.buffer.displayName()
-        content.secondaryText = row.subtitle
-        if let light = row.light {
-            content.image = Self.lightImage(light)
+    override func collectionView(
+        _ collectionView: UICollectionView,
+        cellForItemAt indexPath: IndexPath
+    ) -> UICollectionViewCell {
+        let section = sections[indexPath.section]
+        let row = section.rows[indexPath.row]
+        switch section.layout {
+        case .list:
+            return collectionView.dequeueConfiguredReusableCell(using: listRegistration, for: indexPath, item: row)
+        case .grid:
+            return collectionView.dequeueConfiguredReusableCell(using: chipRegistration, for: indexPath, item: row)
         }
-        if row.compact {
-            // Density comes from the row box, never from type size — one font size app-wide.
-            content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0)
-        }
-        cell.contentConfiguration = content
-
-        cell.accessoryView = badge(unread: row.buffer.unread, highlights: row.buffer.highlights)
-        cell.accessoryType = cell.accessoryView == nil ? .disclosureIndicator : .none
-        return cell
     }
 
-    /// The status light as a leading image, so it sits in the cell's own image slot and
-    /// stays aligned with the text however the row is laid out.
-    private static func lightImage(_ light: StatusLight) -> UIImage? {
-        UIImage(systemName: "circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9))?
-            .withTintColor(Palette.color(for: light), renderingMode: .alwaysOriginal)
+    override func collectionView(
+        _ collectionView: UICollectionView,
+        viewForSupplementaryElementOfKind kind: String,
+        at indexPath: IndexPath
+    ) -> UICollectionReusableView {
+        collectionView.dequeueConfiguredReusableSupplementary(using: headerRegistration, for: indexPath)
     }
 
-    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        tableView.deselectRow(at: indexPath, animated: true)
+    // MARK: - Collection view delegate
+
+    override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        collectionView.deselectItem(at: indexPath, animated: true)
         onSelect?(sections[indexPath.section].rows[indexPath.row].buffer)
     }
 
-    override func tableView(
-        _ tableView: UITableView,
-        trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
-    ) -> UISwipeActionsConfiguration? {
-        let buffer = sections[indexPath.section].rows[indexPath.row].buffer
+    /// Trailing swipe on a roster row leaves/closes the buffer. Grid chips get nothing — the
+    /// shortcut isn't the buffer's home, so leaving from it would be a surprise.
+    private func trailingSwipe(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        guard indexPath.section < sections.count else { return nil }
+        let section = sections[indexPath.section]
+        guard section.layout == .list, indexPath.row < section.rows.count else { return nil }
+        let buffer = section.rows[indexPath.row].buffer
         // The server log and the system buffer can't be closed.
         guard buffer.kind != .server, buffer.kind != .system else { return nil }
         let title = buffer.kind == .channel ? "Leave" : "Close"
@@ -462,10 +635,11 @@ final class BufferListViewController: UITableViewController {
     }
 
     /// Long-press to pin. The Favorites section is only as real as the way to fill it, and
-    /// a section with no path into it would just be a permanently empty box.
-    override func tableView(
-        _ tableView: UITableView,
-        contextMenuConfigurationForRowAt indexPath: IndexPath,
+    /// a section with no path into it would just be a permanently empty box. Available on the
+    /// roster rows and on the chips alike, so a favorite is also how you *un*favorite.
+    override func collectionView(
+        _ collectionView: UICollectionView,
+        contextMenuConfigurationForItemAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
         let buffer = sections[indexPath.section].rows[indexPath.row].buffer
@@ -484,22 +658,5 @@ final class BufferListViewController: UITableViewController {
                 },
             ])
         }
-    }
-
-    /// A pill showing the unread count, tinted red when the buffer holds a highlight.
-    private func badge(unread: Int, highlights: Int) -> UIView? {
-        guard unread > 0 else { return nil }
-        let label = UILabel()
-        label.text = " \(unread) "
-        label.font = .preferredFont(forTextStyle: .caption1)
-        label.textColor = .white
-        label.backgroundColor = highlights > 0 ? .systemRed : .systemGray
-        label.textAlignment = .center
-        label.sizeToFit()
-        let height = label.bounds.height + 4
-        label.frame = CGRect(x: 0, y: 0, width: max(label.bounds.width + 8, height), height: height)
-        label.layer.cornerRadius = height / 2
-        label.layer.masksToBounds = true
-        return label
     }
 }

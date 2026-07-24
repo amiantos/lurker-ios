@@ -71,16 +71,17 @@ final class BufferTitleButton: UIButton {
     }
 
     /// What's currently rendered, so an unchanged update costs nothing.
-    private var shown: (title: String, status: StatusLight)?
+    private var shown: (title: String, status: StatusLight, hint: String)?
 
-    func update(title: String, status: StatusLight) {
+    func update(title: String, status: StatusLight, hint: String = "Shows this buffer's info and settings") {
         // This is called from every state change — i.e. once per arriving message on a busy
         // channel — while the title is fixed for the screen's life and the light only moves
         // on connection transitions. Reassigning `configuration` schedules a button
         // reconfiguration and the invalidate below relayouts the whole navigation bar, so
         // without this guard each message would pay for a bar relayout that changes nothing.
-        guard shown?.title != title || shown?.status != status else { return }
-        shown = (title, status)
+        // `hint` is part of the identity so a caller that varies it isn't silently ignored.
+        guard shown?.title != title || shown?.status != status || shown?.hint != hint else { return }
+        shown = (title, status, hint)
 
         // One font size app-wide; the pill earns its emphasis with weight, not size.
         var attributed = AttributedString(title)
@@ -93,7 +94,7 @@ final class BufferTitleButton: UIButton {
         light.backgroundColor = Palette.color(for: status)
         // The light is a color-only signal, so it has to be spoken too.
         accessibilityLabel = "\(title), \(status.spoken)"
-        accessibilityHint = "Shows this buffer's info and settings"
+        accessibilityHint = hint
     }
 }
 
