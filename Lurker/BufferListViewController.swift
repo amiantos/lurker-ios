@@ -5,25 +5,28 @@ import Combine
 import LurkerKit
 import UIKit
 
-/// The buffer picker, summoned from the title pill or a swipe in from the left edge.
+/// The app's home screen: every buffer you have, and the way into all of them.
 ///
-/// A quick switcher rather than a directory: the buffers you actually move between are a
-/// handful you keep returning to, so recents and pins come first at a size you can hit
-/// without looking, and the full grouped roster sits underneath, denser, for the times you
-/// want something you haven't touched in a week.
+/// It is the navigation stack's *root*, and a chat screen is pushed on top of it. That's the
+/// ordinary iOS shape for a list of things you go into and come back from, and it buys the
+/// back button and the interactive pop gesture rather than making this screen invent its own
+/// way in and out. It used to be a sheet over the chat screen, which meant a bespoke button
+/// to summon it, an edge swipe wired by hand, and a chat screen that could never be left.
+///
+/// Not a directory: the buffers you actually move between are a handful you keep returning
+/// to, so recents and pins come first at a size you can hit without looking, and the full
+/// grouped roster sits underneath, denser, for the times you want something you haven't
+/// touched in a week.
 ///
 /// "Denser" is spacing, not type size — one font size app-wide. The hierarchy is row
 /// height, a network subtitle on the promoted rows, and order.
 ///
-/// It reports the pick through `onSelect` and doesn't know what happens next; the chat
-/// screen swaps itself out.
-final class BufferSwitcherViewController: UITableViewController {
+/// It reports the pick through `onSelect` and doesn't know what happens next.
+final class BufferListViewController: UITableViewController {
     private let viewModel: ChatViewModel
-    /// The buffer on screen behind this sheet, so it can be kept out of Recent.
-    private let current: BufferKey
     private var cancellables = Set<AnyCancellable>()
 
-    /// Called with the picked buffer. The presenter owns hydrating it and dismissing this.
+    /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
@@ -43,24 +46,13 @@ final class BufferSwitcherViewController: UITableViewController {
     private struct Section {
         let title: String?
         let rows: [Row]
-        /// The network this section groups, when it groups one. Carried so the header can
-        /// offer a "+" that already knows where it's joining — which is the whole reason
-        /// joining doesn't need to ask.
-        let network: Network?
-
-        init(title: String?, rows: [Row], network: Network? = nil) {
-            self.title = title
-            self.rows = rows
-            self.network = network
-        }
     }
 
     private var state = ChatState()
     private var sections: [Section] = []
 
-    init(viewModel: ChatViewModel, current: BufferKey) {
+    init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        self.current = current
         super.init(style: .insetGrouped)
     }
 
@@ -70,17 +62,13 @@ final class BufferSwitcherViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Buffers"
-        navigationItem.leftBarButtonItem = accountItem()
-        // Done stays. Joining moved onto the network headers, so nothing is competing for
-        // this slot — and the alternatives to it (the grabber, a swipe down) are direct
-        // manipulation, which leaves Switch Control with no way out of this sheet at all.
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .done, primaryAction: UIAction { [weak self] _ in
-                self?.dismiss(animated: true)
-            }
-        )
+        navigationItem.largeTitleDisplayMode = .always
+        // Account and Join go in the bottom toolbar rather than the navigation bar: they're
+        // the two things you *do* here, as against the list itself, and the bottom of a tall
+        // phone is where a thumb already is. (`toolbarItems` is the plain navigation-
+        // controller toolbar — on iOS 26 it renders as the floating glass bar.)
+        toolbarItems = [accountItem(), .flexibleSpace(), joinItem]
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
-        tableView.register(NetworkHeaderView.self, forHeaderFooterViewReuseIdentifier: "network")
 
         // The list depends on networks, buffers, and connection state — a message arriving
         // in some channel shouldn't rebuild it (badge counts arrive as read-state updates,
@@ -97,6 +85,14 @@ final class BufferSwitcherViewController: UITableViewController {
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
         apply(viewModel.state)
+    }
+
+    /// The toolbar belongs to the navigation controller, so each screen has to say whether
+    /// it wants one — the chat screen hides it (see `ChatViewController.viewWillAppear`),
+    /// and coming back here has to put it up again.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.setToolbarHidden(false, animated: animated)
     }
 
     private func apply(_ state: ChatState) {
@@ -119,8 +115,7 @@ final class BufferSwitcherViewController: UITableViewController {
             image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
             attributes: .destructive
         ) { [weak self] _ in
-            // Revokes server-side + clears the Keychain; SceneDelegate dismisses this sheet
-            // and returns us to sign-in.
+            // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
             self?.viewModel.logout()
         }
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [signOut]))
@@ -130,18 +125,60 @@ final class BufferSwitcherViewController: UITableViewController {
 
     // MARK: - Joining
 
-    /// Join lives on each network's own header, as a "+" beside its name — the web client's
-    /// `net-add`.
+    /// Join, in the bottom-right of the list — where an app whose home screen is a list of
+    /// things puts "one more of these".
     ///
-    /// Putting it there answers the network question by *position* instead of asking it. A
-    /// single button somewhere else has to establish which network it means: as a menu of
-    /// networks (which then has to be rebuilt as they come and go, and this list rebuilds on
-    /// every unread count), or as a form with a picker in it (a whole modal to fill in one
-    /// field the header already knew). The header knows, so neither is needed and a plain
-    /// prompt does.
+    /// Its menu is **deferred**, so which networks it offers is decided when you tap it
+    /// rather than whenever the item happened to be built. That's the whole reason this can
+    /// be a menu at all: the item itself is never replaced (a `toolbarItems` array set once
+    /// in `viewDidLoad`), and it was *replacing* a bar item on every unread count that
+    /// previously closed the menu out from under whoever had it open.
     ///
-    /// Disabled unless the network is connected, matching the web: a JOIN with no socket to
-    /// travel down goes nowhere and nothing ever comes back to say so.
+    /// #11 will add "Add Network…" alongside the channels.
+    private lazy var joinItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "plus"),
+            menu: UIMenu(children: [
+                UIDeferredMenuElement.uncached { [weak self] completion in
+                    completion(self?.joinElements() ?? [])
+                },
+            ])
+        )
+        item.accessibilityLabel = "Join Channel"
+        return item
+    }()
+
+    /// One network makes the "+" a straight tap through to the prompt — a menu of one is a
+    /// tap spent to learn nothing — and several make it a list to pick from.
+    ///
+    /// Networks that aren't connected are offered but disabled, matching the web's `net-add`:
+    /// a JOIN with no socket to travel down goes nowhere, and nothing comes back to say so.
+    /// Shown rather than hidden because the network is still yours, and a list that silently
+    /// omits it just looks wrong.
+    private func joinElements() -> [UIMenuElement] {
+        let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        guard !networks.isEmpty else {
+            return [UIAction(title: "No networks", attributes: .disabled) { _ in }]
+        }
+        if let only = networks.first, networks.count == 1 {
+            return [UIAction(
+                title: "Join Channel…",
+                attributes: only.state == .connected ? [] : .disabled
+            ) { [weak self] _ in
+                self?.presentJoinAlert(network: only)
+            }]
+        }
+        return networks.map { network in
+            UIAction(
+                title: network.name,
+                subtitle: network.state == .connected ? nil : "not connected",
+                attributes: network.state == .connected ? [] : .disabled
+            ) { [weak self] _ in
+                self?.presentJoinAlert(network: network)
+            }
+        }
+    }
+
     private func presentJoinAlert(network: Network) {
         guard presentedViewController == nil else { return }
         let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
@@ -224,9 +261,7 @@ final class BufferSwitcherViewController: UITableViewController {
                 .filter { !promoted.contains($0.key.id) }
                 .sorted(by: Self.order)
             guard !buffers.isEmpty else { continue }
-            sections.append(Section(
-                title: header(for: network), rows: buffers.map(compactRow), network: network
-            ))
+            sections.append(Section(title: header(for: network), rows: buffers.map(compactRow)))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
@@ -237,19 +272,19 @@ final class BufferSwitcherViewController: UITableViewController {
         return sections
     }
 
-    /// The buffers you've actually been in lately, newest first — the whole point of the
-    /// switcher.
+    /// The buffers you've actually been in lately, newest first.
     ///
-    /// The buffer you're *currently* in is excluded. Recency is recorded when a buffer
-    /// appears, so by the time this sheet can exist the current buffer is always the
-    /// newest entry — which would put the row you're already on at the top, where your
-    /// thumb lands, doing nothing. A switcher's first entry should be where you'd go next.
+    /// The buffer you were *just* in is included, and sits at the top. As a sheet over the
+    /// chat screen this list excluded it — the row you were already on would have been the
+    /// first thing under your thumb, doing nothing. Backing out to a home screen inverts
+    /// that: the conversation you just left is the single likeliest place you'd want to
+    /// return to, and a list that hid it would be the thing that looked broken.
     ///
     /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
     /// system buffer is excluded because it already has its own row above.
     private func recentRows(_ state: ChatState, promoted: inout Set<String>) -> [Row] {
         let rows = UserPreferences.standard.recentBufferKeys
-            .filter { $0 != current.id && !promoted.contains($0) }
+            .filter { !promoted.contains($0) }
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .prefix(Self.recentLimit)
@@ -311,19 +346,6 @@ final class BufferSwitcherViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         sections[section].title
-    }
-
-    /// A network's header carries its "+"; every other section keeps the plain title above
-    /// (returning nil here falls back to `titleForHeaderInSection`, so Recent/Favorites and
-    /// the Lurker row are untouched).
-    override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
-        let model = sections[section]
-        guard let network = model.network, let title = model.title else { return nil }
-        let header = tableView.dequeueReusableHeaderFooterView(withIdentifier: "network") as? NetworkHeaderView
-        header?.configure(title: title, network: network) { [weak self] in
-            self?.presentJoinAlert(network: network)
-        }
-        return header
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {

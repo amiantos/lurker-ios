@@ -144,7 +144,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferInfo() })
         navigationItem.titleView = titleButton
-        navigationItem.leftBarButtonItem = bufferListItem()
+        // Explicitly never, not `.automatic`: automatic *inherits* from the screen below,
+        // which is the buffer list and its large title — leaving this screen a tall empty
+        // band above a `titleView` that is already the title.
+        navigationItem.largeTitleDisplayMode = .never
+        // No leading item: the navigation controller's own back button goes there, and the
+        // buffer list it returns to is this screen's parent rather than a sheet it summons.
         navigationItem.rightBarButtonItem = overflowItem()
 
         tableView.dataSource = self
@@ -315,6 +320,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
         apply(viewModel.state)
+    }
+
+    /// The navigation controller's toolbar belongs to the buffer list, not here — the
+    /// composer already owns the bottom of this screen, and two bars stacked there would
+    /// fight over the same inch of thumb.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.setToolbarHidden(true, animated: animated)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -909,17 +922,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if case .activate(let key) = outcome { navigate(to: key) }
     }
 
-    /// Switch the whole screen to another buffer — what `/msg` and `/query` ask for once the
-    /// DM is open. The same root-swap the buffer switcher does: no back chevron, no stack
-    /// growth. The target may not be in state yet (a brand-new DM whose `open-buffer` reply
-    /// is still in flight), so it's synthesized when absent, exactly like the system buffer.
+    /// Switch to another buffer — what `/msg` and `/query` ask for once the DM is open. The
+    /// target may not be in state yet (a brand-new DM whose `open-buffer` reply is still in
+    /// flight), which is what `buffer(for:)` synthesizes for.
     private func navigate(to key: BufferKey) {
         guard key != buffer.key else { return }
-        let target = viewModel.state.buffers[key.id]
-            ?? Buffer(networkId: key.networkId, target: key.target,
-                      kind: BufferKind.of(networkId: key.networkId, target: key.target))
-        navigationController?.setViewControllers(
-            [ChatViewController(viewModel: viewModel, buffer: target)], animated: true
+        navigationController?.showBuffer(
+            viewModel.state.buffer(for: key), viewModel: viewModel, animated: true
         )
     }
 
@@ -1168,13 +1177,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Navigation
 
-    /// Swipe in from either edge to reach the two lists this screen sits between: buffers
-    /// on the left, nicks on the right. Each edge has the matching bar item above it — the
-    /// list button and the overflow menu's "Members" — so these are shortcuts to visible
-    /// controls, not the only way in.
+    /// Swipe in from the right edge for the nick list — a shortcut to the overflow menu's
+    /// "Members", not the only way in.
     ///
-    /// The left edge is free to claim because this screen is the navigation stack's root,
-    /// so there's no interactive pop gesture to collide with.
+    /// The **left** edge is no longer ours. It used to open the buffer list, which was free
+    /// to claim while this screen was the navigation stack's root; now the list is the root
+    /// and this is pushed on top, so that edge belongs to the system's interactive pop —
+    /// which goes to the same place, and is the gesture people already try.
     private func addEdgeSwipes() {
         func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) -> UIScreenEdgePanGestureRecognizer {
             let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
@@ -1182,7 +1191,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             view.addGestureRecognizer(swipe)
             return swipe
         }
-        _ = edgeSwipe(.left, #selector(swipedFromLeft))
         let rightEdge = edgeSwipe(.right, #selector(swipedFromRight))
 
         // Drag left anywhere to pull the timestamps in. This overlaps the right-edge swipe
@@ -1239,61 +1247,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         true
     }
 
-    @objc private func swipedFromLeft(_ recognizer: UIScreenEdgePanGestureRecognizer) {
-        // On `.began`, so the sheet starts coming as soon as the intent is unambiguous
-        // rather than waiting for the finger to lift.
-        guard recognizer.state == .began else { return }
-        showBufferList()
-    }
-
     @objc private func swipedFromRight(_ recognizer: UIScreenEdgePanGestureRecognizer) {
         guard recognizer.state == .began else { return }
         showMemberList()
     }
 
-    /// The buffer list. A sheet, not a push: the list is a picker for this screen, not a
-    /// place you go — so the stack never grows and there's no back chevron competing with
-    /// the bar items for the same job.
-    private func showBufferList() {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
-        let viewModel = self.viewModel
-        let nav = navigationController
-        let current = buffer.key
-        let list = BufferSwitcherViewController(viewModel: viewModel, current: current)
-        // `nav` weakly: it holds the sheet, which holds the list, which holds this
-        // closure — a strong capture would close that loop for as long as the sheet is up.
-        list.onSelect = { [weak nav] buffer in
-            // Picking the buffer you're already in means "close this", not "rebuild it".
-            // Swapping the root would re-latch the unread divider, re-request history, and
-            // throw away your scroll position to arrive back exactly where you started.
-            guard buffer.key != current else { return nav?.dismiss(animated: true) ?? () }
-            // No `openBuffer` here: the new screen's own `hydrateIfNeeded` asks for the
-            // history. Requesting it here too would double every buffer tap — the reply
-            // hasn't landed by the time the new VC's first `apply` runs, so it would still
-            // see `hydrated == false` and ask again, costing a second backlog read and a
-            // second full reload.
-            //
-            // Swap the root *behind* the sheet, then dismiss, so it slides down onto the
-            // buffer you picked instead of flashing the one you left.
-            nav?.setViewControllers(
-                [ChatViewController(viewModel: viewModel, buffer: buffer)], animated: false
-            )
-            nav?.dismiss(animated: true)
-        }
-        let sheet = UINavigationController(rootViewController: list)
-        sheet.sheetPresentationController?.prefersGrabberVisible = true
-        // Presented from the navigation controller rather than from `self`, which is about
-        // to be replaced as its root — a presenting VC deallocated mid-dismiss takes the
-        // sheet down with it.
-        nav?.present(sheet, animated: true)
-    }
-
     /// The recent-highlights list. A full-height sheet — it's a reading surface, not a
-    /// glance — presented from the navigation controller like the buffer switcher, because
+    /// glance — presented from the navigation controller rather than from `self`, because
     /// picking a highlight replaces this screen and a presenter deallocated mid-swap would
-    /// take the sheet down with it. Tapping a highlight jumps to its buffer the same
-    /// root-swap way `/msg` and the switcher do; landing at the bottom of that conversation
-    /// (scrolling to the exact matched line is deferred to #42).
+    /// take the sheet down with it. Tapping a highlight jumps to its buffer the same way
+    /// `/msg` and the list do.
     private func showHighlights() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let viewModel = self.viewModel
@@ -1301,14 +1264,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let highlights = HighlightsViewController(viewModel: viewModel)
         highlights.onSelect = { [weak nav] item in
             let key = item.bufferKey
-            // Root-swap to the buffer and jump to the matched line (#42) — even when it's the
-            // buffer already on screen, since the point is to move to that message. The buffer
-            // may not be in state (a channel since closed, or one whose row never materialized),
-            // which is what `buffer(for:)` synthesizes for; the new screen fetches an `around`
-            // slice centered on the match and scrolls to it.
-            let target = viewModel.state.buffer(for: key)
-            nav?.setViewControllers(
-                [ChatViewController(viewModel: viewModel, buffer: target, jumpTo: item.message.id)], animated: false
+            // Navigate and jump to the matched line (#42) — even when it's the buffer already
+            // on screen, since the point is to move to that message. The buffer may not be in
+            // state (a channel since closed, or one whose row never materialized), which is
+            // what `buffer(for:)` synthesizes for; the new screen fetches an `around` slice
+            // centered on the match and scrolls to it.
+            nav?.showBuffer(
+                viewModel.state.buffer(for: key), viewModel: viewModel,
+                jumpTo: item.message.id, animated: false
             )
             nav?.dismiss(animated: true)
         }
@@ -1349,23 +1312,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
-    /// The buffer list, on the leading side to agree with the left-edge swipe that already
-    /// opens it — the button and the gesture on that edge now mean the same thing.
-    private func bufferListItem() -> UIBarButtonItem {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "list.bullet"),
-            primaryAction: UIAction { [weak self] _ in self?.showBufferList() }
-        )
-        item.accessibilityLabel = "Buffers"
-        return item
-    }
-
-    /// The views menu, balancing the buffer list across the pill: the surfaces you *look
-    /// at*, as against the buffer you're in. Highlights today; search, bookmarks and
-    /// uploads land here as they're built, which is the set the desktop client keeps in
-    /// its bottom toolbar (#49).
+    /// The views menu, opposite the back button: the surfaces you *look at*, as against the
+    /// buffer you're in. Highlights today; search, bookmarks and uploads land here as they're
+    /// built, which is the set the desktop client keeps in its bottom toolbar (#49).
     ///
-    /// Nothing account-scoped lives here. Sign-out sits in the buffer sheet's own menu,
+    /// Nothing account-scoped lives here. Sign-out sits in the buffer list's own menu,
     /// where the things that outlast the buffer you happen to be reading belong — and
     /// where it isn't one slip of the thumb from "Members".
     ///
