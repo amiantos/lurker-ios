@@ -27,6 +27,22 @@ final class BufferTitleButton: UIButton {
     private let light = UIView()
     private static let lightSize: CGFloat = 9
 
+    /// Dynamic Type, but bounded — the navigation bar does not grow with text size.
+    ///
+    /// Measured on iPhone 17 Pro / iOS 26: the bar is 54pt tall and UIKit's own bar buttons
+    /// are a fixed 44pt in *every* orientation and content size. An unbounded subheadline
+    /// took the pill to 70.7pt at AccessibilityXXXL — 13pt of it above the bar's top edge,
+    /// in the status bar, and 3pt below it over the message list, because `UINavigationBar`
+    /// doesn't clip its subviews. The cap keeps the capsule inside the row it sits in;
+    /// beyond it the name truncates, which the pill already does horizontally.
+    ///
+    /// Not a stored constant: it has to be re-read whenever the content size category
+    /// changes, which is what the trait registration in `init` is for.
+    private static var titleFont: UIFont {
+        let base = UIFont.systemFont(ofSize: 15, weight: .semibold)  // subheadline's own size
+        return UIFontMetrics(forTextStyle: .subheadline).scaledFont(for: base, maximumPointSize: 22)
+    }
+
     init(onTap: @escaping () -> Void) {
         super.init(frame: .zero)
         addAction(UIAction { _ in onTap() }, for: .touchUpInside)
@@ -54,6 +70,21 @@ final class BufferTitleButton: UIButton {
             light.widthAnchor.constraint(equalToConstant: Self.lightSize),
             light.heightAnchor.constraint(equalToConstant: Self.lightSize),
         ])
+
+        // The font is baked into `configuration.attributedTitle`, so it doesn't rescale
+        // itself when the reader changes text size — and `update` early-returns when the
+        // title hasn't changed, so nothing else would notice either. One pill now lives for
+        // the app's whole life, so "it'll be rebuilt on the next screen" isn't true any more.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (pill: BufferTitleButton, _) in
+            pill.reapplyTitleFont()
+        }
+    }
+
+    private func reapplyTitleFont() {
+        guard var attributed = configuration?.attributedTitle else { return }
+        attributed.font = Self.titleFont
+        configuration?.attributedTitle = attributed
+        invalidateIntrinsicContentSize()
     }
 
     @available(*, unavailable)
@@ -123,7 +154,7 @@ final class BufferTitleButton: UIButton {
 
         // One font size app-wide; the pill earns its emphasis with weight, not size.
         var attributed = AttributedString(title)
-        attributed.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
+        attributed.font = Self.titleFont
         attributed.foregroundColor = UIColor.label
         configuration?.attributedTitle = attributed
         // The name drives the pill's width, and the cap above is applied on measure.

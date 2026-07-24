@@ -36,12 +36,6 @@ final class BufferListViewController: UICollectionViewController {
     /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
-    /// The floating title pill, shared with the chat screen — literally the same view, owned
-    /// by `NavigationPill`. Here it names "Lurker" and carries the socket light, and taps
-    /// through to the system buffer — it stands in for the Lurker row this list used to
-    /// carry, moving that status off a row (which read oddly above the grids) and into the
-    /// bar, where the chat screen already keeps the same pill.
-
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
     /// just the roster again — this is a display cap, not a limit on what's remembered. Four,
     /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
@@ -122,9 +116,6 @@ final class BufferListViewController: UICollectionViewController {
         // original: a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
         navigationItem.largeTitleDisplayMode = .always
-        // The same pill the chat screen wears, in the same centre spot — the one control that
-        // means "Lurker, and how it's doing" is in one place on both screens. Its tap opens
-        // the system buffer rather than a buffer-info sheet, which is what this screen has.
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
@@ -839,6 +830,10 @@ final class BufferListViewController: UICollectionViewController {
 
 // MARK: - The shared title pill
 
+/// The same pill the chat screen wears, in the same centre spot — literally the same view,
+/// owned by `NavigationPill`. The one control that means "Lurker, and how it's doing" is in
+/// one place on both screens. It stands in for the Lurker row this list used to carry, moving
+/// that status off a row (which read oddly above the grids) and into the bar.
 extension BufferListViewController: PillPresenting {
 
     /// Fixed except for the light: this screen is the app, not a buffer, so it always reads
@@ -851,6 +846,8 @@ extension BufferListViewController: PillPresenting {
         )
     }
 
+    /// Opens the system buffer rather than a buffer-info sheet, which is what the chat screen's
+    /// tap does — this screen *is* the app, so there's no one buffer to describe.
     func pillTapped() {
         openSystemBuffer()
     }
