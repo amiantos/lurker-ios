@@ -139,31 +139,56 @@ final class ContactsAndPresenceTests: XCTestCase {
         .snapshot([NetworkSnapshot(id: id, state: .connected, nick: "me", channels: [], peerPresence: presence)])
     }
 
-    func testPresenceUnknownForNetworkWeDoNotHave() {
+    /// A store with a live socket. presence() now gates on the client's own link, so a test
+    /// asserting a specific peer status must first be "connected" or every dot reads offline.
+    private func connectedStore() -> LurkerStore {
         let store = LurkerStore()
+        store.apply(.socketOpen)
+        return store
+    }
+
+    func testPresenceOfflineWhileClientIsDisconnected() {
+        let store = connectedStore()
+        store.apply(connectedNetwork(2, presence: ["darc": .online]))
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .online)
+        // Socket drops → reconnecting: the cached row is stale, so the dot must not claim online
+        // even though the network's own state is still .connected from the last snapshot.
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline)
+    }
+
+    func testPresenceOfflineWhenDeviceUnreachable() {
+        let store = connectedStore()
+        store.apply(connectedNetwork(2, presence: ["darc": .online]))
+        store.setReachable(false)
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline)
+    }
+
+    func testPresenceUnknownForNetworkWeDoNotHave() {
+        let store = connectedStore()
         XCTAssertEqual(store.state.presence(networkId: 99, nick: "darc"), .unknown)
     }
 
     func testPresenceUnknownForConnectedNetworkWithNoRow() {
-        let store = LurkerStore()
+        let store = connectedStore()
         store.apply(connectedNetwork(2))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .unknown)
     }
 
     func testPresenceReadsStoredRowCaseInsensitively() {
-        let store = LurkerStore()
+        let store = connectedStore()
         store.apply(connectedNetwork(2, presence: ["darc": .online]))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "Darc"), .online)
     }
 
     func testBackReadsAsOnline() {
-        let store = LurkerStore()
+        let store = connectedStore()
         store.apply(connectedNetwork(2, presence: ["darc": .back]))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .online)
     }
 
     func testDisconnectedNetworkReadsOfflineRegardlessOfRow() {
-        let store = LurkerStore()
+        let store = connectedStore()
         // A network we hold but that isn't connected: its cached rows are stale, so a friend
         // there is unreachable → offline, even if a stale row said otherwise.
         store.apply(.snapshot([
@@ -173,7 +198,7 @@ final class ContactsAndPresenceTests: XCTestCase {
     }
 
     func testLivePeerPresenceUpdatesAndNullClears() {
-        let store = LurkerStore()
+        let store = connectedStore()
         store.apply(connectedNetwork(2, presence: ["darc": .online]))
         store.apply(.peerPresence(networkId: 2, nick: "Darc", state: .away))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .away)
@@ -183,7 +208,7 @@ final class ContactsAndPresenceTests: XCTestCase {
     }
 
     func testPrimaryPresenceFollowsThePrimaryTarget() {
-        let store = LurkerStore()
+        let store = connectedStore()
         store.apply(.snapshot([
             NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], peerPresence: ["alt": .away]),
             NetworkSnapshot(id: 3, state: .connected, nick: "me", channels: [], peerPresence: ["main": .online]),
@@ -201,7 +226,7 @@ final class ContactsAndPresenceTests: XCTestCase {
     }
 
     func testSnapshotReplacesPeerPresenceWholesale() {
-        let store = LurkerStore()
+        let store = connectedStore()
         store.apply(connectedNetwork(2, presence: ["darc": .online, "naia": .away]))
         // A fresh snapshot for the network is authoritative — a peer no longer watched drops out.
         store.apply(connectedNetwork(2, presence: ["darc": .online]))

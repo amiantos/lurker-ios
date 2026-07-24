@@ -269,12 +269,11 @@ final class BufferListViewController: UICollectionViewController {
                     widthDimension: .fractionalWidth(1),
                     heightDimension: .fractionalHeight(1)
                 ))
-                // `subitem:count:` (deprecated) rather than its `repeatingSubitem:count:`
-                // rename: the rename is documented as equivalent but does *not* divide the row
-                // here — it lets each `.fractionalWidth(1)` item take the full width, so the
-                // first chip fills the row and the second is pushed off. The old form divides
-                // the group into two equal columns (accounting for the interitem gutter), which
-                // is exactly what a two-up grid needs.
+                // Two equal columns: `repeatingSubitem:count:` sizes each of the `count`
+                // columns and splits the interitem gutter between them, and the item's
+                // `.fractionalWidth(1)` fills its own column. This is the non-deprecated
+                // rename of `subitem:count:` — same single-subitem-repeated-count semantics,
+                // distinct from the `subitems:` array variant that does NOT divide the row.
                 let group = NSCollectionLayoutGroup.horizontal(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
@@ -283,7 +282,7 @@ final class BufferListViewController: UICollectionViewController {
                         // rather than clipping the name/network stack.
                         heightDimension: .estimated(64)
                     ),
-                    subitem: item,
+                    repeatingSubitem: item,
                     count: 2
                 )
                 group.interItemSpacing = .fixed(10)

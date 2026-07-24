@@ -80,13 +80,19 @@ public struct ChatState: Sendable {
     }
 
     /// The status of a watched (network, nick), disconnected-aware — the single source the
-    /// friend rows read. Mirrors the web client's `peerFor` + `deriveState`:
+    /// friend rows read. Mirrors the web client's `peerFor` + `deriveState`, plus a check the
+    /// web doesn't need (its socket state drives the same store):
+    ///  - if THIS client can't reach the server — no device network path, or a socket that
+    ///    isn't up (connecting/reconnecting) — every cached row is stale, because presence only
+    ///    ever arrives over a live socket. Report `offline` rather than a green dot over a dead
+    ///    link; a stale snapshot can otherwise leave `Network.state` reading `.connected`;
     ///  - a network we hold but that isn't connected reads `offline` (its cached presence
     ///    rows are stale, and a peer on a network we've dropped is unreachable from here);
     ///  - a connected network with no row for the nick reads `unknown` ("potentially online",
     ///    the no-MONITOR case), as does a network we've never heard of;
     ///  - otherwise the stored state maps through: `online`/`back` → online, `away`, `offline`.
     public func presence(networkId: Int, nick: String) -> FriendPresence {
+        guard reachable, connection == .connected else { return .offline }
         if let network = networks[networkId], network.state != .connected { return .offline }
         switch peerPresence[networkId]?[nick.lowercased()] {
         case .online, .back: return .online

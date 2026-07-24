@@ -75,11 +75,12 @@ final class ConfigureFriendViewController: UITableViewController {
             self.notifyOnline = false
             seededTargets = sorted.first.map { [TargetDraft(networkId: $0.id, nick: "", isPrimary: true)] } ?? []
         }
-        // A friend must have exactly one primary; a seed that somehow carries none (or several)
-        // is normalized to the first so the "primary" radio is never blank or ambiguous.
-        if !seededTargets.contains(where: { $0.isPrimary }), !seededTargets.isEmpty {
-            seededTargets[0].isPrimary = true
-        }
+        // A friend must have exactly one primary. Keep the first flagged target (promote the
+        // first if none is flagged) and clear the rest, so a seed carrying none OR several never
+        // shows multiple selected radios or sends multiple primaries back to the server.
+        let primaryIndex = seededTargets.firstIndex(where: { $0.isPrimary })
+            ?? (seededTargets.isEmpty ? nil : 0)
+        for i in seededTargets.indices { seededTargets[i].isPrimary = (i == primaryIndex) }
         self.targets = seededTargets
 
         super.init(style: .insetGrouped)
