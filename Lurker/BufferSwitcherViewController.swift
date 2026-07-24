@@ -43,6 +43,16 @@ final class BufferSwitcherViewController: UITableViewController {
     private struct Section {
         let title: String?
         let rows: [Row]
+        /// The network this section groups, when it groups one. Carried so the header can
+        /// offer a "+" that already knows where it's joining — which is the whole reason
+        /// joining doesn't need to ask.
+        let network: Network?
+
+        init(title: String?, rows: [Row], network: Network? = nil) {
+            self.title = title
+            self.rows = rows
+            self.network = network
+        }
     }
 
     private var state = ChatState()
@@ -61,11 +71,16 @@ final class BufferSwitcherViewController: UITableViewController {
         super.viewDidLoad()
         title = "Buffers"
         navigationItem.leftBarButtonItem = accountItem()
-        // No Done button: "+" has taken that slot, and the sheet already dismisses three
-        // ways — the grabber, a swipe down, and picking a buffer, which is what you opened
-        // it to do.
-        navigationItem.rightBarButtonItem = joinItem
+        // Done stays. Joining moved onto the network headers, so nothing is competing for
+        // this slot — and the alternatives to it (the grabber, a swipe down) are direct
+        // manipulation, which leaves Switch Control with no way out of this sheet at all.
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            systemItem: .done, primaryAction: UIAction { [weak self] _ in
+                self?.dismiss(animated: true)
+            }
+        )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
+        tableView.register(NetworkHeaderView.self, forHeaderFooterViewReuseIdentifier: "network")
 
         // The list depends on networks, buffers, and connection state — a message arriving
         // in some channel shouldn't rebuild it (badge counts arrive as read-state updates,
@@ -86,7 +101,6 @@ final class BufferSwitcherViewController: UITableViewController {
 
     private func apply(_ state: ChatState) {
         self.state = state
-        refreshJoinItem(state)
         sections = buildSections(state)
         tableView.reloadData()
     }
@@ -114,62 +128,53 @@ final class BufferSwitcherViewController: UITableViewController {
         return item
     }
 
-    /// Join, promoted out of the chat screen's menu into the one place you already go to
-    /// change which conversation you're in. A channel you haven't joined is a buffer you
-    /// don't have, so the buffer list is where its absence is felt.
-    ///
-    /// A plain button, not a menu: it always does the same thing, so the only state that
-    /// reaches it is whether there's anywhere to join at all. That matters more than it
-    /// sounds — `apply` runs on every unread count, and a *menu* here would have to be
-    /// rebuilt as networks came and went, swapping the item out from under itself while
-    /// open. `isEnabled` on a stable item has no such failure mode.
-    private lazy var joinItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(
-            title: nil, image: UIImage(systemName: "plus"),
-            primaryAction: UIAction { [weak self] _ in self?.presentJoin() }, menu: nil
-        )
-        item.accessibilityLabel = "Join Channel"
-        return item
-    }()
+    // MARK: - Joining
 
-    /// Disabled with no networks: there is nothing the user could do from this sheet to
-    /// make it work, and a "+" that opens a form with nowhere to send it is worse than a
-    /// grey one.
-    private func refreshJoinItem(_ state: ChatState) {
-        joinItem.isEnabled = !state.networks.isEmpty
+    /// Join lives on each network's own header, as a "+" beside its name — the web client's
+    /// `net-add`.
+    ///
+    /// Putting it there answers the network question by *position* instead of asking it. A
+    /// single button somewhere else has to establish which network it means: as a menu of
+    /// networks (which then has to be rebuilt as they come and go, and this list rebuilds on
+    /// every unread count), or as a form with a picker in it (a whole modal to fill in one
+    /// field the header already knew). The header knows, so neither is needed and a plain
+    /// prompt does.
+    ///
+    /// Disabled unless the network is connected, matching the web: a JOIN with no socket to
+    /// travel down goes nowhere and nothing ever comes back to say so.
+    private func presentJoinAlert(network: Network) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
+        alert.addTextField {
+            $0.placeholder = "#channel"
+            $0.autocapitalizationType = .none
+            $0.autocorrectionType = .no
+            $0.spellCheckingType = .no
+            $0.returnKeyType = .join
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
+            let typed = (alert?.textFields?.first?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self?.join(network: network, channel: typed)
+        })
+        present(alert, animated: true)
     }
 
     /// Joining is also switching: you asked for a channel, so land in it. The buffer won't
-    /// exist yet — the row arrives with the server's `channel-joined` — so hand over a
+    /// exist yet — its row arrives with the server's `channel-joined` — so hand over a
     /// synthesized one exactly as a notification tap does, and let the chat screen's
     /// `hydrateIfNeeded` fill it in when the join completes.
-    private func presentJoin() {
-        // Same guard as every other present site in this app: a second tap while the sheet
-        // is coming up would otherwise be dropped by UIKit with a console warning.
-        guard presentedViewController == nil else { return }
-        guard let form = JoinChannelViewController(networks: Array(state.networks.values)) else { return }
-        form.onJoin = { [weak self] network, channel in
-            guard let self else { return }
-            viewModel.joinChannel(networkId: network.id, channel: channel)
-            // `buffer(for:)` rather than a hand-built one: `ensurePrefix` accepts the full
-            // RFC-1459 sigil set, of which `BufferKind.of` classifies only `#` and `&` as
-            // channels — so hardcoding `.channel` here would hand the chat screen a member
-            // list its store row disagrees with.
-            let buffer = state.buffer(for: BufferKey(networkId: network.id, target: channel))
-            // Dismissed through `self`, not through the form — the form owns this closure,
-            // so capturing it here would be a cycle. (A view controller dismisses whatever
-            // it presented, which is the form's sheet.)
-            //
-            // And dismissed *before* reporting: `onSelect` tears down the sheet this form
-            // is presented from, and dismissing a presenter out from under its own
-            // presented controller drops the animation on the floor.
-            dismiss(animated: true) { [weak self] in self?.onSelect?(buffer) }
-        }
-        let sheet = UINavigationController(rootViewController: form)
-        sheet.sheetPresentationController?.prefersGrabberVisible = true
-        // Medium: it's two fields over the list you were just reading, not a place to be.
-        sheet.sheetPresentationController?.detents = [.medium(), .large()]
-        present(sheet, animated: true)
+    private func join(network: Network, channel typed: String) {
+        // A bare sigil is not a name: `ensurePrefix("#")` would send a JOIN for "#".
+        guard !ChannelName.fold(typed).isEmpty else { return }
+        let channel = ChannelName.ensurePrefix(typed)
+        viewModel.joinChannel(networkId: network.id, channel: channel)
+        // `buffer(for:)` rather than a hand-built one: `ensurePrefix` accepts the full
+        // RFC-1459 sigil set, of which `BufferKind.of` classifies only `#` and `&` as
+        // channels — so hardcoding `.channel` here would hand the chat screen a member list
+        // its store row disagrees with.
+        onSelect?(state.buffer(for: BufferKey(networkId: network.id, target: channel)))
     }
 
     // MARK: - Sections
@@ -219,7 +224,9 @@ final class BufferSwitcherViewController: UITableViewController {
                 .filter { !promoted.contains($0.key.id) }
                 .sorted(by: Self.order)
             guard !buffers.isEmpty else { continue }
-            sections.append(Section(title: header(for: network), rows: buffers.map(compactRow)))
+            sections.append(Section(
+                title: header(for: network), rows: buffers.map(compactRow), network: network
+            ))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
@@ -304,6 +311,19 @@ final class BufferSwitcherViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         sections[section].title
+    }
+
+    /// A network's header carries its "+"; every other section keeps the plain title above
+    /// (returning nil here falls back to `titleForHeaderInSection`, so Recent/Favorites and
+    /// the Lurker row are untouched).
+    override func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        let model = sections[section]
+        guard let network = model.network, let title = model.title else { return nil }
+        let header = tableView.dequeueReusableHeaderFooterView(withIdentifier: "network") as? NetworkHeaderView
+        header?.configure(title: title, network: network) { [weak self] in
+            self?.presentJoinAlert(network: network)
+        }
+        return header
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
