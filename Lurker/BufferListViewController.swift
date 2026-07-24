@@ -265,18 +265,15 @@ final class BufferListViewController: UICollectionViewController {
                 layoutSection = .list(using: config, layoutEnvironment: environment)
 
             case .grid:
+                // Two-up grid. Unlike the deprecated `subitem:count:` (which forced equal-sized
+                // items), `repeatingSubitem:count:` makes it *your* job to size the item to fit
+                // `count` repetitions — so the item is `.fractionalWidth(0.5)`, half the group.
+                // Left at `.fractionalWidth(1)` each item takes the full row and the second chip
+                // is pushed off, collapsing the grid to one column. (See SO 77092978.)
                 let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(
-                    widthDimension: .fractionalWidth(1),
+                    widthDimension: .fractionalWidth(0.5),
                     heightDimension: .fractionalHeight(1)
                 ))
-                // `subitem:count:` (deprecated) rather than its `repeatingSubitem:count:`
-                // rename: DESPITE the API diff documenting them as equivalent, the rename does
-                // *not* divide the row here — it lets each `.fractionalWidth(1)` item take the
-                // full width, so the first chip fills the row and the second is pushed off
-                // (verified: switching to `repeatingSubitem:count:` collapses all three grids to
-                // one column). The old form divides the group into two equal columns (accounting
-                // for the interitem gutter), which is exactly what a two-up grid needs. Keep the
-                // deprecation warning; it's the price of a working layout.
                 let group = NSCollectionLayoutGroup.horizontal(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
@@ -285,7 +282,7 @@ final class BufferListViewController: UICollectionViewController {
                         // rather than clipping the name/network stack.
                         heightDimension: .estimated(64)
                     ),
-                    subitem: item,
+                    repeatingSubitem: item,
                     count: 2
                 )
                 group.interItemSpacing = .fixed(10)
