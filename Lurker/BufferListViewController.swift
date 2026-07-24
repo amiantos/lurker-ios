@@ -52,12 +52,32 @@ final class BufferListViewController: UICollectionViewController {
         case grid
     }
 
-    private struct Row {
+    private struct Row: Equatable {
         let buffer: Buffer
         /// The network name, shown on grid chips where the buffer has been lifted out of its
         /// section and would otherwise be ambiguous across networks. Nil on roster rows,
         /// which already sit under their network's header.
         let subtitle: String?
+        /// Set only on friend chips: the friend's presence dot state, the contact's display
+        /// name (which may differ from the DM nick), and the contact id the row's edit/remove
+        /// menu acts on. Equatable so a presence change reconfigures the one chip.
+        var presence: FriendPresence?
+        var displayName: String?
+        var contactId: Int?
+
+        init(
+            buffer: Buffer,
+            subtitle: String?,
+            presence: FriendPresence? = nil,
+            displayName: String? = nil,
+            contactId: Int? = nil
+        ) {
+            self.buffer = buffer
+            self.subtitle = subtitle
+            self.presence = presence
+            self.displayName = displayName
+            self.contactId = contactId
+        }
     }
 
     private struct Section {
@@ -127,6 +147,11 @@ final class BufferListViewController: UICollectionViewController {
                     && $0.buffers == $1.buffers
                     && $0.connection == $1.connection
                     && $0.reachable == $1.reachable
+                    // The Friends section renders off these two: the contact list and the
+                    // per-nick presence the dots read. A friend coming online is a presence
+                    // change with no buffer change, so without these the chip's dot never moves.
+                    && $0.contacts == $1.contacts
+                    && $0.peerPresence == $1.peerPresence
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -189,7 +214,9 @@ final class BufferListViewController: UICollectionViewController {
         }
         let changed = previous.indices.flatMap { section in
             sections[section].rows.indices.compactMap { row in
-                previous[section].rows[row].buffer != sections[section].rows[row].buffer
+                // Compare the whole row, not just its buffer: a friend chip's presence and
+                // display name live on the row, so a dot flip has to reconfigure too.
+                previous[section].rows[row] != sections[section].rows[row]
                     ? IndexPath(item: row, section: section)
                     : nil
             }
@@ -308,10 +335,13 @@ final class BufferListViewController: UICollectionViewController {
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
         cell, _, row in
         cell.configure(
-            name: row.buffer.displayName(),
+            // Friend chips carry the contact's display name (which may differ from the DM
+            // nick); every other chip falls back to the buffer's own name.
+            name: row.displayName ?? row.buffer.displayName(),
             network: row.subtitle,
             unread: row.buffer.unread,
-            highlights: row.buffer.highlights
+            highlights: row.buffer.highlights,
+            presence: row.presence
         )
     }
 
@@ -384,11 +414,22 @@ final class BufferListViewController: UICollectionViewController {
             image: UIImage(systemName: "plus"),
             menu: UIMenu(children: [
                 UIDeferredMenuElement.uncached { [weak self] completion in
-                    completion(self?.joinElements() ?? [])
+                    guard let self else { return completion([]) }
+                    // Join lives in its own inline group so "Add Friend…" reads as a separate
+                    // kind of "add", not one more network to join.
+                    let join = UIMenu(title: "", options: .displayInline, children: self.joinElements())
+                    let addFriend = UIAction(
+                        title: "Add Friend…",
+                        image: UIImage(systemName: "person.badge.plus")
+                    ) { [weak self] _ in
+                        guard let self else { return }
+                        ConfigureFriendViewController.present(from: self, viewModel: self.viewModel, editing: nil)
+                    }
+                    completion([join, addFriend])
                 },
             ])
         )
-        item.accessibilityLabel = "Join Channel"
+        item.accessibilityLabel = "Add"
         return item
     }()
 
@@ -461,13 +502,18 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Sections
 
     private func buildSections(_ state: ChatState) -> [Section] {
+        // A friend's primary DM is shown as its friend chip, so it's hidden from its network's
+        // roster (and from Recent) rather than printed twice — matching the web client, whose
+        // FRIENDS group likewise lifts these DMs out of their network list.
+        let friendDmKeys = Self.friendPrimaryDmKeys(state)
+
         var byNetwork: [Int: [Buffer]] = [:]
         for buffer in state.buffers.values {
             // The system buffer has no network and no row of its own here anymore — it's the
             // title pill in the bar — so it's simply not collected into a section.
-            if let networkId = buffer.networkId {
-                byNetwork[networkId, default: []].append(buffer)
-            }
+            guard let networkId = buffer.networkId else { continue }
+            if friendDmKeys.contains(buffer.key.id) { continue } // shown under Friends instead
+            byNetwork[networkId, default: []].append(buffer)
         }
 
         var sections: [Section] = []
@@ -477,9 +523,13 @@ final class BufferListViewController: UICollectionViewController {
         // different things — a card vs. a row, and only the row leaves the channel on a swipe —
         // so the duplication is a quick way in, not a buffer printed twice by accident.
         let favorites = favoriteRows(state)
-        let recents = recentRows(state)
+        let recents = recentRows(state, friendDmKeys: friendDmKeys)
+        let friends = friendRows(state)
         if !favorites.isEmpty { sections.append(Section(title: "Favorites", layout: .grid, rows: favorites)) }
         if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
+        // Right under Recent, as its own two-up grid — the handful of people you keep coming
+        // back to, with a live presence dot on each.
+        if !friends.isEmpty { sections.append(Section(title: "Friends", layout: .grid, rows: friends)) }
 
         let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
         var seen = Set<Int>()
@@ -508,18 +558,47 @@ final class BufferListViewController: UICollectionViewController {
     ///
     /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
     /// system buffer is excluded because it already has its own row above.
-    private func recentRows(_ state: ChatState) -> [Row] {
+    private func recentRows(_ state: ChatState, friendDmKeys: Set<String>) -> [Row] {
         // Favorites claim a buffer before Recent does, so a favorite you just opened stays a
         // single Favorites chip rather than printing a second, identical chip in the Recent
-        // grid right beside it. (Both still keep their ordinary roster row below — this only
-        // dedups between the two grids.)
-        let favorites = Set(UserPreferences.standard.favoriteBufferKeys)
+        // grid right beside it. Friend primary DMs are likewise excluded — they have their own
+        // Friends chip. (All still keep their ordinary roster row below — this only dedups
+        // between the grids.)
+        let excluded = Set(UserPreferences.standard.favoriteBufferKeys).union(friendDmKeys)
         return UserPreferences.standard.recentBufferKeys
-            .filter { !favorites.contains($0) }
+            .filter { !excluded.contains($0) }
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .prefix(Self.recentLimit)
             .map { chipRow($0, state) }
+    }
+
+    /// One chip per friend, in the store's alphabetical order, each opening its primary DM.
+    /// A target-less contact (which the server won't create) has no DM to open, so it's
+    /// skipped rather than shown as a dead chip.
+    private func friendRows(_ state: ChatState) -> [Row] {
+        state.contacts.compactMap { contact -> Row? in
+            guard let target = contact.primaryTarget else { return nil }
+            let key = BufferKey(networkId: target.networkId, target: target.nick)
+            // `buffer(for:)` resolves an existing DM (keeping its server-cased target and
+            // unread count) or synthesizes an unhydrated one to open — the same handoff the
+            // join flow uses, so tapping the chip hydrates on the chat screen.
+            return Row(
+                buffer: state.buffer(for: key),
+                subtitle: state.networks[target.networkId]?.name,
+                presence: state.primaryPresence(contact),
+                displayName: contact.displayName,
+                contactId: contact.id
+            )
+        }
+    }
+
+    /// `BufferKey.id`s of every friend's primary DM — the DMs shown as friend chips and
+    /// therefore hidden from their network roster and Recent.
+    private static func friendPrimaryDmKeys(_ state: ChatState) -> Set<String> {
+        Set(state.contacts.compactMap { contact in
+            contact.primaryTarget.map { BufferKey(networkId: $0.networkId, target: $0.nick).id }
+        })
     }
 
     /// Pinned buffers, in the order they were pinned. Local to the device (UserDefaults),
@@ -642,7 +721,32 @@ final class BufferListViewController: UICollectionViewController {
         contextMenuConfigurationForItemAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        let buffer = sections[indexPath.section].rows[indexPath.row].buffer
+        let row = sections[indexPath.section].rows[indexPath.row]
+
+        // A friend chip's menu edits or removes the friend — favoriting a DM that's already a
+        // friend chip would be redundant, and Remove is the friend equivalent of "leave".
+        if let contactId = row.contactId {
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+                UIMenu(children: [
+                    UIAction(title: "Edit Friend…", image: UIImage(systemName: "person.crop.circle")) { _ in
+                        guard let self, let contact = self.state.contacts.first(where: { $0.id == contactId })
+                        else { return }
+                        ConfigureFriendViewController.present(from: self, viewModel: self.viewModel, editing: contact)
+                    },
+                    UIAction(
+                        title: "Remove Friend",
+                        image: UIImage(systemName: "person.badge.minus"),
+                        attributes: .destructive
+                    ) { _ in
+                        guard let self, let contact = self.state.contacts.first(where: { $0.id == contactId })
+                        else { return }
+                        self.confirmRemoveFriend(contact)
+                    },
+                ])
+            }
+        }
+
+        let buffer = row.buffer
         guard buffer.kind != .system else { return nil }
         let key = buffer.key.id
         let isFavorite = UserPreferences.standard.isFavorite(key)
@@ -658,5 +762,22 @@ final class BufferListViewController: UICollectionViewController {
                 },
             ])
         }
+    }
+
+    /// Confirm before removing a friend from a long-press — a stray tap shouldn't silently
+    /// unfriend someone. (The editor's own Remove button, reached deliberately, doesn't.)
+    private func confirmRemoveFriend(_ contact: Contact) {
+        // An alert, not an action sheet: it needs no popover anchor, so it's safe on iPad from
+        // a context-menu action that doesn't hand us a source rect.
+        let alert = UIAlertController(
+            title: "Remove \(contact.displayName)?",
+            message: "This stops watching their nicks. Your DM history is kept.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { [weak self] _ in
+            self?.viewModel.deleteContact(id: contact.id)
+        })
+        present(alert, animated: true)
     }
 }

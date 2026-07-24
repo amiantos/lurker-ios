@@ -30,6 +30,14 @@ public struct ChatState: Sendable {
     public var buffers: [String: Buffer] = [:]
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
+    /// The friends list, sorted case-insensitively by display name. Server-authoritative:
+    /// seeded by `contacts-snapshot` and kept in sync by `contact-updated`/`contact-deleted`.
+    public var contacts: [Contact] = []
+    /// Peer presence keyed `networkId → lowercased nick → state`. Mirrors the server's
+    /// MONITOR-fed presence: seeded from each network snapshot's `peerPresence` blob and
+    /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
+    /// which layers the network's own connection state on top.
+    public var peerPresence: [Int: [String: PresenceState]] = [:]
     public var error: String?
 
     public init() {}
@@ -69,6 +77,30 @@ public struct ChatState: Sendable {
                 target: key.target,
                 kind: BufferKind.of(networkId: key.networkId, target: key.target)
             )
+    }
+
+    /// The status of a watched (network, nick), disconnected-aware — the single source the
+    /// friend rows read. Mirrors the web client's `peerFor` + `deriveState`:
+    ///  - a network we hold but that isn't connected reads `offline` (its cached presence
+    ///    rows are stale, and a peer on a network we've dropped is unreachable from here);
+    ///  - a connected network with no row for the nick reads `unknown` ("potentially online",
+    ///    the no-MONITOR case), as does a network we've never heard of;
+    ///  - otherwise the stored state maps through: `online`/`back` → online, `away`, `offline`.
+    public func presence(networkId: Int, nick: String) -> FriendPresence {
+        if let network = networks[networkId], network.state != .connected { return .offline }
+        switch peerPresence[networkId]?[nick.lowercased()] {
+        case .online, .back: return .online
+        case .away: return .away
+        case .offline: return .offline
+        case nil: return .unknown
+        }
+    }
+
+    /// A friend's status: the presence of its primary target — the DM that opens when the
+    /// friend is tapped — so the dot never claims online when the DM you'd open is offline.
+    public func primaryPresence(_ contact: Contact) -> FriendPresence {
+        guard let target = contact.primaryTarget else { return .unknown }
+        return presence(networkId: target.networkId, nick: target.nick)
     }
 }
 
@@ -153,6 +185,32 @@ final class LurkerStore {
                 state, networkId: networkId, target: target,
                 lastReadId: lastReadId, unread: unread, highlights: highlights
             )
+        case .contactsSnapshot(let contacts):
+            var next = state
+            next.contacts = sortedContacts(contacts)
+            return next
+        case .contactUpdated(let contact):
+            var next = state
+            var rest = next.contacts.filter { $0.id != contact.id }
+            rest.append(contact)
+            next.contacts = sortedContacts(rest)
+            return next
+        case .contactDeleted(let id):
+            var next = state
+            next.contacts.removeAll { $0.id == id }
+            return next
+        case .peerPresence(let networkId, let nick, let peerState):
+            var next = state
+            var map = next.peerPresence[networkId] ?? [:]
+            // A null state (server reports nothing known) is stored as absence, so it reads
+            // back as `unknown` rather than a stale prior state.
+            if let peerState {
+                map[nick.lowercased()] = peerState
+            } else {
+                map.removeValue(forKey: nick.lowercased())
+            }
+            next.peerPresence[networkId] = map
+            return next
         case .serverError(let text):
             var next = state
             next.error = text
@@ -218,8 +276,23 @@ final class LurkerStore {
                 next.buffers[key] = buffer
                 next.members[key] = channel.members
             }
+            // The snapshot is authoritative for this network's presence — replace wholesale,
+            // so a reconnect drops any stale rows for peers no longer watched.
+            next.peerPresence[snapshot.id] = snapshot.peerPresence
         }
         return next
+    }
+
+    /// Case-insensitive alphabetical by display name, id-tiebroken for a stable order — the
+    /// same ordering the web friends store keeps, so a friend never jumps position on edit.
+    private static func sortedContacts(_ contacts: [Contact]) -> [Contact] {
+        contacts.sorted {
+            switch $0.displayName.localizedCaseInsensitiveCompare($1.displayName) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return $0.id < $1.id
+            }
+        }
     }
 
     private static func applyBacklog(

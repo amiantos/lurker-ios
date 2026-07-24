@@ -350,6 +350,29 @@ final class LurkerClient {
         send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
+    /// Create or edit a friend/contact and its per-network watch list (`set-contact`). Omit
+    /// `id` to create; pass it to edit. `targets` are the (networkId, nick) pairs to watch;
+    /// exactly one should be `isPrimary` (the DM that opens on tap) — the server promotes the
+    /// first if none is flagged. The server echoes a `contact-updated` to every device.
+    func setContact(id: Int?, displayName: String, notifyOnline: Bool, targets: [ContactTarget]) {
+        send([
+            "type": "set-contact",
+            // NSNull (not a dropped key) so "create" is explicit rather than an absent field.
+            "contactId": id.map { $0 as Any } ?? NSNull(),
+            "displayName": displayName,
+            "notifyOnline": notifyOnline,
+            "targets": targets.map {
+                ["networkId": $0.networkId, "nick": $0.nick, "isPrimary": $0.isPrimary] as [String: Any]
+            },
+        ])
+    }
+
+    /// Remove a friend/contact and stop watching all its nicks (`delete-contact`). The server
+    /// echoes a `contact-deleted`.
+    func deleteContact(id: Int) {
+        send(["type": "delete-contact", "contactId": id])
+    }
+
     /// Report whether the user can actually SEE the app (#490).
     ///
     /// This is the gate the server's push decision hangs on: it suppresses push while any

@@ -34,6 +34,13 @@ enum FrameParser {
             )
         case "error":
             return .serverError(obj.string("text"))
+        case "contacts-snapshot":
+            return .contactsSnapshot(obj.objects("contacts").map(parseContact))
+        case "contact-updated":
+            guard let contact = obj["contact"] as? [String: Any] else { return .ignored }
+            return .contactUpdated(parseContact(contact))
+        case "contact-deleted":
+            return .contactDeleted(obj.int("contactId"))
         default:
             return .ignored
         }
@@ -80,10 +87,46 @@ enum FrameParser {
                 id: network.int("networkId"),
                 state: ConnectionState.from(network.stringOrNull("state")),
                 nick: network.string("nick"),
-                channels: network.objects("channels").map(parseChannel)
+                channels: network.objects("channels").map(parseChannel),
+                peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any])
             )
         }
         return .snapshot(networks)
+    }
+
+    /// The snapshot's `peerPresence` blob — `lowercased nick → {nick, state, stateAt,
+    /// awayMessage}` — flattened to the one field the client acts on. Entries whose `state`
+    /// isn't a known value (or is null) are dropped, which reads as `unknown`, exactly as a
+    /// live null-state event would.
+    private static func parsePeerPresence(_ blob: [String: Any]?) -> [String: PresenceState] {
+        guard let blob else { return [:] }
+        var out: [String: PresenceState] = [:]
+        for (nick, value) in blob {
+            guard let entry = value as? [String: Any],
+                  let raw = entry["state"] as? String,
+                  let state = PresenceState(rawValue: raw)
+            else { continue }
+            out[nick.lowercased()] = state
+        }
+        return out
+    }
+
+    /// A `ContactRecord` → domain `Contact`, shared by the snapshot list and the
+    /// `contact-updated` echo. Targets missing a nick are still carried through — the server
+    /// won't send one, and dropping fields silently would mask a contract drift.
+    private static func parseContact(_ obj: [String: Any]) -> Contact {
+        Contact(
+            id: obj.int("id"),
+            displayName: obj.string("displayName"),
+            notifyOnline: obj.bool("notifyOnline"),
+            targets: obj.objects("targets").map { target in
+                ContactTarget(
+                    networkId: target.int("networkId"),
+                    nick: target.string("nick"),
+                    isPrimary: target.bool("isPrimary")
+                )
+            }
+        )
     }
 
     private static func parseChannel(_ channel: [String: Any]) -> ChannelSnapshot {
@@ -179,6 +222,20 @@ enum FrameParser {
                 networkId: obj.intOrNull("networkId"),
                 target: target,
                 member: parseMember(member)
+            )
+        }
+        // `peer-presence` is network-scoped state, not a buffer line: it rides `irc` with a
+        // `:server:<id>` target (so it survives even for a dismissed DM) and carries the nick
+        // as the routing key. No id, nothing to render — lift it out before `parseEvent` turns
+        // it into an `.other` Message nothing reads. `state` may be null → nil → `unknown`.
+        if obj.string("type") == "peer-presence" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let nick = obj.string("nick")
+            if nick.isEmpty { return .ignored }
+            return .peerPresence(
+                networkId: networkId,
+                nick: nick,
+                state: PresenceState(rawValue: obj.string("state"))
             )
         }
         return .live(networkId: obj.intOrNull("networkId"), target: target, message: parseEvent(obj))
