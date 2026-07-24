@@ -689,7 +689,14 @@ final class BufferListViewController: UICollectionViewController {
 
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
-        onSelect?(sections[indexPath.section].rows[indexPath.row].buffer)
+        let row = sections[indexPath.section].rows[indexPath.row]
+        // A friend's primary DM often isn't a materialized buffer — a DM that's closed
+        // server-side has no row in `state.buffers`, and the chat screen's hydrate only fires
+        // for a buffer that already has one. Send open-buffer explicitly here (as /query does)
+        // so the server ships that DM's backlog and it opens, instead of hanging on the loading
+        // spinner. Redundant-but-harmless when the DM is already open (it just re-hydrates).
+        if row.contactId != nil { viewModel.openBuffer(row.buffer.key) }
+        onSelect?(row.buffer)
     }
 
     /// Trailing swipe on a roster row leaves/closes the buffer. Grid chips get nothing — the

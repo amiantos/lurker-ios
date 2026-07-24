@@ -115,7 +115,10 @@ final class BufferChipCell: UICollectionViewCell {
         badgeContainer.setContentHuggingPriority(.required, for: .horizontal)
         badgeContainer.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let row = UIStackView(arrangedSubviews: [presenceDot, textStack, badgeContainer])
+        // The presence dot shares the trailing slot with the unread pill (only one shows at a
+        // time), so it sits where the count would — a friend's status and their unread badge
+        // occupy the same corner rather than the dot crowding the name on the left.
+        let row = UIStackView(arrangedSubviews: [textStack, badgeContainer, presenceDot])
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
@@ -159,9 +162,6 @@ final class BufferChipCell: UICollectionViewCell {
         // Hidden rather than blank so the name centers in the card when there's no network.
         networkLabel.isHidden = network == nil
 
-        presenceDot.isHidden = presence == nil
-        if let presence { presenceDot.backgroundColor = Self.presenceColor(presence) }
-
         badgeContainer.subviews.forEach { $0.removeFromSuperview() }
         if let pill = makeUnreadBadge(unread: unread, highlights: highlights) {
             pill.translatesAutoresizingMaskIntoConstraints = false
@@ -173,8 +173,12 @@ final class BufferChipCell: UICollectionViewCell {
                 pill.bottomAnchor.constraint(equalTo: badgeContainer.bottomAnchor),
             ])
             badgeContainer.isHidden = false
+            // The unread count takes the trailing slot; the dot yields to it.
+            presenceDot.isHidden = true
         } else {
             badgeContainer.isHidden = true
+            presenceDot.isHidden = presence == nil
+            if let presence { presenceDot.backgroundColor = Self.presenceColor(presence) }
         }
 
         var summary = network.map { "\(name), \($0)" } ?? name
