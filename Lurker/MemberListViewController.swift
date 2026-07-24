@@ -92,4 +92,33 @@ final class MemberListViewController: UITableViewController {
         cell.selectionStyle = .none
         return cell
     }
+
+    /// Long-press a member to add (or edit) them as a friend — the web client's primary way in,
+    /// straight off a nick you're looking at. Only channels have a network to watch on.
+    override func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let networkId = buffer.networkId, indexPath.row < members.count else { return nil }
+        let nick = members[indexPath.row].nick
+        // Edit the contact already watching this (network, nick), else add a new one prefilled.
+        let existing = viewModel.contacts.first { contact in
+            contact.targets.contains { $0.networkId == networkId && $0.nick.lowercased() == nick.lowercased() }
+        }
+        return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+            let title = existing == nil ? "Add Friend…" : "Edit Friend…"
+            return UIMenu(children: [
+                UIAction(title: title, image: UIImage(systemName: "person.badge.plus")) { _ in
+                    guard let self else { return }
+                    ConfigureFriendViewController.present(
+                        from: self,
+                        viewModel: self.viewModel,
+                        editing: existing,
+                        prefill: existing == nil ? (networkId, nick) : nil
+                    )
+                },
+            ])
+        }
+    }
 }

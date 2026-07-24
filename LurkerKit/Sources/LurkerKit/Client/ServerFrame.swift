@@ -59,6 +59,23 @@ enum ServerFrame: Equatable, Sendable {
     /// these onto the buffer — it never derives unread/highlight counts locally.
     case readState(networkId: Int?, target: String, lastReadId: Int, unread: Int, highlights: Int)
 
+    /// WS `contacts-snapshot`: the whole friends list, sent in the connect burst. Replaces
+    /// whatever the store held (a reconnect re-sends it wholesale).
+    case contactsSnapshot([Contact])
+
+    /// WS `contact-updated`: one friend created or edited, fanned out to every device so the
+    /// list stays identical whether the edit came from this phone, the browser, or an agent.
+    /// Upsert by id.
+    case contactUpdated(Contact)
+
+    /// WS `contact-deleted`: a friend removed. Drop it by id.
+    case contactDeleted(Int)
+
+    /// A `peer-presence` ephemeral (rides `irc`, `type:"peer-presence"`, network-scoped via a
+    /// `:server:<id>` target): a watched nick changed state. `state` is nil when the server
+    /// reports no known state, which the store reads as `unknown`.
+    case peerPresence(networkId: Int, nick: String, state: PresenceState?)
+
     /// WS `send-result`: ack for a send/action/notice, keyed by the client's clientId.
     case sendResult(clientId: String?, ok: Bool, error: String?)
 
@@ -94,6 +111,10 @@ struct NetworkSnapshot: Equatable, Sendable {
     let state: ConnectionState
     let nick: String
     let channels: [ChannelSnapshot]
+    /// Watched-peer presence for this network, `lowercased nick → state`. The connect-time
+    /// seed the live `peer-presence` events then patch. Defaulted so the many existing
+    /// snapshot call sites that predate presence don't have to name it.
+    var peerPresence: [String: PresenceState] = [:]
 }
 
 struct ChannelSnapshot: Equatable, Sendable {

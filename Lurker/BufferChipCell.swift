@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import LurkerKit
 import UIKit
 
 /// A capsule pill showing the unread count, tinted red when the buffer holds a highlight.
@@ -71,6 +72,9 @@ final class BufferChipCell: UICollectionViewCell {
     private let nameLabel = UILabel()
     private let networkLabel = UILabel()
     private let badgeContainer = UIView()
+    /// A small presence dot, shown only on friend chips (nil presence hides it and collapses
+    /// its slot, so ordinary Favorites/Recent chips are unchanged).
+    private let presenceDot = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -80,6 +84,15 @@ final class BufferChipCell: UICollectionViewCell {
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)
+
+        presenceDot.translatesAutoresizingMaskIntoConstraints = false
+        presenceDot.layer.cornerRadius = 5
+        presenceDot.setContentHuggingPriority(.required, for: .horizontal)
+        presenceDot.setContentCompressionResistancePriority(.required, for: .horizontal)
+        NSLayoutConstraint.activate([
+            presenceDot.widthAnchor.constraint(equalToConstant: 10),
+            presenceDot.heightAnchor.constraint(equalToConstant: 10),
+        ])
 
         // Semibold at the body size, scaled by the body metric so it still tracks Dynamic Type.
         let base = UIFont.systemFont(ofSize: 17, weight: .semibold)
@@ -102,7 +115,10 @@ final class BufferChipCell: UICollectionViewCell {
         badgeContainer.setContentHuggingPriority(.required, for: .horizontal)
         badgeContainer.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let row = UIStackView(arrangedSubviews: [textStack, badgeContainer])
+        // The presence dot shares the trailing slot with the unread pill (only one shows at a
+        // time), so it sits where the count would — a friend's status and their unread badge
+        // occupy the same corner rather than the dot crowding the name on the left.
+        let row = UIStackView(arrangedSubviews: [textStack, badgeContainer, presenceDot])
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
@@ -136,7 +152,11 @@ final class BufferChipCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    func configure(name: String, network: String?, unread: Int, highlights: Int) {
+    /// `presence` is set only for friend chips; nil leaves the chip exactly as a
+    /// Favorites/Recent card (no dot). The dot color reads "is this friend reachable right
+    /// now": green online, orange away, muted grey offline/unknown — deliberately understated
+    /// for offline (the common case) rather than the web's red, which reads as an alert on iOS.
+    func configure(name: String, network: String?, unread: Int, highlights: Int, presence: FriendPresence? = nil) {
         nameLabel.text = name
         networkLabel.text = network
         // Hidden rather than blank so the name centers in the card when there's no network.
@@ -153,14 +173,37 @@ final class BufferChipCell: UICollectionViewCell {
                 pill.bottomAnchor.constraint(equalTo: badgeContainer.bottomAnchor),
             ])
             badgeContainer.isHidden = false
+            // The unread count takes the trailing slot; the dot yields to it.
+            presenceDot.isHidden = true
         } else {
             badgeContainer.isHidden = true
+            presenceDot.isHidden = presence == nil
+            if let presence { presenceDot.backgroundColor = Self.presenceColor(presence) }
         }
 
         var summary = network.map { "\(name), \($0)" } ?? name
+        if let presence { summary += ", \(Self.presenceLabel(presence))" }
         if unread > 0 {
             summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"
         }
         accessibilityLabel = summary
+    }
+
+    private static func presenceColor(_ presence: FriendPresence) -> UIColor {
+        switch presence {
+        case .online: return .systemGreen
+        case .away: return .systemOrange
+        case .offline: return .tertiaryLabel
+        case .unknown: return .quaternaryLabel
+        }
+    }
+
+    private static func presenceLabel(_ presence: FriendPresence) -> String {
+        switch presence {
+        case .online: return "online"
+        case .away: return "away"
+        case .offline: return "offline"
+        case .unknown: return "status unknown"
+        }
     }
 }

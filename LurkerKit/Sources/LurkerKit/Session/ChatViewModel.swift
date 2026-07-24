@@ -320,6 +320,23 @@ public final class ChatViewModel {
     /// The networks the user is on, for the join picker and buffer-list grouping.
     public var networks: [Network] { Array(store.state.networks.values) }
 
+    // MARK: - Friends (contacts)
+
+    /// The friends list, sorted by display name. The UI reads presence live off `state`
+    /// (`state.primaryPresence(contact)`), so this is just identity + targets.
+    public var contacts: [Contact] { store.state.contacts }
+
+    /// Create (nil `id`) or edit a friend. The optimistic UI comes from the server's
+    /// `contact-updated` echo, which folds in via the normal frame path — no local mutation.
+    public func saveContact(id: Int?, displayName: String, notifyOnline: Bool, targets: [ContactTarget]) {
+        client.setContact(id: id, displayName: displayName, notifyOnline: notifyOnline, targets: targets)
+    }
+
+    /// Remove a friend. The list updates when the `contact-deleted` echo lands.
+    public func deleteContact(id: Int) {
+        client.deleteContact(id: id)
+    }
+
     public func clearError() { store.clearError() }
 
     // MARK: - App lifecycle (fed by the SceneDelegate)
