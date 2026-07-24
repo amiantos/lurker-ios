@@ -306,6 +306,19 @@ final class LurkerClient {
         send(["type": "history", "mode": "latest", "networkId": networkId, "target": target, "limit": limit])
     }
 
+    /// Page NEWER history for a detached buffer (scroll-down), forward from `after` (exclusive
+    /// message id). The reply is a `history` frame (mode `after`) the store appends; once the
+    /// server signals `hasMoreNewer: false` the slice has reached the live tail and the buffer
+    /// re-attaches (#45). The mirror of `loadOlder`, and the read path that carries a jump-to-
+    /// first-unread back down to the present without the pill's full `latest` re-fetch.
+    func loadNewer(networkId: Int?, target: String, after: Int, limit: Int = 100) {
+        guard let networkId else { return }
+        send([
+            "type": "history", "mode": "after",
+            "networkId": networkId, "target": target, "afterId": after, "limit": limit,
+        ])
+    }
+
     /// Mark a buffer read up to `messageId`. The server MAX-clamps, so re-sending a lower
     /// id is a safe no-op. The system buffer sends `networkId: null` (hence NSNull, not a
     /// dropped key), so this can't reuse the `guard let networkId` shortcut.

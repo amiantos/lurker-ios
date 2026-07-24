@@ -43,6 +43,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// moment they're back at the bottom, however they got there.
     private let jumpButton = JumpToLatestButton()
     private var newWhileDetached = 0
+    /// The floating "jump to your first unread" pill at the top (#45), shown when this buffer
+    /// opened with unreads sitting above the reader. Tapping it lands on the unread divider —
+    /// scrolling to it if it's loaded, else jumping an `around` slice centered on the read
+    /// boundary — and reading forward from there after-pages down to live.
+    private let jumpToUnreadButton = JumpToUnreadButton()
+    /// Whether the buffer was detached (`hasMoreNewer`) as of the *previous* `apply`. Kept so
+    /// after-paging appends (and the re-attach that flips detached→attached in one apply) never
+    /// inflate the jump-to-latest badge — that count is live traffic only, and a detached buffer
+    /// holds live out, so any growth there is history the reader deliberately pulled (#45).
+    private var wasDetached = false
+    /// Set when you send a line, cleared the moment you scroll off the bottom. It suppresses
+    /// the jump-to-unread pill after a send: your own bubble lands in the pill's bottom-trailing
+    /// slot, so the pill would sit on top of the message you just wrote. Once you leave the
+    /// bottom this clears, so the pill returns when you next come back down (#45).
+    private var unreadDismissedBySend = false
     /// The completion pill strip and the context currently driving it (nil = nothing under
     /// the caret). The composer reports what *kind* of completion is live; this screen owns
     /// the candidates, because they come from state the bar never sees — the command table,
@@ -126,6 +141,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// competing chain.
     private var jumpConverging = false
     private var jumpConvergePass = 0
+    /// Whether this jump should pulse the first UNREAD row (just below the divider) instead of
+    /// its anchor. A jump-to-unread (#45) anchors on the last-read message — which sits *above*
+    /// the marker — so flashing the anchor would highlight the wrong side of the seam; the
+    /// reader's eye wants the first new line. Off for every other jump (a highlight/notification
+    /// tap flashes the message it landed on). Consumed and cleared by `finishJump`.
+    private var jumpFlashesFirstUnread = false
     /// How many runloops to re-scroll before settling. The first scroll usually lands the anchor
     /// already; a couple of extra passes correct the rare case where estimated off-screen heights
     /// left it slightly off.
@@ -224,6 +245,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(jumpButton)
 
+        jumpToUnreadButton.onTap = { [weak self] in self?.jumpToFirstUnread() }
+        jumpToUnreadButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(jumpToUnreadButton)
+
         composer.onCompletion = { [weak self] completion in
             self?.activeCompletion = completion
             self?.updateSuggestions()
@@ -274,6 +299,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // so the keyboard carries both up together.
             jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
+
+            // The exact slot the jump-to-latest pill uses — the two are mutually exclusive (up
+            // when you're at the latest with unread above, down when you're up in history), so
+            // they share one footprint and the arrow direction is the whole message.
+            jumpToUnreadButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            jumpToUnreadButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
             // The suggestion pills: centered over the field for tap reach (the jump pill
             // owns the trailing edge), riding the composer for the same
@@ -416,15 +447,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // self-size from an estimate, and consolidation can reshape the run at the boundary).
         let anchor = wasNearBottom ? nil : topVisibleAnchor()
 
-        // What the jump pill badges: messages that landed below while the reader was up in
-        // history. Appends only — the first id moving means the reader pulled older pages,
+        // What the jump pill badges: live messages that landed below while the reader was up
+        // in history. Appends only — the first id moving means the reader pulled older pages,
         // and a pure state change (connection, read counts, names) moves no count at all.
-        if !wasNearBottom, newFirstId == oldFirstId, updated.count > messages.count {
+        //
+        // Excluded when the buffer is (or just was) detached: a detached buffer holds live
+        // traffic out of the log, so anything appended there is a newer-history page the reader
+        // pulled by scrolling down (#45), not a surprise from below. `wasDetached` covers the
+        // re-attach apply too, where the final `after` page both appends and clears the flag.
+        let nowDetached = state.buffers[buffer.key.id]?.hasMoreNewer == true
+        if !wasNearBottom, !wasDetached, !nowDetached,
+           newFirstId == oldFirstId, updated.count > messages.count {
             newWhileDetached += updated.count - messages.count
         }
 
         messages = updated
         rows = buildRows(from: updated)
+        // Cache the divider's row so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick
+        // and jump-converge hot paths — `rows` only changes here.
+        dividerRow = rows.firstIndex { if case .unreadDivider = $0 { return true }; return false }
         updateTitle(state)
         composer.placeholder = composerPlaceholder
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
@@ -494,7 +535,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // still at the top, and the pill would flash in for the frame before
         // `landInitialIfNeeded` parks the buffer at its newest message.
         landInitialIfNeeded()
-        updateJumpButton()
+        updateFloatingPills()
+        wasDetached = nowDetached
     }
 
     override func viewDidLayoutSubviews() {
@@ -526,19 +568,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToBottom()
     }
 
-    /// Start converging on the jump anchor, once. Waits (returns, leaving the jump pending) if
-    /// its row isn't loaded yet — unless the `around` slice already came back without it
-    /// (`anchorMissing`), in which case it gives up and lands at the bottom.
+    /// The row a converging jump scrolls to and flashes: the first unread (just below the
+    /// divider) for a jump-to-unread (#45), else the anchor's own row. Re-resolved every pass by
+    /// `convergeJump`, so a row rebuild between runloops can't strand the scroll on a stale index.
+    /// Nil until the target both exists and can be trusted — which is what keeps a landing
+    /// waiting: the anchor's row isn't loaded yet, or, for the unread jump, the `around` slice is
+    /// still in flight so the divider is pinned to the top of the stale latest window (every
+    /// loaded row unread) rather than the real seam.
+    private func jumpTargetRow(anchor: Int) -> Int? {
+        if jumpFlashesFirstUnread {
+            if aroundRequested, !aroundSliceArrived { return nil }
+            return firstUnreadRow
+        }
+        return rowIndex(containing: anchor)
+    }
+
+    /// Start converging on the jump target, once. Waits (returns, leaving the jump pending) if
+    /// the target row isn't available yet — unless the `around` slice already came back without
+    /// it (`anchorMissing`, or no unread in the slice), in which case it gives up and lands at
+    /// the bottom.
     private func beginJumpLanding() {
         guard let anchor = pendingJumpId, !jumpConverging else { return }
-        guard rowIndex(containing: anchor) != nil else {
+        guard jumpTargetRow(anchor: anchor) != nil else {
             if aroundSliceArrived {
-                // The response landed without the anchor (`anchorMissing`). Release the jump so
-                // the screen isn't stuck "landing" forever — land at the bottom if there's
-                // anything to land on, otherwise just let go (an empty buffer shows its empty
-                // state, and a later message follows the normal near-bottom path).
+                // The response landed without a target. Release the jump so the screen isn't
+                // stuck "landing" forever — land at the bottom if there's anything to land on,
+                // otherwise just let go (an empty buffer shows its empty state, and a later
+                // message follows the near-bottom path).
+                resetJumpState()
                 needsInitialScroll = false
-                pendingJumpId = nil
                 if !rows.isEmpty { scrollToBottom() }
             }
             return // else: still waiting for the around response.
@@ -560,7 +618,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// a lone scroll can land approximately — a couple of passes correct as real heights render —
     /// then it flashes and releases the jump.
     private func convergeJump(anchor: Int) {
-        guard let index = rowIndex(containing: anchor) else { return finishJump(flashing: nil) }
+        guard let index = jumpTargetRow(anchor: anchor) else { return finishJump(flashing: nil) }
         tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .middle, animated: false)
         jumpConvergePass += 1
         guard jumpConvergePass < Self.jumpConvergePasses else { return finishJump(flashing: anchor) }
@@ -570,18 +628,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Release the jump and pulse the anchor's (re-resolved) row. A vanished anchor just lands
-    /// at the bottom.
+    /// Release the jump and pulse the landed-on row — the same row `convergeJump` targeted (the
+    /// first unread for a jump-to-unread, else the anchor), resolved once through `jumpTargetRow`
+    /// before the state is cleared. A vanished target just lands at the bottom.
     private func finishJump(flashing anchor: Int?) {
+        let target = anchor.flatMap { jumpTargetRow(anchor: $0) }
+        resetJumpState()
         needsInitialScroll = false
-        pendingJumpId = nil
-        jumpConverging = false
-        jumpConvergePass = 0
-        guard let anchor, let index = rowIndex(containing: anchor) else {
+        guard let target else {
             if !rows.isEmpty { scrollToBottom() }
             return
         }
-        flashRow(at: IndexPath(row: index, section: 0))
+        flashRow(at: IndexPath(row: target, section: 0))
+    }
+
+    /// Clear all one-shot jump state. Both jump entry points call this before arming their own
+    /// `pendingJumpId`/`jumpFlashesFirstUnread`, and the landing paths call it to release the
+    /// jump — so a newly added jump field (as `jumpFlashesFirstUnread` was for #45) can't be left
+    /// stranded set from a prior jump.
+    private func resetJumpState() {
+        pendingJumpId = nil
+        aroundRequested = false
+        aroundSliceArrived = false
+        aroundBaselineIds = []
+        jumpConverging = false
+        jumpConvergePass = 0
+        jumpFlashesFirstUnread = false
     }
 
     /// A warm pulse behind the row, fading out — the "here it is" after a jump. The wash reuses
@@ -822,11 +894,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Within ~80pt of the bottom — treated as "following the conversation".
-    private var isNearBottom: Bool {
-        let fromBottom = tableView.contentSize.height - tableView.contentOffset.y - tableView.bounds.height
-        return fromBottom < 80
+    /// How far the newest message sits below the viewport bottom (0 when parked at the tail).
+    private var distanceFromBottom: CGFloat {
+        tableView.contentSize.height - tableView.contentOffset.y - tableView.bounds.height
     }
+
+    /// Within ~80pt of the bottom — treated as "following the conversation".
+    private var isNearBottom: Bool { distanceFromBottom < 80 }
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
@@ -834,11 +908,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Back at the bottom — however you got there — means caught up: the badge counts
         // "new since you scrolled away", and you're not away anymore.
         if isNearBottom { newWhileDetached = 0 }
-        updateJumpButton()
+        // Leaving the bottom clears the post-send suppression, so the jump-to-unread pill
+        // returns when you next come back down (#45).
+        else { unreadDismissedBySend = false }
+        updateFloatingPills()
+        guard !messages.isEmpty else { return }
         // Near the top → pull older history. The view model guards `hasMoreOlder` and an
         // in-flight page, so firing this on every scroll tick is safe.
-        guard !messages.isEmpty, scrollView.contentOffset.y < 300 else { return }
-        viewModel.loadOlder(buffer.key)
+        if scrollView.contentOffset.y < 300 { viewModel.loadOlder(buffer.key) }
+        // Near the bottom of a detached slice → pull NEWER history, walking the reader forward
+        // toward live (#45). The mirror of the loadOlder prefetch; the view model guards
+        // `hasMoreNewer` and an in-flight page. Reaching the tail re-attaches and resumes live.
+        if isDetached, distanceFromBottom < 300 { viewModel.loadNewer(buffer.key) }
     }
 
     /// The settle after `jumpToLatest`'s animated scroll: rows are self-sizing, so the
@@ -849,13 +930,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToBottom()
     }
 
-    /// Visible whenever the reader is up in history; the badge only when something has
-    /// arrived below since. Both derived, so it can run on every tick and every reload.
-    private func updateJumpButton() {
-        // Also shown when detached (#42): a jump parked us on an older slice, and the pill is
-        // the way back to live — even at the bottom *of the slice* (where near-bottom is true).
-        jumpButton.setVisible((isDetached || !isNearBottom) && !rows.isEmpty, animated: true)
+    /// Update the two floating pills that share the bottom-trailing slot. They're mutually
+    /// exclusive — the jump-to-**latest** pill when the reader is up in history / detached, the
+    /// jump-to-**unread** pill when at the latest with unread above — and deciding both here in
+    /// one place makes that exclusion structural (the jump pill wins the slot) rather than an
+    /// invariant two separate methods must keep in sync. Derived, so it runs on every apply and
+    /// scroll tick.
+    private func updateFloatingPills() {
+        // Jump-to-latest: up in history, or parked on a detached slice below the live tail (#42)
+        // — shown even at the bottom *of that slice*, where near-bottom is true.
+        let showLatest = (isDetached || !isNearBottom) && !rows.isEmpty
+        jumpButton.setVisible(showLatest, animated: true)
         jumpButton.setNewCount(newWhileDetached)
+        // Jump-to-unread (#45): only when the jump pill isn't claiming the slot, the reader
+        // hasn't just sent, and a first-unread row exists off-screen. A non-nil `firstUnreadRow`
+        // already implies rows exist and a divider is built, and `!showLatest` (with rows) means
+        // near-bottom and attached — so those conditions fold in here.
+        let showUnread = !showLatest && !unreadDismissedBySend
+            && firstUnreadRow != nil && !isDividerVisible
+        jumpToUnreadButton.setVisible(showUnread, animated: true)
     }
 
     /// The buffer is showing an `around` slice below the live tail (#42): live events are held
@@ -870,18 +963,68 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard !rows.isEmpty else { return }
         newWhileDetached = 0
         if isDetached {
-            // Re-arm the one-shot landing (and drop any stale jump state, including a converge
+            // Re-arm the one-shot landing (dropping any stale jump state, including a converge
             // that would otherwise leave `jumpConverging` stuck) so `landInitialIfNeeded` parks
             // us at the tail when the replacement slice lands.
+            resetJumpState()
             needsInitialScroll = true
-            pendingJumpId = nil
-            aroundRequested = false
-            aroundSliceArrived = false
-            jumpConverging = false
             viewModel.loadLatest(buffer.key)
         } else {
             tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
         }
+    }
+
+    // MARK: - Jump to first unread (#45)
+
+    /// The row the unread divider sits at, cached whenever `rows` is rebuilt (see `apply`).
+    /// Read on every scroll tick and jump-converge pass, so it's cached rather than re-scanned:
+    /// on a large-unread channel `rows` runs to thousands of entries and the divider can be near
+    /// the bottom of them.
+    private var dividerRow: Int?
+
+    /// The first unread row — the one just below the divider, when both it and a row past it
+    /// exist. The single definition of "where the unreads begin", used by the pill's visibility,
+    /// the jump target, and the post-jump flash.
+    private var firstUnreadRow: Int? {
+        dividerRow.flatMap { rows.indices.contains($0 + 1) ? $0 + 1 : nil }
+    }
+
+    /// Whether the unread divider is currently on screen — the reader has reached (or is at)
+    /// their first unread, so the "jump to unread" pill has done its job and should retire.
+    private var isDividerVisible: Bool {
+        guard let row = dividerRow else { return false }
+        return tableView.indexPathsForVisibleRows?.contains(IndexPath(row: row, section: 0)) ?? false
+    }
+
+    /// Jump to the first unread message, always via the #42 jump — never a raw scroll. On a
+    /// channel with a large unread count the first unread is thousands of churny, self-sizing
+    /// rows above the tail (or not loaded at all), and a single `scrollToRow` against estimated
+    /// heights there simply doesn't land. Anchoring the jump on the last-read message handles
+    /// both cases uniformly: when it's off the loaded slice, `requestAroundIfNeeded` fetches a
+    /// detached `around` slice centered on it; when it's already held, `convergeJump` walks to
+    /// it over several passes, re-resolving the row by id each runloop to correct for the
+    /// height/consolidation drift that breaks a one-shot scroll. Either way the divider (and the
+    /// unreads below it) land on screen, with after-paging carrying the reader forward to live.
+    private func jumpToFirstUnread() {
+        guard let boundary = dividerAfterId, boundary > 0 else { return }
+        // The FETCH anchors on the read boundary (last-read id), not the first unread: on a
+        // large-unread channel every loaded row is newer than the boundary, so the first unread
+        // *is* the oldest loaded row — anchoring the fetch there would find it already held and
+        // never page back to the real seam (the web's #216). Centering the `around` slice on the
+        // boundary is what pulls the seam into view.
+        //
+        // The SCROLL/flash target is decoupled from this anchor (see `jumpTargetRow`): it's the
+        // first unread *rendered* row (below the divider), because the boundary id can be an
+        // `.other` frame this buffer never renders (`lastReadId` is `max()` over *all* stored
+        // ids), which `rowIndex` could never resolve — so scrolling to the boundary itself could
+        // wedge the landing forever. `jumpFlashesFirstUnread` switches both onto the divider row.
+        resetJumpState()
+        needsInitialScroll = true
+        pendingJumpId = boundary
+        jumpFlashesFirstUnread = true
+        jumpToUnreadButton.setVisible(false, animated: true)
+        requestAroundIfNeeded(viewModel.state)
+        landInitialIfNeeded()
     }
 
     /// A failed send (`send-result` ok:false) or a server `error` frame lands in
@@ -927,6 +1070,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func send(_ text: String) {
+        // Sending puts your own bubble where the jump-to-unread pill floats; retire it until you
+        // scroll away and back (see `unreadDismissedBySend`).
+        unreadDismissedBySend = true
+        updateFloatingPills()
         let outcome = viewModel.send(buffer.key, text: text)
         composer.clear()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
@@ -1384,7 +1531,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // pill goes with it — stated here rather than left to the scroll's delegate tick,
         // which doesn't fire when the offset was already close enough to need no change.
         newWhileDetached = 0
-        updateJumpButton()
+        updateFloatingPills()
     }
 
     @objc private func keyboardWillHide() {
