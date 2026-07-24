@@ -38,6 +38,8 @@ public final class ChatViewModel {
     private var backgroundedAt: Date?
     /// Buffer keys with an older-history page in flight, so scroll-up can't spam requests.
     private var loadingOlder: Set<String> = []
+    /// Buffer keys with a newer-history page in flight (#45), so scroll-down can't spam requests.
+    private var loadingNewer: Set<String> = []
     /// Highest message id we've already marked read per buffer, to dedupe mark-read spam.
     private var lastMarked: [String: Int] = [:]
 
@@ -95,6 +97,7 @@ public final class ChatViewModel {
         sessions.clear()
         store.reset()
         loadingOlder.removeAll()
+        loadingNewer.removeAll()
         lastMarked.removeAll()
         statusSubject.value = nil
         sessionSubject.value = .loggedOut
@@ -257,6 +260,20 @@ public final class ChatViewModel {
         client.loadOlder(networkId: key.networkId, target: key.target, before: oldest)
     }
 
+    /// Page newer history for a detached buffer (scroll-down, #45). Uses the newest held
+    /// message id as an exclusive cursor; no-ops unless the buffer is detached (an `around`
+    /// slice below the tail), something is held to page from, and no page is already in flight.
+    /// The reply appends; reaching the tail (`hasMoreNewer: false`) re-attaches the buffer to
+    /// live. This is how a jump-to-first-unread reader walks forward to the present.
+    public func loadNewer(_ key: BufferKey) {
+        guard !loadingNewer.contains(key.id),
+              let buffer = store.state.buffers[key.id], buffer.hasMoreNewer,
+              let newest = store.state.messages[key.id]?.last(where: { $0.id != 0 })?.id
+        else { return }
+        loadingNewer.insert(key.id)
+        client.loadNewer(networkId: key.networkId, target: key.target, after: newest)
+    }
+
     /// Fetch a history slice centered on `anchorId` — the message a jump lands on (#42). The
     /// reply (`history` mode `around`) replaces the buffer's slice with the anchor in the
     /// middle; the screen scrolls to it once it lands. Distinct from `loadOlder`: this
@@ -405,10 +422,19 @@ public final class ChatViewModel {
             reconnectAttempt = 0 // a clean connection resets the backoff
         case .socketClosed:
             loadingOlder.removeAll() // in-flight history pages won't get a reply now
+            loadingNewer.removeAll()
             store.apply(frame)
             onSocketDropped()
-        case .history(let networkId, let target, _, _, _, _):
-            loadingOlder.remove(BufferKey(networkId: networkId, target: target).id)
+        case .history(let networkId, let target, _, let mode, _, _):
+            // The page in flight is done — clear the set that requested this mode so the next
+            // scroll can page again. Only `before` arms `loadingOlder` and only `after` arms
+            // `loadingNewer`; `around`/`latest` are one-shots tracked by the screen, not here.
+            let id = BufferKey(networkId: networkId, target: target).id
+            switch mode {
+            case .before: loadingOlder.remove(id)
+            case .after: loadingNewer.remove(id)
+            case .around, .latest: break
+            }
             store.apply(frame)
         default:
             store.apply(frame)
@@ -459,6 +485,7 @@ public final class ChatViewModel {
         sessions.clear()
         store.reset()
         loadingOlder.removeAll()
+        loadingNewer.removeAll()
         lastMarked.removeAll()
         statusSubject.value = "Your session ended — please sign in again."
         sessionSubject.value = .loggedOut

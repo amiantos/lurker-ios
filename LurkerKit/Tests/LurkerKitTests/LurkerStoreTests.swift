@@ -195,6 +195,32 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["latest", "live"])
     }
 
+    func testAfterPagingAppendsNewerThenReattachesAtTheTail() {
+        let store = LurkerStore()
+        // Jump lands a detached slice below the tail (#42).
+        store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "anchor"), msg(11, "b")],
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+        ))
+        XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer, "detached after the around jump")
+        // Read forward: an `after` page appends newer and, with more still ahead, stays detached.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(11, "b"), msg(12, "c"), msg(13, "d")],
+            mode: .after, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["anchor", "b", "c", "d"], "appends, dedupes the overlap")
+        XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer, "still detached while newer remains")
+        // The final page reaches the tail → re-attach, and live appends resume.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(14, "e")],
+            mode: .after, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer, "reaching the tail re-attaches")
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(15, "live")))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["anchor", "b", "c", "d", "e", "live"])
+    }
+
     func testHistoryTracksHasMoreOlderForThePagingGate() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e")]))
