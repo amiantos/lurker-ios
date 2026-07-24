@@ -522,7 +522,7 @@ final class BufferListViewController: UICollectionViewController {
         // ordinary row in its network section below. The grid chip and the roster row read as
         // different things — a card vs. a row, and only the row leaves the channel on a swipe —
         // so the duplication is a quick way in, not a buffer printed twice by accident.
-        let favorites = favoriteRows(state)
+        let favorites = favoriteRows(state, friendDmKeys: friendDmKeys)
         let recents = recentRows(state, friendDmKeys: friendDmKeys)
         let friends = friendRows(state)
         if !favorites.isEmpty { sections.append(Section(title: "Favorites", layout: .grid, rows: favorites)) }
@@ -604,8 +604,11 @@ final class BufferListViewController: UICollectionViewController {
     /// Pinned buffers, in the order they were pinned. Local to the device (UserDefaults),
     /// which is why they're app-level and span networks freely — unlike the web client's
     /// server pins, which are per-network.
-    private func favoriteRows(_ state: ChatState) -> [Row] {
+    private func favoriteRows(_ state: ChatState, friendDmKeys: Set<String>) -> [Row] {
+        // A friend's primary DM belongs to the Friends grid, so a DM favorited before it became
+        // a friend isn't also printed as a Favorites chip beside its Friends chip.
         UserPreferences.standard.favoriteBufferKeys
+            .filter { !friendDmKeys.contains($0) }
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .map { chipRow($0, state) }

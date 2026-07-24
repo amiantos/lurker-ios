@@ -78,6 +78,20 @@ final class ContactsAndPresenceTests: XCTestCase {
         guard case .ignored = frame else { return XCTFail("expected ignored, got \(frame)") }
     }
 
+    func testPeerPresenceRoutesByNickEvenWithoutTarget() {
+        // Presence is routed by nick, not target (`:server:<id>` is only a carrier). Parsing
+        // must not hinge on the target field, so a frame missing it still routes.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":2,"type":"peer-presence","nick":"darc","state":"online"}"##
+        )
+        guard case let .peerPresence(networkId, nick, state) = frame else {
+            return XCTFail("expected peerPresence, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 2)
+        XCTAssertEqual(nick, "darc")
+        XCTAssertEqual(state, .online)
+    }
+
     func testSnapshotSeedsPeerPresence() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"peerPresence":{"darc":{"nick":"darc","state":"away","stateAt":null,"awayMessage":"brb"}}}]}"##

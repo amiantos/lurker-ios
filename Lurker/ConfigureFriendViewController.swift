@@ -128,11 +128,16 @@ final class ConfigureFriendViewController: UITableViewController {
 
     private func save() {
         guard canSave else { return }
-        let saveTargets = targets.filter(validTarget).map {
+        let valid = targets.filter(validTarget)
+        // If the row the user flagged primary was left blank it's filtered out here, leaving no
+        // primary. Rather than let the server pick a fallback, promote the first valid target so
+        // the saved friend's primary DM is deterministic and matches what's about to show.
+        let hasPrimary = valid.contains { $0.isPrimary }
+        let saveTargets = valid.enumerated().map { index, draft in
             ContactTarget(
-                networkId: $0.networkId,
-                nick: $0.nick.trimmingCharacters(in: .whitespacesAndNewlines),
-                isPrimary: $0.isPrimary
+                networkId: draft.networkId,
+                nick: draft.nick.trimmingCharacters(in: .whitespacesAndNewlines),
+                isPrimary: hasPrimary ? draft.isPrimary : index == 0
             )
         }
         viewModel.saveContact(
@@ -176,7 +181,12 @@ final class ConfigureFriendViewController: UITableViewController {
     private func setPrimary(id: UUID) {
         guard let targetSection = layout.firstIndex(of: .targets) else { return }
         for i in targets.indices { targets[i].isPrimary = targets[i].id == id }
-        tableView.reloadSections(IndexSet(integer: targetSection), with: .none)
+        // Patch each visible row's radio in place rather than reloading the section, so tapping
+        // one row's primary radio doesn't drop the keyboard from a nick field being edited.
+        for i in targets.indices {
+            let cell = tableView.cellForRow(at: IndexPath(row: i, section: targetSection)) as? FriendTargetCell
+            cell?.setPrimary(targets[i].isPrimary)
+        }
         updateSaveButton()
     }
 
@@ -206,8 +216,10 @@ final class ConfigureFriendViewController: UITableViewController {
     private func setNetwork(_ networkId: Int, id: UUID) {
         guard let index = targets.firstIndex(where: { $0.id == id }) else { return }
         targets[index].networkId = networkId
-        if let targetSection = layout.firstIndex(of: .targets) {
-            tableView.reloadRows(at: [IndexPath(row: index, section: targetSection)], with: .none)
+        // Patch the chooser in place (no reload) so a nick being typed keeps its keyboard.
+        if let targetSection = layout.firstIndex(of: .targets),
+           let cell = tableView.cellForRow(at: IndexPath(row: index, section: targetSection)) as? FriendTargetCell {
+            cell.setNetwork(title: networkName(networkId), menu: networkMenu(for: id))
         }
         updateSaveButton()
     }
@@ -458,16 +470,27 @@ private final class FriendTargetCell: UITableViewCell {
         onNickChanged: @escaping (String) -> Void,
         onPrimaryTapped: @escaping () -> Void
     ) {
-        networkButton.setTitle(networkTitle, for: .normal)
-        networkButton.menu = networkMenu
-        networkButton.accessibilityLabel = "Network, \(networkTitle)"
+        setNetwork(title: networkTitle, menu: networkMenu)
         nickField.text = nick
+        setPrimary(isPrimary)
+        self.onNickChanged = onNickChanged
+        self.onPrimaryTapped = onPrimaryTapped
+    }
+
+    /// Patch just the network chooser in place — no cell reload, so a nick field being edited in
+    /// another row keeps its keyboard when the network changes.
+    func setNetwork(title: String, menu: UIMenu) {
+        networkButton.setTitle(title, for: .normal)
+        networkButton.menu = menu
+        networkButton.accessibilityLabel = "Network, \(title)"
+    }
+
+    /// Patch just the primary radio in place, for the same reason.
+    func setPrimary(_ isPrimary: Bool) {
         let symbol = isPrimary ? "largecircle.fill.circle" : "circle"
         primaryButton.setImage(UIImage(systemName: symbol), for: .normal)
         primaryButton.tintColor = isPrimary ? tintColor : .tertiaryLabel
         primaryButton.accessibilityValue = isPrimary ? "on" : "off"
-        self.onNickChanged = onNickChanged
-        self.onPrimaryTapped = onPrimaryTapped
     }
 
     @objc private func nickEditingChanged() { onNickChanged?(nickField.text ?? "") }

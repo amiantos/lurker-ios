@@ -189,6 +189,20 @@ enum FrameParser {
     }
 
     private static func parseLive(_ obj: [String: Any]) -> ServerFrame {
+        // `peer-presence` is network-scoped state routed by `nick`, not a buffer line — its
+        // `:server:<id>` target is only a carrier. Handle it before the target guard below so
+        // the presence handler never depends on an unrelated field: no id, nothing to render,
+        // and `state` may be null → nil → `unknown`.
+        if obj.string("type") == "peer-presence" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let nick = obj.string("nick")
+            if nick.isEmpty { return .ignored }
+            return .peerPresence(
+                networkId: networkId,
+                nick: nick,
+                state: PresenceState(rawValue: obj.string("state"))
+            )
+        }
         let target = obj.string("target")
         if target.isEmpty { return .ignored }
         // `channel-topic` rides the `irc` kind like everything else, but it isn't an event
@@ -222,20 +236,6 @@ enum FrameParser {
                 networkId: obj.intOrNull("networkId"),
                 target: target,
                 member: parseMember(member)
-            )
-        }
-        // `peer-presence` is network-scoped state, not a buffer line: it rides `irc` with a
-        // `:server:<id>` target (so it survives even for a dismissed DM) and carries the nick
-        // as the routing key. No id, nothing to render — lift it out before `parseEvent` turns
-        // it into an `.other` Message nothing reads. `state` may be null → nil → `unknown`.
-        if obj.string("type") == "peer-presence" {
-            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
-            let nick = obj.string("nick")
-            if nick.isEmpty { return .ignored }
-            return .peerPresence(
-                networkId: networkId,
-                nick: nick,
-                state: PresenceState(rawValue: obj.string("state"))
             )
         }
         return .live(networkId: obj.intOrNull("networkId"), target: target, message: parseEvent(obj))
