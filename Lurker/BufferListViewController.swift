@@ -756,6 +756,43 @@ final class BufferListViewController: UICollectionViewController {
         let buffer = row.buffer
         guard buffer.kind != .system else { return nil }
         let key = buffer.key.id
+
+        // A DM gets friend actions where a channel gets Favorite: a friend is the "favorite
+        // person" concept, so a DM favorite would just be a weaker duplicate of it. Edit if a
+        // contact already watches this nick, else Add prefilled from it. A DM favorited before
+        // this change still offers Unfavorite so it can't get stuck pinned.
+        if buffer.kind == .dm, let networkId = buffer.networkId {
+            let nick = buffer.target
+            let existing = state.contacts.first { contact in
+                contact.targets.contains { $0.networkId == networkId && $0.nick.lowercased() == nick.lowercased() }
+            }
+            let isFavorite = UserPreferences.standard.isFavorite(key)
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
+                var actions: [UIMenuElement] = [
+                    UIAction(
+                        title: existing == nil ? "Add Friend…" : "Edit Friend…",
+                        image: UIImage(systemName: "person.badge.plus")
+                    ) { _ in
+                        guard let self else { return }
+                        ConfigureFriendViewController.present(
+                            from: self,
+                            viewModel: self.viewModel,
+                            editing: existing,
+                            prefill: existing == nil ? (networkId, nick) : nil
+                        )
+                    },
+                ]
+                if isFavorite {
+                    actions.append(UIAction(title: "Unfavorite", image: UIImage(systemName: "star.slash")) { _ in
+                        guard let self else { return }
+                        UserPreferences.standard.toggleFavorite(key)
+                        self.apply(self.state)
+                    })
+                }
+                return UIMenu(children: actions)
+            }
+        }
+
         let isFavorite = UserPreferences.standard.isFavorite(key)
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(children: [
