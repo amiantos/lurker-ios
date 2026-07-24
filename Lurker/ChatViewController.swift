@@ -566,17 +566,33 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToBottom()
     }
 
-    /// Start converging on the jump anchor, once. Waits (returns, leaving the jump pending) if
-    /// its row isn't loaded yet — unless the `around` slice already came back without it
-    /// (`anchorMissing`), in which case it gives up and lands at the bottom.
+    /// The row a converging jump scrolls to and flashes: the first unread — the row just below
+    /// the divider — for a jump-to-unread (#45), else the anchor's own row. Re-resolved every
+    /// pass by `convergeJump`, so a row rebuild between runloops can't strand the scroll on a
+    /// stale index. Nil until the target exists (the anchor's row isn't loaded yet, or — for the
+    /// unread jump — the divider hasn't been built), which is what keeps a landing waiting.
+    private func jumpTargetRow(anchor: Int) -> Int? {
+        if jumpFlashesFirstUnread {
+            return dividerRow.flatMap { rows.indices.contains($0 + 1) ? $0 + 1 : nil }
+        }
+        return rowIndex(containing: anchor)
+    }
+
+    /// Start converging on the jump target, once. Waits (returns, leaving the jump pending) if
+    /// the target row isn't available yet — unless the `around` slice already came back without
+    /// it (`anchorMissing`), in which case it gives up and lands at the bottom.
     private func beginJumpLanding() {
         guard let anchor = pendingJumpId, !jumpConverging else { return }
-        guard rowIndex(containing: anchor) != nil else {
+        // A jump-to-unread with its `around` slice still in flight must wait for the slice, not
+        // converge on the pre-fetch divider — which is pinned to the top of the stale latest
+        // window (every loaded row is unread) and would land nowhere near the real seam.
+        if jumpFlashesFirstUnread, aroundRequested, !aroundSliceArrived { return }
+        guard jumpTargetRow(anchor: anchor) != nil else {
             if aroundSliceArrived {
-                // The response landed without the anchor (`anchorMissing`). Release the jump so
-                // the screen isn't stuck "landing" forever — land at the bottom if there's
-                // anything to land on, otherwise just let go (an empty buffer shows its empty
-                // state, and a later message follows the normal near-bottom path).
+                // The response landed without a target (`anchorMissing`, or no unread in the
+                // slice). Release the jump so the screen isn't stuck "landing" forever — land at
+                // the bottom if there's anything to land on, otherwise just let go (an empty
+                // buffer shows its empty state, and a later message follows the near-bottom path).
                 needsInitialScroll = false
                 pendingJumpId = nil
                 jumpFlashesFirstUnread = false
@@ -601,7 +617,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// a lone scroll can land approximately — a couple of passes correct as real heights render —
     /// then it flashes and releases the jump.
     private func convergeJump(anchor: Int) {
-        guard let index = rowIndex(containing: anchor) else { return finishJump(flashing: nil) }
+        guard let index = jumpTargetRow(anchor: anchor) else { return finishJump(flashing: nil) }
         tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .middle, animated: false)
         jumpConvergePass += 1
         guard jumpConvergePass < Self.jumpConvergePasses else { return finishJump(flashing: anchor) }
@@ -973,8 +989,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// unreads below it) land on screen, with after-paging carrying the reader forward to live.
     private func jumpToFirstUnread() {
         guard let boundary = dividerAfterId, boundary > 0 else { return }
-        // Re-arm the same one-shot landing a fresh jump uses, but pulse the first unread rather
-        // than the anchor (which is the last-read message, above the marker).
+        // The FETCH anchors on the read boundary (last-read id), not the first unread: on a
+        // large-unread channel every loaded row is newer than the boundary, so the first unread
+        // *is* the oldest loaded row — anchoring the fetch there would find it already held and
+        // never page back to the real seam (the web's #216). Centering the `around` slice on the
+        // boundary is what pulls the seam into view.
+        //
+        // The SCROLL/flash target is decoupled from this anchor (see `jumpTargetRow`): it's the
+        // first unread *rendered* row (below the divider), because the boundary id can be an
+        // `.other` frame this buffer never renders (`lastReadId` is `max()` over *all* stored
+        // ids), which `rowIndex` could never resolve — so scrolling to the boundary itself could
+        // wedge the landing forever. `jumpFlashesFirstUnread` switches both onto the divider row.
         needsInitialScroll = true
         pendingJumpId = boundary
         aroundRequested = false
