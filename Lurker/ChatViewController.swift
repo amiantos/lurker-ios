@@ -68,7 +68,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
     /// only decides whether the breathing gap applies (see `keyboardWillChange`).
     private var keyboardOverlap: CGFloat = 0
-    private var titleButton: BufferTitleButton!
+
+    /// The pill's light. Stored, unlike its title, because the state it comes from arrives by
+    /// subscription and isn't kept — `updateTitle` is the one place it's recomputed. Amber
+    /// until the first state lands: this screen is built before there's anything to ask.
+    private var pillStatus: StatusLight = .warn
 
     /// A rendered row. A message is either dialogue (a bubble, carrying where it sits in
     /// its run) or narration (a full-width line) — see `EventType.isBubble`. A run of
@@ -166,11 +170,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        titleButton = BufferTitleButton(onTap: { [weak self] in self?.showBufferInfo() })
-        navigationItem.titleView = titleButton
         // Explicitly never, not `.automatic`: automatic *inherits* from the screen below,
         // which is the buffer list and its large title — leaving this screen a tall empty
-        // band above a `titleView` that is already the title.
+        // band under a pill that is already the title.
         navigationItem.largeTitleDisplayMode = .never
         // No leading item: the navigation controller's own back button goes there, and the
         // buffer list it returns to is this screen's parent rather than a sheet it summons.
@@ -782,16 +784,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func updateTitle(_ state: ChatState) {
-        titleButton.update(
-            title: displayName,
-            status: StatusLight.of(
-                reachable: state.reachable,
-                connection: state.connection,
-                // A DM's light tracks its network, exactly like a channel's: real peer
-                // presence is 1.1 (see StatusLight.of).
-                network: buffer.networkId.flatMap { state.networks[$0]?.state }
-            )
+        pillStatus = StatusLight.of(
+            reachable: state.reachable,
+            connection: state.connection,
+            // A DM's light tracks its network, exactly like a channel's: real peer
+            // presence is 1.1 (see StatusLight.of).
+            network: buffer.networkId.flatMap { state.networks[$0]?.state }
         )
+        navigationPill?.refresh(from: self)
     }
 
     /// Turn the filtered message list into rows: collapse runs of membership churn into
@@ -1647,6 +1647,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         cell.contentConfiguration = content
         cell.backgroundColor = .clear
         return cell
+    }
+}
+
+// MARK: - The shared title pill
+
+extension ChatViewController: PillPresenting {
+
+    /// The title is computed rather than stored so it is right from the moment this screen
+    /// exists: the pill is asked for its content as the push *begins*, which is before any
+    /// state has arrived, and a stored title would leave the pill briefly blank and then
+    /// cross-fade the buffer's name in on top of a transition that was already running.
+    var pillContent: PillContent {
+        PillContent(title: displayName, status: pillStatus, hint: "Shows this buffer's info and settings")
+    }
+
+    func pillTapped() {
+        showBufferInfo()
     }
 }
 
