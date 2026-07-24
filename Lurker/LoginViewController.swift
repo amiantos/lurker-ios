@@ -39,7 +39,7 @@ final class LoginViewController: UIViewController {
     /// floating over a sign-in form.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        navigationController?.setToolbarHidden(true, animated: animated)
+        setNavigationToolbarHidden(true, animated: animated)
     }
 
     override func viewDidLoad() {

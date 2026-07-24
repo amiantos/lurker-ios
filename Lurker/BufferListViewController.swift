@@ -87,12 +87,11 @@ final class BufferListViewController: UITableViewController {
         apply(viewModel.state)
     }
 
-    /// The toolbar belongs to the navigation controller, so each screen has to say whether
-    /// it wants one — the chat screen hides it (see `ChatViewController.viewWillAppear`),
-    /// and coming back here has to put it up again.
+    /// The only screen that wants the toolbar. See `setNavigationToolbarHidden` for why an
+    /// abandoned swipe-back would otherwise leave it behind on the chat screen.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        navigationController?.setToolbarHidden(false, animated: animated)
+        setNavigationToolbarHidden(false, animated: animated)
     }
 
     private func apply(_ state: ChatState) {

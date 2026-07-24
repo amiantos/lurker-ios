@@ -327,7 +327,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// fight over the same inch of thumb.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        navigationController?.setToolbarHidden(true, animated: animated)
+        setNavigationToolbarHidden(true, animated: animated)
     }
 
     override func viewDidAppear(_ animated: Bool) {
