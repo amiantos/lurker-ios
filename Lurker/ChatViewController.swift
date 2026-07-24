@@ -322,14 +322,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         apply(viewModel.state)
     }
 
-    /// The navigation controller's toolbar belongs to the buffer list, not here — the
-    /// composer already owns the bottom of this screen, and two bars stacked there would
-    /// fight over the same inch of thumb.
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        setNavigationToolbarHidden(true, animated: animated)
-    }
-
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         // We're now looking at this buffer — mark it read up to the latest loaded message.

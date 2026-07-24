@@ -4,35 +4,6 @@
 import LurkerKit
 import UIKit
 
-extension UIViewController {
-
-    /// Declare whether this screen wants the navigation controller's toolbar, as part of the
-    /// transition that brings it on screen.
-    ///
-    /// Each screen states its own preference — the buffer list wants the toolbar, the chat
-    /// screen and the sign-in screen don't — because the toolbar belongs to the navigation
-    /// controller and outlives all of them. Nothing morphs between the two bottom bars: the
-    /// chat screen's is a composer that has to track the keyboard, which a navigation
-    /// toolbar cannot do, so the toolbar genuinely leaves and the composer genuinely
-    /// arrives. (NetNewsWire's toolbar appears to morph because *every* one of its screens
-    /// has a toolbar, so UIKit is only swapping items inside one bar that never goes away.)
-    ///
-    /// The `notifyWhenInteractionChanges` half is the part that isn't cosmetic. An
-    /// interactive swipe-back that the user abandons never re-runs `viewWillAppear` on the
-    /// screen that stayed — UIKit sends the revealed screen an appear/disappear pair and the
-    /// one underneath your finger only a `viewDidAppear`. So the toolbar the buffer list put
-    /// up on the way out would still be there afterwards, floating over the composer, until
-    /// something else happened to move it.
-    func setNavigationToolbarHidden(_ hidden: Bool, animated: Bool) {
-        guard let nav = navigationController else { return }
-        nav.setToolbarHidden(hidden, animated: animated)
-        transitionCoordinator?.notifyWhenInteractionChanges { context in
-            guard context.isCancelled else { return }
-            nav.setToolbarHidden(!hidden, animated: context.isAnimated)
-        }
-    }
-}
-
 extension UINavigationController {
 
     /// Open a buffer, with the buffer list behind it.

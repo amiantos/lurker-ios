@@ -63,11 +63,15 @@ final class BufferListViewController: UITableViewController {
         super.viewDidLoad()
         title = "Buffers"
         navigationItem.largeTitleDisplayMode = .always
-        // Account and Join go in the bottom toolbar rather than the navigation bar: they're
-        // the two things you *do* here, as against the list itself, and the bottom of a tall
-        // phone is where a thumb already is. (`toolbarItems` is the plain navigation-
-        // controller toolbar — on iOS 26 it renders as the floating glass bar.)
-        toolbarItems = [accountItem(), .flexibleSpace(), joinItem]
+        // Both in the navigation bar, and deliberately not in a bottom toolbar. A toolbar
+        // would be a second floating bar over a scrolling list, and it can't persist across
+        // the push into a chat screen — whose bottom is a composer — so it has to leave and
+        // come back on every navigation, which is a lot of movement to buy two buttons.
+        //
+        // Set once here and never replaced: `apply` runs on every unread-count change, and
+        // swapping a bar button item out closes any menu it happens to be showing.
+        navigationItem.leftBarButtonItem = accountItem()
+        navigationItem.rightBarButtonItem = joinItem
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         // The list depends on networks, buffers, and connection state — a message arriving
@@ -85,13 +89,6 @@ final class BufferListViewController: UITableViewController {
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
         apply(viewModel.state)
-    }
-
-    /// The only screen that wants the toolbar. See `setNavigationToolbarHidden` for why an
-    /// abandoned swipe-back would otherwise leave it behind on the chat screen.
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        setNavigationToolbarHidden(false, animated: animated)
     }
 
     private func apply(_ state: ChatState) {
@@ -124,14 +121,13 @@ final class BufferListViewController: UITableViewController {
 
     // MARK: - Joining
 
-    /// Join, in the bottom-right of the list — where an app whose home screen is a list of
-    /// things puts "one more of these".
+    /// Join — "one more of these" — opposite the account menu.
     ///
     /// Its menu is **deferred**, so which networks it offers is decided when you tap it
-    /// rather than whenever the item happened to be built. That's the whole reason this can
-    /// be a menu at all: the item itself is never replaced (a `toolbarItems` array set once
-    /// in `viewDidLoad`), and it was *replacing* a bar item on every unread count that
-    /// previously closed the menu out from under whoever had it open.
+    /// rather than whenever the item happened to be built. That's what lets this be a menu
+    /// at all: the item is built once and never replaced, and it was *replacing* a bar item
+    /// on every unread count that previously closed the menu out from under whoever had it
+    /// open. Deferring is the fix; rebuilding is the bug.
     ///
     /// #11 will add "Add Network…" alongside the channels.
     private lazy var joinItem: UIBarButtonItem = {

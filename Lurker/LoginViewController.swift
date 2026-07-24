@@ -34,14 +34,6 @@ final class LoginViewController: UIViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// The buffer list puts a toolbar up; a mid-session 401 swaps that list out for this
-    /// screen without taking the toolbar with it, leaving an account menu and a join button
-    /// floating over a sign-in form.
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        setNavigationToolbarHidden(true, animated: animated)
-    }
-
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
