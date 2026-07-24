@@ -27,6 +27,17 @@ extension UINavigationController {
         jumpTo messageId: Int? = nil,
         animated: Bool
     ) {
+        // Already reading this one, and nothing to jump to? Leave it alone. Rebuilding the
+        // screen re-latches the unread divider, re-requests history, and throws away the
+        // scroll position to arrive exactly where we already are — which is what tapping a
+        // notification for the conversation you're looking at (a friend-online push carries
+        // no messageId) would otherwise cost. A jump is a real move and still rebuilds.
+        if messageId == nil,
+           viewControllers.first is BufferListViewController,
+           let top = viewControllers.last as? ChatViewController,
+           top.buffer.key.id == buffer.key.id {
+            return
+        }
         let list = (viewControllers.first as? BufferListViewController) ?? makeBufferList(viewModel: viewModel)
         let chat = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
         setViewControllers([list, chat], animated: animated)

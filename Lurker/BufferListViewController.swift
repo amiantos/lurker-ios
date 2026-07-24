@@ -50,6 +50,11 @@ final class BufferListViewController: UITableViewController {
 
     private var state = ChatState()
     private var sections: [Section] = []
+    /// Whether this screen is actually on screen, as against merely alive under a chat screen.
+    /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
+    /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
+    /// this, each one rebuilds every section and reloads a table nobody can see.
+    private var isOnScreen = false
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -91,8 +96,33 @@ final class BufferListViewController: UITableViewController {
         apply(viewModel.state)
     }
 
+    /// Coming back from a buffer rebuilds, always — not just when state moved under us.
+    ///
+    /// Recent order lives in `UserPreferences`, written by the chat screen on appear, and
+    /// nothing publishes it. As a sheet this screen was built fresh on every summon so it
+    /// always re-read it; as a reused root it would show the order from before you opened the
+    /// buffer you just backed out of — which on a quiet connection is exactly the buffer
+    /// missing from the top of a list whose whole job is putting it there.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        isOnScreen = true
+        rebuild()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        isOnScreen = false
+    }
+
+    /// The new state is always kept — it's what the deferred menus and the next rebuild read —
+    /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
+        guard isOnScreen else { return }
+        rebuild()
+    }
+
+    private func rebuild() {
         sections = buildSections(state)
         tableView.reloadData()
     }
@@ -155,7 +185,7 @@ final class BufferListViewController: UITableViewController {
         guard !networks.isEmpty else {
             return [UIAction(title: "No networks", attributes: .disabled) { _ in }]
         }
-        if let only = networks.first, networks.count == 1 {
+        if networks.count == 1, let only = networks.first {
             return [UIAction(
                 title: "Join Channel…",
                 attributes: only.state == .connected ? [] : .disabled
@@ -226,10 +256,10 @@ final class BufferListViewController: UITableViewController {
 
         // The Lurker row, carrying the socket light — the same signal the title pill shows
         // on the system buffer. It has to live here too: the pill is on the chat screen,
-        // and this sheet covers it, so without this row a socket drop while you're picking
-        // a buffer would be invisible. (The web client's list keeps a LURKER row for the
-        // same reason.) The buffer may not have arrived yet, so fall back to the synthetic
-        // one — it's the launch screen's buffer and always exists.
+        // which isn't on screen while you're here, so without this row a socket drop while
+        // you're picking a buffer would be invisible. (The web client's list keeps a LURKER
+        // row for the same reason.) The buffer may not have arrived yet, so fall back to the
+        // synthetic one — it's app-scoped and always exists.
         sections.append(Section(title: nil, rows: [Row(
             buffer: system ?? .system,
             subtitle: nil,
@@ -398,6 +428,10 @@ final class BufferListViewController: UITableViewController {
         let title = buffer.kind == .channel ? "Leave" : "Close"
         let close = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, done in
             self?.viewModel.closeBuffer(buffer.key)
+            // Leaving here is the one moment the client *knows* a buffer is gone. Restoring
+            // into one that isn't there lands on a spinner that never resolves (see
+            // `SceneDelegate.launchBuffer`), and that path can't detect it — so tell it.
+            UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
             done(true)
         }
         return UISwipeActionsConfiguration(actions: [close])

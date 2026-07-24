@@ -38,6 +38,10 @@ final class LoginViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
         title = "Lurker"
+        // Explicitly never: the navigation bar prefers large titles for the buffer list's
+        // sake, and inheriting that here would stack a large "Lurker" in the bar directly on
+        // top of the large "Lurker" this screen already draws as its own heading.
+        navigationItem.largeTitleDisplayMode = .never
 
         let heading = UILabel()
         heading.text = "Lurker"

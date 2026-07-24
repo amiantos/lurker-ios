@@ -19,8 +19,8 @@ enum UserPreferences {
 
     /// Registration happens once, when this is first touched, rather than on every access.
     /// It used to be a computed property that re-registered the dictionary each time, which
-    /// was free when the only readers were the sign-in screen — but the buffer switcher
-    /// reaches through here several times per state change, and registering is idempotent
+    /// was free when the only readers were the sign-in screen — but the buffer list
+    /// reaches through here several times per rebuild, and registering is idempotent
     /// work done to reach the same answer.
     static let standard: UserDefaults = {
         let defaults = UserDefaults.standard
@@ -111,6 +111,18 @@ extension UserDefaults {
     func forgetLastBuffer() {
         removeObject(forKey: UserPreferences.Key.lastBufferTarget)
         removeObject(forKey: UserPreferences.Key.lastBufferNetworkId)
+    }
+
+    /// Forgotten when the buffer itself is closed. That is the one case of "the buffer is
+    /// gone" the client can actually *prove* — the user just left it from this device — and
+    /// restoring into a buffer with no row sits on "Loading messages…" forever, because
+    /// `hydrateIfNeeded` has nothing to ask about.
+    ///
+    /// Matched on `id`, not the key: the stored target keeps its original case while the
+    /// store row carries whatever the server last said, and `#Lurker` is `#lurker`.
+    func forgetLastBuffer(ifMatching key: BufferKey) {
+        guard lastBufferKey?.id == key.id else { return }
+        forgetLastBuffer()
     }
 
     /// `BufferKey.id`s the user pinned, in the order they pinned them.

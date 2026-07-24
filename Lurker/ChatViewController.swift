@@ -10,13 +10,16 @@ import UIKit
 /// `open-buffer`, and live `irc` frames after that — including the echo of our own sends
 /// (`self: true`), which is why there's no optimistic-bubble bookkeeping here.
 ///
-/// This is the root of the navigation stack, not a pushed detail: the buffer list is a
-/// sheet summoned from the title pill. So the stack is exactly one deep, always, and
-/// switching buffers replaces the root rather than growing it.
+/// This is a *detail* pushed onto the buffer list, which is the navigation stack's root — so
+/// it gets the back button and the interactive pop for free (#49). Switching buffers replaces
+/// this screen rather than stacking another on top of it (see `UINavigationController
+/// .showBuffer`), so the stack is exactly two deep whenever a buffer is open, never more.
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate,
     UIGestureRecognizerDelegate {
     private let viewModel: ChatViewModel
-    private let buffer: Buffer
+    /// Readable from outside so navigation can tell "open this buffer" from "you're already
+    /// in it" without rebuilding the screen to find out — see `showBuffer`.
+    let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
 
     private let tableView = UITableView()
@@ -326,16 +329,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidAppear(animated)
         // We're now looking at this buffer — mark it read up to the latest loaded message.
         viewModel.markRead(buffer.key)
-        // …and it's now the most recent, which is what the switcher promotes. Recorded on
+        // …and it's now the most recent, which is what the list promotes. Recorded on
         // appear rather than on the pick, so the launch buffer counts too and a buffer
         // reached any other way can't slip past the bookkeeping.
         UserPreferences.standard.recordRecentBuffer(buffer.key.id)
         // …and it's where a relaunch should land (#49). Same moment, same reason: whatever
         // route brought you here, this is the buffer you were last looking at.
         UserPreferences.standard.recordLastBuffer(buffer.key)
-        // An error that landed before we had a window — or while the buffer list was
-        // covering us — has nothing else coming to re-trigger it.
+        // An error that landed before we had a window — or while a sheet was covering us —
+        // has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
+    }
+
+    /// Backing out to the list means the *list* is where you were, not this buffer. Without
+    /// this the restore target could only ever be a chat screen: leave a conversation on
+    /// purpose, quit, and the next launch shoves you straight back into it, which is the one
+    /// move a home screen is supposed to make unnecessary.
+    ///
+    /// Gated on the list being what we're uncovering — the stack is already updated by the
+    /// time this runs — so a buffer *swap* (`/msg`, a notification tap, a highlight) doesn't
+    /// trip it, and a cancelled interactive pop re-records on the `viewDidAppear` that follows.
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        guard isMovingFromParent, navigationController?.topViewController is BufferListViewController else {
+            return
+        }
+        UserPreferences.standard.forgetLastBuffer()
     }
 
     /// Rebuild the nick highlighter when this buffer's coloring set changes — the channel's
@@ -870,11 +889,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// empty / loading states across every screen are #19 — this is the send-failure
     /// case the composer must never swallow.
     ///
-    /// Presented from whatever is actually on top, not from `self`. The buffer-list sheet
-    /// is presented by the *navigation controller*, so our own `presentedViewController`
-    /// reads nil while the sheet covers the screen — presenting on `self` there is
-    /// dropped by UIKit, and since only the alert's OK clears `state.error`, the error
-    /// would stick and its own repeat would then be swallowed as a duplicate.
+    /// Presented from whatever is actually on top, not from `self`. The highlights sheet is
+    /// presented by the *navigation controller*, so our own `presentedViewController` reads
+    /// nil while it covers the screen — presenting on `self` there is dropped by UIKit, and
+    /// since only the alert's OK clears `state.error`, the error would stick and its own
+    /// repeat would then be swallowed as a duplicate.
     private func surface(_ error: String?) {
         guard let error, let root = view.window?.rootViewController else { return }
         var top = root
@@ -1023,7 +1042,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 // Deliver to whatever buffer is on screen NOW: the user may have switched away
                 // since starting the upload, and the link should land where their cursor is,
                 // not in a torn-down composer (this is what the web client does too).
-                Self.activeChat()?.composer.insert(url)
+                //
+                // There may be no buffer on screen at all now that the list is a place you can
+                // back out to (#49) — and a successful upload whose link goes nowhere, silently,
+                // is the worst of the three outcomes. Hand it over instead of dropping it.
+                if let chat = Self.activeChat() {
+                    chat.composer.insert(url)
+                } else {
+                    UIPasteboard.general.string = url
+                    Self.presentAlert(title: "Upload finished", message: "The link is on your clipboard.")
+                }
             case .failed(let error):
                 self.presentUploadAlert(error.userMessage)
             case .cancelled:
@@ -1039,16 +1067,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .first(where: \.isKeyWindow)
     }
 
-    /// The ChatViewController currently on screen. Buffers live one-deep under the nav
-    /// controller, so it's the nav's top VC — resolved from the active window rather than
-    /// `self`, so it finds the CURRENT buffer even when the originating VC is offscreen.
+    /// The ChatViewController currently on screen, if any. Exactly one is ever in the stack
+    /// and it's on top of the buffer list, so it's the nav's top VC — resolved from the active
+    /// window rather than `self`, so it finds the CURRENT buffer even when the originating VC
+    /// is offscreen. Nil when the user has backed out to the list and no buffer is open.
     private static func activeChat() -> ChatViewController? {
         (keyWindow()?.rootViewController as? UINavigationController)?.topViewController as? ChatViewController
     }
 
     /// The frontmost presented VC, for presenting over whatever is currently up (a sheet, the
-    /// buffer switcher). Mirrors `surface(_:)`'s reasoning: presenting on a covered or
-    /// offscreen `self` is silently dropped by UIKit.
+    /// buffer list). Mirrors `surface(_:)`'s reasoning: presenting on a covered or offscreen
+    /// `self` is silently dropped by UIKit.
     private static func topMostViewController() -> UIViewController? {
         guard var top = keyWindow()?.rootViewController else { return nil }
         while let presented = top.presentedViewController { top = presented }
@@ -1118,10 +1147,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func presentUploadAlert(_ message: String) {
-        // Top-most, not `self`: an upload can finish while the buffer switcher is up or after
-        // this VC went offscreen, and presenting on `self` then is dropped by UIKit.
-        guard let top = Self.topMostViewController() else { return }
-        let alert = UIAlertController(title: "Upload failed", message: message, preferredStyle: .alert)
+        Self.presentAlert(title: "Upload failed", message: message)
+    }
+
+    /// Top-most, not `self`: an upload outlives the buffer it started in — the user can back
+    /// out to the list or open a sheet — and presenting on a covered or offscreen `self` is
+    /// silently dropped by UIKit.
+    private static func presentAlert(title: String, message: String) {
+        guard let top = topMostViewController() else { return }
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         top.present(alert, animated: true)
     }
