@@ -5,25 +5,28 @@ import Combine
 import LurkerKit
 import UIKit
 
-/// The buffer picker, summoned from the title pill or a swipe in from the left edge.
+/// The app's home screen: every buffer you have, and the way into all of them.
 ///
-/// A quick switcher rather than a directory: the buffers you actually move between are a
-/// handful you keep returning to, so recents and pins come first at a size you can hit
-/// without looking, and the full grouped roster sits underneath, denser, for the times you
-/// want something you haven't touched in a week.
+/// It is the navigation stack's *root*, and a chat screen is pushed on top of it. That's the
+/// ordinary iOS shape for a list of things you go into and come back from, and it buys the
+/// back button and the interactive pop gesture rather than making this screen invent its own
+/// way in and out. It used to be a sheet over the chat screen, which meant a bespoke button
+/// to summon it, an edge swipe wired by hand, and a chat screen that could never be left.
+///
+/// Not a directory: the buffers you actually move between are a handful you keep returning
+/// to, so recents and pins come first at a size you can hit without looking, and the full
+/// grouped roster sits underneath, denser, for the times you want something you haven't
+/// touched in a week.
 ///
 /// "Denser" is spacing, not type size — one font size app-wide. The hierarchy is row
 /// height, a network subtitle on the promoted rows, and order.
 ///
-/// It reports the pick through `onSelect` and doesn't know what happens next; the chat
-/// screen swaps itself out.
-final class BufferSwitcherViewController: UITableViewController {
+/// It reports the pick through `onSelect` and doesn't know what happens next.
+final class BufferListViewController: UITableViewController {
     private let viewModel: ChatViewModel
-    /// The buffer on screen behind this sheet, so it can be kept out of Recent.
-    private let current: BufferKey
     private var cancellables = Set<AnyCancellable>()
 
-    /// Called with the picked buffer. The presenter owns hydrating it and dismissing this.
+    /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
@@ -47,10 +50,14 @@ final class BufferSwitcherViewController: UITableViewController {
 
     private var state = ChatState()
     private var sections: [Section] = []
+    /// Whether this screen is actually on screen, as against merely alive under a chat screen.
+    /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
+    /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
+    /// this, each one rebuilds every section and reloads a table nobody can see.
+    private var isOnScreen = false
 
-    init(viewModel: ChatViewModel, current: BufferKey) {
+    init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        self.current = current
         super.init(style: .insetGrouped)
     }
 
@@ -60,11 +67,19 @@ final class BufferSwitcherViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Buffers"
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .done, primaryAction: UIAction { [weak self] _ in
-                self?.dismiss(animated: true)
-            }
-        )
+        navigationItem.largeTitleDisplayMode = .always
+        // Both in the navigation bar, and deliberately not in a bottom toolbar. A toolbar
+        // would be a second floating bar over a scrolling list, and it can't persist across
+        // the push into a chat screen — whose bottom is a composer — so it has to leave and
+        // come back on every navigation, which is a lot of movement to buy two buttons.
+        //
+        // Set once here and never replaced: `apply` runs on every unread-count change, and
+        // swapping a bar button item out closes any menu it happens to be showing.
+        navigationItem.leftBarButtonItem = accountItem()
+        // First element is the *trailing-most*, so this reads "+ then …" left to right —
+        // the views menu sits in the same corner it occupies on the chat screen, so the one
+        // button that means the same thing on both screens is in the same place on both.
+        navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "buffer")
 
         // The list depends on networks, buffers, and connection state — a message arriving
@@ -84,10 +99,168 @@ final class BufferSwitcherViewController: UITableViewController {
         apply(viewModel.state)
     }
 
+    /// Coming back from a buffer rebuilds, always — not just when state moved under us.
+    ///
+    /// Recent order lives in `UserPreferences`, written by the chat screen on appear, and
+    /// nothing publishes it. As a sheet this screen was built fresh on every summon so it
+    /// always re-read it; as a reused root it would show the order from before you opened the
+    /// buffer you just backed out of — which on a quiet connection is exactly the buffer
+    /// missing from the top of a list whose whole job is putting it there.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        isOnScreen = true
+        rebuild()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        isOnScreen = false
+    }
+
+    /// The new state is always kept — it's what the deferred menus and the next rebuild read —
+    /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
+        guard isOnScreen else { return }
+        rebuild()
+    }
+
+    private func rebuild() {
         sections = buildSections(state)
         tableView.reloadData()
+    }
+
+    // MARK: - Bar items
+
+    /// Account and settings: the things that outlast whichever conversation you're reading.
+    /// It lives here rather than on the chat screen's "…" because that one is a list of
+    /// *views* — and because sign-out sitting next to "Members" put the end of your session
+    /// one slipped thumb from a nick list.
+    ///
+    /// A cog rather than a second ellipsis, now that this screen has a real views menu of its
+    /// own on the trailing side: two identical "…" on one bar would be two buttons that look
+    /// like the same button. It's where Settings (#20) lands, so the icon is also honest
+    /// about where it's going.
+    private func accountItem() -> UIBarButtonItem {
+        let signOut = UIAction(
+            title: "Sign Out",
+            image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+            attributes: .destructive
+        ) { [weak self] _ in
+            // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
+            self?.viewModel.logout()
+        }
+        let item = UIBarButtonItem(image: UIImage(systemName: "gearshape"), menu: UIMenu(children: [signOut]))
+        item.accessibilityLabel = "Settings"
+        return item
+    }
+
+    /// The same views menu the chat screen carries, minus the entries that need a buffer.
+    ///
+    /// Highlights is app-scoped — it spans every network — so being able to reach it only
+    /// from inside some arbitrary conversation was an artifact of the chat screen having once
+    /// been the only screen. Search, bookmarks and uploads land here as they're built, which
+    /// is the set the desktop client keeps in its bottom toolbar (#49).
+    ///
+    /// Members is deliberately absent: it describes a channel, and there isn't one here.
+    private func viewsItem() -> UIBarButtonItem {
+        let highlights = UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+            guard let self else { return }
+            showHighlights(viewModel: viewModel)
+        }
+        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [highlights]))
+        item.accessibilityLabel = "More"
+        return item
+    }
+
+    // MARK: - Joining
+
+    /// Join — "one more of these" — opposite the account menu.
+    ///
+    /// Its menu is **deferred**, so which networks it offers is decided when you tap it
+    /// rather than whenever the item happened to be built. That's what lets this be a menu
+    /// at all: the item is built once and never replaced, and it was *replacing* a bar item
+    /// on every unread count that previously closed the menu out from under whoever had it
+    /// open. Deferring is the fix; rebuilding is the bug.
+    ///
+    /// #11 will add "Add Network…" alongside the channels.
+    private lazy var joinItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "plus"),
+            menu: UIMenu(children: [
+                UIDeferredMenuElement.uncached { [weak self] completion in
+                    completion(self?.joinElements() ?? [])
+                },
+            ])
+        )
+        item.accessibilityLabel = "Join Channel"
+        return item
+    }()
+
+    /// One network makes the "+" a straight tap through to the prompt — a menu of one is a
+    /// tap spent to learn nothing — and several make it a list to pick from.
+    ///
+    /// Networks that aren't connected are offered but disabled, matching the web's `net-add`:
+    /// a JOIN with no socket to travel down goes nowhere, and nothing comes back to say so.
+    /// Shown rather than hidden because the network is still yours, and a list that silently
+    /// omits it just looks wrong.
+    private func joinElements() -> [UIMenuElement] {
+        let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        guard !networks.isEmpty else {
+            return [UIAction(title: "No networks", attributes: .disabled) { _ in }]
+        }
+        if networks.count == 1, let only = networks.first {
+            return [UIAction(
+                title: "Join Channel…",
+                attributes: only.state == .connected ? [] : .disabled
+            ) { [weak self] _ in
+                self?.presentJoinAlert(network: only)
+            }]
+        }
+        return networks.map { network in
+            UIAction(
+                title: network.name,
+                subtitle: network.state == .connected ? nil : "not connected",
+                attributes: network.state == .connected ? [] : .disabled
+            ) { [weak self] _ in
+                self?.presentJoinAlert(network: network)
+            }
+        }
+    }
+
+    private func presentJoinAlert(network: Network) {
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
+        alert.addTextField {
+            $0.placeholder = "#channel"
+            $0.autocapitalizationType = .none
+            $0.autocorrectionType = .no
+            $0.spellCheckingType = .no
+            $0.returnKeyType = .join
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
+            let typed = (alert?.textFields?.first?.text ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            self?.join(network: network, channel: typed)
+        })
+        present(alert, animated: true)
+    }
+
+    /// Joining is also switching: you asked for a channel, so land in it. The buffer won't
+    /// exist yet — its row arrives with the server's `channel-joined` — so hand over a
+    /// synthesized one exactly as a notification tap does, and let the chat screen's
+    /// `hydrateIfNeeded` fill it in when the join completes.
+    private func join(network: Network, channel typed: String) {
+        // A bare sigil is not a name: `ensurePrefix("#")` would send a JOIN for "#".
+        guard !ChannelName.fold(typed).isEmpty else { return }
+        let channel = ChannelName.ensurePrefix(typed)
+        viewModel.joinChannel(networkId: network.id, channel: channel)
+        // `buffer(for:)` rather than a hand-built one: `ensurePrefix` accepts the full
+        // RFC-1459 sigil set, of which `BufferKind.of` classifies only `#` and `&` as
+        // channels — so hardcoding `.channel` here would hand the chat screen a member list
+        // its store row disagrees with.
+        onSelect?(state.buffer(for: BufferKey(networkId: network.id, target: channel)))
     }
 
     // MARK: - Sections
@@ -107,10 +280,10 @@ final class BufferSwitcherViewController: UITableViewController {
 
         // The Lurker row, carrying the socket light — the same signal the title pill shows
         // on the system buffer. It has to live here too: the pill is on the chat screen,
-        // and this sheet covers it, so without this row a socket drop while you're picking
-        // a buffer would be invisible. (The web client's list keeps a LURKER row for the
-        // same reason.) The buffer may not have arrived yet, so fall back to the synthetic
-        // one — it's the launch screen's buffer and always exists.
+        // which isn't on screen while you're here, so without this row a socket drop while
+        // you're picking a buffer would be invisible. (The web client's list keeps a LURKER
+        // row for the same reason.) The buffer may not have arrived yet, so fall back to the
+        // synthetic one — it's app-scoped and always exists.
         sections.append(Section(title: nil, rows: [Row(
             buffer: system ?? .system,
             subtitle: nil,
@@ -148,19 +321,19 @@ final class BufferSwitcherViewController: UITableViewController {
         return sections
     }
 
-    /// The buffers you've actually been in lately, newest first — the whole point of the
-    /// switcher.
+    /// The buffers you've actually been in lately, newest first.
     ///
-    /// The buffer you're *currently* in is excluded. Recency is recorded when a buffer
-    /// appears, so by the time this sheet can exist the current buffer is always the
-    /// newest entry — which would put the row you're already on at the top, where your
-    /// thumb lands, doing nothing. A switcher's first entry should be where you'd go next.
+    /// The buffer you were *just* in is included, and sits at the top. As a sheet over the
+    /// chat screen this list excluded it — the row you were already on would have been the
+    /// first thing under your thumb, doing nothing. Backing out to a home screen inverts
+    /// that: the conversation you just left is the single likeliest place you'd want to
+    /// return to, and a list that hid it would be the thing that looked broken.
     ///
     /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
     /// system buffer is excluded because it already has its own row above.
     private func recentRows(_ state: ChatState, promoted: inout Set<String>) -> [Row] {
         let rows = UserPreferences.standard.recentBufferKeys
-            .filter { $0 != current.id && !promoted.contains($0) }
+            .filter { !promoted.contains($0) }
             .compactMap { state.buffers[$0] }
             .filter { $0.kind != .system }
             .prefix(Self.recentLimit)
@@ -279,6 +452,10 @@ final class BufferSwitcherViewController: UITableViewController {
         let title = buffer.kind == .channel ? "Leave" : "Close"
         let close = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, done in
             self?.viewModel.closeBuffer(buffer.key)
+            // Leaving here is the one moment the client *knows* a buffer is gone. Restoring
+            // into one that isn't there lands on a spinner that never resolves (see
+            // `SceneDelegate.launchBuffer`), and that path can't detect it — so tell it.
+            UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
             done(true)
         }
         return UISwipeActionsConfiguration(actions: [close])

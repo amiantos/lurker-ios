@@ -48,6 +48,28 @@ public struct ChatState: Sendable {
     public var totalHighlights: Int {
         buffers.values.reduce(0) { $0 + $1.highlights }
     }
+
+    /// The buffer for `key`, synthesizing an empty one when the store has no row yet.
+    ///
+    /// Every screen that navigates somewhere by *key* rather than by a buffer in hand needs
+    /// this: a launch restoring where you left off, a notification tap, a highlight tap, a
+    /// channel you just asked to join. In all four the row may legitimately not exist yet —
+    /// a push can beat its own backlog frame, a join's row arrives with `channel-joined` —
+    /// and the screen's `hydrateIfNeeded` fills it in once it does.
+    ///
+    /// It lives here because the four call sites had each written it out and one had already
+    /// drifted, hardcoding `.channel` where `BufferKind.of` would have said `.dm`: a `!foo`
+    /// target carries a channel sigil for *input* purposes (`ChannelName.sigils`) but is not
+    /// one of the sigils a buffer is classified by. That mismatch gives a screen a member
+    /// list and nick coloring for a buffer whose store row disagrees.
+    public func buffer(for key: BufferKey) -> Buffer {
+        buffers[key.id]
+            ?? Buffer(
+                networkId: key.networkId,
+                target: key.target,
+                kind: BufferKind.of(networkId: key.networkId, target: key.target)
+            )
+    }
 }
 
 /// Holds the domain state and folds `ServerFrame`s into it. The fold is a pure function

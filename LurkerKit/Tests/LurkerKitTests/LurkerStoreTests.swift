@@ -510,6 +510,35 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.connection, .reconnecting)
     }
 
+    func testBufferForKeyReturnsTheStoredRowWhenThereIsOne() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+
+        let found = store.state.buffer(for: BufferKey(networkId: 1, target: "#LURKER"))
+        XCTAssertTrue(found.hydrated, "the real row, not a fresh synthetic one")
+    }
+
+    /// The divergence that motivated pulling this out of its four call sites: `!foo` carries
+    /// a channel sigil for *input* (`ChannelName.sigils`, which the join form prefixes with)
+    /// but is not one of the two sigils a buffer is classified by. A site that hardcoded
+    /// `.channel` gave its screen a member list the store row would never agree with.
+    func testBufferForKeySynthesizesWithTheSameKindClassificationTheStoreUses() {
+        let state = ChatState()
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "#lurker")).kind, .channel)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "&local")).kind, .channel)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "!foo")).kind, .dm)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "bob")).kind, .dm)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: nil, target: Buffer.systemTarget)).kind, .system)
+    }
+
+    /// A synthesized buffer must be unhydrated, or the screen built from it would skip
+    /// asking for history and sit empty forever.
+    func testASynthesizedBufferIsUnhydratedSoItsScreenStillFetches() {
+        let buffer = ChatState().buffer(for: BufferKey(networkId: 1, target: "#lurker"))
+        XCTAssertFalse(buffer.hydrated)
+        XCTAssertEqual(buffer.target, "#lurker", "case is preserved, unlike BufferKey.id")
+    }
+
     func testADropBeforeTheFirstOpenStaysConnectingNotReconnecting() {
         let store = LurkerStore()
         store.apply(.socketClosed(reason: "refused", code: nil))

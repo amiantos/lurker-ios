@@ -13,12 +13,14 @@ enum UserPreferences {
         static let lastBackend = "lastBackend"
         static let recentBufferKeys = "recentBufferKeys"
         static let favoriteBufferKeys = "favoriteBufferKeys"
+        static let lastBufferTarget = "lastBufferTarget"
+        static let lastBufferNetworkId = "lastBufferNetworkId"
     }
 
     /// Registration happens once, when this is first touched, rather than on every access.
     /// It used to be a computed property that re-registered the dictionary each time, which
-    /// was free when the only readers were the sign-in screen — but the buffer switcher
-    /// reaches through here several times per state change, and registering is idempotent
+    /// was free when the only readers were the sign-in screen — but the buffer list
+    /// reaches through here several times per rebuild, and registering is idempotent
     /// work done to reach the same answer.
     static let standard: UserDefaults = {
         let defaults = UserDefaults.standard
@@ -71,6 +73,56 @@ extension UserDefaults {
         keys.removeAll { $0 == key }
         keys.insert(key, at: 0)
         set(keys, forKey: UserPreferences.Key.recentBufferKeys)
+    }
+
+    // MARK: - State restoration
+
+    /// The buffer that was on screen when the app was last used, so a relaunch lands where
+    /// you left off instead of on the system buffer every time (#49).
+    ///
+    /// Stored as its parts rather than as a `BufferKey.id` like the lists above, because
+    /// `id` lower-cases the target and this one is *reconstructed* into a buffer at launch
+    /// — before any frame has arrived to correct the case. The lists only ever look keys up
+    /// in state, so lossy is fine there and isn't here.
+    ///
+    /// A nil `networkId` is the system buffer, and is stored by *absence* — `object(forKey:)`
+    /// returning nil is the only way UserDefaults can say "no integer here", since a missing
+    /// integer key otherwise reads as 0, a real network id.
+    var lastBufferKey: BufferKey? {
+        guard let target = string(forKey: UserPreferences.Key.lastBufferTarget), !target.isEmpty else {
+            return nil
+        }
+        return BufferKey(networkId: object(forKey: UserPreferences.Key.lastBufferNetworkId) as? Int, target: target)
+    }
+
+    func recordLastBuffer(_ key: BufferKey) {
+        set(key.target, forKey: UserPreferences.Key.lastBufferTarget)
+        if let networkId = key.networkId {
+            set(networkId, forKey: UserPreferences.Key.lastBufferNetworkId)
+        } else {
+            removeObject(forKey: UserPreferences.Key.lastBufferNetworkId)
+        }
+    }
+
+    /// Forgotten on sign-out. Restoration is the one preference here that *synthesizes* a
+    /// buffer rather than looking one up, so a stale entry doesn't quietly fall out the way
+    /// a stale recent does — signing in as somebody else would land them in a channel from
+    /// the previous account.
+    func forgetLastBuffer() {
+        removeObject(forKey: UserPreferences.Key.lastBufferTarget)
+        removeObject(forKey: UserPreferences.Key.lastBufferNetworkId)
+    }
+
+    /// Forgotten when the buffer itself is closed. That is the one case of "the buffer is
+    /// gone" the client can actually *prove* — the user just left it from this device — and
+    /// restoring into a buffer with no row sits on "Loading messages…" forever, because
+    /// `hydrateIfNeeded` has nothing to ask about.
+    ///
+    /// Matched on `id`, not the key: the stored target keeps its original case while the
+    /// store row carries whatever the server last said, and `#Lurker` is `#lurker`.
+    func forgetLastBuffer(ifMatching key: BufferKey) {
+        guard lastBufferKey?.id == key.id else { return }
+        forgetLastBuffer()
     }
 
     /// `BufferKey.id`s the user pinned, in the order they pinned them.
