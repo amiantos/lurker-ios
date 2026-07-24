@@ -187,12 +187,28 @@ extension UIViewController {
 /// is the point — a pill owned by a screen dies with that screen.
 ///
 /// ⚠ The pill *is* this controller's `delegate`, and its entire sync mechanism is
-/// `willShow`/`didShow`. Setting `delegate` on this controller from anywhere else silently
-/// strands the pill on whatever screen it last saw — there's no compile-time or runtime
-/// signal. If something ever needs the delegate too, forward to `pill` rather than replace it.
+/// `willShow`/`didShow`. Setting `delegate` on this controller from anywhere else strands the
+/// pill on whatever screen it last saw. If something ever needs the delegate too, forward to
+/// `pill` rather than replace it.
 final class PilledNavigationController: UINavigationController {
 
     let pill = NavigationPill()
+
+    /// Make that coupling fail loudly in development instead of silently in the UI.
+    ///
+    /// Guarding inside `attach` would only catch a delegate set *before* it, and `attach` runs
+    /// from `viewDidLoad` — so in practice it would catch nothing. The direction that can
+    /// actually happen is a delegate assigned afterwards, which this sees.
+    override var delegate: (any UINavigationControllerDelegate)? {
+        didSet {
+            assert(
+                delegate === pill,
+                "PilledNavigationController's delegate belongs to its NavigationPill. Forward to "
+                    + "`pill` from your own delegate rather than replacing it, or the pill stops "
+                    + "tracking the stack."
+            )
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
