@@ -9,7 +9,21 @@ enum ServerFrame: Equatable, Sendable {
     case networks([Network])
 
     /// WS `snapshot`: live per-network state + joined channels and their members.
+    ///
+    /// **Not authoritative for which buffers exist.** Its per-network `channels` is empty for
+    /// every network without a live connection, and is read before auto-rejoin JOINs land even
+    /// for one that has it. DMs and `:server:` logs aren't in it at all — they arrive as
+    /// separate `backlog` frames afterwards. Use `backlogComplete` to know the burst is done.
     case snapshot([NetworkSnapshot])
+
+    /// WS `backlog-complete`: the terminal frame of a snapshot burst (lurker #635).
+    ///
+    /// The only frame that says "that's all of it". The server sends it last on every
+    /// snapshot — connect, in-band resync, fresh-network re-emit — and deliberately *not* at
+    /// all if the burst throws partway, since a truncated snapshot has proved nothing about
+    /// the buffers it never reached. So it means "the roster you have is the whole roster",
+    /// which is exactly what an empty list needs before it can claim to be empty.
+    case backlogComplete
 
     /// WS `backlog`: a buffer, plus its history when `hydrated`. A shell arrives
     /// unhydrated with no events (the "fetch on open" marker).

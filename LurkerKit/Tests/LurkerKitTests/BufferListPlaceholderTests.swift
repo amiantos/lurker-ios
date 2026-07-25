@@ -7,54 +7,96 @@ import XCTest
 
 /// What the buffer list shows when it has no rows.
 ///
-/// The interesting case isn't the resolver — it's two lines — but the *signal* it reads.
-/// Keying this on the socket instead of the snapshot is the mistake that's easy to make and
-/// hard to notice: it looks right on a warm launch and flashes "no networks" on a cold one.
+/// The resolver is three lines; the interesting part is the *signal* it reads. Two plausible
+/// ones are wrong in ways that only show on some accounts — the socket is up before the burst
+/// is applied, and the `snapshot` frame isn't authoritative for buffer existence — so both are
+/// pinned here as regressions rather than left to be re-derived.
 @MainActor
 final class BufferListPlaceholderTests: XCTestCase {
 
     func testBuffersPresentMeansNoPlaceholder() {
-        XCTAssertEqual(BufferListPlaceholder.of(hasBuffers: true, snapshotLoaded: true), .none)
-        // Even mid-fetch: rows on screen beat any placeholder.
-        XCTAssertEqual(BufferListPlaceholder.of(hasBuffers: true, snapshotLoaded: false), .none)
+        XCTAssertEqual(
+            BufferListPlaceholder.of(hasBuffers: true, hasNetworks: true, backlogComplete: true), .none
+        )
+        // Even mid-burst: rows on screen beat any placeholder.
+        XCTAssertEqual(
+            BufferListPlaceholder.of(hasBuffers: true, hasNetworks: true, backlogComplete: false), .none
+        )
     }
 
-    func testNothingYetIsLoadingUntilTheSnapshotLands() {
-        XCTAssertEqual(BufferListPlaceholder.of(hasBuffers: false, snapshotLoaded: false), .loading)
+    func testNothingYetIsLoadingUntilTheBurstFinishes() {
+        XCTAssertEqual(
+            BufferListPlaceholder.of(hasBuffers: false, hasNetworks: false, backlogComplete: false), .loading
+        )
+        // Networks known but the burst still running — the DM-only / all-disconnected case.
+        // This is the one that flashed when the flag was latched on the `snapshot` frame.
+        XCTAssertEqual(
+            BufferListPlaceholder.of(hasBuffers: false, hasNetworks: true, backlogComplete: false), .loading
+        )
     }
 
-    func testAnEmptyAnswerIsAnAnswer() {
-        // An account with no networks configured. The server has said so; spinning forever
-        // would be the app declining to admit it.
-        XCTAssertEqual(BufferListPlaceholder.of(hasBuffers: false, snapshotLoaded: true), .empty)
+    func testAFreshAccountIsToldToAddANetwork() {
+        XCTAssertEqual(
+            BufferListPlaceholder.of(hasBuffers: false, hasNetworks: false, backlogComplete: true), .noNetworks
+        )
+    }
+
+    func testAnAccountWithNetworksIsNotToldToAddOne() {
+        // A network that never connects has no buffers, and this is its steady state — not a
+        // flash. Telling someone to add a network they've already added reads as the app not
+        // knowing its own state.
+        XCTAssertEqual(
+            BufferListPlaceholder.of(hasBuffers: false, hasNetworks: true, backlogComplete: true), .noBuffers
+        )
     }
 
     // MARK: - The signal itself
 
-    /// `snapshotLoaded` has to survive a socket drop. A reconnect resends the snapshot, but
-    /// the roster we already have stays on screen while it does — going back to `.loading`
-    /// would blank a list with perfectly good content in it.
-    func testSnapshotLoadedLatchesAcrossAReconnect() {
+    /// The `snapshot` frame must NOT be what latches this. Its per-network `channels` is empty
+    /// for every network without a live connection, and DMs and `:server:` logs are never in it
+    /// at all — so on a launch while the networks are still connecting it would claim the roster
+    /// had landed with nothing in it, and the list would flash "No buffers yet".
+    func testASnapshotAloneDoesNotMeanTheRosterLanded() {
         let store = LurkerStore()
-        XCTAssertFalse(store.state.snapshotLoaded)
-
         store.apply(.snapshot([]))
-        XCTAssertTrue(store.state.snapshotLoaded, "an empty snapshot is still an answer")
+        XCTAssertFalse(store.state.backlogComplete, "the snapshot is a prefix, not the whole answer")
+    }
+
+    func testBacklogCompleteLatchesTheRoster() {
+        let store = LurkerStore()
+        XCTAssertFalse(store.state.backlogComplete)
+
+        store.apply(.backlogComplete)
+        XCTAssertTrue(store.state.backlogComplete, "an empty burst is still an answer")
+    }
+
+    /// It has to survive a socket drop. A reconnect re-sends everything, but the roster we
+    /// already have stays on screen while it does — going back to `.loading` would blank a list
+    /// with perfectly good content in it.
+    func testBacklogCompleteSurvivesAReconnect() {
+        let store = LurkerStore()
+        store.apply(.backlogComplete)
 
         store.apply(.socketOpen)
         store.apply(.socketClosed(reason: nil, code: nil))
         XCTAssertEqual(store.state.connection, .reconnecting)
-        XCTAssertTrue(store.state.snapshotLoaded, "a drop doesn't un-answer the question")
+        XCTAssertTrue(store.state.backlogComplete, "a drop doesn't un-answer the question")
     }
 
     /// Sign-out has to clear it, or the next account's cold launch reads the previous one's
-    /// answer and shows "No buffers yet" before its snapshot lands.
-    func testResetClearsSnapshotLoaded() {
+    /// answer and shows "No networks yet" before its own burst lands.
+    func testResetClearsBacklogComplete() {
         let store = LurkerStore()
-        store.apply(.snapshot([]))
-        XCTAssertTrue(store.state.snapshotLoaded)
+        store.apply(.backlogComplete)
+        XCTAssertTrue(store.state.backlogComplete)
 
         store.reset()
-        XCTAssertFalse(store.state.snapshotLoaded)
+        XCTAssertFalse(store.state.backlogComplete)
+    }
+
+    /// The frame carries no payload, so the only thing that can go wrong is not recognizing
+    /// its `kind` — in which case it parses as `.ignored` and the list spins forever.
+    func testTheTerminalFrameParses() {
+        XCTAssertEqual(FrameParser.parseWs(##"{"kind":"backlog-complete"}"##), .backlogComplete)
     }
 }
