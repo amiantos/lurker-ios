@@ -11,6 +11,23 @@ final class RenderingTests: XCTestCase {
 
     // MARK: - mIRC formatting
 
+    /// What a line reads as, for showing a message somewhere that can't render its formatting —
+    /// the actions sheet's header (#60). The control byte is invisible but its color digits are
+    /// not, so an unstripped header shows a different string from the line that was pressed.
+    func testStripRemovesControlCodesAndKeepsText() {
+        XCTAssertEqual(IRCFormatting.strip("\u{03}04ALERT\u{03} disk full"), "ALERT disk full")
+        XCTAssertEqual(IRCFormatting.strip("\u{02}bold\u{02} and \u{1D}italic\u{1D}"), "bold and italic")
+        XCTAssertEqual(IRCFormatting.strip("\u{03}04,08warned\u{0F} again"), "warned again")
+    }
+
+    /// Text with nothing to strip comes back untouched — including a bare digit after a word,
+    /// which must not be mistaken for a color argument.
+    func testStripLeavesPlainTextAlone() {
+        XCTAssertEqual(IRCFormatting.strip("just a message"), "just a message")
+        XCTAssertEqual(IRCFormatting.strip("route 66 is long"), "route 66 is long")
+        XCTAssertEqual(IRCFormatting.strip(""), "")
+    }
+
     func testBoldTogglesRuns() {
         let runs = IRCFormatting.parse("a\u{02}b\u{02}c")
         XCTAssertEqual(runs.map(\.text), ["a", "b", "c"])

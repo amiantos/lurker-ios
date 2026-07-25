@@ -18,7 +18,7 @@ import UIKit
 /// rather than through the property being overridden. Tried on device; the text still selected.
 ///
 /// The price is that turning it off also turns off UITextView's link detection, so tapping a URL is
-/// done by hand: `url(at:)` maps a point to a `.link` attribute, and a tap gesture opens it. That's
+/// done by hand: `url(at:)` maps a point to a `.messageLink` attribute, and a tap gesture opens it. That's
 /// a few lines of TextKit 2, and unlike the alternatives there's no gesture in it to fight over.
 /// It's also checkable at a point rather than only by pressing the screen — see `url(at:)`.
 ///
@@ -53,7 +53,8 @@ final class MessageTextView: UITextView {
     ///
     /// Two things have to be true for a hit: the point must land *inside* a laid-out line — not
     /// merely nearest to one, or the empty space beside a short line would "hit" its last character
-    /// — and the character there must carry a `.link`.
+    /// — and the character there must carry a `.messageLink` (see `MessageRenderer`, which stamps
+    /// it in place of `.link`).
     func url(at point: CGPoint) -> URL? {
         guard let layoutManager = textLayoutManager,
               let contentManager = layoutManager.textContentManager,

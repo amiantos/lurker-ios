@@ -9,9 +9,10 @@ import UIKit
 /// prefix ("* nick waves", "--", a network name) and read as narration about the room
 /// rather than speech in it, so they stay lines while dialogue becomes bubbles.
 ///
-/// Backed by a `UITextView` rather than a label so auto-linked URLs are actually tappable
-/// (a `UILabel` ignores `.link` interaction) and text is selectable to copy. Non-editable
-/// and non-scrolling so it behaves like a self-sizing label.
+/// Backed by a `MessageTextView` rather than a label: TextKit 2 is what makes hit-testing a tapped
+/// URL possible at all, and a `UILabel` exposes no layout to hit-test against. Nothing here is
+/// selectable — copying goes through the long-press actions sheet (#60) — and it's non-scrolling,
+/// so it behaves like a self-sizing label.
 final class LineCell: UITableViewCell, TimestampRevealing, MessageBodyHosting {
     static let reuseID = "line"
 

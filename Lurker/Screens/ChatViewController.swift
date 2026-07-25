@@ -1751,25 +1751,41 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard presentedViewController == nil, navigationController?.presentedViewController == nil
         else { return }
         let point = recognizer.location(in: tableView)
-        guard let indexPath = tableView.indexPathForRow(at: point),
-              rows.indices.contains(indexPath.row),
-              let message = rows[indexPath.row].message
+        guard let indexPath = tableView.indexPathForRow(at: point), rows.indices.contains(indexPath.row)
         else { return }
 
         // A press that lands on a URL is about the URL — the line around it isn't what the finger
         // was on. Asked of the cell, which is the only thing that knows where its body sits.
+        //
+        // Hit-tested before the row is resolved to a message, not after: a row can render text
+        // without standing for a single message — a consolidated run of topic changes, say — and
+        // a URL in one of those is still a URL you can act on. Gating this on a message first made
+        // long press do nothing at all there, while a plain tap opened the link.
         let cell = tableView.cellForRow(at: indexPath) as? MessageBodyHosting
         let url = cell.flatMap { $0.linkURL(at: recognizer.location(in: $0)) }
+        let message = rows[indexPath.row].message
 
-        let subject: MessageActionsViewController.Subject = url.map { .link($0) } ?? .message(message)
-        guard let sheet = MessageActionsViewController(subject: subject) else { return }
+        guard let subject = url.map(MessageActionsViewController.Subject.link)
+            ?? message.map(MessageActionsViewController.Subject.message),
+            let sheet = MessageActionsViewController(subject: subject)
+        else { return }
+
+        // The keyboard would otherwise stay up over the sheet. Every other sheet here opens at
+        // `.medium()` and stays partly visible above it, but this one is sized to two or three
+        // rows — shorter than the keyboard — so it can land entirely behind it, which is the
+        // common case: mid-draft, keyboard up, long-press a line to reply to it.
+        composer.resignFirstResponder()
 
         // The press has no other visible effect at the moment it fires — the row doesn't lift the
         // way a peek did — so the tap is what confirms it registered, before the sheet animates in.
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         sheet.onRun = { [weak self] key in
             guard let self else { return }
-            if let url { runLinkAction(key, on: url) } else { runMessageAction(key, on: message) }
+            if let url {
+                runLinkAction(key, on: url)
+            } else if let message {
+                runMessageAction(key, on: message)
+            }
         }
         present(sheet, animated: true)
     }

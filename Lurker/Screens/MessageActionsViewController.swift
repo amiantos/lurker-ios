@@ -38,11 +38,18 @@ final class MessageActionsViewController: UITableViewController {
 
     private let subject: Subject
     private let actions: [MessageAction]
+    /// Rows stay tappable through the dismissal animation, so without this a quick double tap on
+    /// Share Link queues two runs — and the second `UIActivityViewController` is dropped by UIKit
+    /// with a console warning rather than presented.
+    private var hasRun = false
     /// The content height the sheet was last sized to, so a re-layout that changed nothing doesn't
     /// invalidate the detent.
     private var measuredHeight: CGFloat = 0
 
     private static let detent = UISheetPresentationController.Detent.Identifier("messageActions")
+    /// Only for the pre-layout estimate above; the real heights are self-sizing.
+    private static let estimatedRowHeight: CGFloat = 52
+    private static let estimatedHeaderHeight: CGFloat = 88
 
     /// Nil when the subject offers nothing — the caller shouldn't present an empty sheet.
     init?(subject: Subject) {
@@ -53,6 +60,10 @@ final class MessageActionsViewController: UITableViewController {
         guard !actions.isEmpty else { return nil }
         self.subject = subject
         self.actions = actions
+        // Seeded, not left at zero: the detent is resolved once before the first layout, so an
+        // unseeded sheet animates in as a ~40pt sliver and then jumps to its real height. The
+        // estimate is replaced by the measured value on the first `viewDidLayoutSubviews`.
+        self.measuredHeight = Self.estimatedHeaderHeight + CGFloat(actions.count) * Self.estimatedRowHeight
         super.init(style: .insetGrouped)
 
         modalPresentationStyle = .pageSheet
@@ -75,7 +86,7 @@ final class MessageActionsViewController: UITableViewController {
         super.viewDidLoad()
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "action")
         tableView.rowHeight = UITableView.automaticDimension
-        tableView.estimatedRowHeight = 52
+        tableView.estimatedRowHeight = Self.estimatedRowHeight
         tableView.alwaysBounceVertical = false
         // The subject is a header, not a row: as a cell it sat in its own rounded card, indented
         // and left-aligned exactly like the actions under it, so it read as a fourth thing you
@@ -104,10 +115,15 @@ final class MessageActionsViewController: UITableViewController {
         switch subject {
         case .message(let message):
             // The nick names who you're acting on; the body confirms which of their lines it was.
-            // Raw text, matching what Copy would put on the pasteboard — a sheet that shows one
-            // thing and copies another is worse than one that shows nothing.
+            //
+            // Stripped of mIRC codes, deliberately unlike Copy Text, which keeps them. The header's
+            // only job is identification, so it has to match what's on screen: raw,
+            // `\u{03}04ALERT\u{03} disk full` reads as red "ALERT disk full" in the list but as
+            // "04ALERT disk full" here — the one case where the header would show a different line
+            // from the one pressed. Copy keeps the codes because the pasteboard is about fidelity
+            // to what was sent, which is also what the web does.
             title.text = (message.nick?.isEmpty == false) ? message.nick : "Message"
-            detail.text = message.text
+            detail.text = message.text.map { IRCFormatting.strip($0) }
         case .link(let url):
             // Host as the title: "which site is this" is the question a link menu has to answer
             // first, and it stays legible where a long URL truncates to nothing useful.
@@ -117,10 +133,12 @@ final class MessageActionsViewController: UITableViewController {
 
         let stack = UIStackView(arrangedSubviews: [title, detail])
         stack.axis = .vertical
-        stack.spacing = 2
+        // The title needs to clear the grabber rather than sit just under it, and the detail needs
+        // to read as a caption *of* the title rather than a second line of it — at 2pt the two ran
+        // together as one block.
+        stack.spacing = 6
         stack.isLayoutMarginsRelativeArrangement = true
-        // Tight to the grabber above, with air before the actions below.
-        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 18, leading: 32, bottom: 14, trailing: 32)
+        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 26, leading: 32, bottom: 14, trailing: 32)
         return stack
     }
 
@@ -182,6 +200,8 @@ final class MessageActionsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard !hasRun else { return }
+        hasRun = true
         let key = actions[indexPath.row].key
         // Dismiss first, act second. Reply hands focus to the composer, and a `becomeFirstResponder`
         // issued from under a sheet that is still on screen doesn't take — you'd get `nick: ` in the
