@@ -15,6 +15,7 @@ enum UserPreferences {
         static let favoriteBufferKeys = "favoriteBufferKeys"
         static let lastBufferTarget = "lastBufferTarget"
         static let lastBufferNetworkId = "lastBufferNetworkId"
+        static let messageListStyles = "messageListStyles"
     }
 
     /// Registration happens once, when this is first touched, rather than on every access.
@@ -146,5 +147,46 @@ extension UserDefaults {
         }
         set(keys, forKey: UserPreferences.Key.favoriteBufferKeys)
         return !wasFavorite
+    }
+
+    /// How each buffer draws its message list, and the default for the rest.
+    ///
+    /// Stored as one JSON blob rather than a key per buffer: it's read and written as a whole
+    /// (`applyToAll` clears every exception at once), and a per-buffer key would leave orphans in
+    /// UserDefaults for every channel ever parted. Local to the device, like favorites — see
+    /// `MessageListStylePreferences`.
+    var messageListStyles: MessageListStylePreferences {
+        guard let data = data(forKey: UserPreferences.Key.messageListStyles),
+              let decoded = try? JSONDecoder().decode(MessageListStylePreferences.self, from: data)
+        else { return MessageListStylePreferences() }
+        return decoded
+    }
+
+    func messageListStyle(for key: BufferKey) -> MessageListStyle {
+        messageListStyles.style(for: key.id)
+    }
+
+    /// Give one buffer its own style.
+    func setMessageListStyle(_ style: MessageListStyle, for key: BufferKey) {
+        var styles = messageListStyles
+        styles.set(style, for: key.id)
+        save(styles)
+    }
+
+    /// Make `style` the default and drop every per-buffer exception.
+    func setMessageListStyleForAllBuffers(_ style: MessageListStyle) {
+        var styles = messageListStyles
+        styles.applyToAll(style)
+        save(styles)
+    }
+
+    private func save(_ styles: MessageListStylePreferences) {
+        // A failure here would silently reset everyone to bubbles on the next read, so it's worth
+        // a line in the log rather than a bare `try?`.
+        do {
+            set(try JSONEncoder().encode(styles), forKey: UserPreferences.Key.messageListStyles)
+        } catch {
+            NSLog("[prefs] could not save message list styles: %@", error.localizedDescription)
+        }
     }
 }

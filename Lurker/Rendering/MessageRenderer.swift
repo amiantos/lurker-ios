@@ -190,8 +190,9 @@ enum MessageRenderer {
     /// A collapsed run — "alice, bob and 3 others joined; dave left". Nicks keep their
     /// colors; the categories and connectives are muted. Mirrors how the web client colors
     /// its `NickRef`s and leaves the rest as meta text.
-    static func renderConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
+    static func renderConsolidation(
+        _ summary: ConsolidationSummary, base: UIFont = .preferredFont(forTextStyle: .subheadline)
+    ) -> NSAttributedString {
         let clauses = summary.groups.map { identityClause($0, base: base) }
 
         let line = NSMutableAttributedString()
@@ -216,9 +217,10 @@ enum MessageRenderer {
     ///
     /// Returns nil for an empty list so the caller has one thing to check rather than
     /// rendering a stray " is typing…".
-    static func renderTyping(_ nicks: [String]) -> NSAttributedString? {
+    static func renderTyping(
+        _ nicks: [String], base: UIFont = .preferredFont(forTextStyle: .subheadline)
+    ) -> NSAttributedString? {
         guard !nicks.isEmpty else { return nil }
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
         // Past three names the list stops being scannable and starts being a wall — the same
         // judgement `Consolidation` makes about a join flood, and the same phrasing.
         let visible = nicks.prefix(3)
@@ -240,6 +242,121 @@ enum MessageRenderer {
         // Singular only for one name: "alice and bob are", "alice, bob, and 2 others are".
         line.append(muted(nicks.count == 1 ? " is typing…" : " are typing…", base: base))
         return line
+    }
+
+    // MARK: - Compact (terminal) style
+
+    /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
+    /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
+    /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
+    static func compactFont() -> UIFont {
+        let reference = UIFont.preferredFont(forTextStyle: .subheadline)
+        return UIFontMetrics(forTextStyle: .subheadline).scaledFont(
+            for: .monospacedSystemFont(ofSize: reference.pointSize, weight: .regular)
+        )
+    }
+
+    /// One line of the terminal feed: `14:32 <alice> hello`.
+    ///
+    /// Every row is the same shape — a time, a short marker saying what kind of event it is, then
+    /// the text — which is the whole point of the style: no bubbles, no captions, no grouping, so
+    /// density comes from the absence of chrome rather than from hiding anything.
+    ///
+    /// The wording inside is the *same* wording the bubble style uses, because it comes from the
+    /// same builders (`body`, `renderActivity`, `renderConsolidation`). Only the frame around it
+    /// differs, so a line can't say two different things depending on which style you're in.
+    static func renderCompact(
+        _ message: Message,
+        networkName: String? = nil,
+        traits: UITraitCollection = .current,
+        settings: Settings = Settings(),
+        highlighter: NickHighlighter? = nil
+    ) -> NSAttributedString {
+        let base = compactFont()
+        let line = NSMutableAttributedString()
+        line.append(timeColumn(message.date, base: base))
+
+        if message.type == .action {
+            // The actor is inside the sentence, so it takes the marker slot rather than a nick.
+            let color = nickColor(message)
+            line.append(NSAttributedString(
+                string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
+            ))
+            line.append(body(message, base: base, fallback: color, highlighter: highlighter))
+        } else if message.type.isActivity {
+            line.append(marker(for: message.type, base: base))
+            line.append(renderActivity(message, base: base, settings: settings))
+        } else {
+            line.append(speaker(message, networkName: networkName, base: base))
+            line.append(body(message, base: base, fallback: .label, highlighter: highlighter))
+        }
+        return line
+    }
+
+    /// A collapsed run in the terminal feed, under the same time column as everything else.
+    static func renderCompactConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
+        let base = compactFont()
+        let line = NSMutableAttributedString()
+        line.append(timeColumn(summary.date, base: base))
+        line.append(muted("-- ", base: base))
+        line.append(renderConsolidation(summary, base: base))
+        return line
+    }
+
+    /// The typing line in the terminal feed. No time — it isn't a moment — but it keeps the
+    /// column, so it doesn't hang off the left edge under the log.
+    static func renderCompactTyping(_ nicks: [String]) -> NSAttributedString? {
+        let base = compactFont()
+        guard let typists = renderTyping(nicks, base: base) else { return nil }
+        let line = NSMutableAttributedString()
+        line.append(timeColumn(nil, base: base))
+        line.append(muted("-- ", base: base))
+        line.append(typists)
+        return line
+    }
+
+    /// `14:32 `, muted — and nothing at all when the event has no time.
+    ///
+    /// No padding to hold the column open on a dateless row (the typing line is the only one).
+    /// Lines wrap to the leading margin rather than under the text, so a blank time column would
+    /// be the single indent on the screen, which reads as a stray tab rather than as alignment.
+    private static func timeColumn(_ date: Date?, base: UIFont) -> NSAttributedString {
+        guard let text = timestamp(date) else { return NSAttributedString() }
+        return NSAttributedString(
+            string: text + " ", attributes: [.font: base, .foregroundColor: UIColor.tertiaryLabel]
+        )
+    }
+
+    /// Who is speaking, in the terminal conventions: `<nick>` for a message, `-nick-` for a notice
+    /// (IRC's own mark, the same one the bubble style puts in its caption), and `--` for the
+    /// server talking in its own voice.
+    private static func speaker(_ message: Message, networkName: String?, base: UIFont) -> NSAttributedString {
+        let line = NSMutableAttributedString()
+        switch message.type {
+        case .notice:
+            line.append(muted("-", base: base))
+            line.append(nickToken(message.nick, isSelf: message.isSelf, base: base))
+            line.append(muted("- ", base: base))
+        case .message:
+            line.append(muted("<", base: base))
+            line.append(nickToken(message.nick, isSelf: message.isSelf, base: base))
+            line.append(muted("> ", base: base))
+        default:
+            line.append(muted("-- ", base: base))
+        }
+        return line
+    }
+
+    /// The arrow column: `-->` joining, `<--` leaving, `--` for everything else. Directional
+    /// membership churn is the one thing a log is scanned for, and the arrows are readable at a
+    /// glance in a way the words aren't.
+    private static func marker(for type: EventType, base: UIFont) -> NSAttributedString {
+        let glyph = switch type {
+        case .join: "--> "
+        case .part, .quit, .kick: "<-- "
+        default: "-- "
+        }
+        return muted(glyph, base: base)
     }
 
     // MARK: - Line building blocks

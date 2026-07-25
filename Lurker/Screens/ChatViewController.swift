@@ -118,6 +118,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Empty unless `look.nick.show_mode_prefix` is on — which it isn't by default — so the
     /// whole feature costs nothing until someone asks for it.
     private var modePrefixes: [String: String] = [:]
+    /// How this buffer draws its messages, and the renderer for it. Per-buffer and local to the
+    /// device (`MessageListStylePreferences`) — a style reaches the list and nothing else, so
+    /// changing it is a re-register and a reload, never a rebuild of the screen.
+    private var listStyle: MessageListStyle = .bubbles
+    private var styling: any MessageListStyling = BubbleListStyle()
 
     /// Colors known nicks mentioned in message bodies. Rebuilt only when this buffer's
     /// coloring set changes, since compiling the match regex is the costly part.
@@ -210,9 +215,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         tableView.dataSource = self
         tableView.delegate = self
-        tableView.register(BubbleCell.self, forCellReuseIdentifier: BubbleCell.reuseID)
-        tableView.register(LineCell.self, forCellReuseIdentifier: LineCell.reuseID)
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "divider")
+        // The markers are shared by every style; the rest belong to whichever one is active.
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: MessageListMarker.reuseID)
+        applyListStyle(UserPreferences.standard.messageListStyle(for: buffer.key), reloading: false)
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
         // The iMessage dismissal: drag down through the conversation and the keyboard
@@ -1506,7 +1511,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         revealPan = UIPanGestureRecognizer(target: self, action: #selector(revealPanned))
         revealPan.delegate = self
         revealPan.require(toFail: rightEdge)
-        tableView.addGestureRecognizer(revealPan)
+        // Added only if the active style reveals timestamps — the compact style stamps every line,
+        // so the gesture would be inert and still compete with the scroll.
+        updateRevealGesture()
 
         // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
         // so it costs nothing per row and survives reuse — and so whatever draws a message next
@@ -1576,6 +1583,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Runs after this sheet has finished dismissing, so `showMemberList`'s guard sees a
         // clear screen.
         info.onShowMembers = { [weak self] in self?.showMemberList() }
+        // Live, while the sheet is still up: the list is behind it, so you see the style you
+        // picked before deciding whether to apply it everywhere.
+        info.onChangeStyle = { [weak self] style in self?.applyListStyle(style) }
         let sheet = UINavigationController(rootViewController: info)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
@@ -1831,54 +1841,71 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        switch rows[indexPath.row] {
-        case .unreadDivider:
-            return markerCell("New messages", color: .systemRed, bold: true)
-        case .dateDivider(let day):
-            return markerCell(MessageRenderer.dayLabel(day), color: .secondaryLabel, bold: false)
-        case .startOfHistory:
-            return markerCell("— start of history —", color: .tertiaryLabel, bold: false)
-        case .bubble(let message, let position):
-            let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID) as! BubbleCell
-            cell.configure(
-                message, position: position, networkName: networkName(for: message),
-                highlighter: nickHighlighter,
-                modePrefix: message.nick.flatMap { modePrefixes[$0.lowercased()] } ?? ""
-            )
-            // Scrolled into view mid-drag: match the neighbors it's arriving next to.
-            cell.setReveal(reveal)
-            return cell
-        case .line(let message):
-            let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            // A `/me` action is conversation and keeps the tight default; a status line is
-            // narration and gets the block spacing that sets its run apart from the chat.
-            let spacing = message.type.isActivity ? statusBlockSpacing(at: indexPath.row) : (top: 4, bottom: 4)
-            cell.configure(
-                MessageRenderer.render(message, traits: traitCollection, settings: settings),
-                date: message.date,
-                topInset: spacing.top, bottomInset: spacing.bottom, highlighted: message.matched
-            )
-            cell.setReveal(reveal)
-            return cell
-        case .consolidated(let summary):
-            // A collapsed run is a full-width meta line like any other activity line, so it
-            // rides the same cell — just rendered from the summary instead of one message.
-            let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            let spacing = statusBlockSpacing(at: indexPath.row)
-            cell.configure(MessageRenderer.renderConsolidation(summary), date: summary.date, topInset: spacing.top, bottomInset: spacing.bottom)
-            cell.setReveal(reveal)
-            return cell
-        case .typing(let nicks):
-            // Rides `LineCell` like every other piece of narration — same margins, same font,
-            // same reveal behavior. It just has no timestamp, because it isn't a moment.
-            let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
-            cell.configure(
-                MessageRenderer.renderTyping(nicks) ?? NSAttributedString(),
-                date: nil, topInset: 10, bottomInset: 6
-            )
-            cell.setReveal(reveal)
-            return cell
+        styling.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
+    }
+
+    /// What the active style needs from this screen to draw a row.
+    private var listContext: MessageListContext {
+        MessageListContext(
+            networkName: { [weak self] message in self?.networkName(for: message) },
+            highlighter: nickHighlighter,
+            modePrefixes: modePrefixes,
+            settings: settings,
+            traits: traitCollection,
+            reveal: reveal,
+            isStatusRow: { [weak self] index in self?.isStatusRow(index) ?? false }
+        )
+    }
+
+    /// Install or remove the drag-to-reveal timestamp gesture to match the active style.
+    ///
+    /// Tolerates the recognizer not existing yet, because it doesn't: the style is applied in
+    /// `viewDidLoad` before `addEdgeSwipes` builds the gesture (the style has to be known before
+    /// the first `cellForRowAt`, and the gesture needs the edge swipe to order itself against). So
+    /// this runs twice — once as a no-op, then again from `addEdgeSwipes` — rather than either
+    /// caller assuming the other went first.
+    private func updateRevealGesture() {
+        guard let revealPan else { return }
+        if listStyle.revealsTimestamps {
+            if revealPan.view == nil { tableView.addGestureRecognizer(revealPan) }
+        } else {
+            tableView.removeGestureRecognizer(revealPan)
+            apply(reveal: 0) // a style swapped mid-drag would otherwise leave the rows slid over
         }
+    }
+
+    /// Switch this buffer's message list to `style`.
+    ///
+    /// Everything above the list is untouched — the composer, the pill, the banners and the pills
+    /// are a layer of glass over a list that swaps out underneath them. The reveal gesture is the
+    /// one piece of chrome that belongs to a style rather than to the screen, because it only means
+    /// anything where the timestamps are hidden; the compact style stamps every line, so it isn't
+    /// installed rather than installed-and-inert.
+    func applyListStyle(_ style: MessageListStyle, reloading: Bool = true) {
+        listStyle = style
+        styling = style.styling
+        styling.register(in: tableView)
+
+        updateRevealGesture()
+
+        guard reloading else { return }
+        // Keep the reader on the line they were reading. Every row height changes at once here —
+        // far more than a history prepend moves them — so restoring a content offset would land
+        // somewhere unrelated. Same anchor dance `apply` does across a prepend, for the same
+        // reason, minus the height-delta fallback: nothing was prepended, so there's no delta.
+        let atBottom = isNearBottom
+        let anchor = atBottom ? nil : topVisibleAnchor()
+        UIView.performWithoutAnimation {
+            tableView.reloadData()
+            tableView.layoutIfNeeded()
+            if let anchor, let index = rowIndex(containing: anchor.id) {
+                tableView.contentOffset.y =
+                    tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - anchor.offset
+            }
+            clampToContent()
+        }
+        // Following the conversation means staying at the tail, which is now a different offset.
+        if atBottom { scrollToBottom() }
     }
 
     /// Vertical padding for a status line, by where it sits in a run of consecutive status
