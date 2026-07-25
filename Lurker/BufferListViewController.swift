@@ -365,18 +365,27 @@ final class BufferListViewController: UICollectionViewController {
     /// own on the trailing side: two identical "…" on one bar would be two buttons that look
     /// like the same button. It's where Settings (#20) lands, so the icon is also honest
     /// about where it's going.
+    /// A direct tap now that Settings exists (#20) — the cog said "Settings" and opened a
+    /// one-item menu, which is a menu standing in for the screen it was named after. Sign-out
+    /// moved inside, where it sits behind a confirmation rather than one slipped thumb away.
     private func accountItem() -> UIBarButtonItem {
-        let signOut = UIAction(
-            title: "Sign Out",
-            image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
-            attributes: .destructive
-        ) { [weak self] _ in
-            // Revokes server-side + clears the Keychain; SceneDelegate returns us to sign-in.
-            self?.viewModel.logout()
-        }
-        let item = UIBarButtonItem(image: UIImage(systemName: "gearshape"), menu: UIMenu(children: [signOut]))
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "gearshape"),
+            primaryAction: UIAction { [weak self] _ in self?.showSettings() }
+        )
         item.accessibilityLabel = "Settings"
         return item
+    }
+
+    /// Presented as a sheet, like every other secondary surface off this screen (buffer info,
+    /// members, highlights) — Settings is somewhere you visit and leave, not somewhere the
+    /// navigation stack should hold on to.
+    private func showSettings() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let sheet = UINavigationController(rootViewController: SettingsViewController(viewModel: viewModel))
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        sheet.sheetPresentationController?.detents = [.large()]
+        present(sheet, animated: true)
     }
 
     /// The same views menu the chat screen carries, minus the entries that need a buffer.
