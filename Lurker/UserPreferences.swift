@@ -15,6 +15,7 @@ enum UserPreferences {
         static let favoriteBufferKeys = "favoriteBufferKeys"
         static let lastBufferTarget = "lastBufferTarget"
         static let lastBufferNetworkId = "lastBufferNetworkId"
+        static let sendTypingNotifications = "sendTypingNotifications"
     }
 
     /// Registration happens once, when this is first touched, rather than on every access.
@@ -27,6 +28,7 @@ enum UserPreferences {
         defaults.register(defaults: [
             Key.lastServerURL: Backend.selfHosted.defaultURL,
             Key.lastBackend: Backend.selfHosted.rawValue,
+            Key.sendTypingNotifications: true,
         ])
         return defaults
     }()
@@ -49,6 +51,24 @@ extension UserDefaults {
 
     func set(lastBackend: Backend) {
         set(lastBackend.rawValue, forKey: UserPreferences.Key.lastBackend)
+    }
+
+    /// Whether to broadcast our own `+typing` tags (#61). Mirrors the server-side
+    /// `chat.send_typing_notifications`, including its `true` default
+    /// (`shared/settingsRegistry.ts:780`).
+    ///
+    /// Local for now, and deliberately so: this is a *privacy* switch — off means other people
+    /// stop being told when you're composing — and shipping the sending half with no way to
+    /// refuse it isn't defensible just because the settings screen (#20) hasn't landed. The
+    /// web enforces the same setting purely client-side (`MessageInput.vue:544`; `ircManager
+    /// .typing` does no gating), so honoring it here is the whole mechanism, not half of one.
+    /// When #20 arrives this should read the synced value instead.
+    var sendTypingNotifications: Bool {
+        bool(forKey: UserPreferences.Key.sendTypingNotifications)
+    }
+
+    func set(sendTypingNotifications: Bool) {
+        set(sendTypingNotifications, forKey: UserPreferences.Key.sendTypingNotifications)
     }
 
     // MARK: - Quick switcher

@@ -82,10 +82,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case line(Message)
         case consolidated(ConsolidationSummary)
         case unreadDivider
+        /// "alice is typing…" at the foot of the buffer (#61). Not a message: it has no id,
+        /// never anchors a scroll, and disappears without leaving a gap in the record.
+        case typing([String])
     }
 
     private var messages: [Message] = [] // filtered to what this buffer renders; drives anchoring + mark-read
     private var rows: [Row] = [] // messages + the unread divider; what the table renders
+    /// Who the store says is composing here, as of the last apply or tick (#61).
+    private var typists: [String] = []
+    /// Re-reads `typists` while anybody is typing.
+    ///
+    /// Needed because a typing entry's lease expires by the *clock*, not by a frame: the last
+    /// thing a peer sends is `active`, and what happens next is nothing at all. Without a tick
+    /// the line would sit there until some unrelated state change happened to redraw it. Runs
+    /// only while someone is typing, so an idle buffer costs nothing.
+    private var typingTicker: Timer?
+    /// Our own outgoing composing state — decides *what* to send; this screen owns only the
+    /// timer that asks it (see `OutgoingTyping`).
+    private var outgoingTyping = OutgoingTyping()
+    /// Fires once the draft has sat untouched long enough to downgrade `active` → `paused`.
+    private var typingIdleTimer: Timer?
     /// Network names, for labelling system lines with the network they're about.
     private var networks: [Int: Network] = [:]
 
@@ -218,6 +235,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             view.layoutIfNeeded()
             if wasNearBottom { scrollToBottom() }
         }
+        composer.onDraftChange = { [weak self] draft in self?.draftChanged(draft) }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
             self?.uploadPastedImage(data: data, mime: mime, filename: name)
@@ -343,14 +361,30 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // creates it as "network", the REST roster fills the real name in without changing
         // the count). Anything narrower drops that update and leaves the labels wrong.
         let key = buffer.key.id
+        let bufferKey = buffer.key
         viewModel.statePublisher
-            .removeDuplicates {
-                $0.messages[key] == $1.messages[key]
-                    && $0.buffers[key] == $1.buffers[key]
-                    && $0.error == $1.error
-                    && $0.connection == $1.connection
-                    && $0.reachable == $1.reachable
-                    && $0.networks == $1.networks
+            .removeDuplicates { old, new in
+                // One instant for both sides, so the comparison can't disagree with itself
+                // because a lease happened to lapse between the two reads.
+                let now = Date()
+                return old.messages[key] == new.messages[key]
+                    && old.buffers[key] == new.buffers[key]
+                    && old.error == new.error
+                    && old.connection == new.connection
+                    && old.reachable == new.reachable
+                    && old.networks == new.networks
+                    // Typing is this buffer's only state that changes with nothing else
+                    // changing alongside it — leave it out and every `typing` frame is
+                    // dropped here as a duplicate and the line never appears (#61).
+                    //
+                    // Compared as the RENDERED list, not as the raw entries. A peer re-sends
+                    // `active` every ~3s while they keep typing, and each one carries a fresh
+                    // `expiresAt` — so comparing entries makes every refresh a change, and
+                    // every refresh would run a full `apply`: consolidation over the entire
+                    // loaded history, a `reloadData`, and the anchor-restore dance. With three
+                    // people typing in a busy channel that's a table reload a second to draw
+                    // a line that hasn't changed. The nick list is what's on screen.
+                    && old.typists(in: bufferKey, now: now) == new.typists(in: bufferKey, now: now)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -384,10 +418,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// trip it, and a cancelled interactive pop re-records on the `viewDidAppear` that follows.
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Leaving with a half-written draft shouldn't leave the channel thinking you're still
+        // mid-sentence for the next 30 seconds. Unconditional — unlike the restore-target
+        // bookkeeping below, this applies however you left, including a buffer swap.
+        endTyping()
         guard isMovingFromParent, navigationController?.topViewController is BufferListViewController else {
             return
         }
         UserPreferences.standard.forgetLastBuffer()
+    }
+
+    deinit {
+        // Timers hold this screen alive until they fire; a buffer swap replaces it, so without
+        // this a `repeats: true` ticker would keep an off-screen controller (and its state
+        // subscription) resident until someone stopped typing.
+        typingTicker?.invalidate()
+        typingIdleTimer?.invalidate()
     }
 
     /// Rebuild the nick highlighter when this buffer's coloring set changes — the channel's
@@ -464,10 +510,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
 
         messages = updated
-        rows = buildRows(from: updated)
-        // Cache the divider's row so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick
-        // and jump-converge hot paths — `rows` only changes here.
-        dividerRow = rows.firstIndex { if case .unreadDivider = $0 { return true }; return false }
+        typists = state.typists(in: buffer.key)
+        rebuildRows()
+        updateTypingTicker()
         updateTitle(state)
         composer.placeholder = composerPlaceholder
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
@@ -829,7 +874,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if splitIndex != nil { rows.append(.unreadDivider) }
         appendConsolidated(after)
 
-        return withBubbleRuns(rows)
+        // The typing line goes last, below even the newest message — it's the only row that
+        // describes the present rather than the past. Appended *after* the run pass so it
+        // never participates in one: it isn't a bubble, and a run that tried to include it
+        // would re-tighten its corners every time somebody started or stopped typing.
+        var built = withBubbleRuns(rows)
+        if !typists.isEmpty { built.append(.typing(typists)) }
+        return built
+    }
+
+    /// Rebuild `rows` from the current `messages` + `typists`, and re-cache the divider index.
+    ///
+    /// Two callers with different triggers — a state apply and the typing ticker — so the
+    /// bookkeeping that has to stay in step with `rows` lives here rather than being repeated
+    /// (and eventually forgotten) at each one.
+    private func rebuildRows() {
+        rows = buildRows(from: messages)
+        // Cached so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick and
+        // jump-converge hot paths — `rows` only changes here.
+        dividerRow = rows.firstIndex { if case .unreadDivider = $0 { return true }; return false }
     }
 
     /// Second pass: fill in each bubble's `RunPosition` by looking at its neighbours. Only
@@ -876,7 +939,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .bubble(let message, _): id = message.id
         case .line(let message): id = message.id
         case .consolidated(let summary): id = summary.lastId
-        case .unreadDivider: return nil
+        // Neither is a message: there's nothing to re-find after a reload, and anchoring the
+        // viewport to a row that can vanish on a timer would drop the reader when it does.
+        case .unreadDivider, .typing: return nil
         }
         return id > 0 ? id : nil
     }
@@ -889,7 +954,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             case .bubble(let message, _): message.id == id
             case .line(let message): message.id == id
             case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
-            case .unreadDivider: false
+            case .unreadDivider, .typing: false
             }
         }
     }
@@ -954,6 +1019,86 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The buffer is showing an `around` slice below the live tail (#42): live events are held
     /// back, and the jump-to-latest pill re-attaches rather than just scrolling.
     private var isDetached: Bool { viewModel.state.buffers[buffer.key.id]?.hasMoreNewer == true }
+
+    // MARK: - Typing (#61)
+
+    /// Start ticking while someone is typing, stop when nobody is.
+    private func updateTypingTicker() {
+        guard !typists.isEmpty else {
+            typingTicker?.invalidate()
+            typingTicker = nil
+            return
+        }
+        guard typingTicker == nil else { return }
+        // One second is well inside the shortest lease (6s), so the line never lingers
+        // visibly past its welcome, and it's coarse enough to be free.
+        //
+        // `.common` rather than `scheduledTimer`'s default mode: the run loop switches to
+        // tracking while the table is being dragged, and a default-mode timer simply stops
+        // firing for the duration — so a reader scrolling through history would watch the
+        // typing line hang there, un-expired, until they lifted their finger.
+        let ticker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshTypists()
+        }
+        RunLoop.main.add(ticker, forMode: .common)
+        typingTicker = ticker
+    }
+
+    /// Re-read the typists and redraw only if the list actually changed.
+    ///
+    /// The guard is what makes a once-a-second timer acceptable: for most ticks nothing has
+    /// changed and this costs a dictionary lookup and a comparison, not a table reload.
+    ///
+    /// Redrawing goes through `apply` rather than reloading here, because adding or removing
+    /// a row is exactly the event `apply` already knows how to survive: it re-pins a
+    /// scrolled-up reader to the line they were on (a bare `reloadData` re-estimates
+    /// off-screen row heights and shoves the viewport — the lurch that was fixed in #42), and
+    /// it stays out of the way of a landing that hasn't happened yet, which a direct
+    /// `scrollToBottom` here would steal from a jump mid-converge.
+    private func refreshTypists() {
+        guard viewModel.state.typists(in: buffer.key) != typists else { return }
+        apply(viewModel.state)
+    }
+
+    /// The draft changed — tell the network, and re-arm the idle downgrade.
+    private func draftChanged(_ draft: String) {
+        emitTyping(outgoingTyping.draftChanged(to: draft, at: Date()))
+        typingIdleTimer?.invalidate()
+        typingIdleTimer = nil
+        // Nothing to downgrade if we aren't claiming to type in the first place.
+        guard outgoingTyping.isSignalling else { return }
+        // `.common` for the same reason as the ticker: scrolling the conversation with a
+        // half-written draft must not hold the `paused` downgrade open indefinitely.
+        let idle = Timer(timeInterval: OutgoingTyping.idle, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            typingIdleTimer = nil
+            // The draft captured here is the latest one: any change re-arms this timer.
+            emitTyping(outgoingTyping.idled(draft: draft, at: Date()))
+        }
+        RunLoop.main.add(idle, forMode: .common)
+        typingIdleTimer = idle
+    }
+
+    /// Stop claiming to type — on send, and on leaving the buffer. Silent when we weren't.
+    private func endTyping() {
+        typingIdleTimer?.invalidate()
+        typingIdleTimer = nil
+        emitTyping(outgoingTyping.ended())
+    }
+
+    private func emitTyping(_ signal: TypingSignal?) {
+        guard let signal else { return }
+        // The privacy switch (see `sendTypingNotifications`). Deliberately checked here, at
+        // the single point every tag leaves through, rather than at the three call sites that
+        // produce them — a gate you can forget to apply is not a privacy control.
+        //
+        // `OutgoingTyping` still advances its state while suppressed, so it believes it said
+        // things it didn't. That's harmless in both directions: nothing is sent while the
+        // switch is off, and turning it on mid-draft costs at most one refresh window (3s)
+        // before the next `active` goes out.
+        guard UserPreferences.standard.sendTypingNotifications else { return }
+        viewModel.setTyping(buffer.key, signal: signal)
+    }
 
     /// Ride back down animated — it's a distance covered, not a teleport — then let
     /// `scrollViewDidEndScrollingAnimation` correct for the estimated heights. When detached,
@@ -1074,6 +1219,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // scroll away and back (see `unreadDismissedBySend`).
         unreadDismissedBySend = true
         updateFloatingPills()
+        // Before the send, not after: the line itself is the end of composing, and a `done`
+        // trailing it would be a second, redundant tag. `composer.clear()` below re-enters
+        // `draftChanged` with an empty field, which is a no-op once this has run.
+        endTyping()
         let outcome = viewModel.send(buffer.key, text: text)
         composer.clear()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
@@ -1599,6 +1748,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             cell.configure(MessageRenderer.renderConsolidation(summary), date: summary.date, topInset: spacing.top, bottomInset: spacing.bottom)
             cell.setReveal(reveal)
             return cell
+        case .typing(let nicks):
+            // Rides `LineCell` like every other piece of narration — same margins, same font,
+            // same reveal behavior. It just has no timestamp, because it isn't a moment.
+            let cell = tableView.dequeueReusableCell(withIdentifier: LineCell.reuseID) as! LineCell
+            cell.configure(
+                MessageRenderer.renderTyping(nicks) ?? NSAttributedString(),
+                date: nil, topInset: 10, bottomInset: 6
+            )
+            cell.setReveal(reveal)
+            return cell
         }
     }
 
@@ -1622,7 +1781,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         switch rows[index] {
         case .consolidated: return true
         case .line(let message): return message.type.isActivity
-        case .bubble, .unreadDivider: return false
+        // Typing opens its own gap below the conversation rather than joining a status block
+        // — it belongs to the composer's end of the screen, not to the log.
+        case .bubble, .unreadDivider, .typing: return false
         }
     }
 

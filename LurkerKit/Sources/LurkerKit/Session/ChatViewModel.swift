@@ -305,6 +305,13 @@ public final class ChatViewModel {
         client.markAllRead()
     }
 
+    /// Emit a `typing` signal for `key`. Buffers with nobody on the other end — the system
+    /// buffer, a `:server:` log — are dropped by the client, which owns that guard for every
+    /// conversation-only verb (see `LurkerClient.setTyping`).
+    public func setTyping(_ key: BufferKey, signal: TypingSignal) {
+        client.setTyping(networkId: key.networkId, target: key.target, signal: signal)
+    }
+
     public func joinChannel(networkId: Int, channel: String) {
         let name = channel.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }

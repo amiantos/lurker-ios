@@ -331,6 +331,25 @@ final class LurkerClient {
         ])
     }
 
+    /// Tell the network we're composing. Fire-and-forget: the server turns it into a
+    /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
+    /// rather than needing a retry.
+    ///
+    /// Guarded like `closeBuffer`, and for the same reason: this verb is meaningless without a
+    /// real conversation on the other end. The app-scoped system buffer has no network to send
+    /// over and a `:server:` log is a one-way feed, so both are dropped here rather than put on
+    /// the wire as a frame the server would have to reject. That's also why there's no
+    /// `NSNull()` branch — a null `networkId` never gets this far.
+    func setTyping(networkId: Int?, target: String, signal: TypingSignal) {
+        guard let networkId, !target.hasPrefix(":server:") else { return }
+        send([
+            "type": "typing",
+            "networkId": networkId,
+            "target": target,
+            "state": signal.rawValue,
+        ])
+    }
+
     func markAllRead() {
         send(["type": "mark-all-read"])
     }

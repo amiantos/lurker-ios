@@ -228,6 +228,23 @@ enum FrameParser {
                 members: obj.objects("members").map(parseMember)
             )
         }
+        // `typing` is ephemeral state like the three around it — no id, nothing to render —
+        // and its payload lives in `state`, which `parseEvent` doesn't read. Note this sits
+        // BELOW the target guard: unlike `peer-presence`, a typing tag is meaningless without
+        // knowing which conversation it's about.
+        if obj.string("type") == "typing" {
+            let nick = obj.string("nick")
+            // Nobody to attribute it to. (The server always sends one; a malformed frame
+            // shouldn't become an entry keyed on the empty string.)
+            if nick.isEmpty { return .ignored }
+            return .typing(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                nick: nick,
+                activity: TypingActivity.from(obj.stringOrNull("state")),
+                userhost: obj.stringOrNull("userhost")
+            )
+        }
         if obj.string("type") == "member-update" {
             // A patch with no nick has nobody to apply to.
             guard let member = obj["member"] as? [String: Any], !member.string("nick").isEmpty

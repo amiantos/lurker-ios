@@ -76,6 +76,23 @@ enum ServerFrame: Equatable, Sendable {
     /// reports no known state, which the store reads as `unknown`.
     case peerPresence(networkId: Int, nick: String, state: PresenceState?)
 
+    /// A `typing` ephemeral (rides `irc`, `type:"typing"`): a peer's `+typing` tag, scoped to
+    /// the channel or DM they're composing in. `activity` is nil for `done` and for anything
+    /// unrecognized, which the store reads as "stop showing them".
+    ///
+    /// Our *own* typing never arrives here: under `echo-message` the server sees its own
+    /// TAGMSG reflect back and drops it, case-folded, before publishing
+    /// (`ircConnection.ts:2621`). So the client deliberately does not re-check for self —
+    /// that verdict has an owner, and duplicating it would just be a second place to get the
+    /// case-folding wrong.
+    case typing(
+        networkId: Int?,
+        target: String,
+        nick: String,
+        activity: TypingActivity?,
+        userhost: String?
+    )
+
     /// WS `send-result`: ack for a send/action/notice, keyed by the client's clientId.
     case sendResult(clientId: String?, ok: Bool, error: String?)
 

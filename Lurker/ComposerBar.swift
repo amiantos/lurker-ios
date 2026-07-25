@@ -55,6 +55,15 @@ final class ComposerBar: UIView {
     /// The owner floats the suggestion pills; the bar only reports the token.
     var onCompletion: ((Completion?) -> Void)?
 
+    /// Fired whenever the field's text changes, with the current draft — including the
+    /// programmatic changes (`clear()` after a send, a completion insert), because those are
+    /// changes to what the user is composing too. Drives the outgoing typing signal (#61).
+    var onDraftChange: ((String) -> Void)?
+
+    /// The draft as of the last `onDraftChange`, so a re-measure that changes no text doesn't
+    /// masquerade as an edit. See `textViewDidChange`.
+    private var lastEmittedDraft = ""
+
     var placeholder: String = "" {
         didSet { placeholderLabel.text = placeholder }
     }
@@ -443,6 +452,15 @@ extension ComposerBar: UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         updateSendEnabled()
         emitCompletion()
+        // Only when the text genuinely differs. This method is also called by hand for
+        // *layout* reasons — `updateMetrics()` on a Dynamic Type change, which re-measures the
+        // field without touching a character — and firing the draft hook there would tell the
+        // channel you'd resumed typing because you changed your text size in Control Center.
+        let draft = textView.text ?? ""
+        if draft != lastEmittedDraft {
+            lastEmittedDraft = draft
+            onDraftChange?(draft)
+        }
 
         // Grow to fit the text, up to the cap; past it, hold the height and let the text
         // scroll inside. The floor is one line's height, the same value the pills use, so a
