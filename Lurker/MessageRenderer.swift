@@ -32,7 +32,12 @@ enum MessageRenderer {
     }
 
     /// What captions a bubble's run. Nil leaves it uncaptioned.
-    static func caption(_ message: Message, networkName: String?) -> String? {
+    ///
+    /// `modePrefix` is the speaker's channel-mode glyph (`@`, `+`, …) when
+    /// `look.nick.show_mode_prefix` is on and they're a current member — the caller resolves
+    /// it, because it comes from the nicklist rather than from the message. It prefixes a
+    /// nick only: a network or a notice's `-mark-` isn't a channel member.
+    static func caption(_ message: Message, networkName: String?, modePrefix: String = "") -> String? {
         switch message.type {
         // IRC's own mark for a notice, in the place that names the speaker — the only
         // thing separating "NickServ said this" from "NickServ noticed this".
@@ -41,7 +46,7 @@ enum MessageRenderer {
         case .system: networkName ?? "System"
         // Raw server text has no author but the server itself.
         case .motd, .other: networkName
-        default: message.nick
+        default: message.nick.map { modePrefix + $0 }
         }
     }
 
@@ -71,11 +76,13 @@ enum MessageRenderer {
     /// `traits` flatten the actor's (now trait-keyed) color into the baked `/me` asterisk
     /// image. The caller passes its own live traits rather than letting it fall back to
     /// `UITraitCollection.current`, which isn't reliably set during `cellForRowAt`.
-    static func render(_ message: Message, traits: UITraitCollection = .current) -> NSAttributedString {
+    static func render(
+        _ message: Message, traits: UITraitCollection = .current, settings: Settings = Settings()
+    ) -> NSAttributedString {
         let base = UIFont.preferredFont(forTextStyle: .subheadline)
         return message.type == .action
             ? renderAction(message, base: base, traits: traits)
-            : renderActivity(message, base: base)
+            : renderActivity(message, base: base, settings: settings)
     }
 
     /// "* alice waves" — an asterisk marker, then the actor and what they did, the whole
@@ -108,25 +115,34 @@ enum MessageRenderer {
     /// A structural line — "alice joined", "bob is now bob_afk", "chan set +o dave". The
     /// actor and any nicks it names are colored; the connective words are muted, so the line
     /// reads as narration about the room rather than something someone said in it.
-    private static func renderActivity(_ message: Message, base: UIFont) -> NSAttributedString {
+    private static func renderActivity(
+        _ message: Message, base: UIFont, settings: Settings = Settings()
+    ) -> NSAttributedString {
         let line = NSMutableAttributedString()
         let actor = nickToken(message.nick, isSelf: message.isSelf, base: base)
+        // Both off by default, matching the registry. The account sits between the nick and
+        // the host, as it does on the web (and in weechat, irssi and thelounge).
+        let account = settings.bool("chat.show_join_account", default: false)
+            ? message.account.map { " [\($0)]" } ?? "" : ""
+        let host = settings.bool("chat.show_event_host", default: false)
+            ? message.userHostMask.map { " (\($0))" } ?? "" : ""
         switch message.type {
         case .join:
             line.append(actor)
-            line.append(muted(" joined", base: base))
+            line.append(muted(account + host + " joined", base: base))
         case .part:
             line.append(actor)
-            line.append(muted(" left", base: base))
+            line.append(muted(host + " left", base: base))
             appendReason(message.text, to: line, base: base)
         case .quit:
             line.append(actor)
-            line.append(muted(" quit", base: base))
+            line.append(muted(host + " quit", base: base))
             appendReason(message.text, to: line, base: base)
         case .nick:
             line.append(actor)
             line.append(muted(" is now ", base: base))
             line.append(nickToken(message.newNick, isSelf: message.isSelf, base: base))
+            line.append(muted(host, base: base))
         case .kick:
             line.append(nickToken(message.kicked, base: base))
             line.append(muted(" was kicked by ", base: base))
@@ -136,6 +152,12 @@ enum MessageRenderer {
             line.append(actor)
             line.append(muted(" set ", base: base))
             line.append(muted(modeDescription(message), base: base))
+        case .chghost:
+            // The suffix here is the mask *before* the change — the new one is the body of
+            // the line — which is what makes weechat's "nick (old) has changed host to new"
+            // shape readable.
+            line.append(actor)
+            line.append(muted(host + " changed host to " + message.chghostMask, base: base))
         case .topic:
             line.append(actor)
             line.append(muted(" set the topic", base: base))
@@ -156,13 +178,12 @@ enum MessageRenderer {
         return line
     }
 
-    /// A collapsed run — "alice, bob and 3 others joined; chan set +o dave". Nicks keep
-    /// their colors; the categories, connectives, and mode annotations are muted. Mirrors
-    /// how the web client colors its `NickRef`s and leaves the rest as meta text.
+    /// A collapsed run — "alice, bob and 3 others joined; dave left". Nicks keep their
+    /// colors; the categories and connectives are muted. Mirrors how the web client colors
+    /// its `NickRef`s and leaves the rest as meta text.
     static func renderConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
         let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        var clauses = summary.groups.map { identityClause($0, base: base) }
-        clauses.append(contentsOf: summary.modeGroups.map { modeClause($0, base: base) })
+        let clauses = summary.groups.map { identityClause($0, base: base) }
 
         let line = NSMutableAttributedString()
         for (index, clause) in clauses.enumerated() {
@@ -274,19 +295,6 @@ enum MessageRenderer {
         }
     }
 
-    private static func modeClause(
-        _ mode: ConsolidationSummary.ModeSummary, base: UIFont
-    ) -> NSAttributedString {
-        let clause = NSMutableAttributedString()
-        clause.append(nickToken(mode.setter, base: base))
-        clause.append(muted(" set ", base: base))
-        let changes = mode.changes.map { change in
-            change.params.isEmpty ? change.mode : "\(change.mode) \(change.params.joined(separator: ", "))"
-        }
-        clause.append(muted(changes.joined(separator: ", "), base: base))
-        return clause
-    }
-
     private static func verb(_ kind: ConsolidationSummary.IdentityGroup.Kind) -> String {
         switch kind {
         case .joined: " joined"
@@ -294,6 +302,7 @@ enum MessageRenderer {
         case .reconnected: " reconnected"
         case .joinedAndLeft: " joined briefly"
         case .renamed: "" // the → in the name conveys it
+        case .rehosted: " changed host"
         }
     }
 
@@ -388,6 +397,22 @@ enum MessageRenderer {
     static func timestamp(_ date: Date?) -> String? {
         guard let date else { return nil }
         return timeFormatter.string(from: date)
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .full
+        formatter.timeStyle = .none
+        // "Today"/"Yesterday" where the locale has words for them, the full date otherwise.
+        // The web uses a plain `dateStyle: 'full'` here; this is the platform convention
+        // (Messages, Mail) and it earns its keep on a divider the reader passes every day.
+        formatter.doesRelativeDateFormatting = true
+        return formatter
+    }()
+
+    /// The label on a day-change divider — "Today", "Yesterday", or "Friday, 25 July 2026".
+    static func dayLabel(_ date: Date) -> String {
+        dayFormatter.string(from: date)
     }
 
     // MARK: - Colors

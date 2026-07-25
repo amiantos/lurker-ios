@@ -140,7 +140,8 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
     /// result, not reading links in place.
     func configure(
         _ message: Message, position: RunPosition, networkName: String? = nil,
-        highlighter: NickHighlighter? = nil, showsHighlight: Bool = true, interactive: Bool = true
+        highlighter: NickHighlighter? = nil, showsHighlight: Bool = true, interactive: Bool = true,
+        modePrefix: String = ""
     ) {
         let isSelf = message.isSelf
         // Display-only in a results list: let taps fall through to the row.
@@ -150,7 +151,7 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
 
         // Our own runs need no nick — the side and the tint already say who sent it. Runs
         // break on type, so a caption covers the whole run.
-        let caption = MessageRenderer.caption(message, networkName: networkName)
+        let caption = MessageRenderer.caption(message, networkName: networkName, modePrefix: modePrefix)
         nickLabel.isHidden = isSelf || !position.isFirst || caption == nil
         nickLabel.text = caption
         nickLabel.textColor = MessageRenderer.captionColor(message, networkName: networkName)

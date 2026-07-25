@@ -74,23 +74,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// until the first state lands: this screen is built before there's anything to ask.
     private var pillStatus: StatusLight = .warn
 
-    /// A rendered row. A message is either dialogue (a bubble, carrying where it sits in
-    /// its run) or narration (a full-width line) — see `EventType.isBubble`. A run of
-    /// consecutive membership churn collapses into a single `consolidated` summary line.
-    private enum Row {
-        case bubble(Message, RunPosition)
-        case line(Message)
-        case consolidated(ConsolidationSummary)
-        case unreadDivider
-        /// "alice is typing…" at the foot of the buffer (#61). Not a message: it has no id,
-        /// never anchors a scroll, and disappears without leaving a gap in the record.
-        case typing([String])
-    }
-
     private var messages: [Message] = [] // filtered to what this buffer renders; drives anchoring + mark-read
-    private var rows: [Row] = [] // messages + the unread divider; what the table renders
+    private var rows: [MessageRow] = [] // messages + dividers; what the table renders
     /// Who the store says is composing here, as of the last apply or tick (#61).
     private var typists: [String] = []
+    /// Whether the server has older history left for this buffer, as of the last apply.
+    ///
+    /// Starts true so an unhydrated buffer doesn't claim to have reached its beginning in the
+    /// moment before its first page lands — "no more history" has to be something the server
+    /// told us, not the absence of an answer. Same default the parser applies for the same
+    /// reason (`FrameParser.swift:220`).
+    private var hasMoreOlder = true
     /// The settings in force as of the last apply.
     ///
     /// Snapshotted alongside `typists` rather than read live inside `buildRows`, so every path
@@ -115,6 +109,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var typingIdleTimer: Timer?
     /// Network names, for labelling system lines with the network they're about.
     private var networks: [Int: Network] = [:]
+    /// Lowercased nick → channel-mode glyph (`@`, `+`, …), for the author caption.
+    ///
+    /// Snapshotted per apply rather than looked up per row: `cellForRowAt` runs for every
+    /// visible cell on every reload, and the glyph comes from the nicklist, not the message.
+    /// Empty unless `look.nick.show_mode_prefix` is on — which it isn't by default — so the
+    /// whole feature costs nothing until someone asks for it.
+    private var modePrefixes: [String: String] = [:]
 
     /// Colors known nicks mentioned in message bodies. Rebuilt only when this buffer's
     /// coloring set changes, since compiling the match regex is the costly part.
@@ -372,6 +373,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the count). Anything narrower drops that update and leaves the labels wrong.
         let key = buffer.key.id
         let bufferKey = buffer.key
+        // Captured by value like the keys above: the predicate outlives this call, and it
+        // needs nothing from `self` that can change.
+        let thisBuffer = buffer
         viewModel.statePublisher
             .removeDuplicates { old, new in
                 // One instant for both sides, so the comparison can't disagree with itself
@@ -400,6 +404,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // same trap typing hit: leave it out and a change made on the web does
                     // nothing here until some unrelated frame happens to redraw (#65).
                     && old.settings == new.settings
+                    // The author's mode glyph comes from the nicklist, so an op/deop changes
+                    // what's on screen with no message alongside it — the same trap again.
+                    //
+                    // Compared as the DERIVED glyph map rather than as `members`, for the same
+                    // reason typing compares its rendered list: `Member` carries `away`, and
+                    // with away-notify on a busy channel that flips constantly. Comparing
+                    // members outright would run a full rebuild — consolidation over all of
+                    // history, a reload, the anchor restore — every time anyone stepped away.
+                    // The map is empty (and both sides equal) while the setting is off, which
+                    // is the default, so this costs nothing until someone turns it on.
+                    && Self.modePrefixes(for: old, buffer: thisBuffer)
+                        == Self.modePrefixes(for: new, buffer: thisBuffer)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -527,6 +543,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         messages = updated
         typists = state.typists(in: buffer.key)
         settings = state.settings
+        // Covered by the `old.buffers[key] == new.buffers[key]` arm of the dedupe predicate,
+        // so a buffer whose only change is exhausting its history still reaches us.
+        hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
+        modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
         rebuildRows()
         updateTypingTicker()
         updateTitle(state)
@@ -855,59 +875,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         navigationPill?.refresh(from: self)
     }
 
-    /// Turn the filtered message list into rows: collapse runs of membership churn into
-    /// summary lines, interleave the unread divider before the first message past the read
-    /// boundary, and work out where each surviving bubble sits in its run.
+    /// The channel-mode glyph for each current member, keyed by lowercased nick.
     ///
-    /// The divider only shows when there was a real read point (`dividerAfterId > 0`) and
-    /// something unread — a brand-new buffer with nothing previously read shows none. It is
-    /// a hard break for *both* passes: consolidation must not span it (a run half-read and
-    /// half-new would hide the new arrivals inside a summary), and neither may a bubble run
-    /// (tightened corners across it would knit together the very messages it separates).
-    private func buildRows(from messages: [Message]) -> [Row] {
-        let boundary = dividerAfterId ?? 0
-        let splitIndex = boundary > 0
-            ? messages.firstIndex(where: { $0.id > boundary })
-            : nil
-
-        // Consolidate each side of the divider independently so a run never straddles it.
-        let (before, after): ([Message], [Message]) = splitIndex.map {
-            (Array(messages[..<$0]), Array(messages[$0...]))
-        } ?? (messages, [])
-
-        // Both server-side (#65), so the phone agrees with whatever the user set on the web.
-        // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
-        // user when bootstrap lands a moment after launch.
-        let consolidateEnabled = settings.bool("chat.consolidate_joins", default: true)
-        let maxNames = settings.int("chat.consolidate_max_names", default: 5)
-
-        var rows: [Row] = []
-        func appendConsolidated(_ slice: [Message]) {
-            guard consolidateEnabled else {
-                // Off: every event stands on its own line, exactly as it arrived.
-                rows.append(contentsOf: slice.map { $0.type.isBubble ? .bubble($0, .solo) : .line($0) })
-                return
-            }
-            for row in Consolidation.consolidate(slice, maxNames: maxNames) {
-                switch row {
-                case .summary(let summary):
-                    rows.append(.consolidated(summary))
-                case .passthrough(let message):
-                    rows.append(message.type.isBubble ? .bubble(message, .solo) : .line(message))
-                }
-            }
+    /// Empty — and free — unless `look.nick.show_mode_prefix` is on, and only for channels: a
+    /// DM has no modes, and the server buffer has no members. Members only, deliberately:
+    /// backlog from someone who has since left gets no glyph rather than a guessed one, which
+    /// is what the web does. A member holding no modes is left out entirely, so the lookup
+    /// falls through to "" for them too.
+    private static func modePrefixes(for state: ChatState, buffer: Buffer) -> [String: String] {
+        guard buffer.kind == .channel,
+              state.settings.bool("look.nick.show_mode_prefix", default: false)
+        else { return [:] }
+        var prefixes: [String: String] = [:]
+        for member in state.members[buffer.key.id] ?? [] {
+            let glyph = MemberPrefix.of(member.modes)
+            if !glyph.isEmpty { prefixes[member.nick.lowercased()] = glyph }
         }
-        appendConsolidated(before)
-        if splitIndex != nil { rows.append(.unreadDivider) }
-        appendConsolidated(after)
-
-        // The typing line goes last, below even the newest message — it's the only row that
-        // describes the present rather than the past. Appended *after* the run pass so it
-        // never participates in one: it isn't a bubble, and a run that tried to include it
-        // would re-tighten its corners every time somebody started or stopped typing.
-        var built = withBubbleRuns(rows)
-        if !typists.isEmpty { built.append(.typing(typists)) }
-        return built
+        return prefixes
     }
 
     /// Rebuild `rows` from the current `messages` + `typists`, and re-cache the divider index.
@@ -915,27 +899,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Two callers with different triggers — a state apply and the typing ticker — so the
     /// bookkeeping that has to stay in step with `rows` lives here rather than being repeated
     /// (and eventually forgotten) at each one.
+    ///
+    /// The row stream itself is built in `LurkerKit` (`MessageRows`): it's the
+    /// layout-independent half of the list, so it belongs where a second message-list style
+    /// can reach it — and where it can be tested, which a view controller's private method
+    /// can't be.
     private func rebuildRows() {
-        rows = buildRows(from: messages)
+        rows = MessageRows.build(
+            messages: messages,
+            dividerAfterId: dividerAfterId,
+            hasMoreOlder: hasMoreOlder,
+            typists: typists,
+            settings: settings
+        )
         // Cached so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick and
         // jump-converge hot paths — `rows` only changes here.
         dividerRow = rows.firstIndex { if case .unreadDivider = $0 { return true }; return false }
-    }
-
-    /// Second pass: fill in each bubble's `RunPosition` by looking at its neighbours. Only
-    /// consecutive bubble rows group; a line, a summary, or the divider between two bubbles
-    /// is a non-bubble neighbour and so breaks the run — exactly what we want.
-    private func withBubbleRuns(_ rows: [Row]) -> [Row] {
-        func bubble(at index: Int) -> Message? {
-            guard rows.indices.contains(index), case .bubble(let message, _) = rows[index] else { return nil }
-            return message
-        }
-        return rows.enumerated().map { index, row in
-            guard case .bubble(let message, _) = row else { return row }
-            let isFirst = !MessageGrouping.continuesRun(message, after: bubble(at: index - 1))
-            let isLast = bubble(at: index + 1).map { !MessageGrouping.continuesRun($0, after: message) } ?? true
-            return .bubble(message, RunPosition(isFirst: isFirst, isLast: isLast))
-        }
     }
 
     // MARK: - Scroll anchoring across a history prepend
@@ -947,7 +926,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let viewportTop = tableView.contentOffset.y + tableView.adjustedContentInset.top
         guard let visible = tableView.indexPathsForVisibleRows?.sorted() else { return nil }
         for indexPath in visible {
-            guard rows.indices.contains(indexPath.row), let id = rowAnchorId(rows[indexPath.row]) else { continue }
+            guard rows.indices.contains(indexPath.row), let id = rows[indexPath.row].anchorId else { continue }
             let frame = tableView.rectForRow(at: indexPath)
             // The first row still showing below the viewport top is the one being read.
             if frame.maxY > viewportTop {
@@ -957,33 +936,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return nil
     }
 
-    /// A stable id to anchor a row by. A summary anchors on its *last* event, because a run
-    /// only ever grows upward as older history loads — so its bottom id doesn't move.
-    /// Ephemeral lines (id 0) can't be re-found after a reload, so they don't anchor.
-    private func rowAnchorId(_ row: Row) -> Int? {
-        let id: Int
-        switch row {
-        case .bubble(let message, _): id = message.id
-        case .line(let message): id = message.id
-        case .consolidated(let summary): id = summary.lastId
-        // Neither is a message: there's nothing to re-find after a reload, and anchoring the
-        // viewport to a row that can vanish on a timer would drop the reader when it does.
-        case .unreadDivider, .typing: return nil
-        }
-        return id > 0 ? id : nil
-    }
-
     /// The row that now represents message `id` — its own row, or the summary whose span
     /// covers it after a history page merged it into a consolidated run.
     private func rowIndex(containing id: Int) -> Int? {
-        rows.firstIndex { row in
-            switch row {
-            case .bubble(let message, _): message.id == id
-            case .line(let message): message.id == id
-            case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
-            case .unreadDivider, .typing: false
-            }
-        }
+        rows.firstIndex { $0.represents(id) }
     }
 
     /// How far the newest message sits below the viewport bottom (0 when parked at the tail).
@@ -1742,12 +1698,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         switch rows[indexPath.row] {
         case .unreadDivider:
-            return dividerCell()
+            return markerCell("New messages", color: .systemRed, bold: true)
+        case .dateDivider(let day):
+            return markerCell(MessageRenderer.dayLabel(day), color: .secondaryLabel, bold: false)
+        case .startOfHistory:
+            return markerCell("— start of history —", color: .tertiaryLabel, bold: false)
         case .bubble(let message, let position):
             let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID) as! BubbleCell
             cell.configure(
                 message, position: position, networkName: networkName(for: message),
-                highlighter: nickHighlighter
+                highlighter: nickHighlighter,
+                modePrefix: message.nick.flatMap { modePrefixes[$0.lowercased()] } ?? ""
             )
             // Scrolled into view mid-drag: match the neighbors it's arriving next to.
             cell.setReveal(reveal)
@@ -1758,7 +1719,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // narration and gets the block spacing that sets its run apart from the chat.
             let spacing = message.type.isActivity ? statusBlockSpacing(at: indexPath.row) : (top: 4, bottom: 4)
             cell.configure(
-                MessageRenderer.render(message, traits: traitCollection), date: message.date,
+                MessageRenderer.render(message, traits: traitCollection, settings: settings),
+                date: message.date,
                 topInset: spacing.top, bottomInset: spacing.bottom, highlighted: message.matched
             )
             cell.setReveal(reveal)
@@ -1796,18 +1758,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
     }
 
-    /// Whether the row at `index` is status narration — a consolidated summary or a
-    /// standalone activity line (a join, mode, topic, …), but *not* a `/me` action, which is
-    /// conversation and so breaks a status block rather than joining it.
+    /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range
+    /// reads as "not status", which is what gives the first and last rows their outer edge.
     private func isStatusRow(_ index: Int) -> Bool {
-        guard rows.indices.contains(index) else { return false }
-        switch rows[index] {
-        case .consolidated: return true
-        case .line(let message): return message.type.isActivity
-        // Typing opens its own gap below the conversation rather than joining a status block
-        // — it belongs to the composer's end of the screen, not to the log.
-        case .bubble, .unreadDivider, .typing: return false
-        }
+        rows.indices.contains(index) && rows[index].isStatus
     }
 
     /// What to call the network a nick-less line belongs to.
@@ -1819,14 +1773,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         (message.originNetworkId ?? buffer.networkId).flatMap { networks[$0]?.name }
     }
 
-    private func dividerCell() -> UITableViewCell {
+    /// A centered marker row — the unread divider, a day change, the start of history.
+    ///
+    /// One cell for all three because they're one thing to a reader: a break in the flow that
+    /// names itself. Only the label and its weight differ — the unread marker is the one you
+    /// are meant to find, so it alone is colored and bold; the others are quiet furniture.
+    private func markerCell(_ text: String, color: UIColor, bold: Bool) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "divider")!
         var content = cell.defaultContentConfiguration()
-        content.text = "New messages"
-        content.textProperties.color = .systemRed
+        content.text = text
+        content.textProperties.color = color
         let caption = UIFont.preferredFont(forTextStyle: .caption1)
-        content.textProperties.font = caption.fontDescriptor.withSymbolicTraits(.traitBold)
-            .map { UIFont(descriptor: $0, size: 0) } ?? caption
+        content.textProperties.font = bold
+            ? caption.fontDescriptor.withSymbolicTraits(.traitBold)
+                .map { UIFont(descriptor: $0, size: 0) } ?? caption
+            : caption
         content.textProperties.alignment = .center
         cell.contentConfiguration = content
         cell.backgroundColor = .clear

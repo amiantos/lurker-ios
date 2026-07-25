@@ -25,9 +25,9 @@ import UIKit
 /// still comes from the registry is everything a *control* needs to be correct: the type, the
 /// default, and an int's bounds, so a stepper can't offer a value the server would reject.
 ///
-/// What's here is behavior — what the app *does* with a message, not what it looks like.
-/// Appearance has no rows yet simply because there's nothing implemented for them to drive;
-/// when there is, it belongs in its own section rather than mixed in with these.
+/// Behavior and appearance are separate sections — what the app *does* with a message is a
+/// different question from what the message looks like, and mixing them makes both lists
+/// harder to scan. A key earns a row in either only once the app actually honors it.
 final class SettingsViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -35,7 +35,8 @@ final class SettingsViewController: UITableViewController {
     /// The server settings this screen offers, in display order, with the label to show.
     ///
     /// **Add a key here only when the app honors it.** Each one is wired to real behavior:
-    /// typing to `ChatViewController.emitTyping`, both consolidation keys to `buildRows`. The
+    /// typing to `ChatViewController.emitTyping`, the consolidation keys and the two event
+    /// suffixes to `MessageRows`/`MessageRenderer`, the mode prefix to the bubble caption. The
     /// rest of the registry is deliberately absent — the web is where you configure the things
     /// the phone doesn't implement, and a control for a setting the app ignores is worse than
     /// no control at all.
@@ -43,6 +44,14 @@ final class SettingsViewController: UITableViewController {
         ("chat.send_typing_notifications", "Send typing notifications"),
         ("chat.consolidate_joins", "Consolidate events"),
         ("chat.consolidate_max_names", "Max consolidated nicks"),
+        ("chat.show_event_host", "Show user@host on events"),
+        ("chat.show_join_account", "Show account on joins"),
+    ]
+
+    /// Settings that change how the conversation *looks* rather than what the app does with a
+    /// message. Its own section, so the behavior list above stays a list of behaviors.
+    private static let appearanceSettings: [(key: String, label: String)] = [
+        ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
     ]
 
     /// Keys whose control is dead unless another setting is on — a max-nicks stepper means
@@ -58,6 +67,7 @@ final class SettingsViewController: UITableViewController {
 
     private enum Section {
         case chat([SettingRow])
+        case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
         case account
@@ -109,15 +119,23 @@ final class SettingsViewController: UITableViewController {
         // Only what this server actually knows about. A self-hosted instance updates on its
         // owner's schedule and can legitimately be older than the app, so a key it has never
         // heard of gets no row rather than a control whose write would be rejected.
-        let rows = Self.chatSettings.compactMap { entry in
-            registry[entry.key].map { SettingRow(label: entry.label, option: $0) }
+        func resolve(_ entries: [(key: String, label: String)]) -> [SettingRow] {
+            entries.compactMap { entry in
+                registry[entry.key].map { SettingRow(label: entry.label, option: $0) }
+            }
         }
+        let rows = resolve(Self.chatSettings)
+        let appearanceRows = resolve(Self.appearanceSettings)
         // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
         // silently rendering a Settings screen whose only contents are Sign Out and a version
         // number — which reads as "this app has no settings" instead of "we couldn't load them".
         // `loaded` distinguishes the two: cached *values* are already in force either way, but
         // only a real bootstrap brings the registry the controls are built from.
-        sections = rows.isEmpty ? [.unavailable, .account, .about] : [.chat(rows), .account, .about]
+        // `rows` is the test for a usable registry, not `appearanceRows`: an older server may
+        // legitimately not know an appearance key yet, and an empty section is worse than none.
+        sections = rows.isEmpty
+            ? [.unavailable, .account, .about]
+            : [.chat(rows)] + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)]) + [.account, .about]
         tableView.reloadData()
     }
 
@@ -127,7 +145,7 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
-        case .chat(let rows): rows.count
+        case .chat(let rows), .appearance(let rows): rows.count
         case .unavailable, .account, .about: 1
         }
     }
@@ -135,6 +153,7 @@ final class SettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
         case .chat, .unavailable: "Chat"
+        case .appearance: "Appearance"
         case .account, .about: nil
         }
     }
@@ -146,7 +165,7 @@ final class SettingsViewController: UITableViewController {
         // leaving someone to discover. Everything else the registry would say is reference
         // material, and the web has room for it.
         case .chat: "Saved to your account and applied on every device."
-        case .unavailable, .account, .about: nil
+        case .appearance, .unavailable, .account, .about: nil
         }
     }
 
@@ -158,7 +177,7 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
-        case .chat(let rows):
+        case .chat(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
             // The subtitle slot is otherwise unused, so a failed write can say why right under

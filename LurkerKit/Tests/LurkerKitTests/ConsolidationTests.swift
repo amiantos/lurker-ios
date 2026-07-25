@@ -6,7 +6,7 @@ import XCTest
 @testable import LurkerKit
 
 /// Join consolidation — the net-effect collapse ported from the web client's
-/// `shared/consolidate.ts`, extended so `mode` folds into a run instead of breaking it.
+/// `shared/consolidate.ts`, over the same event set.
 ///
 /// The classification is load-bearing and easy to get subtly wrong (a join-then-part must
 /// read "joined briefly", not "joined"), so the state machine is pinned here rather than
@@ -135,38 +135,66 @@ final class ConsolidationTests: XCTestCase {
         XCTAssertEqual(joined?.hidden, 2)
     }
 
-    // MARK: - Mode folding (the divergence from web)
+    // MARK: - Mode is not consolidatable
 
-    func testALoneModePassesThrough() {
-        let rows = Consolidation.consolidate([msg(.mode, "chan", modes: [ModeChange(mode: "+o", param: "alice")])])
-        XCTAssertEqual(rows.count, 1)
-        guard case .passthrough = rows[0] else { return XCTFail("a single mode must not consolidate") }
-    }
-
-    func testModeDoesNotBreakAJoinRunAndFoldsIn() {
-        // The netsplit-auto-op shape: join, +o, join. On the web the mode would split this
-        // into two summaries; here it's one, with the mode surfaced as its own group.
-        let summary = onlySummary(Consolidation.consolidate([
+    func testModeBreaksTheRun() {
+        // The netsplit-auto-op shape: join, +o, join. Being opped is consequential in a way
+        // join churn isn't, so the mode stands on its own line and splits the run rather
+        // than folding in — matching the web's CONSOLIDATABLE_TYPES.
+        let rows = Consolidation.consolidate([
             msg(.join, "alice"),
             msg(.mode, "chan", modes: [ModeChange(mode: "+o", param: "alice")], at: 1),
             msg(.join, "bob", at: 2),
-        ]))
-        XCTAssertEqual(nicks(group(summary, .joined)), ["alice", "bob"])
-        XCTAssertEqual(summary?.modeGroups.count, 1)
-        XCTAssertEqual(summary?.modeGroups.first?.setter, "chan")
-        XCTAssertEqual(summary?.modeGroups.first?.changes.first?.mode, "+o")
-        XCTAssertEqual(summary?.modeGroups.first?.changes.first?.params, ["alice"])
+        ])
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertFalse(rows.contains { if case .summary = $0 { return true } else { return false } })
     }
 
-    func testSameFlagFromOneSetterMergesTargets() {
-        let summary = onlySummary(Consolidation.consolidate([
+    func testTwoModesDoNotConsolidate() {
+        let rows = Consolidation.consolidate([
             msg(.mode, "chan", modes: [ModeChange(mode: "+o", param: "alice")]),
             msg(.mode, "chan", modes: [ModeChange(mode: "+o", param: "bob")], at: 1),
+        ])
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertFalse(rows.contains { if case .summary = $0 { return true } else { return false } })
+    }
+
+    // MARK: - chghost
+
+    func testTwoChghostsReadAsRehosted() {
+        let summary = onlySummary(Consolidation.consolidate([
+            msg(.chghost, "alice"), msg(.chghost, "bob", at: 1),
         ]))
-        XCTAssertTrue(summary?.groups.isEmpty ?? false, "modes only — no membership groups")
-        XCTAssertEqual(summary?.modeGroups.count, 1)
-        XCTAssertEqual(summary?.modeGroups.first?.changes.count, 1)
-        XCTAssertEqual(summary?.modeGroups.first?.changes.first?.params, ["alice", "bob"])
+        XCTAssertEqual(nicks(group(summary, .rehosted)), ["alice", "bob"])
+    }
+
+    func testChghostIsTransparentToAJoin() {
+        // Post-netsplit each rejoining user emits JOIN then CHGHOST as they identify to
+        // services. That must read as a plain "joined" — not "alice joined; alice changed
+        // host", which would say the same churn twice (web #593).
+        let summary = onlySummary(Consolidation.consolidate([
+            msg(.join, "alice"), msg(.chghost, "alice", at: 1),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .joined)), ["alice"])
+        XCTAssertNil(group(summary, .rehosted))
+    }
+
+    func testARenameOutranksARehost() {
+        // No presence change, so it comes down to which says more: "alice → alice2" does.
+        let summary = onlySummary(Consolidation.consolidate([
+            msg(.chghost, "alice"), msg(.nick, "alice", newNick: "alice2", at: 1),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .renamed)), ["alice2"])
+        XCTAssertNil(group(summary, .rehosted))
+    }
+
+    func testChghostJoinsARunWithJoinsAndParts() {
+        let summary = onlySummary(Consolidation.consolidate([
+            msg(.join, "alice"), msg(.chghost, "bob", at: 1), msg(.quit, "carol", at: 2),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .joined)), ["alice"])
+        XCTAssertEqual(nicks(group(summary, .rehosted)), ["bob"])
+        XCTAssertEqual(nicks(group(summary, .left)), ["carol"])
     }
 
     // MARK: - Summary metadata

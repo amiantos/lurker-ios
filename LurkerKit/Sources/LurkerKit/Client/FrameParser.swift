@@ -354,12 +354,19 @@ enum FrameParser {
             originNetworkId: type == .system ? event.intOrNull("originNetworkId") : nil,
             // The server's `extractExtras` spreads these onto the event for exactly one
             // type each — `newNick` on nick, `kicked` on kick, `invited` on invite, `modes`
-            // on mode. Reading them unconditionally is harmless (they're absent otherwise),
-            // and the renderer only reaches for the one its type implies.
+            // on mode, `newIdent`/`newHost` on chghost, `account` on join. Reading them
+            // unconditionally is harmless (they're absent otherwise), and the renderer only
+            // reaches for the one its type implies.
             newNick: event.stringOrNull("newNick"),
             kicked: event.stringOrNull("kicked"),
             invited: event.stringOrNull("invited"),
-            modes: event.objects("modes").map { ModeChange(mode: $0.string("mode"), param: $0.stringOrNull("param")) }
+            modes: event.objects("modes").map { ModeChange(mode: $0.string("mode"), param: $0.stringOrNull("param")) },
+            newIdent: event.stringOrNull("newIdent"),
+            newHost: event.stringOrNull("newHost"),
+            // Not an extra — a real column on the messages table, so it survives backlog for
+            // every event type that had one (`server/db/messages.ts:157`).
+            userhost: event.stringOrNull("userhost"),
+            account: event.stringOrNull("account")
         )
     }
 }
