@@ -54,6 +54,10 @@ public struct ChatState: Sendable {
     /// quiet without sending anything — so it's left to be cleaned up by the events above
     /// rather than by a sweep that would only exist to tidy a map nobody reads directly.
     public var typing: [String: [String: TypingEntry]] = [:]
+    /// The user's server-side settings (#65). Seeded by `/api/settings/bootstrap` and patched
+    /// by live `settings` frames, so a change made on the web takes effect here without a
+    /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
+    public var settings = Settings()
     public var error: String?
 
     public init() {}
@@ -263,6 +267,22 @@ final class LurkerStore {
                 state, networkId: networkId, target: target,
                 nick: nick, activity: activity, userhost: userhost, now: now
             )
+        case .settingsBootstrap(let registry, let values):
+            var next = state
+            next.settings.load(registry: registry, values: values)
+            return next
+        case .settingsChanged(let changes):
+            var next = state
+            // Patch, never replace — the frame carries only what moved, so assigning it
+            // wholesale would drop every other stored setting until the next bootstrap.
+            next.settings.apply(changes: changes)
+            return next
+        case .settingsValues(let values):
+            var next = state
+            // Replace: this one IS the full stored set, and it can be smaller than what we
+            // hold (see `Settings.replaceValues`).
+            next.settings.replaceValues(values)
+            return next
         case .serverError(let text):
             var next = state
             next.error = text

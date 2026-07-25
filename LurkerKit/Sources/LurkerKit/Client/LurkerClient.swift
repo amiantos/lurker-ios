@@ -112,13 +112,30 @@ final class LurkerClient {
     /// plain REST, and supplies the names the snapshot omits), then open the socket. If
     /// the roster fetch already saw a 401 the token is dead — skip the upgrade.
     func start() async {
-        if await fetchNetworks() { openSocket() }
+        guard await fetchNetworks() else { return }
+        // Detached, so it genuinely cannot hold up the socket. `session` has the default 60s
+        // request timeout, so a server that accepts the connection but stalls on this path — a
+        // slow read, an overloaded cell, a proxy black-holing it — would otherwise leave the
+        // app with no socket, no buffers and no messages for up to a minute on every launch.
+        //
+        // Ordering costs nothing now that values are cached across launches
+        // (`SettingsCache`): the rules are already in force when the first backlog renders, so
+        // there's nothing to wait for and nothing to reflow.
+        Task { await fetchSettings() }
+        openSocket()
     }
 
     /// Reopen the socket after a drop, resuming from `since` so the server ships only the
     /// gap (`?since=N`) rather than re-sending everything. Skips the roster re-fetch —
     /// names don't change and the reconnect snapshot re-sends live network state anyway.
     func reconnect(since: Int) {
+        // Settings are re-fetched here, unlike the network roster.
+        //
+        // They're the one piece of state with no resume path: `settings` frames are live
+        // fan-out only and are never replayed (the resume slice carries messages, not
+        // settings), so a change made on the web while this phone was backgrounded or in
+        // reconnect backoff would otherwise be invisible until the app was relaunched.
+        Task { await fetchSettings() }
         openSocket(since: since)
     }
 
@@ -141,6 +158,80 @@ final class LurkerClient {
             return true
         } catch {
             return true // a network hiccup, not an auth failure — let the socket try
+        }
+    }
+
+    /// `GET /api/settings/bootstrap` → the registry + the user's stored values (#65).
+    ///
+    /// Deliberately does NOT report a 401 the way `fetchNetworks` does. That call is the token
+    /// check and has already run and passed by the time we get here; a 401 on this one would
+    /// mean the token died in the intervening milliseconds, and treating it as an auth failure
+    /// would bounce the user to sign-in over a settings fetch. The socket upgrade is the next
+    /// thing to run and it will find out for itself.
+    private func fetchSettings() async {
+        guard let token, let url = URL(string: baseURL + "/api/settings/bootstrap") else { return }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return }
+            onFrame(FrameParser.parseSettingsBootstrap(text))
+        } catch {
+            // Registry defaults carry the app until the next launch.
+        }
+    }
+
+    /// `PATCH /api/settings` (#65). The server validates against the registry and fans a
+    /// `settings` frame back out to every device — including this one — so the store is
+    /// updated by the echo rather than optimistically here. That keeps one path for "a setting
+    /// changed" whether it came from this phone, the browser, or another device, and means a
+    /// rejected write simply never takes effect rather than needing a rollback.
+    ///
+    /// Returns the server's error message on failure, nil on success.
+    func updateSettings(_ changes: [String: SettingValue]) async -> String? {
+        guard let token, let url = URL(string: baseURL + "/api/settings") else { return "Not signed in." }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = changes.mapValues(\.jsonValue)
+        guard let payload = try? JSONSerialization.data(withJSONObject: ["changes": body]) else {
+            return "Couldn't encode that setting."
+        }
+        request.httpBody = payload
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return "Signed out."
+            }
+            if (200..<300).contains(code) {
+                // Apply the server's own response rather than waiting for the WS echo.
+                //
+                // Both arrive, on separate connections, racing each other. When the HTTP reply
+                // wins — which it routinely does — a caller that rebuilt its UI at that moment
+                // would read the OLD store value and visibly snap the control back before the
+                // frame flipped it forward again. Worse, with the socket down (reconnect
+                // backoff can run to tens of seconds, and `settings` frames are never
+                // replayed) the echo may not arrive at all, leaving a write that succeeded
+                // looking like one that failed.
+                //
+                // `values` is the full stored set, and the reducer patches rather than
+                // replaces, so applying it is idempotent with the echo that follows.
+                if let text = String(data: data, encoding: .utf8) {
+                    onFrame(.settingsValues(FrameParser.parseSettingValues(
+                        FrameParser.jsonObject(from: text)?["values"]
+                    )))
+                }
+                return nil
+            }
+            // The server explains itself on a 400 (`{error, key}`); prefer its wording.
+            let text = String(data: data, encoding: .utf8) ?? ""
+            return FrameParser.errorMessage(from: text) ?? "Couldn't save that setting."
+        } catch {
+            return "Couldn't reach the server."
         }
     }
 

@@ -93,6 +93,20 @@ enum ServerFrame: Equatable, Sendable {
         userhost: String?
     )
 
+    /// REST `GET /api/settings/bootstrap`: the registry plus the user's *stored* values.
+    /// Defaults are not merged in — see `Settings.effective`.
+    case settingsBootstrap(registry: [String: SettingOption], values: [String: SettingValue])
+
+    /// WS `settings`: the keys that just changed, fanned out to every device (including the
+    /// echo of this client's own `PATCH`). A patch, never a full set.
+    case settingsChanged([String: SettingValue])
+
+    /// The `{values}` a REST reply carries (`PATCH /api/settings`) — the user's complete
+    /// stored set, which REPLACES what we hold rather than merging into it. See
+    /// `Settings.replaceValues`: a key set back to its default is dropped server-side, so it
+    /// comes back as an absence that a merge would never notice.
+    case settingsValues([String: SettingValue])
+
     /// WS `send-result`: ack for a send/action/notice, keyed by the client's clientId.
     case sendResult(clientId: String?, ok: Bool, error: String?)
 
