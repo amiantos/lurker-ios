@@ -38,20 +38,36 @@ final class MessageActionsTests: XCTestCase {
         XCTAssertEqual(MessageActions.build(for: msg(type: .action)).map(\.key), [.reply, .copy])
     }
 
-    /// Narration and server text are not: there is nothing useful to do to a join line, and
-    /// "Reply to alice" on one would address a person who didn't say anything.
-    func testNonSpeechOffersNothing() {
-        for type: EventType in [.join, .part, .quit, .nick, .kick, .mode, .topic, .system, .motd, .error] {
+    /// The server's own output — MOTD, system, error — is not speech, so no Reply. But it is the
+    /// text people most often want off the screen, and on iOS this menu is the only way to get it
+    /// (the row menu took the long press from the selection loupe), so Copy has to be there.
+    func testServerTextOffersCopyOnly() {
+        for type: EventType in [.system, .motd, .error, .ctcp, .e2e, .other] {
+            XCTAssertEqual(
+                MessageActions.build(for: msg(type: type, text: "something")).map(\.key), [.copy],
+                "\(type) should offer Copy"
+            )
+        }
+    }
+
+    /// Activity narration offers nothing. Its `text` is a fragment of what's on screen — a part
+    /// reason, a topic — because the line is synthesized from structured fields, so Copy would put
+    /// something other than the pressed line on the pasteboard.
+    func testActivityNarrationOffersNothing() {
+        for type: EventType in [.join, .part, .quit, .nick, .kick, .mode, .topic, .invite, .chghost] {
             XCTAssertTrue(
-                MessageActions.build(for: msg(type: type, text: "something")).isEmpty,
+                MessageActions.build(for: msg(type: type, text: "brb")).isEmpty,
                 "\(type) should offer no actions"
             )
         }
     }
 
-    /// Id 0 is this client's "no id" — an ephemeral line the server has never heard of.
-    func testEphemeralLineOffersNothing() {
-        XCTAssertTrue(MessageActions.build(for: msg(id: 0)).isEmpty)
+    /// Id 0 is this client's "no id" — an ephemeral, locally synthesized line. The server having
+    /// never heard of it doesn't make its text less copyable; the web's id gate belongs to
+    /// Bookmark, which this doesn't ship.
+    func testEphemeralLineStillOffersCopy() {
+        XCTAssertEqual(MessageActions.build(for: msg(id: 0)).map(\.key), [.reply, .copy])
+        XCTAssertEqual(MessageActions.build(for: msg(id: 0, type: .system, nick: nil)).map(\.key), [.copy])
     }
 
     // MARK: - Per-action gating

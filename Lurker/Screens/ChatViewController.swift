@@ -118,6 +118,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Empty unless `look.nick.show_mode_prefix` is on — which it isn't by default — so the
     /// whole feature costs nothing until someone asks for it.
     private var modePrefixes: [String: String] = [:]
+    /// The message an open context menu (#60) was built for. Held because the table `reloadData`s
+    /// on every apply, so the row the menu was raised from can move while it's up — see `menuRow`.
+    private var menuTarget: Message?
 
     /// Colors known nicks mentioned in message bodies. Rebuilt only when this buffer's
     /// coloring set changes, since compiling the match regex is the costly part.
@@ -1745,6 +1748,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let message = rows[indexPath.row].message else { return nil }
         let actions = MessageActions.build(for: message)
         guard !actions.isEmpty else { return nil }
+        menuTarget = message
         return UIContextMenuConfiguration(identifier: indexPath as NSIndexPath, previewProvider: nil) {
             [weak self] _ in
             UIMenu(children: actions.map { action in
@@ -1771,14 +1775,44 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         messagePreview(for: configuration)
     }
 
+    /// The message the open menu belongs to, so its row can be re-found after the table moves
+    /// underneath it. Cleared when the menu goes away.
+    func tableView(
+        _ tableView: UITableView,
+        willEndContextMenuInteraction configuration: UIContextMenuConfiguration,
+        animator: (any UIContextMenuInteractionAnimating)?
+    ) {
+        menuTarget = nil
+    }
+
     /// The view the menu lifts, asked of the cell — see `MessageMenuPreviewing`. Nil falls back to
     /// UIKit's own whole-cell preview, which is the right answer for a cell that has no opinion
     /// and for a row that scrolled out of the table while the menu was up.
     private func messagePreview(for configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
-        guard let indexPath = configuration.identifier as? NSIndexPath,
-              let cell = tableView.cellForRow(at: indexPath as IndexPath) as? MessageMenuPreviewing
+        guard let indexPath = menuRow(for: configuration),
+              let cell = tableView.cellForRow(at: indexPath) as? MessageMenuPreviewing
         else { return nil }
         return cell.menuPreview()
+    }
+
+    /// Which row the open menu's message is on *now*.
+    ///
+    /// Not simply the index path the configuration was built with: every apply calls `reloadData`,
+    /// and a menu can be open across one. A cleared unread divider, a run re-consolidating, or an
+    /// older page prepending all shift the rows under it — and then the stale path resolves to a
+    /// different message, so the dismissal animates the lifted bubble down into somebody else's
+    /// line. Re-finding the message by id is what keeps the lift attached to what was pressed.
+    ///
+    /// `represents` rather than an equality check, because a history page can merge the message
+    /// into a consolidated run, and that summary is where it now lives. Falls back to the original
+    /// path for an ephemeral line (id 0), which has no id to re-find and can't move anyway — it
+    /// only ever sits at the tail.
+    private func menuRow(for configuration: UIContextMenuConfiguration) -> IndexPath? {
+        if let id = menuTarget?.id, id > 0,
+           let row = rows.firstIndex(where: { $0.represents(id) }) {
+            return IndexPath(row: row, section: 0)
+        }
+        return (configuration.identifier as? NSIndexPath) as IndexPath?
     }
 
     /// The platform half of the two actions: the composer, and the pasteboard.
@@ -1786,7 +1820,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         MessageActions.run(
             key, on: message,
             context: MessageActionContext(
-                reply: { [weak self] nick in self?.composer.address(nick) },
+                reply: { [weak self] nick in
+                    // Deferred a turn: this runs from inside the menu's action handler, while the
+                    // menu is still dismissing, and a responder change made in that window doesn't
+                    // reliably take — you'd get `nick: ` in the composer and no keyboard. The web
+                    // defers the same hand-off into a microtask for the same reason
+                    // (`MessageInput.addressInComposer`).
+                    DispatchQueue.main.async { self?.composer.address(nick) }
+                },
                 copy: { UIPasteboard.general.string = $0 }
             )
         )

@@ -22,6 +22,11 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
     /// preview is the text on the system's own card — this only softens its corners.
     private static let previewRadius: CGFloat = 12
 
+    /// Whether the matched-line wash is on, so a lifted `/me` keeps it. The wash lives on
+    /// `contentView`, but the preview targets the text view, so without carrying it across the
+    /// row would flash from warm to plain for the length of the menu and back on dismissal.
+    private var isMatched = false
+
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         selectionStyle = .none
@@ -94,6 +99,7 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
     ) {
         messageText.textContainerInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 12)
         messageText.attributedText = attributed
+        isMatched = highlighted
         contentView.backgroundColor = highlighted ? Palette.highlightBubble : .clear
         revealTime.text = MessageRenderer.timestamp(date)
         // VoiceOver has no drag to make, so the time is spoken as part of the line rather
@@ -112,6 +118,9 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
         parameters.visiblePath = UIBezierPath(
             roundedRect: messageText.bounds, cornerRadius: Self.previewRadius
         )
+        // A matched action carries its wash onto the card, so the lift looks like the row it
+        // came out of instead of flashing plain for the length of the menu.
+        if isMatched { parameters.backgroundColor = Palette.highlightBubble }
         return UITargetedPreview(view: messageText, parameters: parameters)
     }
 

@@ -51,28 +51,44 @@ public struct MessageActionContext {
 /// Bookmark and Ignore are the web's other two and are deliberately absent: bookmarks need the
 /// `set-bookmark`/`bookmark-ids-snapshot` protocol surface nothing here consumes yet, and Ignore
 /// needs rule authoring, which belongs with the screen that applies rules.
+///
+/// One row still ends up with no menu and no selection: a consolidated summary, which stands for
+/// a run of events rather than one message (`MessageRow.message` is nil for it). Its text is
+/// synthesized at render time, so there is no raw string to copy — the same reason activity lines
+/// get no Copy below.
 public enum MessageActions {
 
     /// The actions for `message`, in menu order — empty when the line offers none.
     ///
-    /// Eligibility matches the web's `eligibleForActions`: speech (a message, an action, or a
-    /// notice) carrying a stable server id. Everything else is narration or furniture — a join,
-    /// a topic change, a date divider — which there is nothing useful to do *to*. An id of 0 is
-    /// this client's "no id": an ephemeral, locally synthesized line that the server has never
-    /// heard of.
+    /// Gated per action rather than by one eligibility test, which is a deliberate divergence
+    /// from the web's `eligibleForActions` (speech + a non-null id, for all four of its actions).
+    /// Two reasons the web's gate doesn't transfer:
+    ///
+    ///  - **The id gate is Bookmark's**, and we don't ship Bookmark. Neither Reply nor Copy needs
+    ///    the server to have heard of the line: one addresses a nick, the other reads a string.
+    ///  - **On iOS the menu is the only way to copy at all.** The row menu takes the long press
+    ///    away from the text-selection loupe (see `MessageTextView`), so a line with no menu is a
+    ///    line whose text can't be copied — the web always has drag-select as a floor. Gating
+    ///    Copy on speech would silently strand every MOTD, system and error line in the server
+    ///    buffer, which is exactly the text people reach for.
     public static func build(for message: Message) -> [MessageAction] {
-        guard message.type.isSpeech, message.id > 0 else { return [] }
         var actions: [MessageAction] = []
 
-        // Reply addresses someone. Replying to yourself is meaningless, and a line with no nick
-        // has nobody to address.
-        if let nick = message.nick, !nick.isEmpty, !message.isSelf {
+        // Reply addresses someone, so it stays speech-only: narration names its actor inside the
+        // sentence rather than speaking. Replying to yourself is meaningless, and a line with no
+        // nick has nobody to address.
+        if message.type.isSpeech, let nick = message.nick, !nick.isEmpty, !message.isSelf {
             actions.append(
                 MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
             )
         }
 
-        if let text = message.text, !text.isEmpty {
+        // Copy wants lines whose `text` IS their content. That's everything that isn't activity
+        // narration — speech and all the server's own output. An activity line synthesizes what
+        // you see from structured fields and keeps only a fragment in `text` (a part reason, a
+        // topic), so "Copy Text" on `alice left (brb)` would put `brb` on the pasteboard. Better
+        // to offer nothing than to copy something other than the line you pressed.
+        if !message.type.isActivity, let text = message.text, !text.isEmpty {
             actions.append(MessageAction(key: .copy, title: "Copy Text", symbol: "doc.on.doc"))
         }
 

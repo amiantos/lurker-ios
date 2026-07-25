@@ -275,28 +275,39 @@ struct BubbleRadii {
     /// The outline, walked clockwise from the top-left corner's end. Circular arcs rather than
     /// the continuous curve `cornerConfiguration` draws with — the difference is sub-pixel at
     /// these radii, and this path is only ever a preview's clip and shadow.
+    ///
+    /// Radii are clamped to half the shorter side, which is what `cornerConfiguration` does for
+    /// us and this has to match. It bites on the small bubbles, not the exotic ones: a solo
+    /// one-line bubble is ~35pt tall against two 18pt radii stacked down its side, and a
+    /// one-character bubble is narrower than the two across its top. Unclamped, the segments
+    /// between the arcs run backwards and the arcs bulge outside `bounds` — so the lift would be
+    /// clipped to a silhouette the bubble UIKit actually drew (a capsule) never had.
     func path(in rect: CGRect) -> UIBezierPath {
+        let limit = min(rect.width, rect.height) / 2
+        let (tl, tr) = (min(topLeft, limit), min(topRight, limit))
+        let (br, bl) = (min(bottomRight, limit), min(bottomLeft, limit))
+
         let path = UIBezierPath()
-        path.move(to: CGPoint(x: rect.minX + topLeft, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX - topRight, y: rect.minY))
+        path.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
         path.addArc(
-            withCenter: CGPoint(x: rect.maxX - topRight, y: rect.minY + topRight),
-            radius: topRight, startAngle: -.pi / 2, endAngle: 0, clockwise: true
+            withCenter: CGPoint(x: rect.maxX - tr, y: rect.minY + tr),
+            radius: tr, startAngle: -.pi / 2, endAngle: 0, clockwise: true
         )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRight))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
         path.addArc(
-            withCenter: CGPoint(x: rect.maxX - bottomRight, y: rect.maxY - bottomRight),
-            radius: bottomRight, startAngle: 0, endAngle: .pi / 2, clockwise: true
+            withCenter: CGPoint(x: rect.maxX - br, y: rect.maxY - br),
+            radius: br, startAngle: 0, endAngle: .pi / 2, clockwise: true
         )
-        path.addLine(to: CGPoint(x: rect.minX + bottomLeft, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
         path.addArc(
-            withCenter: CGPoint(x: rect.minX + bottomLeft, y: rect.maxY - bottomLeft),
-            radius: bottomLeft, startAngle: .pi / 2, endAngle: .pi, clockwise: true
+            withCenter: CGPoint(x: rect.minX + bl, y: rect.maxY - bl),
+            radius: bl, startAngle: .pi / 2, endAngle: .pi, clockwise: true
         )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + topLeft))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
         path.addArc(
-            withCenter: CGPoint(x: rect.minX + topLeft, y: rect.minY + topLeft),
-            radius: topLeft, startAngle: .pi, endAngle: 3 * .pi / 2, clockwise: true
+            withCenter: CGPoint(x: rect.minX + tl, y: rect.minY + tl),
+            radius: tl, startAngle: .pi, endAngle: 3 * .pi / 2, clockwise: true
         )
         path.close()
         return path
