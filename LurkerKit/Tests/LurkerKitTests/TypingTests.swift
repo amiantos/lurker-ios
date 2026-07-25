@@ -133,6 +133,70 @@ final class TypingTests: XCTestCase {
         XCTAssertTrue(state.typing.isEmpty)
     }
 
+    // MARK: - Store: a message ends the run (spec clear-condition #1)
+
+    private func live(_ nick: String, _ text: String, id: Int = 1, target: String = "#chan") -> ServerFrame {
+        .live(
+            networkId: 1, target: target,
+            message: Message(id: id, type: .message, nick: nick, text: text, date: t0)
+        )
+    }
+
+    /// The spec's FIRST clear condition, and not an optimization: `typing=done` is only sent
+    /// when the field is cleared *without* sending (`client-tags/typing.md:38`), so a
+    /// conforming client never announces `done` on send. Without this the line stays pinned
+    /// under the message they just posted for the rest of the lease.
+    func testAMessageFromTheTypistClearsThem() {
+        var state = LurkerStore.reduce(stateWithChannel(), typing("alice", "active"), now: t0)
+        state = LurkerStore.reduce(state, live("alice", "hello"), now: t0)
+        XCTAssertEqual(state.typists(in: key, now: t0), [])
+    }
+
+    /// A paused entry is the worst case — a 30s lease with nothing to end it.
+    func testAMessageClearsAPausedTypist() {
+        var state = LurkerStore.reduce(stateWithChannel(), typing("alice", "paused"), now: t0)
+        state = LurkerStore.reduce(state, live("alice", "hello"), now: t0)
+        XCTAssertEqual(state.typists(in: key, now: t0), [])
+    }
+
+    func testAMessageFromSomeoneElseLeavesTheTypist() {
+        var state = LurkerStore.reduce(stateWithChannel(), typing("alice", "active"), now: t0)
+        state = LurkerStore.reduce(state, live("bob", "hi"), now: t0)
+        XCTAssertEqual(state.typists(in: key, now: t0), ["alice"])
+    }
+
+    /// Servers case nicks inconsistently; the message and the tag must still be one person.
+    func testACaseVariantMessageStillClearsTheTypist() {
+        var state = LurkerStore.reduce(stateWithChannel(), typing("alice", "active"), now: t0)
+        state = LurkerStore.reduce(state, live("ALICE", "hello"), now: t0)
+        XCTAssertEqual(state.typists(in: key, now: t0), [])
+    }
+
+    /// The spec's second clear condition — don't leave a ghost typing in a channel they left.
+    func testAPartFromTheTypistClearsThem() {
+        var state = LurkerStore.reduce(stateWithChannel(), typing("alice", "active"), now: t0)
+        let part = ServerFrame.live(
+            networkId: 1, target: "#chan",
+            message: Message(id: 2, type: .part, nick: "alice", text: nil, date: t0)
+        )
+        state = LurkerStore.reduce(state, part, now: t0)
+        XCTAssertEqual(state.typists(in: key, now: t0), [])
+    }
+
+    func testClearingTheLastTypistDropsTheBufferEntry() {
+        var state = LurkerStore.reduce(stateWithChannel(), typing("alice", "active"), now: t0)
+        state = LurkerStore.reduce(state, live("alice", "hello"), now: t0)
+        XCTAssertNil(state.typing[key.id], "an emptied sub-map should not be left behind")
+    }
+
+    func testAMessageLeavesTheOtherTypists() {
+        var state = stateWithChannel()
+        state = LurkerStore.reduce(state, typing("alice", "active"), now: t0)
+        state = LurkerStore.reduce(state, typing("bob", "active"), now: t0)
+        state = LurkerStore.reduce(state, live("alice", "hello"), now: t0)
+        XCTAssertEqual(state.typists(in: key, now: t0), ["bob"])
+    }
+
     // MARK: - Store: the lease
 
     func testActiveEntryExpiresAfterItsLease() {

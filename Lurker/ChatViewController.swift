@@ -361,18 +361,30 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // creates it as "network", the REST roster fills the real name in without changing
         // the count). Anything narrower drops that update and leaves the labels wrong.
         let key = buffer.key.id
+        let bufferKey = buffer.key
         viewModel.statePublisher
-            .removeDuplicates {
-                $0.messages[key] == $1.messages[key]
-                    && $0.buffers[key] == $1.buffers[key]
-                    && $0.error == $1.error
-                    && $0.connection == $1.connection
-                    && $0.reachable == $1.reachable
-                    && $0.networks == $1.networks
+            .removeDuplicates { old, new in
+                // One instant for both sides, so the comparison can't disagree with itself
+                // because a lease happened to lapse between the two reads.
+                let now = Date()
+                return old.messages[key] == new.messages[key]
+                    && old.buffers[key] == new.buffers[key]
+                    && old.error == new.error
+                    && old.connection == new.connection
+                    && old.reachable == new.reachable
+                    && old.networks == new.networks
                     // Typing is this buffer's only state that changes with nothing else
                     // changing alongside it — leave it out and every `typing` frame is
                     // dropped here as a duplicate and the line never appears (#61).
-                    && $0.typing[key] == $1.typing[key]
+                    //
+                    // Compared as the RENDERED list, not as the raw entries. A peer re-sends
+                    // `active` every ~3s while they keep typing, and each one carries a fresh
+                    // `expiresAt` — so comparing entries makes every refresh a change, and
+                    // every refresh would run a full `apply`: consolidation over the entire
+                    // loaded history, a `reloadData`, and the anchor-restore dance. With three
+                    // people typing in a busy channel that's a table reload a second to draw
+                    // a line that hasn't changed. The nick list is what's on screen.
+                    && old.typists(in: bufferKey, now: now) == new.typists(in: bufferKey, now: now)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -1029,18 +1041,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// The guard is what makes a once-a-second timer acceptable: for most ticks nothing has
     /// changed and this costs a dictionary lookup and a comparison, not a table reload.
+    ///
+    /// Redrawing goes through `apply` rather than reloading here, because adding or removing
+    /// a row is exactly the event `apply` already knows how to survive: it re-pins a
+    /// scrolled-up reader to the line they were on (a bare `reloadData` re-estimates
+    /// off-screen row heights and shoves the viewport — the lurch that was fixed in #42), and
+    /// it stays out of the way of a landing that hasn't happened yet, which a direct
+    /// `scrollToBottom` here would steal from a jump mid-converge.
     private func refreshTypists() {
-        let next = viewModel.state.typists(in: buffer.key)
-        guard next != typists else { return }
-        typists = next
-        // A reader parked at the tail should keep seeing the newest message as the line comes
-        // and goes; a reader up in history must not be dragged anywhere by it. Captured
-        // before the reload, since that's what moves the content.
-        let wasNearBottom = isNearBottom
-        rebuildRows()
-        UIView.performWithoutAnimation { tableView.reloadData() }
-        if wasNearBottom { scrollToBottom() }
-        updateTypingTicker()
+        guard viewModel.state.typists(in: buffer.key) != typists else { return }
+        apply(viewModel.state)
     }
 
     /// The draft changed — tell the network, and re-arm the idle downgrade.
@@ -1069,6 +1079,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func emitTyping(_ signal: TypingSignal?) {
         guard let signal else { return }
+        // The privacy switch (see `sendTypingNotifications`). Deliberately checked here, at
+        // the single point every tag leaves through, rather than at the three call sites that
+        // produce them — a gate you can forget to apply is not a privacy control.
+        //
+        // `OutgoingTyping` still advances its state while suppressed, so it believes it said
+        // things it didn't. That's harmless in both directions: nothing is sent while the
+        // switch is off, and turning it on mid-draft costs at most one refresh window (3s)
+        // before the next `active` goes out.
+        guard UserPreferences.standard.sendTypingNotifications else { return }
         viewModel.setTyping(buffer.key, signal: signal)
     }
 

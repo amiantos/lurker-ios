@@ -468,6 +468,24 @@ final class LurkerStore {
         // history replays deliberately don't fold — the snapshot/`names` list is the
         // authoritative baseline those events predate.
         next.members[key] = foldMembership(next.members[key], message)
+        // Anything we hear *from* this nick ends their typing run, and the same seat below
+        // the id de-dupe applies for the same reason.
+        //
+        // This is the spec's first clear condition, not an optimization: `typing=done` is only
+        // sent "when the user clears the text-input field WITHOUT sending a message"
+        // (`client-tags/typing.md:38`), so a conforming client — senpai, Goguma, gamja —
+        // never announces `done` on send. Without this, their message lands and the "alice is
+        // typing…" line stays pinned underneath it for the rest of the lease: 6s after an
+        // `active`, 30s after a `paused`. Lurker-to-Lurker hides the bug, because our own
+        // composer emits a (non-spec) `done` on send.
+        //
+        // Covers the spec's second condition too — a part/quit/kick from someone mid-sentence
+        // clears them rather than leaving a ghost typing in a channel they've left. The web
+        // does the same, keyed off the resolved buffer (`stores/buffers.ts:444`).
+        if let speaker = message.nick?.lowercased(), next.typing[key]?[speaker] != nil {
+            next.typing[key]?.removeValue(forKey: speaker)
+            if next.typing[key]?.isEmpty == true { next.typing[key] = nil }
+        }
         // A detached buffer (showing an `around` slice below the live tail, #42) holds live
         // events out of the log — appending them would splice a hole past the slice. Member
         // and topic state above stays current; only the message log waits, and re-attaching
