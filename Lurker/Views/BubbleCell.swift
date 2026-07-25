@@ -20,6 +20,16 @@ enum TimestampReveal {
     static let maxOffset: CGFloat = 76
 }
 
+/// A cell that can hand the message list's context menu (#60) the view it should lift, and the
+/// shape to lift it in.
+///
+/// Without this the menu lifts the whole `UITableViewCell`, which is the full width of the screen
+/// — so a three-word bubble would rise out of the list inside a platter the size of the row it
+/// happened to be laid out in. Each cell knows which of its subviews is the *message*.
+protocol MessageMenuPreviewing: UITableViewCell {
+    func menuPreview() -> UITargetedPreview
+}
+
 /// A message rendered as a chat bubble: our own tinted and trailing, everyone else's
 /// filled and leading.
 ///
@@ -28,19 +38,22 @@ enum TimestampReveal {
 /// encode a two-party "me vs them" axis, and IRC has neither two parties nor avatars to
 /// lean on, so captioning every line would roughly double the list's height to say the
 /// same thing.
-final class BubbleCell: UITableViewCell, TimestampRevealing {
+final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing {
     static let reuseID = "bubble"
 
     private let column = UIStackView()
     private let nickLabel = UILabel()
     private let bubble = UIView()
-    private let messageText = UITextView()
+    private let messageText = MessageTextView()
     private let revealTime = UILabel()
 
     private var columnTop: NSLayoutConstraint!
     private var columnBottom: NSLayoutConstraint!
     /// Whether this run gives way to the timestamp — see `setReveal`.
     private var slidesAside = false
+    /// The shape this bubble is currently drawn in, kept so the context-menu lift can be cut to
+    /// the same outline (see `menuPreview`) rather than to a rectangle around it.
+    private var radii = BubbleRadii(topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0)
 
     /// How much of the width a bubble may take before wrapping. The rest is the gutter
     /// that makes the leading/trailing axis legible at a glance.
@@ -166,7 +179,8 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         bubble.backgroundColor = (showsHighlight && message.matched)
             ? Palette.highlightBubble
             : (isSelf ? Palette.outgoingBubble : Palette.incomingBubble)
-        bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
+        radii = Self.radii(isSelf: isSelf, position: position)
+        bubble.cornerConfiguration = radii.configuration
         messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
         // A link is body-colored with a soft underline — matching the web client, whose
         // `--link` defaults to the foreground with a 40%-opacity underline. The accent was
@@ -214,16 +228,77 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
     }
 
     /// Round the outside of a run and tighten the side it's stacked along, so a run reads
-    /// as one block. `cornerConfiguration` is iOS 26's — the deployment target is 26.0, so
-    /// there's no fallback path to keep.
-    private static func corners(isSelf: Bool, position: RunPosition) -> UICornerConfiguration {
+    /// as one block.
+    private static func radii(isSelf: Bool, position: RunPosition) -> BubbleRadii {
         let top: CGFloat = position.isFirst ? wideRadius : tightRadius
         let bottom: CGFloat = position.isLast ? wideRadius : tightRadius
-        return .corners(
-            topLeftRadius: .fixed(isSelf ? wideRadius : top),
-            topRightRadius: .fixed(isSelf ? top : wideRadius),
-            bottomLeftRadius: .fixed(isSelf ? wideRadius : bottom),
-            bottomRightRadius: .fixed(isSelf ? bottom : wideRadius)
+        return BubbleRadii(
+            topLeft: isSelf ? wideRadius : top,
+            topRight: isSelf ? top : wideRadius,
+            bottomRight: isSelf ? bottom : wideRadius,
+            bottomLeft: isSelf ? wideRadius : bottom
         )
+    }
+
+    /// Lift the bubble, not the row it sits in — the row is the full width of the screen and
+    /// mostly empty. Cut to the bubble's own outline (`radii`), so a mid-run bubble rises with
+    /// its tightened corners intact instead of inside a rectangle that shows where the corners
+    /// aren't.
+    func menuPreview() -> UITargetedPreview {
+        let parameters = UIPreviewParameters()
+        // The bubble brings its own fill; a platter behind it would only double it up.
+        parameters.backgroundColor = .clear
+        parameters.visiblePath = radii.path(in: bubble.bounds)
+        return UITargetedPreview(view: bubble, parameters: parameters)
+    }
+}
+
+/// A bubble's four corner radii, and the two shapes they're needed in: the corner configuration
+/// that draws the bubble, and the path that cuts its context-menu lift to the same outline.
+struct BubbleRadii {
+    let topLeft: CGFloat
+    let topRight: CGFloat
+    let bottomRight: CGFloat
+    let bottomLeft: CGFloat
+
+    /// `cornerConfiguration` is iOS 26's — the deployment target is 26.0, so there's no fallback
+    /// path to keep.
+    var configuration: UICornerConfiguration {
+        .corners(
+            topLeftRadius: .fixed(topLeft),
+            topRightRadius: .fixed(topRight),
+            bottomLeftRadius: .fixed(bottomLeft),
+            bottomRightRadius: .fixed(bottomRight)
+        )
+    }
+
+    /// The outline, walked clockwise from the top-left corner's end. Circular arcs rather than
+    /// the continuous curve `cornerConfiguration` draws with — the difference is sub-pixel at
+    /// these radii, and this path is only ever a preview's clip and shadow.
+    func path(in rect: CGRect) -> UIBezierPath {
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: rect.minX + topLeft, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX - topRight, y: rect.minY))
+        path.addArc(
+            withCenter: CGPoint(x: rect.maxX - topRight, y: rect.minY + topRight),
+            radius: topRight, startAngle: -.pi / 2, endAngle: 0, clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - bottomRight))
+        path.addArc(
+            withCenter: CGPoint(x: rect.maxX - bottomRight, y: rect.maxY - bottomRight),
+            radius: bottomRight, startAngle: 0, endAngle: .pi / 2, clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX + bottomLeft, y: rect.maxY))
+        path.addArc(
+            withCenter: CGPoint(x: rect.minX + bottomLeft, y: rect.maxY - bottomLeft),
+            radius: bottomLeft, startAngle: .pi / 2, endAngle: .pi, clockwise: true
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + topLeft))
+        path.addArc(
+            withCenter: CGPoint(x: rect.minX + topLeft, y: rect.minY + topLeft),
+            radius: topLeft, startAngle: .pi, endAngle: 3 * .pi / 2, clockwise: true
+        )
+        path.close()
+        return path
     }
 }

@@ -12,11 +12,15 @@ import UIKit
 /// Backed by a `UITextView` rather than a label so auto-linked URLs are actually tappable
 /// (a `UILabel` ignores `.link` interaction) and text is selectable to copy. Non-editable
 /// and non-scrolling so it behaves like a self-sizing label.
-final class LineCell: UITableViewCell, TimestampRevealing {
+final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing {
     static let reuseID = "line"
 
-    private let messageText = UITextView()
+    private let messageText = MessageTextView()
     private let revealTime = UILabel()
+
+    /// How much of a platter a lifted line gets. A line has no bubble to lift, so the menu's
+    /// preview is the text on the system's own card — this only softens its corners.
+    private static let previewRadius: CGFloat = 12
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -97,6 +101,18 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         messageText.accessibilityLabel = [attributed.string, revealTime.text]
             .compactMap { $0 }
             .joined(separator: ", ")
+    }
+
+    /// Lift the line's text, not the cell — the cell reserves the timestamp's gutter (see the
+    /// trailing constraint), and lifting that would put a strip of empty space inside the
+    /// preview. Unlike a bubble this has no fill of its own, so the system's default platter
+    /// stays: it's what makes the lifted line read as a card rather than as text with a shadow.
+    func menuPreview() -> UITargetedPreview {
+        let parameters = UIPreviewParameters()
+        parameters.visiblePath = UIBezierPath(
+            roundedRect: messageText.bounds, cornerRadius: Self.previewRadius
+        )
+        return UITargetedPreview(view: messageText, parameters: parameters)
     }
 
     /// The line itself never moves — only the timestamp does. See the trailing constraint.

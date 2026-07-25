@@ -1724,6 +1724,74 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.verticalScrollIndicatorInsets.bottom = reserved
     }
 
+    // MARK: - Per-message actions (#60)
+
+    /// Long press a message → Reply and Copy Text.
+    ///
+    /// Which actions a line offers is `MessageActions`' call, not this screen's: it lives in
+    /// LurkerKit so the answer is unit-testable without a view controller, and so a second
+    /// message-list style can't drift from this one — neither of them owns the menu. Here we only
+    /// render the descriptors it returns and hand it somewhere to put the effects.
+    ///
+    /// Rows that offer nothing return nil, which is the difference between a long press that does
+    /// nothing visible and one that lifts a date divider out of the list to show an empty menu.
+    ///
+    /// The identifier is the index path, so the preview methods below can find the cell again.
+    func tableView(
+        _ tableView: UITableView,
+        contextMenuConfigurationForRowAt indexPath: IndexPath,
+        point: CGPoint
+    ) -> UIContextMenuConfiguration? {
+        guard let message = rows[indexPath.row].message else { return nil }
+        let actions = MessageActions.build(for: message)
+        guard !actions.isEmpty else { return nil }
+        return UIContextMenuConfiguration(identifier: indexPath as NSIndexPath, previewProvider: nil) {
+            [weak self] _ in
+            UIMenu(children: actions.map { action in
+                UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { _ in
+                    self?.runMessageAction(action.key, on: message)
+                }
+            })
+        }
+    }
+
+    func tableView(
+        _ tableView: UITableView,
+        previewForHighlightingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
+    ) -> UITargetedPreview? {
+        messagePreview(for: configuration)
+    }
+
+    /// The same preview on the way out, so the lifted message settles back into the row it came
+    /// from instead of fading out over it.
+    func tableView(
+        _ tableView: UITableView,
+        previewForDismissingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
+    ) -> UITargetedPreview? {
+        messagePreview(for: configuration)
+    }
+
+    /// The view the menu lifts, asked of the cell — see `MessageMenuPreviewing`. Nil falls back to
+    /// UIKit's own whole-cell preview, which is the right answer for a cell that has no opinion
+    /// and for a row that scrolled out of the table while the menu was up.
+    private func messagePreview(for configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
+        guard let indexPath = configuration.identifier as? NSIndexPath,
+              let cell = tableView.cellForRow(at: indexPath as IndexPath) as? MessageMenuPreviewing
+        else { return nil }
+        return cell.menuPreview()
+    }
+
+    /// The platform half of the two actions: the composer, and the pasteboard.
+    private func runMessageAction(_ key: MessageActionKey, on message: Message) {
+        MessageActions.run(
+            key, on: message,
+            context: MessageActionContext(
+                reply: { [weak self] nick in self?.composer.address(nick) },
+                copy: { UIPasteboard.general.string = $0 }
+            )
+        )
+    }
+
     // MARK: - UITableViewDataSource
 
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {

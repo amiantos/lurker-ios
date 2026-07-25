@@ -301,6 +301,26 @@ final class ComposerBar: UIView {
         replaceToken(range, with: "\(value) ")
     }
 
+    /// Address `nick` at the head of the draft — what Reply does (#60).
+    ///
+    /// Prepends `nick: ` unless the draft already opens that way, keeps whatever was being typed,
+    /// and leaves the caret at the end so you carry on writing rather than in front of your own
+    /// words. Same insertion as the web's `addressInComposer`, so a reply reads identically
+    /// whichever client sent it. Raises the keyboard, because the tap that got here was a request
+    /// to write something.
+    func address(_ nick: String) {
+        guard !nick.isEmpty else { return }
+        let prefix = "\(nick): "
+        let current = textView.text ?? ""
+        let next = current.hasPrefix(prefix) ? current : prefix + current
+        // Caret at the end, not after the prefix: `replaceToken` puts it where it spliced, which
+        // for a prepend is in front of the existing draft.
+        textView.text = next
+        textView.selectedRange = NSRange(location: (next as NSString).length, length: 0)
+        textViewDidChange(textView)
+        becomeFirstResponder()
+    }
+
     /// Drop `text` in at the caret — how a finished upload's URL lands in the field (#14). A
     /// space is added before it when it would otherwise weld onto the preceding word, and one
     /// after it so the caret sits ready for a caption. The user then edits and sends: the
