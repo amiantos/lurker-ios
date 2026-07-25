@@ -385,6 +385,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // people typing in a busy channel that's a table reload a second to draw
                     // a line that hasn't changed. The nick list is what's on screen.
                     && old.typists(in: bufferKey, now: now) == new.typists(in: bufferKey, now: now)
+                    // Settings reshape the rows (consolidation on/off, its name cap) and
+                    // arrive on their own, from another device or the bootstrap fetch — the
+                    // same trap typing hit: leave it out and a change made on the web does
+                    // nothing here until some unrelated frame happens to redraw (#65).
+                    && old.settings == new.settings
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -859,9 +864,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             (Array(messages[..<$0]), Array(messages[$0...]))
         } ?? (messages, [])
 
+        // Both server-side (#65), so the phone agrees with whatever the user set on the web.
+        // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
+        // user when bootstrap lands a moment after launch.
+        let settings = viewModel.state.settings
+        let consolidateEnabled = settings.bool("chat.consolidate_joins", default: true)
+        let maxNames = settings.int("chat.consolidate_max_names", default: 5)
+
         var rows: [Row] = []
         func appendConsolidated(_ slice: [Message]) {
-            for row in Consolidation.consolidate(slice) {
+            guard consolidateEnabled else {
+                // Off: every event stands on its own line, exactly as it arrived.
+                rows.append(contentsOf: slice.map { $0.type.isBubble ? .bubble($0, .solo) : .line($0) })
+                return
+            }
+            for row in Consolidation.consolidate(slice, maxNames: maxNames) {
                 switch row {
                 case .summary(let summary):
                     rows.append(.consolidated(summary))
@@ -1088,15 +1105,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func emitTyping(_ signal: TypingSignal?) {
         guard let signal else { return }
-        // The privacy switch (see `sendTypingNotifications`). Deliberately checked here, at
-        // the single point every tag leaves through, rather than at the three call sites that
-        // produce them — a gate you can forget to apply is not a privacy control.
-        //
-        // `OutgoingTyping` still advances its state while suppressed, so it believes it said
-        // things it didn't. That's harmless in both directions: nothing is sent while the
-        // switch is off, and turning it on mid-draft costs at most one refresh window (3s)
-        // before the next `active` goes out.
-        guard UserPreferences.standard.sendTypingNotifications else { return }
+        // The `chat.send_typing_notifications` privacy gate lives in `setTyping` itself, at
+        // the single point every tag leaves through. `OutgoingTyping` still advances its state
+        // while suppressed, so it believes it said things it didn't — harmless both ways:
+        // nothing goes out while the switch is off, and turning it on mid-draft costs at most
+        // one refresh window (3s) before the next `active`.
         viewModel.setTyping(buffer.key, signal: signal)
     }
 

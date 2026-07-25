@@ -32,6 +32,10 @@ enum FrameParser {
                 ok: obj.bool("ok"),
                 error: obj.stringOrNull("error")
             )
+        case "settings":
+            // `changes` carries only what moved. An empty object is legal (the server sends
+            // `changes || {}`) and simply patches nothing.
+            return .settingsChanged(parseSettingValues(obj["changes"]))
         case "error":
             return .serverError(obj.string("text"))
         case "contacts-snapshot":
@@ -147,6 +151,52 @@ enum FrameParser {
             user: member.stringOrNull("user"),
             host: member.stringOrNull("host")
         )
+    }
+
+    /// The `error` string from a REST failure body (`{error, key}`), when there is one. Lives
+    /// here rather than at the call site because this is the one place that knows the wire
+    /// format — and the server's own wording ("must be one of …", "out of range") is more use
+    /// to the user than anything the caller could invent.
+    static func errorMessage(from text: String) -> String? {
+        object(from: text)?.stringOrNull("error")
+    }
+
+    /// A `{key: value}` blob of settings — the `values` half of bootstrap, and the `changes`
+    /// of a live update. Anything whose value doesn't decode to a `SettingValue` is skipped
+    /// rather than guessed at: a key we can't represent is one we also can't write back.
+    static func parseSettingValues(_ raw: Any?) -> [String: SettingValue] {
+        guard let object = raw as? [String: Any] else { return [:] }
+        return object.reduce(into: [:]) { out, pair in
+            if let value = SettingValue.from(pair.value) { out[pair.key] = value }
+        }
+    }
+
+    /// `GET /api/settings/bootstrap` → `{registry, values}`.
+    ///
+    /// The registry is an ARRAY of options on the wire (it's `REGISTRY` verbatim), keyed here
+    /// so lookups are by key rather than a linear scan per read.
+    static func parseSettingsBootstrap(_ text: String) -> ServerFrame {
+        guard let obj = object(from: text) else { return .ignored }
+        var registry: [String: SettingOption] = [:]
+        for entry in (obj["registry"] as? [[String: Any]]) ?? [] {
+            let key = entry.string("key")
+            guard !key.isEmpty, let type = SettingType(rawValue: entry.string("type")) else { continue }
+            // A registry entry with no usable default is unusable: `effective` would return nil
+            // for an unset key and every caller would silently fall through to its own
+            // fallback, which is the drift this whole layer exists to prevent.
+            guard let defaultValue = entry["default"].flatMap(SettingValue.from) else { continue }
+            registry[key] = SettingOption(
+                key: key,
+                label: entry.string("label"),
+                description: entry.string("description"),
+                type: type,
+                default: defaultValue,
+                choices: (entry["choices"] as? [String]) ?? [],
+                min: entry.intOrNull("min"),
+                max: entry.intOrNull("max")
+            )
+        }
+        return .settingsBootstrap(registry: registry, values: parseSettingValues(obj["values"]))
     }
 
     private static func parseBacklog(_ obj: [String: Any]) -> ServerFrame {

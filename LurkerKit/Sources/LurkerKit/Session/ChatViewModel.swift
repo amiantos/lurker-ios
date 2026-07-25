@@ -308,8 +308,24 @@ public final class ChatViewModel {
     /// Emit a `typing` signal for `key`. Buffers with nobody on the other end — the system
     /// buffer, a `:server:` log — are dropped by the client, which owns that guard for every
     /// conversation-only verb (see `LurkerClient.setTyping`).
+    ///
+    /// Gated on `chat.send_typing_notifications` here rather than at the call site: this is a
+    /// privacy switch, and a gate you have to remember to apply isn't one. The web enforces
+    /// the same setting purely client-side (`MessageInput.vue:544`) — `ircManager.typing` does
+    /// no gating of its own — so honoring it here is the whole mechanism, not half of one.
     public func setTyping(_ key: BufferKey, signal: TypingSignal) {
+        guard store.state.settings.bool("chat.send_typing_notifications", default: true) else { return }
         client.setTyping(networkId: key.networkId, target: key.target, signal: signal)
+    }
+
+    /// Write settings (#65). The server validates, stores, and fans a `settings` frame back to
+    /// every device — this one included — so the store updates from that echo rather than
+    /// optimistically here: one path for "a setting changed", whatever caused it, and a
+    /// rejected write simply never lands instead of needing to be rolled back.
+    ///
+    /// Returns the server's own error message on failure, nil on success.
+    public func updateSettings(_ changes: [String: SettingValue]) async -> String? {
+        await client.updateSettings(changes)
     }
 
     public func joinChannel(networkId: Int, channel: String) {
