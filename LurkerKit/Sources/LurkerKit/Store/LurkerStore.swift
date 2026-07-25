@@ -277,6 +277,12 @@ final class LurkerStore {
             // wholesale would drop every other stored setting until the next bootstrap.
             next.settings.apply(changes: changes)
             return next
+        case .settingsValues(let values):
+            var next = state
+            // Replace: this one IS the full stored set, and it can be smaller than what we
+            // hold (see `Settings.replaceValues`).
+            next.settings.replaceValues(values)
+            return next
         case .serverError(let text):
             var next = state
             next.error = text

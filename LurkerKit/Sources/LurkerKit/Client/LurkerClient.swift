@@ -221,7 +221,7 @@ final class LurkerClient {
                 // `values` is the full stored set, and the reducer patches rather than
                 // replaces, so applying it is idempotent with the echo that follows.
                 if let text = String(data: data, encoding: .utf8) {
-                    onFrame(.settingsChanged(FrameParser.parseSettingValues(
+                    onFrame(.settingsValues(FrameParser.parseSettingValues(
                         FrameParser.jsonObject(from: text)?["values"]
                     )))
                 }

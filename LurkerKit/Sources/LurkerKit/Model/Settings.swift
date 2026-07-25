@@ -30,7 +30,10 @@ public enum SettingValue: Equatable, Sendable {
         }
         if let text = raw as? String { return .string(text) }
         if let list = raw as? [String] { return .stringList(list) }
-        if let list = raw as? [Any] { return .stringList(list.compactMap { $0 as? String }) }
+        // No lossy fallback for a mixed array. `compactMap`-ing the strings out of it would be
+        // coercion wearing a decode's clothing: the value we'd hold — and write back — would be
+        // a different list than the server sent. A key we can't represent exactly is one the
+        // caller should skip, which is what returning nil gets it.
         return nil
     }
 
@@ -153,10 +156,24 @@ public struct Settings: Equatable, Sendable {
         loaded = true
     }
 
-    /// Merge a `settings` change frame (or the echo of our own write). A patch, never a
-    /// replace: the frame carries only what changed (`wsHub.ts:1652`), so overwriting `values`
+    /// Merge a `settings` change frame (or a seed from the cache). A patch, never a replace:
+    /// the frame carries only what changed (`wsHub.ts:1652`), so overwriting `values`
     /// wholesale would drop every other stored setting until the next bootstrap.
     public mutating func apply(changes: [String: SettingValue]) {
         for (key, value) in changes { values[key] = value }
+    }
+
+    /// Replace the stored values with an authoritative full set — the `{values}` a REST reply
+    /// carries.
+    ///
+    /// Distinct from `apply(changes:)` because a full set can be *smaller* than what we hold,
+    /// and merging would miss that. The server drops a row when a key is set back to its
+    /// default — "no override" (`settingsService.ts:72`) — so a `PATCH` that returns to the
+    /// default comes back as an ABSENCE, not as a value. Merged, the old override would
+    /// survive locally (and get persisted to the cache) while the server has none; that's a
+    /// setting stuck at a value the user has just cleared, for as long as it takes another
+    /// bootstrap to land.
+    public mutating func replaceValues(_ next: [String: SettingValue]) {
+        values = next
     }
 }

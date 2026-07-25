@@ -287,10 +287,23 @@ final class SettingsViewController: UITableViewController {
     private func write(_ key: String, _ value: SettingValue) {
         Task { [weak self] in
             guard let self else { return }
-            let failure = await viewModel.updateSettings([key: value])
-            writeError = failure.map { (key, $0) }
-            // Rebuild either way: on success the echo has landed, on failure this puts the
-            // control back to the value the server still holds and surfaces why.
+            guard let failure = await viewModel.updateSettings([key: value]) else {
+                // Success: the client applied the reply's values, so the store changed and the
+                // subscription has already rebuilt (and cleared any error). Rebuilding again
+                // here would just be a second table reload for the same event.
+                //
+                // The exception is a write that changed nothing — setting a value it already
+                // held. The store doesn't move, `removeDuplicates` swallows it, and nothing
+                // clears a rejection left over from last time.
+                if writeError != nil {
+                    writeError = nil
+                    rebuild()
+                }
+                return
+            }
+            // Rejected. Show the server's reason and put the control back to the value it
+            // still holds.
+            writeError = (key, failure)
             rebuild()
         }
     }

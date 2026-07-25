@@ -166,6 +166,59 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(state.settings.string("look.message.layout", default: "auto"), "auto")
     }
 
+    // MARK: - REST `{values}` replaces rather than merges
+
+    /// The server drops a row when a key is set back to its default — "no override"
+    /// (`settingsService.ts:72`) — so a `PATCH` returning to the default comes back as an
+    /// ABSENCE. Merged, the cleared override would survive locally *and* get persisted to the
+    /// cache, leaving a setting stuck at a value the user just cleared.
+    func testRestValuesRemoveAKeyThatIsNoLongerStored() {
+        var state = bootstrapped()
+        XCTAssertEqual(state.settings.bool("chat.consolidate_joins", default: true), false)
+        // The user switches it back on: `true` == the registry default, so the server deletes
+        // the row and its reply omits the key entirely.
+        state = LurkerStore.reduce(state, .settingsValues(["chat.consolidate_max_names": .int(9)]))
+        XCTAssertTrue(
+            state.settings.bool("chat.consolidate_joins", default: true),
+            "a key absent from the full stored set must revert to its default"
+        )
+        XCTAssertNil(state.settings.values["chat.consolidate_joins"])
+        // …and the untouched one is still there.
+        XCTAssertEqual(state.settings.int("chat.consolidate_max_names", default: 5), 9)
+    }
+
+    /// The WS echo of the same write is a patch and arrives separately; applying it after the
+    /// replace must not resurrect anything.
+    func testEchoAfterReplaceIsIdempotent() {
+        var state = bootstrapped()
+        state = LurkerStore.reduce(state, .settingsValues(["chat.consolidate_max_names": .int(9)]))
+        state = LurkerStore.reduce(state, .settingsChanged(["chat.consolidate_joins": .bool(true)]))
+        XCTAssertTrue(state.settings.bool("chat.consolidate_joins", default: false))
+    }
+
+    func testReplaceLeavesTheRegistryAlone() {
+        var state = bootstrapped()
+        state = LurkerStore.reduce(state, .settingsValues([:]))
+        XCTAssertEqual(state.settings.registry.count, 4)
+        // Everything falls back to its default, which is exactly "nothing overridden".
+        XCTAssertEqual(state.settings.int("chat.consolidate_max_names", default: 0), 5)
+    }
+
+    /// A mixed array can't be represented exactly, and `compactMap`-ing the strings out of it
+    /// would mean writing back a different list than the server sent.
+    func testMixedArrayDoesNotDecodeToAPartialList() {
+        XCTAssertNil(SettingValue.from(["a", 1, "b"] as [Any]))
+        XCTAssertEqual(SettingValue.from(["a", "b"]), .stringList(["a", "b"]))
+    }
+
+    func testUnrepresentableValuesAreSkippedNotGuessed() {
+        let values = FrameParser.parseSettingValues([
+            "good": "yes",
+            "bad": ["a", 1] as [Any],
+        ])
+        XCTAssertEqual(values, ["good": .string("yes")])
+    }
+
     // MARK: - The values cache
 
     /// Its own suite, so tests never scribble on the app's defaults.

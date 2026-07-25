@@ -469,7 +469,7 @@ public final class ChatViewModel {
 
     private func handle(_ frame: ServerFrame) {
         switch frame {
-        case .settingsBootstrap, .settingsChanged:
+        case .settingsBootstrap, .settingsChanged, .settingsValues:
             store.apply(frame)
             // Persist after folding, not from the frame: a `settingsChanged` patch carries only
             // what moved, so the cache has to mirror the merged result rather than the delta.
