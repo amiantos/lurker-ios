@@ -176,15 +176,19 @@ enum MessageRenderer {
     ///
     /// Built like a consolidation summary rather than as a bubble: it's narration about the
     /// room, not speech in it, and it has no author to caption. Names keep their palette
-    /// colors so you can pick out who without reading, and the whole line is italic to mark it
-    /// as the one row that isn't a record of anything — nothing was said, and when it goes it
-    /// leaves no trace.
+    /// colors so you can pick out who without reading; the connective text is muted, which
+    /// with the absent timestamp is enough to place it as an aside rather than a record.
+    ///
+    /// Upright, not italic. The line already reads as apart from the conversation — it sits
+    /// below the newest message, carries no bubble and no time — and setting the one row that
+    /// changes most often in a second style made it pull the eye harder than a thing that says
+    /// nothing has earned.
     ///
     /// Returns nil for an empty list so the caller has one thing to check rather than
     /// rendering a stray " is typing…".
     static func renderTyping(_ nicks: [String]) -> NSAttributedString? {
         guard !nicks.isEmpty else { return nil }
-        let base = UIFont.preferredFont(forTextStyle: .subheadline).italic
+        let base = UIFont.preferredFont(forTextStyle: .subheadline)
         // Past three names the list stops being scannable and starts being a wall — the same
         // judgement `Consolidation` makes about a join flood, and the same phrasing.
         let visible = nicks.prefix(3)
