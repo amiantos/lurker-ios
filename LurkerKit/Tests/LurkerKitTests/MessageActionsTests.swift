@@ -115,6 +115,26 @@ final class MessageActionsTests: XCTestCase {
         XCTAssertEqual(fired, 0)
     }
 
+    /// `run` gates on exactly what `build` offers, not on a looser restatement of it. Each of these
+    /// has the field the action needs — a nick, some text — but isn't offered the action, so
+    /// running it anyway would reply to yourself, reply to a server line, or paste the fragment out
+    /// of an activity line ("brb" from `alice left (brb)`).
+    func testRunEnforcesTheSameGateAsBuild() {
+        var fired = 0
+        let ctx = context(reply: { _ in fired += 1 }, copy: { _ in fired += 1 })
+
+        MessageActions.run(.reply, on: msg(isSelf: true), context: ctx)
+        MessageActions.run(.reply, on: msg(type: .motd), context: ctx)
+        MessageActions.run(.reply, on: msg(type: .part, text: "brb"), context: ctx)
+        MessageActions.run(.copy, on: msg(type: .part, text: "brb"), context: ctx)
+        XCTAssertEqual(fired, 0)
+
+        // …and still runs the ones that ARE offered, so the gate isn't just refusing everything.
+        MessageActions.run(.reply, on: msg(), context: ctx)
+        MessageActions.run(.copy, on: msg(), context: ctx)
+        XCTAssertEqual(fired, 2)
+    }
+
     // MARK: - Links
 
     /// A URL is a URL — nothing to gate on, so the list is fixed.

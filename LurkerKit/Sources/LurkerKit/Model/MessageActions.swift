@@ -142,9 +142,17 @@ public enum MessageActions {
         }
     }
 
-    /// Perform `key` against `message`. A no-op when the message lacks what the action needs, so
-    /// a menu built from a stale row can't fire an action on nothing.
+    /// Perform `key` against `message`. A no-op unless `message` actually offers that action, so a
+    /// menu built from a stale row can't fire an action the line doesn't have.
+    ///
+    /// The gate is `build`'s own answer rather than a restatement of its conditions. Restating them
+    /// is how the two drift: Reply here used to require only a nick, so it would have addressed a
+    /// *self* message or a server line — cases `build` rules out — and Copy would have pasted the
+    /// fragment in an activity line's `text` ("brb" from `alice left (brb)`). Neither was reachable
+    /// through the sheet, which offers only what `build` returned, but "unavailable actions are
+    /// no-ops" is the guarantee this function documents, and it wasn't true.
     public static func run(_ key: MessageActionKey, on message: Message, context: MessageActionContext) {
+        guard build(for: message).contains(where: { $0.key == key }) else { return }
         switch key {
         case .reply:
             guard let nick = message.nick, !nick.isEmpty else { return }
