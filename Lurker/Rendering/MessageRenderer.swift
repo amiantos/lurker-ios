@@ -14,6 +14,15 @@ import UIKit
 ///    per run, so they must not also be baked into the text.
 ///  - `render` — the whole line, prefix included, for the events that stay full-width
 ///    (actions, notices, and the system buffer).
+extension NSAttributedString.Key {
+    /// A URL this client will open itself, stamped by `MessageRenderer` and read back by
+    /// `MessageTextView.url(at:)`.
+    ///
+    /// Deliberately not `.link`: that one is UIKit's, and UIKit insists on restyling it. See the
+    /// note where links are marked.
+    static let messageLink = NSAttributedString.Key("chat.lurker.messageLink")
+}
+
 enum MessageRenderer {
 
     // MARK: - Bubbles
@@ -362,11 +371,33 @@ enum MessageRenderer {
             if explicitFg != nil { mircColored.append(NSRange(location: start, length: attributed.length - start)) }
         }
         // Auto-link URLs over the assembled plain text (control codes already stripped).
-        // The cell's `linkTextAttributes` colors + underlines them; here we only mark them.
+        //
+        // Marked with `.messageLink`, NOT `.link`. A UITextView restyles every `.link` range with
+        // its `linkTextAttributes` — one dictionary for the whole view — over whatever the string
+        // says. That can't express what links need here, because the right color depends on the
+        // line: a `/me`'s body is the nick's color (see `action`), a sender's mIRC run is whatever
+        // they chose, and everything else is `.label`. Forcing one color flattened all three, which
+        // is how `/me` links came out white. Nothing needs `.link` anymore — taps are hit-tested
+        // against this key instead (`MessageTextView.url(at:)`) — so the string keeps full control.
+        //
+        // A link therefore takes no color of its own: it's the color of the text around it, with a
+        // dimmed underline, matching the web's `--link` treatment (40% underline).
         var links: [NSRange] = []
         for match in URLMatcher.matches(in: attributed.string) {
             guard let url = URL(string: match.href) else { continue }
-            attributed.addAttribute(.link, value: url, range: match.range)
+            attributed.addAttribute(.messageLink, value: url, range: match.range)
+            // Per color run, not once for the range: a URL can straddle a color change if the
+            // sender put one mid-link, and the underline should follow the text above it.
+            attributed.enumerateAttribute(.foregroundColor, in: match.range) { value, range, _ in
+                let color = (value as? UIColor) ?? .label
+                attributed.addAttributes(
+                    [
+                        .underlineStyle: NSUnderlineStyle.single.rawValue,
+                        .underlineColor: color.withAlphaComponent(0.4),
+                    ],
+                    range: range
+                )
+            }
             links.append(match.range)
         }
         // Color known nicks named in the body, in their palette color — but never over a span

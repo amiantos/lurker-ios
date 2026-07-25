@@ -48,6 +48,17 @@ public enum MessageRow: Equatable, Sendable {
         return id > 0 ? id : nil
     }
 
+    /// The single message this row renders, or nil for a row that renders something else.
+    ///
+    /// A consolidated summary is deliberately nil: it stands for a *run* of events, so there is no
+    /// one message to act on — and the actions a message offers (#60) are all singular.
+    public var message: Message? {
+        switch self {
+        case .bubble(let message, _), .line(let message): message
+        case .consolidated, .unreadDivider, .dateDivider, .startOfHistory, .typing: nil
+        }
+    }
+
     /// Whether this row is status narration — a consolidated summary or a standalone activity
     /// line (a join, mode, topic, …), but *not* a `/me` action, which is conversation and so
     /// breaks a status block rather than joining it.

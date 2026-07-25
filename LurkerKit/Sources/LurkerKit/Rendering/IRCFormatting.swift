@@ -17,6 +17,16 @@ public struct FormattingRun: Equatable, Sendable {
 /// The server stores raw IRC text with the control bytes intact; this turns it into runs.
 public enum IRCFormatting {
 
+    /// `text` with its mIRC control codes removed — what the line *reads* as, rather than what
+    /// came over the wire.
+    ///
+    /// For showing a message somewhere that can't render its formatting: `\u{03}04ALERT\u{03}` is
+    /// red "ALERT" in the list, but pasted into a plain label it reads `04ALERT`, because the 0x03
+    /// is invisible and the color digits are not.
+    public static func strip(_ text: String) -> String {
+        parse(text).map(\.text).joined()
+    }
+
     public static func parse(_ text: String) -> [FormattingRun] {
         var runs: [FormattingRun] = []
         var current = ""

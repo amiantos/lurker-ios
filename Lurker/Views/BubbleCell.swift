@@ -20,6 +20,15 @@ enum TimestampReveal {
     static let maxOffset: CGFloat = 76
 }
 
+/// A cell whose body can say whether a point lands on a link (#60).
+///
+/// The message list hit-tests before deciding what a long press is about — a press on a URL is
+/// about the URL, not the line around it. The cell owns the conversion because only it knows where
+/// its body sits inside the row.
+protocol MessageBodyHosting: UITableViewCell {
+    func linkURL(at point: CGPoint) -> URL?
+}
+
 /// A message rendered as a chat bubble: our own tinted and trailing, everyone else's
 /// filled and leading.
 ///
@@ -28,13 +37,13 @@ enum TimestampReveal {
 /// encode a two-party "me vs them" axis, and IRC has neither two parties nor avatars to
 /// lean on, so captioning every line would roughly double the list's height to say the
 /// same thing.
-final class BubbleCell: UITableViewCell, TimestampRevealing {
+final class BubbleCell: UITableViewCell, TimestampRevealing, MessageBodyHosting {
     static let reuseID = "bubble"
 
     private let column = UIStackView()
     private let nickLabel = UILabel()
     private let bubble = UIView()
-    private let messageText = UITextView()
+    private let messageText = MessageTextView()
     private let revealTime = UILabel()
 
     private var columnTop: NSLayoutConstraint!
@@ -74,9 +83,7 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         revealTime.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(revealTime)
 
-        messageText.isEditable = false
         messageText.isScrollEnabled = false
-        messageText.isSelectable = true // required for tappable links (also enables copy)
         messageText.backgroundColor = .clear
         messageText.textContainerInset = UIEdgeInsets(top: 7, left: 11, bottom: 7, right: 11)
         messageText.textContainer.lineFragmentPadding = 0
@@ -168,15 +175,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
             : (isSelf ? Palette.outgoingBubble : Palette.incomingBubble)
         bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
         messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
-        // A link is body-colored with a soft underline — matching the web client, whose
-        // `--link` defaults to the foreground with a 40%-opacity underline. The accent was
-        // wrong for this: it's the app's voice (send button, own-nick), not the sender's,
-        // and a pink link inside someone's message read as ours.
-        messageText.linkTextAttributes = [
-            .foregroundColor: UIColor.label,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .underlineColor: UIColor.label.withAlphaComponent(0.4),
-        ]
+        // No `linkTextAttributes`: nothing carries `.link` anymore, so there is nothing for UIKit
+        // to restyle. Link appearance is the renderer's (`MessageRenderer`), which is the only
+        // place that knows a `/me`'s body is the nick's color rather than `.label`.
+        messageText.onOpenURL = { url in UIApplication.shared.open(url) }
 
         // Open a gap around a run and hold the messages inside one tight together, so a run
         // reads as a block with space either side rather than as part of the next one.
@@ -189,6 +191,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing {
         messageText.accessibilityLabel = [caption, message.text, revealTime.text]
             .compactMap { $0 }
             .joined(separator: ", ")
+    }
+
+    func linkURL(at point: CGPoint) -> URL? {
+        messageText.url(at: convert(point, to: messageText))
     }
 
     /// Only our own runs give way.

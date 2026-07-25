@@ -1507,6 +1507,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         revealPan.delegate = self
         revealPan.require(toFail: rightEdge)
         tableView.addGestureRecognizer(revealPan)
+
+        // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
+        // so it costs nothing per row and survives reuse — and so whatever draws a message next
+        // doesn't have to remember to attach it. `MessageTextView` refuses its own long presses,
+        // which is what lets this one through over a message body.
+        tableView.addGestureRecognizer(
+            UILongPressGestureRecognizer(target: self, action: #selector(messageLongPressed))
+        )
     }
 
     @objc private func revealPanned(_ pan: UIPanGestureRecognizer) {
@@ -1722,6 +1730,98 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let reserved = max(0, view.bounds.maxY - composer.frame.minY - view.safeAreaInsets.bottom)
         tableView.contentInset.bottom = reserved
         tableView.verticalScrollIndicatorInsets.bottom = reserved
+    }
+
+    // MARK: - Per-message actions (#60)
+
+    /// Long press a message → the actions sheet (`MessageActionsViewController`).
+    ///
+    /// A plain gesture recognizer rather than `contextMenuConfigurationForRowAt`, because a peek is
+    /// a picture of the list and this list is rebuilt (`reloadData`) on every arriving message —
+    /// see the sheet's own note for what that cost. The gesture is on the table, not the cell, so
+    /// it survives cell reuse for free and doesn't have to be re-attached by whatever draws a row.
+    ///
+    /// Which actions a line offers is `MessageActions`' call, not this screen's: it lives in
+    /// LurkerKit so the answer is unit-testable without a view controller, and so a second
+    /// message-list style can't drift from this one — neither of them owns the menu.
+    @objc private func messageLongPressed(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        // A sheet already up (the nick list, buffer info) means this press is somebody's
+        // mis-tap through a dimmed screen, not a request for a second sheet.
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil
+        else { return }
+        let point = recognizer.location(in: tableView)
+        guard let indexPath = tableView.indexPathForRow(at: point), rows.indices.contains(indexPath.row)
+        else { return }
+
+        // A press that lands on a URL is about the URL — the line around it isn't what the finger
+        // was on. Asked of the cell, which is the only thing that knows where its body sits.
+        //
+        // Hit-tested before the row is resolved to a message, not after: a row can render text
+        // without standing for a single message — a consolidated run of topic changes, say — and
+        // a URL in one of those is still a URL you can act on. Gating this on a message first made
+        // long press do nothing at all there, while a plain tap opened the link.
+        let cell = tableView.cellForRow(at: indexPath) as? MessageBodyHosting
+        let url = cell.flatMap { $0.linkURL(at: recognizer.location(in: $0)) }
+        let message = rows[indexPath.row].message
+
+        guard let subject = url.map(MessageActionsViewController.Subject.link)
+            ?? message.map(MessageActionsViewController.Subject.message),
+            let sheet = MessageActionsViewController(subject: subject)
+        else { return }
+
+        // The keyboard would otherwise stay up over the sheet. Every other sheet here opens at
+        // `.medium()` and stays partly visible above it, but this one is sized to two or three
+        // rows — shorter than the keyboard — so it can land entirely behind it, which is the
+        // common case: mid-draft, keyboard up, long-press a line to reply to it.
+        composer.resignFirstResponder()
+
+        // The press has no other visible effect at the moment it fires — the row doesn't lift the
+        // way a peek did — so the tap is what confirms it registered, before the sheet animates in.
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        sheet.onRun = { [weak self] key in
+            guard let self else { return }
+            if let url {
+                runLinkAction(key, on: url)
+            } else if let message {
+                runMessageAction(key, on: message)
+            }
+        }
+        present(sheet, animated: true)
+    }
+
+    /// Open / Copy / Share, for a press that landed on a link.
+    private func runLinkAction(_ key: MessageActionKey, on url: URL) {
+        MessageActions.run(
+            key, on: url,
+            context: LinkActionContext(
+                open: { UIApplication.shared.open($0) },
+                copy: { UIPasteboard.general.url = $0 },
+                share: { [weak self] url in self?.share(url) }
+            )
+        )
+    }
+
+    /// The system share sheet. Anchored to the composer on a regular-width layout, where a
+    /// popover needs somewhere to point — an unanchored one is a runtime trap on iPad, not a
+    /// cosmetic issue.
+    private func share(_ url: URL) {
+        let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        share.popoverPresentationController?.sourceView = composer
+        share.popoverPresentationController?.sourceRect = composer.bounds
+        present(share, animated: true)
+    }
+
+    /// The platform half of the two actions: the composer, and the pasteboard. Called after the
+    /// sheet has finished dismissing, which is what lets Reply raise the keyboard.
+    private func runMessageAction(_ key: MessageActionKey, on message: Message) {
+        MessageActions.run(
+            key, on: message,
+            context: MessageActionContext(
+                reply: { [weak self] nick in self?.composer.address(nick) },
+                copy: { UIPasteboard.general.string = $0 }
+            )
+        )
     }
 
     // MARK: - UITableViewDataSource

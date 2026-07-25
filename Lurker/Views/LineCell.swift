@@ -9,13 +9,14 @@ import UIKit
 /// prefix ("* nick waves", "--", a network name) and read as narration about the room
 /// rather than speech in it, so they stay lines while dialogue becomes bubbles.
 ///
-/// Backed by a `UITextView` rather than a label so auto-linked URLs are actually tappable
-/// (a `UILabel` ignores `.link` interaction) and text is selectable to copy. Non-editable
-/// and non-scrolling so it behaves like a self-sizing label.
-final class LineCell: UITableViewCell, TimestampRevealing {
+/// Backed by a `MessageTextView` rather than a label: TextKit 2 is what makes hit-testing a tapped
+/// URL possible at all, and a `UILabel` exposes no layout to hit-test against. Nothing here is
+/// selectable — copying goes through the long-press actions sheet (#60) — and it's non-scrolling,
+/// so it behaves like a self-sizing label.
+final class LineCell: UITableViewCell, TimestampRevealing, MessageBodyHosting {
     static let reuseID = "line"
 
-    private let messageText = UITextView()
+    private let messageText = MessageTextView()
     private let revealTime = UILabel()
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -31,9 +32,7 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         revealTime.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(revealTime)
 
-        messageText.isEditable = false
         messageText.isScrollEnabled = false
-        messageText.isSelectable = true // required for tappable links (also enables copy)
         messageText.backgroundColor = .clear
         messageText.textColor = .label // dynamic fallback for any run without an explicit color
         // No left inset here: the leading edge is set by pinning to the same layout-margin
@@ -41,13 +40,10 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         // bubble edges rather than sitting a couple points inside them off its own inset.
         messageText.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 12)
         messageText.textContainer.lineFragmentPadding = 0
-        // Body-colored with a soft underline, matching the web's `--link` default and the
-        // bubbles' links (see BubbleCell) — the underline alone marks it.
-        messageText.linkTextAttributes = [
-            .foregroundColor: UIColor.label,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .underlineColor: UIColor.label.withAlphaComponent(0.4),
-        ]
+        // No `linkTextAttributes`: nothing carries `.link` anymore, so there is nothing for UIKit
+        // to restyle. Link appearance is the renderer's (`MessageRenderer`), which is the only
+        // place that knows a `/me`'s body is the nick's color rather than `.label`.
+        messageText.onOpenURL = { url in UIApplication.shared.open(url) }
         messageText.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(messageText)
         NSLayoutConstraint.activate([
@@ -97,6 +93,10 @@ final class LineCell: UITableViewCell, TimestampRevealing {
         messageText.accessibilityLabel = [attributed.string, revealTime.text]
             .compactMap { $0 }
             .joined(separator: ", ")
+    }
+
+    func linkURL(at point: CGPoint) -> URL? {
+        messageText.url(at: convert(point, to: messageText))
     }
 
     /// The line itself never moves — only the timestamp does. See the trailing constraint.
