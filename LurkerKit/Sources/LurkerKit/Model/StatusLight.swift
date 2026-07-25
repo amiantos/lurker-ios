@@ -28,9 +28,10 @@ extension StatusLight {
     /// `network` is nil for the system buffer, whose whole story is the socket — so once
     /// the socket is up, it's green.
     ///
-    /// DM buffers deliberately pass their *network's* state like a channel does. Real
-    /// peer presence ("is this nick online right now") is 1.1 (APP_1.0_SCOPE.md defers
-    /// it), and it slots into this same dot as an extra inner layer without a redesign.
+    /// DM buffers deliberately pass their *network's* state like a channel does. Real peer
+    /// presence ("is this nick online right now") reaches the app now — the friends list shows
+    /// it — but this dot doesn't read it yet; that's #55. It slots in as an extra inner layer
+    /// without a redesign.
     public static func of(
         reachable: Bool,
         connection: SocketStatus,

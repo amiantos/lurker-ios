@@ -132,8 +132,9 @@ public struct Settings: Equatable, Sendable {
     }
 
     /// `effective` with a caller-supplied fallback for the window before bootstrap returns —
-    /// and for a server too old to know the key at all, which is a real case for a self-hosted
-    /// instance running behind the app (`APP_1.0_SCOPE.md`: a server may legitimately be older).
+    /// and for a server too old to know the key at all. That second case is real rather than
+    /// defensive: a self-hosted instance updates on its owner's schedule, so it can legitimately
+    /// be older than the app talking to it, and a key it has never heard of is normal.
     ///
     /// The fallback should be the same default the registry carries, so behavior doesn't shift
     /// under the user when bootstrap lands a moment after launch.

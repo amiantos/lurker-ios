@@ -25,8 +25,9 @@ import UIKit
 /// still comes from the registry is everything a *control* needs to be correct: the type, the
 /// default, and an int's bounds, so a stepper can't offer a value the server would reject.
 ///
-/// Visual customization stays out of 1.0 (`APP_1.0_SCOPE.md`); these are behavior knobs the
-/// app already implements.
+/// What's here is behavior — what the app *does* with a message, not what it looks like.
+/// Appearance has no rows yet simply because there's nothing implemented for them to drive;
+/// when there is, it belongs in its own section rather than mixed in with these.
 final class SettingsViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
@@ -105,9 +106,9 @@ final class SettingsViewController: UITableViewController {
 
     private func rebuild() {
         let registry = viewModel.state.settings.registry
-        // Only what this server actually knows about. A self-hosted instance can legitimately
-        // be older than the app (`APP_1.0_SCOPE.md`), so a key it's never heard of gets no row
-        // rather than a control whose write would be rejected.
+        // Only what this server actually knows about. A self-hosted instance updates on its
+        // owner's schedule and can legitimately be older than the app, so a key it has never
+        // heard of gets no row rather than a control whose write would be rejected.
         let rows = Self.chatSettings.compactMap { entry in
             registry[entry.key].map { SettingRow(label: entry.label, option: $0) }
         }
