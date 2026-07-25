@@ -118,9 +118,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Empty unless `look.nick.show_mode_prefix` is on — which it isn't by default — so the
     /// whole feature costs nothing until someone asks for it.
     private var modePrefixes: [String: String] = [:]
-    /// The message an open context menu (#60) was built for. Held because the table `reloadData`s
-    /// on every apply, so the row the menu was raised from can move while it's up — see `menuRow`.
-    private var menuTarget: Message?
 
     /// Colors known nicks mentioned in message bodies. Rebuilt only when this buffer's
     /// coloring set changes, since compiling the match regex is the costly part.
@@ -1510,6 +1507,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         revealPan.delegate = self
         revealPan.require(toFail: rightEdge)
         tableView.addGestureRecognizer(revealPan)
+
+        // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
+        // so it costs nothing per row and survives reuse — and so whatever draws a message next
+        // doesn't have to remember to attach it. `MessageTextView` refuses its own long presses,
+        // which is what lets this one through over a message body.
+        tableView.addGestureRecognizer(
+            UILongPressGestureRecognizer(target: self, action: #selector(messageLongPressed))
+        )
     }
 
     @objc private func revealPanned(_ pan: UIPanGestureRecognizer) {
@@ -1729,105 +1734,75 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Per-message actions (#60)
 
-    /// Long press a message → Reply and Copy Text.
+    /// Long press a message → the actions sheet (`MessageActionsViewController`).
+    ///
+    /// A plain gesture recognizer rather than `contextMenuConfigurationForRowAt`, because a peek is
+    /// a picture of the list and this list is rebuilt (`reloadData`) on every arriving message —
+    /// see the sheet's own note for what that cost. The gesture is on the table, not the cell, so
+    /// it survives cell reuse for free and doesn't have to be re-attached by whatever draws a row.
     ///
     /// Which actions a line offers is `MessageActions`' call, not this screen's: it lives in
     /// LurkerKit so the answer is unit-testable without a view controller, and so a second
-    /// message-list style can't drift from this one — neither of them owns the menu. Here we only
-    /// render the descriptors it returns and hand it somewhere to put the effects.
-    ///
-    /// Rows that offer nothing return nil, which is the difference between a long press that does
-    /// nothing visible and one that lifts a date divider out of the list to show an empty menu.
-    ///
-    /// The identifier is the index path, so the preview methods below can find the cell again.
-    func tableView(
-        _ tableView: UITableView,
-        contextMenuConfigurationForRowAt indexPath: IndexPath,
-        point: CGPoint
-    ) -> UIContextMenuConfiguration? {
-        guard let message = rows[indexPath.row].message else { return nil }
-        let actions = MessageActions.build(for: message)
-        guard !actions.isEmpty else { return nil }
-        menuTarget = message
-        return UIContextMenuConfiguration(identifier: indexPath as NSIndexPath, previewProvider: nil) {
-            [weak self] _ in
-            UIMenu(children: actions.map { action in
-                UIAction(title: action.title, image: UIImage(systemName: action.symbol)) { _ in
-                    self?.runMessageAction(action.key, on: message)
-                }
-            })
+    /// message-list style can't drift from this one — neither of them owns the menu.
+    @objc private func messageLongPressed(_ recognizer: UILongPressGestureRecognizer) {
+        guard recognizer.state == .began else { return }
+        // A sheet already up (the nick list, buffer info) means this press is somebody's
+        // mis-tap through a dimmed screen, not a request for a second sheet.
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil
+        else { return }
+        let point = recognizer.location(in: tableView)
+        guard let indexPath = tableView.indexPathForRow(at: point),
+              rows.indices.contains(indexPath.row),
+              let message = rows[indexPath.row].message
+        else { return }
+
+        // A press that lands on a URL is about the URL — the line around it isn't what the finger
+        // was on. Asked of the cell, which is the only thing that knows where its body sits.
+        let cell = tableView.cellForRow(at: indexPath) as? MessageBodyHosting
+        let url = cell.flatMap { $0.linkURL(at: recognizer.location(in: $0)) }
+
+        let subject: MessageActionsViewController.Subject = url.map { .link($0) } ?? .message(message)
+        guard let sheet = MessageActionsViewController(subject: subject) else { return }
+
+        // The press has no other visible effect at the moment it fires — the row doesn't lift the
+        // way a peek did — so the tap is what confirms it registered, before the sheet animates in.
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        sheet.onRun = { [weak self] key in
+            guard let self else { return }
+            if let url { runLinkAction(key, on: url) } else { runMessageAction(key, on: message) }
         }
+        present(sheet, animated: true)
     }
 
-    func tableView(
-        _ tableView: UITableView,
-        previewForHighlightingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
-    ) -> UITargetedPreview? {
-        messagePreview(for: configuration)
+    /// Open / Copy / Share, for a press that landed on a link.
+    private func runLinkAction(_ key: MessageActionKey, on url: URL) {
+        MessageActions.run(
+            key, on: url,
+            context: LinkActionContext(
+                open: { UIApplication.shared.open($0) },
+                copy: { UIPasteboard.general.url = $0 },
+                share: { [weak self] url in self?.share(url) }
+            )
+        )
     }
 
-    /// The same preview on the way out, so the lifted message settles back into the row it came
-    /// from instead of fading out over it.
-    func tableView(
-        _ tableView: UITableView,
-        previewForDismissingContextMenuWithConfiguration configuration: UIContextMenuConfiguration
-    ) -> UITargetedPreview? {
-        messagePreview(for: configuration)
+    /// The system share sheet. Anchored to the composer on a regular-width layout, where a
+    /// popover needs somewhere to point — an unanchored one is a runtime trap on iPad, not a
+    /// cosmetic issue.
+    private func share(_ url: URL) {
+        let share = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        share.popoverPresentationController?.sourceView = composer
+        share.popoverPresentationController?.sourceRect = composer.bounds
+        present(share, animated: true)
     }
 
-    /// The message the open menu belongs to, so its row can be re-found after the table moves
-    /// underneath it. Cleared when the menu goes away.
-    func tableView(
-        _ tableView: UITableView,
-        willEndContextMenuInteraction configuration: UIContextMenuConfiguration,
-        animator: (any UIContextMenuInteractionAnimating)?
-    ) {
-        menuTarget = nil
-    }
-
-    /// The view the menu lifts, asked of the cell — see `MessageMenuPreviewing`. Nil falls back to
-    /// UIKit's own whole-cell preview, which is the right answer for a cell that has no opinion
-    /// and for a row that scrolled out of the table while the menu was up.
-    private func messagePreview(for configuration: UIContextMenuConfiguration) -> UITargetedPreview? {
-        guard let indexPath = menuRow(for: configuration),
-              let cell = tableView.cellForRow(at: indexPath) as? MessageMenuPreviewing
-        else { return nil }
-        return cell.menuPreview()
-    }
-
-    /// Which row the open menu's message is on *now*.
-    ///
-    /// Not simply the index path the configuration was built with: every apply calls `reloadData`,
-    /// and a menu can be open across one. A cleared unread divider, a run re-consolidating, or an
-    /// older page prepending all shift the rows under it — and then the stale path resolves to a
-    /// different message, so the dismissal animates the lifted bubble down into somebody else's
-    /// line. Re-finding the message by id is what keeps the lift attached to what was pressed.
-    ///
-    /// `represents` rather than an equality check, because a history page can merge the message
-    /// into a consolidated run, and that summary is where it now lives. Falls back to the original
-    /// path for an ephemeral line (id 0), which has no id to re-find and can't move anyway — it
-    /// only ever sits at the tail.
-    private func menuRow(for configuration: UIContextMenuConfiguration) -> IndexPath? {
-        if let id = menuTarget?.id, id > 0,
-           let row = rows.firstIndex(where: { $0.represents(id) }) {
-            return IndexPath(row: row, section: 0)
-        }
-        return (configuration.identifier as? NSIndexPath) as IndexPath?
-    }
-
-    /// The platform half of the two actions: the composer, and the pasteboard.
+    /// The platform half of the two actions: the composer, and the pasteboard. Called after the
+    /// sheet has finished dismissing, which is what lets Reply raise the keyboard.
     private func runMessageAction(_ key: MessageActionKey, on message: Message) {
         MessageActions.run(
             key, on: message,
             context: MessageActionContext(
-                reply: { [weak self] nick in
-                    // Deferred a turn: this runs from inside the menu's action handler, while the
-                    // menu is still dismissing, and a responder change made in that window doesn't
-                    // reliably take — you'd get `nick: ` in the composer and no keyboard. The web
-                    // defers the same hand-off into a microtask for the same reason
-                    // (`MessageInput.addressInComposer`).
-                    DispatchQueue.main.async { self?.composer.address(nick) }
-                },
+                reply: { [weak self] nick in self?.composer.address(nick) },
                 copy: { UIPasteboard.general.string = $0 }
             )
         )

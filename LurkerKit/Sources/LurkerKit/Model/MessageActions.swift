@@ -8,6 +8,11 @@ import Foundation
 public enum MessageActionKey: String, Sendable {
     case reply
     case copy
+    // A long press that lands on a link is about the link, not the line it's in — see
+    // `MessageActions.build(for url:)`.
+    case openLink
+    case copyLink
+    case shareLink
 }
 
 /// One entry in a message's action menu.
@@ -39,6 +44,23 @@ public struct MessageActionContext {
     public init(reply: @escaping (String) -> Void, copy: @escaping (String) -> Void) {
         self.reply = reply
         self.copy = copy
+    }
+}
+
+/// Where a link action's effects go — all three are the platform's, none of them this package's.
+public struct LinkActionContext {
+    public let open: (URL) -> Void
+    public let copy: (URL) -> Void
+    public let share: (URL) -> Void
+
+    public init(
+        open: @escaping (URL) -> Void,
+        copy: @escaping (URL) -> Void,
+        share: @escaping (URL) -> Void
+    ) {
+        self.open = open
+        self.copy = copy
+        self.share = share
     }
 }
 
@@ -95,6 +117,31 @@ public enum MessageActions {
         return actions
     }
 
+    /// The actions for a link, when the press landed on one rather than on the line around it.
+    ///
+    /// A fixed list — a URL is a URL, there's nothing to gate on. It's here beside the message
+    /// actions rather than in the sheet that draws it for the same reason as the rest: the second
+    /// message-list style should offer the same three things without either style deciding.
+    public static func build(for url: URL) -> [MessageAction] {
+        [
+            MessageAction(key: .openLink, title: "Open Link", symbol: "safari"),
+            MessageAction(key: .copyLink, title: "Copy Link", symbol: "doc.on.doc"),
+            MessageAction(key: .shareLink, title: "Share Link", symbol: "square.and.arrow.up"),
+        ]
+    }
+
+    /// Perform `key` against `url`. Keys that aren't a link's are ignored rather than trapped —
+    /// the two menus are rendered by one screen, and a mismatch there is a bug in the caller, not
+    /// something worth crashing a chat client over.
+    public static func run(_ key: MessageActionKey, on url: URL, context: LinkActionContext) {
+        switch key {
+        case .openLink: context.open(url)
+        case .copyLink: context.copy(url)
+        case .shareLink: context.share(url)
+        case .reply, .copy: break
+        }
+    }
+
     /// Perform `key` against `message`. A no-op when the message lacks what the action needs, so
     /// a menu built from a stale row can't fire an action on nothing.
     public static func run(_ key: MessageActionKey, on message: Message, context: MessageActionContext) {
@@ -107,6 +154,10 @@ public enum MessageActions {
             // was typed — mIRC color codes and all — not this client's rendering of it.
             guard let text = message.text, !text.isEmpty else { return }
             context.copy(text)
+        case .openLink, .copyLink, .shareLink:
+            // A link's keys, dispatched by the `URL` overload. Ignored rather than trapped: one
+            // screen renders both menus, and a mismatch is a caller bug, not a reason to crash.
+            break
         }
     }
 }

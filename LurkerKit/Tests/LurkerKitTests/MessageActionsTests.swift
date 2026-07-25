@@ -115,6 +115,46 @@ final class MessageActionsTests: XCTestCase {
         XCTAssertEqual(fired, 0)
     }
 
+    // MARK: - Links
+
+    /// A URL is a URL — nothing to gate on, so the list is fixed.
+    func testLinkOffersOpenCopyShare() {
+        let actions = MessageActions.build(for: URL(string: "https://example.com")!)
+        XCTAssertEqual(actions.map(\.key), [.openLink, .copyLink, .shareLink])
+        XCTAssertEqual(actions.map(\.title), ["Open Link", "Copy Link", "Share Link"])
+    }
+
+    func testLinkActionsDispatchToTheirHandlers() {
+        let url = URL(string: "https://example.com/thing")!
+        var opened: [URL] = [], copied: [URL] = [], shared: [URL] = []
+        let ctx = LinkActionContext(
+            open: { opened.append($0) }, copy: { copied.append($0) }, share: { shared.append($0) }
+        )
+        MessageActions.run(.openLink, on: url, context: ctx)
+        MessageActions.run(.copyLink, on: url, context: ctx)
+        MessageActions.run(.shareLink, on: url, context: ctx)
+        XCTAssertEqual(opened, [url])
+        XCTAssertEqual(copied, [url])
+        XCTAssertEqual(shared, [url])
+    }
+
+    /// One screen renders both menus, so each dispatcher has to ignore the other's keys rather
+    /// than trap on them.
+    func testKeysFromTheOtherMenuAreIgnored() {
+        let url = URL(string: "https://example.com")!
+        let linkContext = LinkActionContext(
+            open: { _ in XCTFail("unexpected open") },
+            copy: { _ in XCTFail("unexpected copy") },
+            share: { _ in XCTFail("unexpected share") }
+        )
+        MessageActions.run(.reply, on: url, context: linkContext)
+        MessageActions.run(.copy, on: url, context: linkContext)
+
+        for key: MessageActionKey in [.openLink, .copyLink, .shareLink] {
+            MessageActions.run(key, on: msg(), context: context())
+        }
+    }
+
     private func context(
         reply: @escaping (String) -> Void = { nick in XCTFail("unexpected reply: \(nick)") },
         copy: @escaping (String) -> Void = { text in XCTFail("unexpected copy: \(text)") }

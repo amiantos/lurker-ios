@@ -12,20 +12,11 @@ import UIKit
 /// Backed by a `UITextView` rather than a label so auto-linked URLs are actually tappable
 /// (a `UILabel` ignores `.link` interaction) and text is selectable to copy. Non-editable
 /// and non-scrolling so it behaves like a self-sizing label.
-final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing {
+final class LineCell: UITableViewCell, TimestampRevealing, MessageBodyHosting {
     static let reuseID = "line"
 
     private let messageText = MessageTextView()
     private let revealTime = UILabel()
-
-    /// How much of a platter a lifted line gets. A line has no bubble to lift, so the menu's
-    /// preview is the text on the system's own card — this only softens its corners.
-    private static let previewRadius: CGFloat = 12
-
-    /// Whether the matched-line wash is on, so a lifted `/me` keeps it. The wash lives on
-    /// `contentView`, but the preview targets the text view, so without carrying it across the
-    /// row would flash from warm to plain for the length of the menu and back on dismissal.
-    private var isMatched = false
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -40,9 +31,7 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
         revealTime.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(revealTime)
 
-        messageText.isEditable = false
         messageText.isScrollEnabled = false
-        messageText.isSelectable = true // required for tappable links (also enables copy)
         messageText.backgroundColor = .clear
         messageText.textColor = .label // dynamic fallback for any run without an explicit color
         // No left inset here: the leading edge is set by pinning to the same layout-margin
@@ -50,13 +39,10 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
         // bubble edges rather than sitting a couple points inside them off its own inset.
         messageText.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 12)
         messageText.textContainer.lineFragmentPadding = 0
-        // Body-colored with a soft underline, matching the web's `--link` default and the
-        // bubbles' links (see BubbleCell) — the underline alone marks it.
-        messageText.linkTextAttributes = [
-            .foregroundColor: UIColor.label,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .underlineColor: UIColor.label.withAlphaComponent(0.4),
-        ]
+        // No `linkTextAttributes`: nothing carries `.link` anymore, so there is nothing for UIKit
+        // to restyle. Link appearance is the renderer's (`MessageRenderer`), which is the only
+        // place that knows a `/me`'s body is the nick's color rather than `.label`.
+        messageText.onOpenURL = { url in UIApplication.shared.open(url) }
         messageText.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(messageText)
         NSLayoutConstraint.activate([
@@ -99,7 +85,6 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
     ) {
         messageText.textContainerInset = UIEdgeInsets(top: topInset, left: 0, bottom: bottomInset, right: 12)
         messageText.attributedText = attributed
-        isMatched = highlighted
         contentView.backgroundColor = highlighted ? Palette.highlightBubble : .clear
         revealTime.text = MessageRenderer.timestamp(date)
         // VoiceOver has no drag to make, so the time is spoken as part of the line rather
@@ -109,19 +94,8 @@ final class LineCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing
             .joined(separator: ", ")
     }
 
-    /// Lift the line's text, not the cell — the cell reserves the timestamp's gutter (see the
-    /// trailing constraint), and lifting that would put a strip of empty space inside the
-    /// preview. Unlike a bubble this has no fill of its own, so the system's default platter
-    /// stays: it's what makes the lifted line read as a card rather than as text with a shadow.
-    func menuPreview() -> UITargetedPreview {
-        let parameters = UIPreviewParameters()
-        parameters.visiblePath = UIBezierPath(
-            roundedRect: messageText.bounds, cornerRadius: Self.previewRadius
-        )
-        // A matched action carries its wash onto the card, so the lift looks like the row it
-        // came out of instead of flashing plain for the length of the menu.
-        if isMatched { parameters.backgroundColor = Palette.highlightBubble }
-        return UITargetedPreview(view: messageText, parameters: parameters)
+    func linkURL(at point: CGPoint) -> URL? {
+        messageText.url(at: convert(point, to: messageText))
     }
 
     /// The line itself never moves — only the timestamp does. See the trailing constraint.

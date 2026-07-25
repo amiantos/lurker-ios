@@ -20,14 +20,13 @@ enum TimestampReveal {
     static let maxOffset: CGFloat = 76
 }
 
-/// A cell that can hand the message list's context menu (#60) the view it should lift, and the
-/// shape to lift it in.
+/// A cell whose body can say whether a point lands on a link (#60).
 ///
-/// Without this the menu lifts the whole `UITableViewCell`, which is the full width of the screen
-/// — so a three-word bubble would rise out of the list inside a platter the size of the row it
-/// happened to be laid out in. Each cell knows which of its subviews is the *message*.
-protocol MessageMenuPreviewing: UITableViewCell {
-    func menuPreview() -> UITargetedPreview
+/// The message list hit-tests before deciding what a long press is about — a press on a URL is
+/// about the URL, not the line around it. The cell owns the conversion because only it knows where
+/// its body sits inside the row.
+protocol MessageBodyHosting: UITableViewCell {
+    func linkURL(at point: CGPoint) -> URL?
 }
 
 /// A message rendered as a chat bubble: our own tinted and trailing, everyone else's
@@ -38,7 +37,7 @@ protocol MessageMenuPreviewing: UITableViewCell {
 /// encode a two-party "me vs them" axis, and IRC has neither two parties nor avatars to
 /// lean on, so captioning every line would roughly double the list's height to say the
 /// same thing.
-final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewing {
+final class BubbleCell: UITableViewCell, TimestampRevealing, MessageBodyHosting {
     static let reuseID = "bubble"
 
     private let column = UIStackView()
@@ -51,9 +50,6 @@ final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewi
     private var columnBottom: NSLayoutConstraint!
     /// Whether this run gives way to the timestamp — see `setReveal`.
     private var slidesAside = false
-    /// The shape this bubble is currently drawn in, kept so the context-menu lift can be cut to
-    /// the same outline (see `menuPreview`) rather than to a rectangle around it.
-    private var radii = BubbleRadii(topLeft: 0, topRight: 0, bottomRight: 0, bottomLeft: 0)
 
     /// How much of the width a bubble may take before wrapping. The rest is the gutter
     /// that makes the leading/trailing axis legible at a glance.
@@ -87,9 +83,7 @@ final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewi
         revealTime.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(revealTime)
 
-        messageText.isEditable = false
         messageText.isScrollEnabled = false
-        messageText.isSelectable = true // required for tappable links (also enables copy)
         messageText.backgroundColor = .clear
         messageText.textContainerInset = UIEdgeInsets(top: 7, left: 11, bottom: 7, right: 11)
         messageText.textContainer.lineFragmentPadding = 0
@@ -179,18 +173,12 @@ final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewi
         bubble.backgroundColor = (showsHighlight && message.matched)
             ? Palette.highlightBubble
             : (isSelf ? Palette.outgoingBubble : Palette.incomingBubble)
-        radii = Self.radii(isSelf: isSelf, position: position)
-        bubble.cornerConfiguration = radii.configuration
+        bubble.cornerConfiguration = Self.corners(isSelf: isSelf, position: position)
         messageText.attributedText = MessageRenderer.renderBubble(message, highlighter: highlighter)
-        // A link is body-colored with a soft underline — matching the web client, whose
-        // `--link` defaults to the foreground with a 40%-opacity underline. The accent was
-        // wrong for this: it's the app's voice (send button, own-nick), not the sender's,
-        // and a pink link inside someone's message read as ours.
-        messageText.linkTextAttributes = [
-            .foregroundColor: UIColor.label,
-            .underlineStyle: NSUnderlineStyle.single.rawValue,
-            .underlineColor: UIColor.label.withAlphaComponent(0.4),
-        ]
+        // No `linkTextAttributes`: nothing carries `.link` anymore, so there is nothing for UIKit
+        // to restyle. Link appearance is the renderer's (`MessageRenderer`), which is the only
+        // place that knows a `/me`'s body is the nick's color rather than `.label`.
+        messageText.onOpenURL = { url in UIApplication.shared.open(url) }
 
         // Open a gap around a run and hold the messages inside one tight together, so a run
         // reads as a block with space either side rather than as part of the next one.
@@ -203,6 +191,10 @@ final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewi
         messageText.accessibilityLabel = [caption, message.text, revealTime.text]
             .compactMap { $0 }
             .joined(separator: ", ")
+    }
+
+    func linkURL(at point: CGPoint) -> URL? {
+        messageText.url(at: convert(point, to: messageText))
     }
 
     /// Only our own runs give way.
@@ -228,88 +220,16 @@ final class BubbleCell: UITableViewCell, TimestampRevealing, MessageMenuPreviewi
     }
 
     /// Round the outside of a run and tighten the side it's stacked along, so a run reads
-    /// as one block.
-    private static func radii(isSelf: Bool, position: RunPosition) -> BubbleRadii {
+    /// as one block. `cornerConfiguration` is iOS 26's — the deployment target is 26.0, so
+    /// there's no fallback path to keep.
+    private static func corners(isSelf: Bool, position: RunPosition) -> UICornerConfiguration {
         let top: CGFloat = position.isFirst ? wideRadius : tightRadius
         let bottom: CGFloat = position.isLast ? wideRadius : tightRadius
-        return BubbleRadii(
-            topLeft: isSelf ? wideRadius : top,
-            topRight: isSelf ? top : wideRadius,
-            bottomRight: isSelf ? bottom : wideRadius,
-            bottomLeft: isSelf ? wideRadius : bottom
+        return .corners(
+            topLeftRadius: .fixed(isSelf ? wideRadius : top),
+            topRightRadius: .fixed(isSelf ? top : wideRadius),
+            bottomLeftRadius: .fixed(isSelf ? wideRadius : bottom),
+            bottomRightRadius: .fixed(isSelf ? bottom : wideRadius)
         )
-    }
-
-    /// Lift the bubble, not the row it sits in — the row is the full width of the screen and
-    /// mostly empty. Cut to the bubble's own outline (`radii`), so a mid-run bubble rises with
-    /// its tightened corners intact instead of inside a rectangle that shows where the corners
-    /// aren't.
-    func menuPreview() -> UITargetedPreview {
-        let parameters = UIPreviewParameters()
-        // The bubble brings its own fill; a platter behind it would only double it up.
-        parameters.backgroundColor = .clear
-        parameters.visiblePath = radii.path(in: bubble.bounds)
-        return UITargetedPreview(view: bubble, parameters: parameters)
-    }
-}
-
-/// A bubble's four corner radii, and the two shapes they're needed in: the corner configuration
-/// that draws the bubble, and the path that cuts its context-menu lift to the same outline.
-struct BubbleRadii {
-    let topLeft: CGFloat
-    let topRight: CGFloat
-    let bottomRight: CGFloat
-    let bottomLeft: CGFloat
-
-    /// `cornerConfiguration` is iOS 26's — the deployment target is 26.0, so there's no fallback
-    /// path to keep.
-    var configuration: UICornerConfiguration {
-        .corners(
-            topLeftRadius: .fixed(topLeft),
-            topRightRadius: .fixed(topRight),
-            bottomLeftRadius: .fixed(bottomLeft),
-            bottomRightRadius: .fixed(bottomRight)
-        )
-    }
-
-    /// The outline, walked clockwise from the top-left corner's end. Circular arcs rather than
-    /// the continuous curve `cornerConfiguration` draws with — the difference is sub-pixel at
-    /// these radii, and this path is only ever a preview's clip and shadow.
-    ///
-    /// Radii are clamped to half the shorter side, which is what `cornerConfiguration` does for
-    /// us and this has to match. It bites on the small bubbles, not the exotic ones: a solo
-    /// one-line bubble is ~35pt tall against two 18pt radii stacked down its side, and a
-    /// one-character bubble is narrower than the two across its top. Unclamped, the segments
-    /// between the arcs run backwards and the arcs bulge outside `bounds` — so the lift would be
-    /// clipped to a silhouette the bubble UIKit actually drew (a capsule) never had.
-    func path(in rect: CGRect) -> UIBezierPath {
-        let limit = min(rect.width, rect.height) / 2
-        let (tl, tr) = (min(topLeft, limit), min(topRight, limit))
-        let (br, bl) = (min(bottomRight, limit), min(bottomLeft, limit))
-
-        let path = UIBezierPath()
-        path.move(to: CGPoint(x: rect.minX + tl, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX - tr, y: rect.minY))
-        path.addArc(
-            withCenter: CGPoint(x: rect.maxX - tr, y: rect.minY + tr),
-            radius: tr, startAngle: -.pi / 2, endAngle: 0, clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - br))
-        path.addArc(
-            withCenter: CGPoint(x: rect.maxX - br, y: rect.maxY - br),
-            radius: br, startAngle: 0, endAngle: .pi / 2, clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.minX + bl, y: rect.maxY))
-        path.addArc(
-            withCenter: CGPoint(x: rect.minX + bl, y: rect.maxY - bl),
-            radius: bl, startAngle: .pi / 2, endAngle: .pi, clockwise: true
-        )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + tl))
-        path.addArc(
-            withCenter: CGPoint(x: rect.minX + tl, y: rect.minY + tl),
-            radius: tl, startAngle: .pi, endAngle: 3 * .pi / 2, clockwise: true
-        )
-        path.close()
-        return path
     }
 }
