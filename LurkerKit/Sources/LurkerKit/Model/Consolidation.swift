@@ -4,34 +4,37 @@
 import Foundation
 
 /// Collapses a run of consecutive membership-churn events into a single net-effect
-/// summary, IRCCloud-style — a port of the web client's `shared/consolidate.ts`, with one
-/// deliberate divergence: **`mode` participates**. On the web a mode change terminates a
-/// run, so a netsplit rejoin where ops get auto-opped (`join join +o join +o …`) shatters
-/// into a string of tiny summaries. Here a mode rides inside the run and is surfaced as its
-/// own group, so that whole burst reads as one line.
+/// summary, IRCCloud-style — a port of the web client's `shared/consolidate.ts`, matching
+/// its event set exactly.
 ///
 /// Pure and side-effect-free: no UIKit, no state. Given the buffer's rendered messages, in
 /// order, it returns a row stream where each maximal run of 2+ consolidatable events is one
 /// `.summary`, and everything else passes through untouched.
 ///
-/// Algorithm (identity half, unchanged from the web):
+/// Algorithm:
 ///   1. Walk the stream; group consecutive consolidatable events into a run. Any other row
-///      (a real message, a kick, a topic, an error) terminates it.
+///      (a real message, a kick, a mode, a topic, an error) terminates it.
 ///   2. Inside a run, accumulate a per-identity action sequence: `J` join, `L` leave
-///      (part *or* quit), `R` rename. A rename transfers the identity to the new nick key
-///      so the chain is followed across renames.
+///      (part *or* quit), `R` rename, `H` rehost (chghost). A rename transfers the identity
+///      to the new nick key so the chain is followed across renames.
 ///   3. Classify each identity by its first/last J|L action into joined / left /
-///      reconnected / joinedAndLeft; identities with only `R` actions are renamed.
+///      reconnected / joinedAndLeft. An identity with no J|L falls back to rename over
+///      rehost: any `R` is `renamed`, otherwise `H`-only is `rehosted`.
 ///   4. A run of exactly one event passes through unchanged, so a lone "alice joined" keeps
 ///      its familiar standalone styling.
 public enum Consolidation {
 
-    /// The event types that fold into a summary. `mode` is included here but *not* in the
-    /// join/leave/rename net-effect machine — it's collected separately (see `summarize`).
-    /// `kick`, `topic`, and `invite` are activity lines too, but they stay standalone and
-    /// break a run: each is a discrete, notable event a reader shouldn't have to expand a
-    /// summary to see.
-    static let consolidatableTypes: Set<EventType> = [.join, .part, .quit, .nick, .mode]
+    /// The event types that fold into a summary — the web's `CONSOLIDATABLE_TYPES`
+    /// (`shared/consolidate.ts:121`).
+    ///
+    /// `mode` is deliberately *not* here, matching the web. It was included once, on the
+    /// reasoning that a netsplit rejoin with auto-opping (`join join +o join +o …`) reads
+    /// better as one line than as a string of tiny summaries broken up by mode lines. That
+    /// bought a tidier netsplit at the cost of a second summary vocabulary — a whole parallel
+    /// mode-folding pass and its own group type — and of hiding mode changes, which are
+    /// consequential in a way join churn isn't: being opped or banned is worth its own line.
+    /// `kick`, `topic`, and `invite` stay standalone for the same reason.
+    static let consolidatableTypes: Set<EventType> = [.join, .part, .quit, .nick, .chghost]
 
     /// A row in the consolidated stream.
     public enum Row: Equatable, Sendable {
@@ -63,10 +66,12 @@ public enum Consolidation {
                 return
             }
             let summary = summarize(run, maxNames: maxNames, recentSpeakers: recentSpeakers)
-            // A run that produced nothing to show (e.g. mode events the server sent without
-            // a structured change list) falls back to rendering each event on its own,
-            // rather than emitting a blank summary row.
-            if summary.groups.isEmpty && summary.modeGroups.isEmpty {
+            // A run that produced nothing to show falls back to rendering each event on its
+            // own, rather than emitting a blank summary row. Every consolidatable type
+            // contributes an action today, so this is unreachable — it's the guard that keeps
+            // it that way, since adding a type to the set above without teaching
+            // `identityGroups` about it would otherwise silently swallow it into a blank row.
+            if summary.groups.isEmpty {
                 out.append(contentsOf: run.map(Row.passthrough))
             } else {
                 out.append(.summary(summary))
@@ -94,20 +99,19 @@ public enum Consolidation {
     ) -> ConsolidationSummary {
         ConsolidationSummary(
             groups: identityGroups(events, maxNames: max(1, maxNames), recentSpeakers: recentSpeakers),
-            modeGroups: modeGroups(events),
             date: events.last?.date,
             firstId: events.first?.id ?? 0,
             lastId: events.last?.id ?? 0
         )
     }
 
-    // MARK: - Identity net effect (join / part / quit / nick)
+    // MARK: - Identity net effect (join / part / quit / nick / chghost)
 
     /// Mutable per-identity bookkeeping while walking a run.
     private struct Identity {
         var displayNick: String
         var originalNick: String
-        var actions: [Character] // 'J' | 'L' | 'R'
+        var actions: [Character] // 'J' | 'L' | 'R' | 'H'
         var seenIndex: Int
     }
 
@@ -140,7 +144,7 @@ public enum Consolidation {
                     )
                     seenCounter += 1
                 }
-            case .join, .part, .quit:
+            case .join, .part, .quit, .chghost:
                 let key = (event.nick ?? "").lowercased()
                 var state: Identity
                 if let existing = ids[key] {
@@ -154,10 +158,15 @@ public enum Consolidation {
                     )
                     seenCounter += 1
                 }
-                state.actions.append(event.type == .join ? "J" : "L")
+                let action: Character = switch event.type {
+                case .join: "J"
+                case .chghost: "H"
+                default: "L" // part or quit
+                }
+                state.actions.append(action)
                 ids[key] = state
             default:
-                break // mode is folded separately; nothing else reaches a run
+                break // nothing else reaches a run
             }
         }
 
@@ -173,7 +182,7 @@ public enum Consolidation {
 
         let speakersLc = Set(recentSpeakers.map { $0.lowercased() })
         let order: [ConsolidationSummary.IdentityGroup.Kind] = [
-            .joined, .left, .reconnected, .joinedAndLeft, .renamed,
+            .joined, .left, .reconnected, .joinedAndLeft, .renamed, .rehosted,
         ]
         return order.compactMap { kind in
             guard let entries = buckets[kind], !entries.isEmpty else { return nil }
@@ -182,11 +191,21 @@ public enum Consolidation {
         }
     }
 
-    /// Net effect of an identity's actions. Only the J|L actions decide presence; a lone
-    /// run of renames (no J|L) is a `renamed`.
+    /// Net effect of an identity's actions. Only the J|L actions decide presence.
+    ///
+    /// With no presence change, a rename outranks a rehost — "alice → bob" says more than
+    /// "alice changed host" for an identity that did both.
+    ///
+    /// `H` being transparent to the J|L scan is deliberate (web #593): after a netsplit each
+    /// rejoining user emits JOIN then CHGHOST as they identify to services, so their sequence
+    /// is `[J, H]`. That has to read as a plain "joined" rather than splitting the summary
+    /// into "N joined" plus the same N "changed host". A host change earns its own category
+    /// only when nothing else happened.
     private static func classify(_ actions: [Character]) -> ConsolidationSummary.IdentityGroup.Kind {
         let jl = actions.filter { $0 == "J" || $0 == "L" }
-        guard let first = jl.first, let last = jl.last else { return .renamed }
+        guard let first = jl.first, let last = jl.last else {
+            return actions.contains("R") ? .renamed : .rehosted
+        }
         let wasPresent = first == "L" // a leave first means they were here to begin with
         let isPresent = last == "J" // a join last means they're here now
         switch (wasPresent, isPresent) {
@@ -214,47 +233,6 @@ public enum Consolidation {
         return (Array(ranked.prefix(maxNames)), ranked.count - maxNames)
     }
 
-    // MARK: - Mode folding
-
-    /// Collect the run's mode changes, grouped by setter and then by signed mode token, so
-    /// `+o alice`, `+o bob`, `+v carol` from the same op read as "Chan set +o alice, bob;
-    /// +v carol" rather than three separate lines. Setter and token order follow first
-    /// appearance; params are de-duplicated within a token.
-    private static func modeGroups(_ events: [Message]) -> [ConsolidationSummary.ModeSummary] {
-        var setterOrder: [String] = [] // lowercased keys, first-seen order
-        var setterDisplay: [String: String] = [:]
-        var tokenOrder: [String: [String]] = [:] // setterKey → signed tokens, first-seen
-        var params: [String: [String]] = [:] // "setterKey\u{1}token" → params
-
-        for event in events where event.type == .mode {
-            let setter = event.nick ?? ""
-            let setterKey = setter.lowercased()
-            if tokenOrder[setterKey] == nil {
-                setterOrder.append(setterKey)
-                setterDisplay[setterKey] = setter
-                tokenOrder[setterKey] = []
-            }
-            for change in event.modes {
-                let token = change.mode
-                let paramKey = setterKey + "\u{1}" + token
-                if params[paramKey] == nil {
-                    tokenOrder[setterKey]?.append(token)
-                    params[paramKey] = []
-                }
-                if let param = change.param, !param.isEmpty, !(params[paramKey]?.contains(param) ?? false) {
-                    params[paramKey]?.append(param)
-                }
-            }
-        }
-
-        return setterOrder.compactMap { setterKey in
-            let changes = (tokenOrder[setterKey] ?? []).map { token in
-                ConsolidationSummary.ModeSummary.Change(mode: token, params: params[setterKey + "\u{1}" + token] ?? [])
-            }
-            guard !changes.isEmpty else { return nil }
-            return ConsolidationSummary.ModeSummary(setter: setterDisplay[setterKey] ?? "", changes: changes)
-        }
-    }
 }
 
 /// The structured result of collapsing one run. The renderer turns this into text; keeping
@@ -263,8 +241,6 @@ public enum Consolidation {
 public struct ConsolidationSummary: Equatable, Sendable {
     /// Net-effect membership categories, in fixed display order.
     public let groups: [IdentityGroup]
-    /// Folded mode changes, grouped by setter.
-    public let modeGroups: [ModeSummary]
     /// The last event's timestamp — what the summary reveals on a drag, matching a line.
     public let date: Date?
     /// The persisted-id span of the events this summary replaces. Lets the view find the
@@ -277,20 +253,18 @@ public struct ConsolidationSummary: Equatable, Sendable {
 
     public init(
         groups: [IdentityGroup],
-        modeGroups: [ModeSummary],
         date: Date?,
         firstId: Int,
         lastId: Int
     ) {
         self.groups = groups
-        self.modeGroups = modeGroups
         self.date = date
         self.firstId = firstId
         self.lastId = lastId
     }
 
-    /// One identity within the summary: a nick that joined/left/reconnected/joined-briefly,
-    /// or a nick that renamed itself.
+    /// One identity within the summary: a nick that joined/left/reconnected/joined-briefly/
+    /// changed host, or a nick that renamed itself.
     public enum Entry: Equatable, Sendable {
         case nick(String)
         case renamed(from: String, to: String)
@@ -307,7 +281,7 @@ public struct ConsolidationSummary: Equatable, Sendable {
     /// One net-effect category and its (possibly truncated) member list.
     public struct IdentityGroup: Equatable, Sendable {
         public enum Kind: Equatable, Sendable {
-            case joined, left, reconnected, joinedAndLeft, renamed
+            case joined, left, reconnected, joinedAndLeft, renamed, rehosted
         }
 
         public let kind: Kind
@@ -318,28 +292,6 @@ public struct ConsolidationSummary: Equatable, Sendable {
             self.kind = kind
             self.visible = visible
             self.hidden = hidden
-        }
-    }
-
-    /// The mode changes a single setter made within the run.
-    public struct ModeSummary: Equatable, Sendable {
-        /// One signed mode token and the targets it was applied to.
-        public struct Change: Equatable, Sendable {
-            public let mode: String // e.g. "+o"
-            public let params: [String] // e.g. ["alice", "bob"]; empty for a bare flag
-
-            public init(mode: String, params: [String]) {
-                self.mode = mode
-                self.params = params
-            }
-        }
-
-        public let setter: String
-        public let changes: [Change]
-
-        public init(setter: String, changes: [Change]) {
-            self.setter = setter
-            self.changes = changes
         }
     }
 }

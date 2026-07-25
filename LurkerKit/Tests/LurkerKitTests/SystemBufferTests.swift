@@ -91,6 +91,57 @@ final class SystemBufferTests: XCTestCase {
         )
     }
 
+    /// chghost carries no `text` at all — the line is synthesized from `newIdent`/`newHost` —
+    /// so before it had an `EventType` case it folded to `.other`, failed the `hasText` check,
+    /// and rendered nowhere despite arriving intact (#59).
+    func testChghostRenderabilityRidesTheNewMask() {
+        XCTAssertTrue(
+            Message(id: 1, type: .chghost, nick: "alice", text: nil, newIdent: "u", newHost: "new.host")
+                .isRenderable
+        )
+        // Either half alone is enough to say something.
+        XCTAssertTrue(
+            Message(id: 2, type: .chghost, nick: "alice", text: nil, newHost: "new.host").isRenderable
+        )
+        XCTAssertFalse(
+            Message(id: 3, type: .chghost, nick: "alice", text: nil).isRenderable,
+            "with neither half the line reads 'alice changed host to '"
+        )
+        XCTAssertFalse(
+            Message(id: 4, type: .chghost, nick: nil, text: nil, newHost: "new.host").isRenderable,
+            "chghost needs an actor"
+        )
+    }
+
+    /// `userhost` arrives as the full `nick!user@host`; the suffix shows only the two halves
+    /// after the `!`. Both are required — the server stores an empty ident or host when it
+    /// lacks one, and a half-mask like `(@host)` reads worse than nothing.
+    func testUserHostMaskRequiresBothHalves() {
+        func mask(_ userhost: String?) -> String? {
+            Message(id: 1, type: .join, nick: "alice", text: nil, userhost: userhost).userHostMask
+        }
+        XCTAssertEqual(mask("alice!~user@example.host"), "~user@example.host")
+        XCTAssertNil(mask("alice!@example.host"), "no ident")
+        XCTAssertNil(mask("alice!user@"), "no host")
+        XCTAssertNil(mask("alice"), "no mask at all")
+        XCTAssertNil(mask("alice!userexample.host"), "no @ separator")
+        XCTAssertNil(mask(nil))
+        // A host containing an '@' (rare, but the server doesn't forbid it) splits on the
+        // first one, so the ident stays the ident.
+        XCTAssertEqual(mask("alice!user@a@b"), "user@a@b")
+    }
+
+    /// A half-mask like `@host` reads worse than the host alone, so the two are only joined
+    /// when both are present — matching the web's `chghostMask()`.
+    func testChghostMaskOnlyJoinsWhenBothHalvesArePresent() {
+        let both = Message(id: 1, type: .chghost, nick: "a", text: nil, newIdent: "u", newHost: "h")
+        XCTAssertEqual(both.chghostMask, "u@h")
+        let hostOnly = Message(id: 2, type: .chghost, nick: "a", text: nil, newHost: "h")
+        XCTAssertEqual(hostOnly.chghostMask, "h")
+        let identOnly = Message(id: 3, type: .chghost, nick: "a", text: nil, newIdent: "u")
+        XCTAssertEqual(identOnly.chghostMask, "u")
+    }
+
 
     // MARK: - Severity rides `level`, not `type`
 

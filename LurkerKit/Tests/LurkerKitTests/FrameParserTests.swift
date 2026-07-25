@@ -78,6 +78,30 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(mode.modes.count, 1)
         XCTAssertEqual(mode.modes.first?.mode, "+o")
         XCTAssertEqual(mode.modes.first?.param, "alice")
+
+        guard case let .live(_, _, chghost) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":5,"networkId":1,"target":"#lurker","type":"chghost","nick":"bob","userhost":"bob!old@old.host","newIdent":"~new","newHost":"new.host"}"##
+        ) else { return XCTFail("expected live chghost event") }
+        XCTAssertEqual(chghost.type, .chghost, "chghost must not fold to .other — it renders nowhere there")
+        XCTAssertEqual(chghost.chghostMask, "~new@new.host")
+        XCTAssertEqual(chghost.userhost, "bob!old@old.host", "the mask before the change")
+        XCTAssertTrue(chghost.isRenderable)
+
+        guard case let .live(_, _, join) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":6,"networkId":1,"target":"#lurker","type":"join","nick":"bob","userhost":"bob!u@h","account":"bobby"}"##
+        ) else { return XCTFail("expected live join event") }
+        XCTAssertEqual(join.account, "bobby")
+        XCTAssertEqual(join.userhost, "bob!u@h")
+    }
+
+    /// A logged-out user's extended-join account is the `*` sentinel, which the server stores
+    /// as null and omits — so it must read as "nothing to show", not as an account named `*`.
+    func testAJoinWithoutAnAccountCarriesNone() {
+        guard case let .live(_, _, join) = FrameParser.parseWs(
+            ##"{"kind":"irc","id":1,"networkId":1,"target":"#lurker","type":"join","nick":"bob"}"##
+        ) else { return XCTFail("expected live join event") }
+        XCTAssertNil(join.account)
+        XCTAssertNil(join.userhost)
     }
 
     /// `channel-topic` rides `kind:"irc"` like an event, but it isn't one: no id, nothing

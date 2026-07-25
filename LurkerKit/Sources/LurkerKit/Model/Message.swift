@@ -34,9 +34,24 @@ public struct Message: Equatable, Sendable {
     /// The target of an `invite` — who was invited. `nick` holds the inviter.
     public let invited: String?
     /// The parsed changes on a `mode` event (empty otherwise). `text` carries the same
-    /// changes as a flat string; this is the structured form, so a consolidated run can
-    /// group by flag ("+o alice, bob") rather than concatenating raw mode strings.
+    /// changes as a flat string; this is the structured form, so the line can render
+    /// "+o alice" rather than a raw mode string.
     public let modes: [ModeChange]
+    /// The post-change ident and host on a `chghost` event. Either half can be absent — the
+    /// server stores an empty string when it lacks one — so the mask is built from whichever
+    /// are present rather than assuming both.
+    public let newIdent: String?
+    public let newHost: String?
+    /// The sender's `nick!ident@host` as the server stamped it, when it had one. Server
+    /// messages and synthesized lines carry none.
+    ///
+    /// On a `chghost` line this is the mask *before* the change — the new one is `newIdent`/
+    /// `newHost` — which is what makes "alice (old@mask) changed host to new@mask" readable.
+    public let userhost: String?
+    /// The joining user's services account, from extended-join. Nil on networks without the
+    /// cap and for a logged-out user (the server stores the `*` sentinel as null), which are
+    /// the same thing as far as a renderer is concerned: nothing to show.
+    public let account: String?
 
     public init(
         id: Int,
@@ -52,7 +67,11 @@ public struct Message: Equatable, Sendable {
         newNick: String? = nil,
         kicked: String? = nil,
         invited: String? = nil,
-        modes: [ModeChange] = []
+        modes: [ModeChange] = [],
+        newIdent: String? = nil,
+        newHost: String? = nil,
+        userhost: String? = nil,
+        account: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -68,6 +87,37 @@ public struct Message: Equatable, Sendable {
         self.kicked = kicked
         self.invited = invited
         self.modes = modes
+        self.newIdent = newIdent
+        self.newHost = newHost
+        self.userhost = userhost
+        self.account = account
+    }
+
+    /// The `user@host` half of `userhost` (which arrives as the full `nick!user@host`), or nil
+    /// when either piece is missing.
+    ///
+    /// Both halves are required: the server stores an empty ident or host when it lacks one
+    /// (`nick!@host` / `nick!ident@`), and a half-mask like `@host` reads worse than nothing.
+    /// Same rule the web applies in `eventHostSuffix()`.
+    public var userHostMask: String? {
+        guard let userhost, let bang = userhost.firstIndex(of: "!") else { return nil }
+        let rest = userhost[userhost.index(after: bang)...]
+        guard let at = rest.firstIndex(of: "@") else { return nil }
+        let user = rest[..<at]
+        let host = rest[rest.index(after: at)...]
+        guard !user.isEmpty, !host.isEmpty else { return nil }
+        return "\(user)@\(host)"
+    }
+
+    /// The post-change mask on a `chghost` line — `ident@host`, or whichever half the server
+    /// actually sent. A half-mask like `@host` reads worse than the host alone, so the two
+    /// are only joined with an `@` when both are present. Mirrors the web's `chghostMask()`
+    /// and the server's own mask construction in the CHGHOST handler.
+    public var chghostMask: String {
+        let ident = newIdent ?? ""
+        let host = newHost ?? ""
+        if !ident.isEmpty && !host.isEmpty { return "\(ident)@\(host)" }
+        return host.isEmpty ? ident : host
     }
 
     /// Whether this event has anything to show.
@@ -95,6 +145,9 @@ public struct Message: Equatable, Sendable {
         case .nick: hasNick && !(newNick ?? "").isEmpty
         case .kick: hasNick && !(kicked ?? "").isEmpty
         case .invite: hasNick && !(invited ?? "").isEmpty
+        // Needs somewhere to have changed *to*: with neither half of the new mask the line
+        // reads "alice changed host to " and says nothing.
+        case .chghost: hasNick && !chghostMask.isEmpty
         // A structured change list, or the raw mode string as a fallback.
         case .mode: !modes.isEmpty || hasText
         // Everything else draws its body from `text`.
@@ -149,6 +202,7 @@ public enum EventType: String, Sendable {
     case nick
     case kick
     case mode
+    case chghost
     case topic
     case motd
     case invite
@@ -168,7 +222,7 @@ public enum EventType: String, Sendable {
     /// a run of consecutive activity lines collapses into one net-effect summary.
     public var isActivity: Bool {
         switch self {
-        case .join, .part, .quit, .nick, .kick, .mode, .topic, .invite: true
+        case .join, .part, .quit, .nick, .kick, .mode, .topic, .invite, .chghost: true
         default: false
         }
     }
