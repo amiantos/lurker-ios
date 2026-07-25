@@ -18,11 +18,12 @@ import UIKit
 ///
 /// **Device actions** — sign out, the version — belong to this install and don't sync.
 ///
-/// The rows are built from the registry the server sends: label, help text, type, bounds and
-/// choices all come from `/api/settings/bootstrap`, so nothing here can drift from what the
-/// server will actually accept. What iOS curates is the *key list* (`Row.chatKeys`) — that's
-/// the set of settings the app genuinely honors, and it's short on purpose. A control for a
-/// setting the app ignores is worse than no control at all.
+/// Labels are ours, not the registry's, and there is no help text. The registry's `label` and
+/// `description` are written for a desktop settings pane with room to explain itself — full
+/// sentences, sometimes a worked example — and on a phone that buries three switches under a
+/// wall of prose. A short label a person can scan beats an accurate one they won't read. What
+/// still comes from the registry is everything a *control* needs to be correct: the type, the
+/// default, and an int's bounds, so a stepper can't offer a value the server would reject.
 ///
 /// Visual customization stays out of 1.0 (`APP_1.0_SCOPE.md`); these are behavior knobs the
 /// app already implements.
@@ -30,31 +31,32 @@ final class SettingsViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
 
-    /// The server settings this screen offers, in display order.
+    /// The server settings this screen offers, in display order, with the label to show.
     ///
     /// **Add a key here only when the app honors it.** Each one is wired to real behavior:
-    /// typing to `ChatViewController.emitTyping`, consolidation to `buildRows`. The rest of
-    /// the registry is deliberately absent — the web is where you configure the things the
-    /// phone doesn't implement.
-    private static let chatKeys = [
-        "chat.send_typing_notifications",
-        "chat.consolidate_joins",
-        "chat.consolidate_max_names",
+    /// typing to `ChatViewController.emitTyping`, both consolidation keys to `buildRows`. The
+    /// rest of the registry is deliberately absent — the web is where you configure the things
+    /// the phone doesn't implement, and a control for a setting the app ignores is worse than
+    /// no control at all.
+    private static let chatSettings: [(key: String, label: String)] = [
+        ("chat.send_typing_notifications", "Send typing notifications"),
+        ("chat.consolidate_joins", "Consolidate events"),
+        ("chat.consolidate_max_names", "Max consolidated nicks"),
     ]
 
-    /// Keys whose control should be disabled unless another setting is on — a max-names
-    /// stepper means nothing with consolidation switched off.
+    /// Keys whose control is dead unless another setting is on — a max-nicks stepper means
+    /// nothing with consolidation switched off.
     private static let dependencies = ["chat.consolidate_max_names": "chat.consolidate_joins"]
 
-    /// One section **per setting**, not one section holding all of them.
-    ///
-    /// The registry's `description` is reference documentation written for a desktop pane —
-    /// several sentences, sometimes with an example. Rendered as a row subtitle it swamps the
-    /// control and three settings fill the screen. As a section footer it gets the room it
-    /// needs and the row stays a label plus its switch, which is what Settings.app does with
-    /// exactly this kind of explanatory text.
+    /// A row that's ready to render: the curated label plus the registry entry describing how
+    /// to edit it. Resolved once per rebuild so the table isn't doing lookups per cell.
+    private struct SettingRow {
+        let label: String
+        let option: SettingOption
+    }
+
     private enum Section {
-        case setting(SettingOption, isFirst: Bool, isLast: Bool)
+        case chat([SettingRow])
         case account
         case about
     }
@@ -80,7 +82,6 @@ final class SettingsViewController: UITableViewController {
             systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "row")
-        tableView.allowsSelection = true
 
         // Rebuild when the settings themselves change — including the echo of our own write,
         // which is what actually moves a switch to its new position, and a change made on
@@ -99,10 +100,10 @@ final class SettingsViewController: UITableViewController {
         // Only what this server actually knows about. A self-hosted instance can legitimately
         // be older than the app (`APP_1.0_SCOPE.md`), so a key it's never heard of gets no row
         // rather than a control whose write would be rejected.
-        let options = Self.chatKeys.compactMap { registry[$0] }
-        sections = options.enumerated().map { index, option in
-            .setting(option, isFirst: index == 0, isLast: index == options.count - 1)
-        } + [.account, .about]
+        let rows = Self.chatSettings.compactMap { entry in
+            registry[entry.key].map { SettingRow(label: entry.label, option: $0) }
+        }
+        sections = rows.isEmpty ? [.account, .about] : [.chat(rows), .account, .about]
         tableView.reloadData()
     }
 
@@ -112,29 +113,25 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
-        case .setting, .account, .about: 1
+        case .chat(let rows): rows.count
+        case .account, .about: 1
         }
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
-        // Only above the first, so the group reads as one heading rather than as a
-        // stack of identically-titled boxes.
-        case .setting(_, let isFirst, _): isFirst ? "Chat" : nil
+        case .chat: "Chat"
         case .account, .about: nil
         }
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch sections[section] {
-        case .setting(let option, _, let isLast):
-            // The server's own help text. The sync note rides the last one, where it reads as
-            // a closing statement about the group rather than a caption on one switch — it's
-            // not obvious that a switch here moves the same switch in your browser, and that's
-            // worth stating rather than leaving to be discovered.
-            isLast
-                ? option.description + "\n\nThese are saved to your account and apply on every device."
-                : option.description
+        // The one piece of explanation that stays: it isn't obvious that a switch here moves
+        // the same switch in your browser, and that's a property worth stating rather than
+        // leaving someone to discover. Everything else the registry would say is reference
+        // material, and the web has room for it.
+        case .chat: "Saved to your account and applied on every device."
         case .account, .about: nil
         }
     }
@@ -147,17 +144,17 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
-        case .setting(let option, _, _):
-            content.text = option.label
-            content.textProperties.numberOfLines = 0
-            // The description lives in the footer; the row's subtitle slot is kept free so a
-            // failed write can say why, right under the control that failed.
-            if let error = writeError, error.key == option.key {
+        case .chat(let rows):
+            let row = rows[indexPath.row]
+            content.text = row.label
+            // The subtitle slot is otherwise unused, so a failed write can say why right under
+            // the control that failed.
+            if let error = writeError, error.key == row.option.key {
                 content.secondaryText = error.message
                 content.secondaryTextProperties.color = .systemRed
                 content.secondaryTextProperties.numberOfLines = 0
             }
-            configure(cell, for: option)
+            configure(cell, for: row.option)
         case .account:
             content.text = "Sign Out"
             content.textProperties.color = .systemRed
@@ -172,8 +169,8 @@ final class SettingsViewController: UITableViewController {
     }
 
     /// Attach the right control for the option's type. Only the types the curated key list
-    /// actually uses are built; anything else renders as a read-only row rather than a
-    /// control that silently does nothing.
+    /// actually uses are built; anything else renders as a plain row rather than a control
+    /// that silently does nothing.
     private func configure(_ cell: UITableViewCell, for option: SettingOption) {
         let enabled = isEnabled(option.key)
         switch option.type {
@@ -220,8 +217,6 @@ final class SettingsViewController: UITableViewController {
             )
             cell.accessoryView = stack
         default:
-            // A type we don't build a control for yet. Show the value so the row is still
-            // informative, rather than a dead switch.
             cell.accessoryType = .none
         }
     }
