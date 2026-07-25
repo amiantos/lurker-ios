@@ -30,6 +30,22 @@ It's all pure and unit-tested (`swift test`, no simulator). The UIKit app is a t
 observes `ChatState` and renders it. Self-hosted and hosted are the *same* client differing only in
 base URL and auth — there is deliberately no transport-adapter seam.
 
+The app target (`Lurker/`) is grouped by UI layer. There is no `Model` folder here on purpose —
+every model lives in `LurkerKit`, and a type that needs to exist in both is a sign it belongs in the
+package:
+
+- **`App`** — the delegates, and nothing else
+- **`Navigation`** — how screens reach each other, plus the nav bar's shared title pill
+- **`Screens`** — one view controller per screen
+- **`Views`** — everything a screen composes: cells, the composer, the floating pills, banners
+- **`Rendering`** — model → `NSAttributedString` and the color palette; the UIKit half of the job
+  `LurkerKit/Rendering` does on plain strings
+- **`Services`** — the platform capabilities the app wraps: photo/file picking, image and video
+  transcoding, push registration, reachability, `UserDefaults`
+
+The folders are plain directories: the target is a synchronized group, so adding or moving a file
+needs no project-file edit.
+
 ## Building
 
 Requires a Lurker server you can reach, with a **password** on your account (the native token
