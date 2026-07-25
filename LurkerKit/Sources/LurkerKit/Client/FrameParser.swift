@@ -14,6 +14,8 @@ enum FrameParser {
         guard let obj = object(from: text) else { return .ignored }
         switch obj["kind"] as? String {
         case "snapshot": return parseSnapshot(obj)
+        // Carries no state of its own — its arrival *is* the message.
+        case "backlog-complete": return .backlogComplete
         case "backlog": return parseBacklog(obj)
         case "history": return parseHistory(obj)
         case "irc": return parseLive(obj)

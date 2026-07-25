@@ -82,6 +82,20 @@ final class BufferListViewController: UICollectionViewController {
 
     private var state = ChatState()
     private var sections: [Section] = []
+    /// The centered "loading"/"nothing here" placeholder, and what it's currently showing.
+    /// Tracked so a rebuild only touches the background view when the answer actually changes.
+    private let placeholderView = StateView()
+    private var shownPlaceholder: BufferListPlaceholder = .none
+    /// The floating "Connecting…"/"No internet connection" capsule (#19). The same one the
+    /// chat screen carries: the connection is the app's state, not one screen's, and a list
+    /// that goes quiet because the socket is down should say so where you're standing.
+    ///
+    /// Its state is tracked continuously but only *shown* while this screen is the one on top
+    /// — see `refreshBanner`.
+    private let connectionBanner = ConnectionBanner()
+    /// What the banner would show if this screen were frontmost. Held separately so the answer
+    /// is already current the moment it becomes frontmost, without waiting for a state change.
+    private var bannerState: ConnectionBannerState = .hidden
     /// Whether this screen is actually on screen, as against merely alive under a chat screen.
     /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
     /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
@@ -119,6 +133,29 @@ final class BufferListViewController: UICollectionViewController {
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
+        // This screen *is* its collection view, so the banner is a subview of a scroll view.
+        // Two consequences worth naming:
+        //
+        //  - It's pinned to the safe-area guide, which is expressed against the scroll view's
+        //    bounds — and bounds.origin is the content offset — so the banner rides along and
+        //    stays put in the viewport, while still clearing the nav bar.
+        //  - Cells are inserted above it in subview order as they're dequeued, so a plain
+        //    `addSubview` would let a chip draw over it. `zPosition` wins regardless of order,
+        //    where a `bringSubviewToFront` would need repeating after every reload.
+        connectionBanner.translatesAutoresizingMaskIntoConstraints = false
+        connectionBanner.layer.zPosition = 1
+        view.addSubview(connectionBanner)
+        NSLayoutConstraint.activate([
+            connectionBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            connectionBanner.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            connectionBanner.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
+        ])
+
         // Force the lazy registrations to instantiate here, up front. UIKit throws if a
         // registration is first *created* inside `cellForItemAt` — a lazy var is created
         // once, but "once" is on first access, and its first access would otherwise be the
@@ -150,6 +187,11 @@ final class BufferListViewController: UICollectionViewController {
                     && $0.buffers == $1.buffers
                     && $0.connection == $1.connection
                     && $0.reachable == $1.reachable
+                    // `backlog-complete` carries no state but this flag. On an account with
+                    // nothing to list it moves nothing else at all, so leaving it out would
+                    // drop the frame as a duplicate and spin "Loading buffers…" forever on
+                    // exactly the account the empty state was written for.
+                    && $0.backlogComplete == $1.backlogComplete
                     // The Friends section renders off these two: the contact list and the
                     // per-nick presence the dots read. A friend coming online is a presence
                     // change with no buffer change, so without these the chip's dot never moves.
@@ -180,6 +222,31 @@ final class BufferListViewController: UICollectionViewController {
         isOnScreen = false
     }
 
+    /// Show the banner only once this screen is genuinely frontmost, and hide it the instant a
+    /// push begins — the chat screen carries its own at the same position, so without this the
+    /// two draw over each other for the length of every transition, and VoiceOver hears the
+    /// same string from two `.updatesFrequently` elements.
+    ///
+    /// `viewDidAppear`/`viewWillDisappear` rather than the `viewWillAppear`/`viewDidDisappear`
+    /// pair `isOnScreen` uses, because these two are the edges where `topViewController` has
+    /// already moved: a push has re-pointed it before the outgoing screen's `viewWillDisappear`,
+    /// and an interactive back-swipe doesn't re-point it until the pop actually commits — so a
+    /// cancelled swipe never flashes this screen's banner over the chat screen's.
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        refreshBanner()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        refreshBanner()
+    }
+
+    private func refreshBanner() {
+        let isFrontmost = view.window != nil && navigationController?.topViewController === self
+        connectionBanner.update(isFrontmost ? bannerState : .hidden)
+    }
+
     /// The new state is always kept — it's what the deferred menus and the next rebuild read —
     /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
@@ -188,6 +255,10 @@ final class BufferListViewController: UICollectionViewController {
         // the roster below is worth rebuilding — and `refresh` no-ops both when this screen
         // isn't the one on top and when nothing the pill shows has moved.
         navigationPill?.refresh(from: self)
+        // The banner is about the connection, not the roster, so its *state* is tracked on
+        // every apply regardless of whether the list below is worth rebuilding.
+        bannerState = ConnectionBannerState.of(reachable: state.reachable, connection: state.connection)
+        refreshBanner()
         guard isOnScreen else { return }
         rebuild()
     }
@@ -208,6 +279,7 @@ final class BufferListViewController: UICollectionViewController {
     private func rebuild() {
         let previous = sections
         sections = buildSections(state)
+        updatePlaceholder()
         guard Self.sameStructure(previous, sections) else {
             collectionView.reloadData()
             return
@@ -222,6 +294,50 @@ final class BufferListViewController: UICollectionViewController {
             }
         }
         if !changed.isEmpty { collectionView.reconfigureItems(at: changed) }
+    }
+
+    /// Show a centered placeholder when the list has no rows, so a blank screen always says
+    /// which kind of blank it is.
+    ///
+    /// Keyed on `backlogComplete` — the `backlog-complete` terminal frame — and neither on the
+    /// socket being up nor on the `snapshot` frame having arrived. Both of those are prefixes
+    /// of the answer rather than the answer, and each flashes the empty state on a different
+    /// kind of account; `ChatState.backlogComplete` spells out which and why.
+    ///
+    /// Whether the connection is the reason nothing has landed is the banner's question, not
+    /// this one's — so an offline launch shows the spinner *and* the banner, each answering
+    /// its own.
+    private func updatePlaceholder() {
+        let placeholder = BufferListPlaceholder.of(
+            hasBuffers: !sections.isEmpty,
+            hasNetworks: !state.networks.isEmpty,
+            backlogComplete: state.backlogComplete
+        )
+        guard placeholder != shownPlaceholder else { return }
+        shownPlaceholder = placeholder
+        switch placeholder {
+        case .none:
+            collectionView.backgroundView = nil
+        case .loading:
+            placeholderView.configure(.init(title: "Loading buffers…", isLoading: true))
+            collectionView.backgroundView = placeholderView
+        case .noNetworks:
+            placeholderView.configure(.init(
+                symbol: "bubble.left.and.bubble.right",
+                title: "No networks yet",
+                subtitle: "Add a network to start a conversation."
+            ))
+            collectionView.backgroundView = placeholderView
+        case .noBuffers:
+            // They've done the adding already — the next step is joining something, and
+            // saying "add a network" here would read as the app not knowing its own state.
+            placeholderView.configure(.init(
+                symbol: "bubble.left.and.bubble.right",
+                title: "No buffers yet",
+                subtitle: "Join a channel or start a DM to see it here."
+            ))
+            collectionView.backgroundView = placeholderView
+        }
     }
 
     /// Whether two section models place the same buffers in the same order under the same

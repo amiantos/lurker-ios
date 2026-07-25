@@ -29,6 +29,28 @@ public struct ChatState: Sendable {
     public var maxEventId: Int = 0
     public var networks: [Int: Network] = [:]
     public var buffers: [String: Buffer] = [:]
+    /// Whether a full snapshot burst has finished this session — i.e. `buffers` is the
+    /// server's whole answer rather than a prefix of it.
+    ///
+    /// The buffer list needs this to tell "still arriving" from "you genuinely have no
+    /// buffers". Three plausible signals are all wrong, in ways that only show on some
+    /// accounts:
+    ///
+    ///  - **`connection`** — the socket reports `.connected` *before* the burst is applied,
+    ///    so it flashes the empty state in the gap. The same trap `BufferPlaceholder`
+    ///    documents for the message list.
+    ///  - **The `snapshot` frame** — not authoritative for buffer existence (see
+    ///    `ServerFrame.snapshot`): its `channels` is empty for every network that isn't
+    ///    currently connected, and DMs and `:server:` logs are never in it. A DM-only account,
+    ///    or any launch while the networks are still connecting, would flash "no buffers".
+    ///  - **Emptiness itself** — indistinguishable from the answer being empty.
+    ///
+    /// So it's latched on `backlog-complete`, the frame that exists to say the burst is done.
+    ///
+    /// Never cleared on a drop. A reconnect resends everything, but the roster we already have
+    /// stays on screen while it does, so going back to "loading" would blank a list with
+    /// perfectly good content in it. `reset()` builds a fresh `ChatState`, so sign-out clears it.
+    public var backlogComplete = false
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
     /// The friends list, sorted case-insensitively by display name. Server-authoritative:
@@ -216,6 +238,13 @@ final class LurkerStore {
             return applyNetworks(state, networks)
         case .snapshot(let networks):
             return applySnapshot(state, networks)
+        case .backlogComplete:
+            // The burst is over, so whatever `buffers` holds now is the whole roster — even
+            // when that's nothing. Latched: a later resync re-sends it, and re-asserting true
+            // costs nothing, but going back to false would blank a populated list.
+            var next = state
+            next.backlogComplete = true
+            return next
         case .backlog(let buffer, let messages, let hydrated, let append):
             return applyBacklog(state, buffer, messages, hydrated: hydrated, append: append)
         case .live(let networkId, let target, let message):
