@@ -115,6 +115,29 @@ final class MessageRowsTests: XCTestCase {
         XCTAssertEqual(rows.filter(isDate).count, 1)
     }
 
+    /// A buffer can *open* with an undated line — `LurkerStore.appendLocal` synthesizes one for
+    /// an unrecognized command, and in an empty system buffer that's the first row. It must
+    /// still sit under a day header rather than being stranded above the divider that appears
+    /// once real traffic lands.
+    func testALeadingUndatedRunAdoptsTheFirstDatedDay() {
+        let rows = build([
+            msg(1, at: nil),
+            msg(2, at: nil),
+            msg(3, at: noon),
+        ])
+        XCTAssertEqual(rows.filter(isDate).count, 1, "one header, not one below the local lines")
+        XCTAssertTrue(isDate(row(rows, 0)), "and it sits above them")
+        guard case .dateDivider(let day) = row(rows, 0) else { return XCTFail("expected a date divider") }
+        XCTAssertEqual(day, utc.startOfDay(for: noon))
+        XCTAssertEqual(rows.count, 4)
+    }
+
+    func testAllUndatedMessagesGetNoDayHeader() {
+        // Nothing to name. Guessing a day would be a claim the data doesn't support.
+        let rows = build([msg(1, at: nil), msg(2, at: nil)])
+        XCTAssertEqual(rows.filter(isDate).count, 0)
+    }
+
     // MARK: - Start of history
 
     func testStartOfHistorySitsAboveEverything() {

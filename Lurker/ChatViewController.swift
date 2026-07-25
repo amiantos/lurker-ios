@@ -109,6 +109,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var typingIdleTimer: Timer?
     /// Network names, for labelling system lines with the network they're about.
     private var networks: [Int: Network] = [:]
+    /// Keeps the day-rollover observation removable (see `observeDayChange`).
+    private var dayChangeObserver: NSObjectProtocol?
     /// Lowercased nick → channel-mode glyph (`@`, `+`, …), for the author caption.
     ///
     /// Snapshotted per apply rather than looked up per row: `cellForRowAt` runs for every
@@ -356,6 +358,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         ])
 
         observeKeyboard()
+        observeDayChange()
         addEdgeSwipes()
 
         // Re-render when this buffer's messages or the error change — a frame for some
@@ -465,6 +468,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // subscription) resident until someone stopped typing.
         typingTicker?.invalidate()
         typingIdleTimer?.invalidate()
+        // Block-based observers aren't auto-removed the way the selector-based ones are.
+        if let dayChangeObserver { NotificationCenter.default.removeObserver(dayChangeObserver) }
     }
 
     /// Rebuild the nick highlighter when this buffer's coloring set changes — the channel's
@@ -1618,6 +1623,31 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: actions))
         item.accessibilityLabel = "More"
         return item
+    }
+
+    // MARK: - Day rollover
+
+    /// Redraw when the calendar day changes, so relative date dividers stay true.
+    ///
+    /// `MessageRenderer.dayLabel` formats relatively ("Today", "Yesterday"), and the label is
+    /// baked into a cell at `cellForRowAt`. Nothing else invalidates it: a quiet buffer left
+    /// open past local midnight would keep calling yesterday "Today" until some unrelated
+    /// state change happened to force a reload — and a quiet buffer is exactly the one that
+    /// won't get one. The notification also fires on a time-zone change, which moves the same
+    /// boundary.
+    ///
+    /// The rows themselves don't change (a divider carries an absolute `Date`), so this is a
+    /// redraw, not a rebuild.
+    ///
+    /// Block-based rather than the selector form its keyboard neighbours use, because this
+    /// notification is not guaranteed to be posted on the main thread and `queue: .main` is
+    /// what makes the redraw safe. That form isn't auto-removed on dealloc, hence the token.
+    private func observeDayChange() {
+        dayChangeObserver = NotificationCenter.default.addObserver(
+            forName: .NSCalendarDayChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            self?.tableView.reloadData()
+        }
     }
 
     // MARK: - Keyboard

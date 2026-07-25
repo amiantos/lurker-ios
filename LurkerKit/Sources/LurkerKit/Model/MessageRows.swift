@@ -140,6 +140,21 @@ public enum MessageRows {
         var segment: [Message] = []
         var currentDay: Date?
         var unreadDividerPlaced = false
+
+        // A buffer can *open* with undated lines — `LurkerStore.appendLocal` synthesizes a
+        // dateless system line for things like an unrecognized command, and in an otherwise
+        // empty buffer that line is the first row. Left alone, the loop below emits nothing
+        // above it and then drops a date divider *underneath* it once real traffic arrives,
+        // stranding it above the day it belongs to. So a leading undated run adopts the day of
+        // the first dated message, and the divider goes up before any of them.
+        //
+        // Nothing is invented when there's no dated message at all: a buffer of purely local
+        // lines has no day to name, and guessing one would be a claim we can't support.
+        if messages.first?.date == nil, let firstDated = messages.first(where: { $0.date != nil })?.date {
+            let day = calendar.startOfDay(for: firstDated)
+            rows.append(.dateDivider(day))
+            currentDay = day
+        }
         for message in messages {
             // Local midnight, so the divider follows the reader's calendar rather than UTC's.
             // An undated message can't change the day and doesn't reset it — it just rides
