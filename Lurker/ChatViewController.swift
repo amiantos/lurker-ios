@@ -1032,9 +1032,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard typingTicker == nil else { return }
         // One second is well inside the shortest lease (6s), so the line never lingers
         // visibly past its welcome, and it's coarse enough to be free.
-        typingTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        //
+        // `.common` rather than `scheduledTimer`'s default mode: the run loop switches to
+        // tracking while the table is being dragged, and a default-mode timer simply stops
+        // firing for the duration — so a reader scrolling through history would watch the
+        // typing line hang there, un-expired, until they lifted their finger.
+        let ticker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             self?.refreshTypists()
         }
+        RunLoop.main.add(ticker, forMode: .common)
+        typingTicker = ticker
     }
 
     /// Re-read the typists and redraw only if the list actually changed.
@@ -1060,14 +1067,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         typingIdleTimer = nil
         // Nothing to downgrade if we aren't claiming to type in the first place.
         guard outgoingTyping.isSignalling else { return }
-        typingIdleTimer = Timer.scheduledTimer(
-            withTimeInterval: OutgoingTyping.idle, repeats: false
-        ) { [weak self] _ in
+        // `.common` for the same reason as the ticker: scrolling the conversation with a
+        // half-written draft must not hold the `paused` downgrade open indefinitely.
+        let idle = Timer(timeInterval: OutgoingTyping.idle, repeats: false) { [weak self] _ in
             guard let self else { return }
             typingIdleTimer = nil
             // The draft captured here is the latest one: any change re-arms this timer.
             emitTyping(outgoingTyping.idled(draft: draft, at: Date()))
         }
+        RunLoop.main.add(idle, forMode: .common)
+        typingIdleTimer = idle
     }
 
     /// Stop claiming to type — on send, and on leaving the buffer. Silent when we weren't.

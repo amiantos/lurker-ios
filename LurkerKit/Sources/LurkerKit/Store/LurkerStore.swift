@@ -42,8 +42,17 @@ public struct ChatState: Sendable {
     /// Who is composing, keyed `BufferKey.id → lowercased nick → entry`.
     ///
     /// Purely ephemeral — there is no snapshot for it, so this starts empty on every connect
-    /// and is fed entirely by live `typing` frames. Read through `typists(in:now:)` rather
-    /// than directly: entries carry a lease and are only dropped when someone asks.
+    /// and is fed entirely by live `typing` frames.
+    ///
+    /// **Read through `typists(in:now:)`, never directly.** An entry is removed only by an
+    /// event — a `done`/unrecognized state, a message from that nick, the buffer closing, the
+    /// socket dropping. Nothing prunes on a clock, so a lapsed entry stays in this map until
+    /// one of those happens; `typists` filters it out of the answer rather than deleting it.
+    /// Reading the map raw therefore reports people who stopped typing minutes ago.
+    ///
+    /// The residue is bounded and small — one entry per nick who typed here and then went
+    /// quiet without sending anything — so it's left to be cleaned up by the events above
+    /// rather than by a sweep that would only exist to tidy a map nobody reads directly.
     public var typing: [String: [String: TypingEntry]] = [:]
     public var error: String?
 
