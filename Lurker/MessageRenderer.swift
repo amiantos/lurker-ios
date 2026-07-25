@@ -407,6 +407,11 @@ enum MessageRenderer {
         // The web uses a plain `dateStyle: 'full'` here; this is the platform convention
         // (Messages, Mail) and it earns its keep on a divider the reader passes every day.
         formatter.doesRelativeDateFormatting = true
+        // A `DateFormatter` otherwise snapshots `Locale.current` at init, and this one is a
+        // `static let` that outlives any region change — so it would keep formatting in the
+        // old locale for the rest of the process. Pairs with the redraw `ChatViewController`
+        // does on `NSLocale.currentLocaleDidChangeNotification`.
+        formatter.locale = .autoupdatingCurrent
         return formatter
     }()
 

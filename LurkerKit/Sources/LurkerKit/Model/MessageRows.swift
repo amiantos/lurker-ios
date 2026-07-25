@@ -15,8 +15,12 @@ public enum MessageRow: Equatable, Sendable {
     case consolidated(ConsolidationSummary)
     /// The read boundary — "New messages".
     case unreadDivider
-    /// A day change, carrying that day's local midnight. The label is formatted at render
-    /// so it stays right across a locale change or a midnight rollover.
+    /// A day change, carrying that day's local midnight.
+    ///
+    /// An absolute instant, not a formatted string: the label is produced at render time, so a
+    /// redraw is enough to correct it when the day rolls over or the locale changes, with no
+    /// rebuild of the row stream. Invalidating that redraw is the renderer's job, not this
+    /// type's — see `ChatViewController.observeDateLabelInvalidation`.
     case dateDivider(Date)
     /// "You've reached the beginning", once the buffer has no older history left. The honest
     /// counterpart to a loading placeholder: "nothing more" vs "still fetching".
