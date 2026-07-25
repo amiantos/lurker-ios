@@ -43,8 +43,18 @@ public final class ChatViewModel {
     /// Highest message id we've already marked read per buffer, to dedupe mark-read spam.
     private var lastMarked: [String: Int] = [:]
 
-    public init(sessions: SessionStore = SessionStore()) {
+    /// Last-known setting values, so behavior is right from the first frame rather than from
+    /// whenever the bootstrap fetch lands — see `SettingsCache`.
+    private let settingsCache: SettingsCache
+
+    public init(sessions: SessionStore = SessionStore(), settingsCache: SettingsCache = SettingsCache()) {
         self.sessions = sessions
+        self.settingsCache = settingsCache
+        // Seed before anything can read a setting. Patched in as *values* only — no registry —
+        // so `settings.loaded` stays honestly false until a real bootstrap arrives, while every
+        // behavior gate already reads the user's actual choice.
+        let cached = settingsCache.load()
+        if !cached.isEmpty { store.apply(.settingsChanged(cached)) }
         restoreSession()
     }
 
@@ -95,6 +105,10 @@ public final class ChatViewModel {
         // The next sign-in may be against a different server, whose answer differs.
         apnsSupported = nil
         sessions.clear()
+        // The next account's preferences are not this one's — and a privacy switch in
+        // particular must not carry across users. Both this and the deliberate sign-out clear
+        // it, because either can be followed by someone else signing in on this phone.
+        settingsCache.clear()
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
@@ -455,6 +469,11 @@ public final class ChatViewModel {
 
     private func handle(_ frame: ServerFrame) {
         switch frame {
+        case .settingsBootstrap, .settingsChanged:
+            store.apply(frame)
+            // Persist after folding, not from the frame: a `settingsChanged` patch carries only
+            // what moved, so the cache has to mirror the merged result rather than the delta.
+            settingsCache.save(store.state.settings.values)
         case .unauthorized:
             onAuthLost()
         case .socketOpen:
@@ -523,6 +542,10 @@ public final class ChatViewModel {
         cancelReconnect()
         client.close()
         sessions.clear()
+        // The next account's preferences are not this one's — and a privacy switch in
+        // particular must not carry across users. Both this and the deliberate sign-out clear
+        // it, because either can be followed by someone else signing in on this phone.
+        settingsCache.clear()
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()

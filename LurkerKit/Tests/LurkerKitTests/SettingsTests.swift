@@ -166,6 +166,65 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(state.settings.string("look.message.layout", default: "auto"), "auto")
     }
 
+    // MARK: - The values cache
+
+    /// Its own suite, so tests never scribble on the app's defaults.
+    private func isolatedCache() -> SettingsCache {
+        let suite = UserDefaults(suiteName: "lurker.tests.\(UUID().uuidString)")!
+        return SettingsCache(defaults: suite)
+    }
+
+    func testCacheRoundTripsEveryValueKind() {
+        let cache = isolatedCache()
+        let values: [String: SettingValue] = [
+            "a.bool": .bool(false),
+            "a.int": .int(9),
+            "a.string": .string("compact"),
+            "a.list": .stringList(["x", "y"]),
+        ]
+        cache.save(values)
+        XCTAssertEqual(cache.load(), values)
+    }
+
+    func testCacheStartsEmptyAndClears() {
+        let cache = isolatedCache()
+        XCTAssertEqual(cache.load(), [:])
+        cache.save(["a.bool": .bool(true)])
+        cache.clear()
+        XCTAssertEqual(cache.load(), [:])
+    }
+
+    /// A save replaces rather than merges: it mirrors the server's stored set, and a setting
+    /// reset to its default disappears from that set. Merging would keep the old value alive
+    /// locally forever.
+    func testCacheSaveReplacesRatherThanMerges() {
+        let cache = isolatedCache()
+        cache.save(["a": .bool(true), "b": .int(1)])
+        cache.save(["a": .bool(true)])
+        XCTAssertEqual(cache.load(), ["a": .bool(true)])
+    }
+
+    /// The reason the cache exists. With no registry at all — bootstrap failed, or hasn't
+    /// landed — a cached `false` must still be what a privacy gate reads, because the fallback
+    /// on `chat.send_typing_notifications` is `true` and the user turned it off.
+    func testCachedValueOverridesTheFallbackWithNoRegistry() {
+        var state = ChatState()
+        state = LurkerStore.reduce(state, .settingsChanged(["chat.send_typing_notifications": .bool(false)]))
+        XCTAssertFalse(state.settings.loaded, "values alone must not claim a real bootstrap")
+        XCTAssertFalse(
+            state.settings.bool("chat.send_typing_notifications", default: true),
+            "a cached off must beat the default-on fallback"
+        )
+    }
+
+    /// Seeding from cache supplies values but no registry, so the settings *screen* can still
+    /// tell "we have nothing to render controls from" apart from "this server has no settings".
+    func testSeedingFromCacheLeavesLoadedFalse() {
+        let state = LurkerStore.reduce(ChatState(), .settingsChanged(["a": .bool(true)]))
+        XCTAssertFalse(state.settings.loaded)
+        XCTAssertTrue(state.settings.registry.isEmpty)
+    }
+
     // MARK: - Write encoding
 
     func testValuesRoundTripToJSON() {

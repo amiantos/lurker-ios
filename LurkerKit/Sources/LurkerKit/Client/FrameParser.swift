@@ -153,6 +153,13 @@ enum FrameParser {
         )
     }
 
+    /// Decode a REST body to a JSON object, for the callers that need a field this file has no
+    /// dedicated parse for (`PATCH /api/settings` → `{values}`). Still routed through here so
+    /// `JSONSerialization` stays behind the one type that knows the wire format.
+    static func jsonObject(from text: String) -> [String: Any]? {
+        object(from: text)
+    }
+
     /// The `error` string from a REST failure body (`{error, key}`), when there is one. Lives
     /// here rather than at the call site because this is the one place that knows the wire
     /// format — and the server's own wording ("must be one of …", "out of range") is more use

@@ -91,6 +91,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var rows: [Row] = [] // messages + the unread divider; what the table renders
     /// Who the store says is composing here, as of the last apply or tick (#61).
     private var typists: [String] = []
+    /// The settings in force as of the last apply.
+    ///
+    /// Snapshotted alongside `typists` rather than read live inside `buildRows`, so every path
+    /// that builds rows agrees on which state it's rendering. The sink is
+    /// `.receive(on: .main)`, so `apply`'s argument is an instant behind `viewModel.state`; a
+    /// live read would let one frame mix old messages with new consolidation rules, and would
+    /// disagree with the dedupe predicate about which snapshot is authoritative. It also gives
+    /// the typing ticker's `rebuildRows()` — which has no `state` to thread through — the same
+    /// answer.
+    private var settings = Settings()
     /// Re-reads `typists` while anybody is typing.
     ///
     /// Needed because a typing entry's lease expires by the *clock*, not by a frame: the last
@@ -516,6 +526,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         messages = updated
         typists = state.typists(in: buffer.key)
+        settings = state.settings
         rebuildRows()
         updateTypingTicker()
         updateTitle(state)
@@ -867,7 +878,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Both server-side (#65), so the phone agrees with whatever the user set on the web.
         // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
         // user when bootstrap lands a moment after launch.
-        let settings = viewModel.state.settings
         let consolidateEnabled = settings.bool("chat.consolidate_joins", default: true)
         let maxNames = settings.int("chat.consolidate_max_names", default: 5)
 

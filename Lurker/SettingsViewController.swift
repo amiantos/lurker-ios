@@ -57,6 +57,8 @@ final class SettingsViewController: UITableViewController {
 
     private enum Section {
         case chat([SettingRow])
+        /// Bootstrap hasn't landed, so there's no registry to build controls from.
+        case unavailable
         case account
         case about
     }
@@ -90,7 +92,13 @@ final class SettingsViewController: UITableViewController {
             .map(\.settings)
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.rebuild() }
+            .sink { [weak self] _ in
+                // A settings change from anywhere retires a previous rejection: the value on
+                // screen is now the server's, so a red "out of range" pinned under a control
+                // that's since become correct is just a lie that never expires.
+                self?.writeError = nil
+                self?.rebuild()
+            }
             .store(in: &cancellables)
         rebuild()
     }
@@ -103,7 +111,12 @@ final class SettingsViewController: UITableViewController {
         let rows = Self.chatSettings.compactMap { entry in
             registry[entry.key].map { SettingRow(label: entry.label, option: $0) }
         }
-        sections = rows.isEmpty ? [.account, .about] : [.chat(rows), .account, .about]
+        // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
+        // silently rendering a Settings screen whose only contents are Sign Out and a version
+        // number — which reads as "this app has no settings" instead of "we couldn't load them".
+        // `loaded` distinguishes the two: cached *values* are already in force either way, but
+        // only a real bootstrap brings the registry the controls are built from.
+        sections = rows.isEmpty ? [.unavailable, .account, .about] : [.chat(rows), .account, .about]
         tableView.reloadData()
     }
 
@@ -114,13 +127,13 @@ final class SettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
         case .chat(let rows): rows.count
-        case .account, .about: 1
+        case .unavailable, .account, .about: 1
         }
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
-        case .chat: "Chat"
+        case .chat, .unavailable: "Chat"
         case .account, .about: nil
         }
     }
@@ -132,7 +145,7 @@ final class SettingsViewController: UITableViewController {
         // leaving someone to discover. Everything else the registry would say is reference
         // material, and the web has room for it.
         case .chat: "Saved to your account and applied on every device."
-        case .account, .about: nil
+        case .unavailable, .account, .about: nil
         }
     }
 
@@ -155,6 +168,16 @@ final class SettingsViewController: UITableViewController {
                 content.secondaryTextProperties.numberOfLines = 0
             }
             configure(cell, for: row.option)
+        case .unavailable:
+            content.text = viewModel.state.settings.loaded
+                ? "No chat settings available on this server"
+                : "Couldn't load settings"
+            content.textProperties.color = .secondaryLabel
+            content.secondaryText = viewModel.state.settings.loaded
+                // A server older than the app genuinely may not have these keys.
+                ? "This server doesn't offer the settings this app can change."
+                : "Check your connection and reopen Settings."
+            content.secondaryTextProperties.numberOfLines = 0
         case .account:
             content.text = "Sign Out"
             content.textProperties.color = .systemRed
@@ -194,13 +217,17 @@ final class SettingsViewController: UITableViewController {
             stepper.maximumValue = Double(option.max ?? 100)
             stepper.value = Double(value)
             stepper.isEnabled = enabled
-            stepper.addAction(UIAction { [weak self, weak stepper] _ in
-                guard let self, let stepper else { return }
-                write(option.key, .int(Int(stepper.value)))
-            }, for: .valueChanged)
             // The number itself, next to the stepper — a stepper alone shows you nothing.
             let label = UILabel()
             label.text = String(value)
+            stepper.addAction(UIAction { [weak self, weak stepper, weak label] _ in
+                guard let self, let stepper else { return }
+                let next = Int(stepper.value)
+                // Echo locally and immediately. Without this the number never moves until a
+                // write lands, so the control reads one value while the stepper holds another.
+                label?.text = String(next)
+                scheduleWrite(option.key, .int(next))
+            }, for: .valueChanged)
             label.font = .preferredFont(forTextStyle: .body)
             label.textColor = enabled ? .secondaryLabel : .tertiaryLabel
             label.adjustsFontForContentSizeCategory = true
@@ -227,10 +254,36 @@ final class SettingsViewController: UITableViewController {
         return viewModel.state.settings.bool(parent, default: true)
     }
 
-    /// Write one setting. The store isn't touched here: the server validates, stores, and fans
-    /// a `settings` frame back, which is what actually moves the control. So a rejected write
-    /// leaves the UI where it was — the switch springs back on the rebuild — rather than
-    /// showing a state the server never accepted.
+    /// Pending debounced writes, keyed by setting.
+    private var writeTimers: [String: Timer] = [:]
+
+    /// How long a stepper run is allowed to settle before it's sent.
+    private static let stepperDebounce: TimeInterval = 0.4
+
+    /// Coalesce a run of taps into one write.
+    ///
+    /// A stepper held down (or tapped quickly) would otherwise fire a `PATCH` per increment,
+    /// and every response rebuilds the table — which destroys the very `UIStepper` the finger
+    /// is on, so a continuous press dies after one step and a fast double-tap sends the same
+    /// value twice. Waiting for the run to settle sends one request carrying the final value,
+    /// and no rebuild lands mid-gesture.
+    private func scheduleWrite(_ key: String, _ value: SettingValue) {
+        writeTimers[key]?.invalidate()
+        // `.common`, so the run still settles while the table is being scrolled.
+        let timer = Timer(timeInterval: Self.stepperDebounce, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            writeTimers[key] = nil
+            write(key, value)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        writeTimers[key] = timer
+    }
+
+    /// Write one setting.
+    ///
+    /// The store is updated from the server's reply (`LurkerClient.updateSettings` applies the
+    /// returned values), so a rejected write leaves the control exactly where the server still
+    /// holds it rather than showing a state it never accepted.
     private func write(_ key: String, _ value: SettingValue) {
         Task { [weak self] in
             guard let self else { return }
@@ -257,12 +310,23 @@ final class SettingsViewController: UITableViewController {
             preferredStyle: .actionSheet
         )
         sheet.addAction(UIAlertAction(title: "Sign Out", style: .destructive) { [weak self] _ in
-            self?.dismiss(animated: true) { self?.viewModel.logout() }
+            // `presentingViewController`, not `self`: `self.dismiss` sent while UIKit is still
+            // tearing down the alert dismisses the ALERT and leaves this sheet on screen — a
+            // stranded Settings sheet floating over the sign-in root. Naming the presenter is
+            // unambiguous whichever order those two finish in.
+            guard let self else { return }
+            let presenter = presentingViewController
+            presenter?.dismiss(animated: true) { [weak self] in self?.viewModel.logout() }
         })
         sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
         if let popover = sheet.popoverPresentationController {
             popover.sourceView = tableView
-            popover.sourceRect = tableView.rectForRow(at: IndexPath(row: 0, section: sections.count - 2))
+            // Found by identity rather than counted back from the end, which silently pointed
+            // at the wrong section the moment the section list changed shape.
+            let accountSection = sections.firstIndex { if case .account = $0 { return true }; return false }
+            popover.sourceRect = tableView.rectForRow(
+                at: IndexPath(row: 0, section: accountSection ?? 0)
+            )
         }
         present(sheet, animated: true)
     }

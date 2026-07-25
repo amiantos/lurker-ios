@@ -113,13 +113,15 @@ final class LurkerClient {
     /// the roster fetch already saw a 401 the token is dead — skip the upgrade.
     func start() async {
         guard await fetchNetworks() else { return }
-        // Settings before the socket, not alongside it: the first backlog can render the
-        // instant the socket opens, and rendering it under a different set of rules than the
-        // ones in force (consolidation off, smart filter on) means reflowing the buffer a
-        // moment later. Best-effort — a failure here leaves `settings.loaded` false and every
-        // reader falls through to its registry default, which is a working app, so it must
-        // never block the socket.
-        await fetchSettings()
+        // Detached, so it genuinely cannot hold up the socket. `session` has the default 60s
+        // request timeout, so a server that accepts the connection but stalls on this path — a
+        // slow read, an overloaded cell, a proxy black-holing it — would otherwise leave the
+        // app with no socket, no buffers and no messages for up to a minute on every launch.
+        //
+        // Ordering costs nothing now that values are cached across launches
+        // (`SettingsCache`): the rules are already in force when the first backlog renders, so
+        // there's nothing to wait for and nothing to reflow.
+        Task { await fetchSettings() }
         openSocket()
     }
 
@@ -127,6 +129,13 @@ final class LurkerClient {
     /// gap (`?since=N`) rather than re-sending everything. Skips the roster re-fetch —
     /// names don't change and the reconnect snapshot re-sends live network state anyway.
     func reconnect(since: Int) {
+        // Settings are re-fetched here, unlike the network roster.
+        //
+        // They're the one piece of state with no resume path: `settings` frames are live
+        // fan-out only and are never replayed (the resume slice carries messages, not
+        // settings), so a change made on the web while this phone was backgrounded or in
+        // reconnect backoff would otherwise be invisible until the app was relaunched.
+        Task { await fetchSettings() }
         openSocket(since: since)
     }
 
@@ -198,7 +207,26 @@ final class LurkerClient {
                 onFrame(.unauthorized)
                 return "Signed out."
             }
-            if (200..<300).contains(code) { return nil }
+            if (200..<300).contains(code) {
+                // Apply the server's own response rather than waiting for the WS echo.
+                //
+                // Both arrive, on separate connections, racing each other. When the HTTP reply
+                // wins — which it routinely does — a caller that rebuilt its UI at that moment
+                // would read the OLD store value and visibly snap the control back before the
+                // frame flipped it forward again. Worse, with the socket down (reconnect
+                // backoff can run to tens of seconds, and `settings` frames are never
+                // replayed) the echo may not arrive at all, leaving a write that succeeded
+                // looking like one that failed.
+                //
+                // `values` is the full stored set, and the reducer patches rather than
+                // replaces, so applying it is idempotent with the echo that follows.
+                if let text = String(data: data, encoding: .utf8) {
+                    onFrame(.settingsChanged(FrameParser.parseSettingValues(
+                        FrameParser.jsonObject(from: text)?["values"]
+                    )))
+                }
+                return nil
+            }
             // The server explains itself on a 400 (`{error, key}`); prefer its wording.
             let text = String(data: data, encoding: .utf8) ?? ""
             return FrameParser.errorMessage(from: text) ?? "Couldn't save that setting."
