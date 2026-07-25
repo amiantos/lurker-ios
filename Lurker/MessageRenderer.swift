@@ -172,6 +172,42 @@ enum MessageRenderer {
         return line
     }
 
+    /// "alice is typing…" — the live composing line that sits at the foot of the buffer.
+    ///
+    /// Built like a consolidation summary rather than as a bubble: it's narration about the
+    /// room, not speech in it, and it has no author to caption. Names keep their palette
+    /// colors so you can pick out who without reading, and the whole line is italic to mark it
+    /// as the one row that isn't a record of anything — nothing was said, and when it goes it
+    /// leaves no trace.
+    ///
+    /// Returns nil for an empty list so the caller has one thing to check rather than
+    /// rendering a stray " is typing…".
+    static func renderTyping(_ nicks: [String]) -> NSAttributedString? {
+        guard !nicks.isEmpty else { return nil }
+        let base = UIFont.preferredFont(forTextStyle: .subheadline).italic
+        // Past three names the list stops being scannable and starts being a wall — the same
+        // judgement `Consolidation` makes about a join flood, and the same phrasing.
+        let visible = nicks.prefix(3)
+        let hidden = nicks.count - visible.count
+
+        let line = NSMutableAttributedString()
+        for (index, nick) in visible.enumerated() {
+            if index > 0 {
+                // "and" before the final name only when nothing is truncated; a truncated
+                // list ends "…, and N others" instead.
+                let isLast = index == visible.count - 1
+                line.append(muted(isLast && hidden == 0 ? " and " : ", ", base: base))
+            }
+            line.append(nickToken(nick, base: base))
+        }
+        if hidden > 0 {
+            line.append(muted(", and \(hidden) other\(hidden == 1 ? "" : "s")", base: base))
+        }
+        // Singular only for one name: "alice and bob are", "alice, bob, and 2 others are".
+        line.append(muted(nicks.count == 1 ? " is typing…" : " are typing…", base: base))
+        return line
+    }
+
     // MARK: - Line building blocks
 
     /// A nick in its own color (or the tint, when it's you). Falls back to "someone" for the

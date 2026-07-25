@@ -331,6 +331,18 @@ final class LurkerClient {
         ])
     }
 
+    /// Tell the network we're composing. Fire-and-forget: the server turns it into a
+    /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
+    /// rather than needing a retry.
+    func setTyping(networkId: Int?, target: String, signal: TypingSignal) {
+        send([
+            "type": "typing",
+            "networkId": networkId.map { $0 as Any } ?? NSNull(),
+            "target": target,
+            "state": signal.rawValue,
+        ])
+    }
+
     func markAllRead() {
         send(["type": "mark-all-read"])
     }

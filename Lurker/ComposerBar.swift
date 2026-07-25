@@ -55,6 +55,11 @@ final class ComposerBar: UIView {
     /// The owner floats the suggestion pills; the bar only reports the token.
     var onCompletion: ((Completion?) -> Void)?
 
+    /// Fired whenever the field's text changes, with the current draft — including the
+    /// programmatic changes (`clear()` after a send, a completion insert), because those are
+    /// changes to what the user is composing too. Drives the outgoing typing signal (#61).
+    var onDraftChange: ((String) -> Void)?
+
     var placeholder: String = "" {
         didSet { placeholderLabel.text = placeholder }
     }
@@ -443,6 +448,7 @@ extension ComposerBar: UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
         updateSendEnabled()
         emitCompletion()
+        onDraftChange?(textView.text ?? "")
 
         // Grow to fit the text, up to the cap; past it, hold the height and let the text
         // scroll inside. The floor is one line's height, the same value the pills use, so a

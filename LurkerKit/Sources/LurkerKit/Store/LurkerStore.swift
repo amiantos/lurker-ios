@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import Combine
+import Foundation
 
 /// How the live socket stands, for a connection state the user can actually see.
 public enum SocketStatus: Equatable, Sendable {
@@ -38,6 +39,12 @@ public struct ChatState: Sendable {
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
     /// which layers the network's own connection state on top.
     public var peerPresence: [Int: [String: PresenceState]] = [:]
+    /// Who is composing, keyed `BufferKey.id → lowercased nick → entry`.
+    ///
+    /// Purely ephemeral — there is no snapshot for it, so this starts empty on every connect
+    /// and is fed entirely by live `typing` frames. Read through `typists(in:now:)` rather
+    /// than directly: entries carry a lease and are only dropped when someone asks.
+    public var typing: [String: [String: TypingEntry]] = [:]
     public var error: String?
 
     public init() {}
@@ -102,6 +109,25 @@ public struct ChatState: Sendable {
         }
     }
 
+    /// The peers currently composing in `key`, display-cased, longest-running first.
+    ///
+    /// `now` is a parameter rather than an internal `Date()` so this is deterministic under
+    /// test. The lease is evaluated *here* — the map itself is never pruned — which means a
+    /// caller that stops asking simply sees expired entries gone the next time it does, with
+    /// no timer needed to keep the state honest in the meantime.
+    ///
+    /// Ordered by when each peer started their current run, tie-broken on the folded nick so
+    /// two entries stamped from the same instant (which is every fixture in the tests, and a
+    /// real possibility for two frames in one runloop) still come out in a fixed order rather
+    /// than at the mercy of dictionary iteration.
+    public func typists(in key: BufferKey, now: Date = Date()) -> [String] {
+        guard let entries = typing[key.id] else { return [] }
+        return entries.values
+            .filter { $0.isLive(at: now) }
+            .sorted { ($0.startedAt, $0.nick.lowercased()) < ($1.startedAt, $1.nick.lowercased()) }
+            .map(\.nick)
+    }
+
     /// A friend's status: the presence of its primary target — the DM that opens when the
     /// friend is tapped — so the dot never claims online when the DM you'd open is offline.
     public func primaryPresence(_ contact: Contact) -> FriendPresence {
@@ -137,6 +163,7 @@ final class LurkerStore {
         next.buffers[key.id] = nil
         next.messages[key.id] = nil
         next.members[key.id] = nil
+        next.typing[key.id] = nil
         subject.value = next
     }
 
@@ -165,7 +192,12 @@ final class LurkerStore {
     }
 
     /// The pure core. Given the current state and a frame, produce the next state.
-    static func reduce(_ state: ChatState, _ frame: ServerFrame) -> ChatState {
+    ///
+    /// `now` exists only for the typing lease — the one piece of state whose meaning depends on
+    /// the clock. It's a defaulted parameter rather than a `Date()` inside the typing branch so
+    /// this stays a pure function of its inputs and the lease behavior is testable without
+    /// sleeping through it.
+    static func reduce(_ state: ChatState, _ frame: ServerFrame, now: Date = Date()) -> ChatState {
         switch frame {
         case .networks(let networks):
             return applyNetworks(state, networks)
@@ -217,6 +249,11 @@ final class LurkerStore {
             }
             next.peerPresence[networkId] = map
             return next
+        case .typing(let networkId, let target, let nick, let activity, let userhost):
+            return applyTyping(
+                state, networkId: networkId, target: target,
+                nick: nick, activity: activity, userhost: userhost, now: now
+            )
         case .serverError(let text):
             var next = state
             next.error = text
@@ -238,6 +275,11 @@ final class LurkerStore {
             case .connected, .reconnecting: next.connection = .reconnecting
             case .connecting: next.connection = .connecting
             }
+            // Nobody is typing at us over a socket that isn't there. The lease would retire
+            // these on its own, but a `paused` entry holds for 30s — long enough to survive a
+            // reconnect and show a peer composing when we've heard nothing from them since
+            // before the drop.
+            next.typing = [:]
             return next
         case .unauthorized, .ignored:
             // Session-level / no-op; the view model intercepts `.unauthorized` first.
@@ -246,6 +288,59 @@ final class LurkerStore {
     }
 
     // MARK: - Reducers
+
+    /// Fold a peer's `+typing` tag into the typing map.
+    ///
+    /// **Resolve, never materialize.** A typing tag must not conjure a buffer. It's an ambient
+    /// signal *about* a conversation, not evidence one exists, and a DM row invented from one
+    /// would be a phantom the user never opened — the incoming PRIVMSG is what opens a DM
+    /// (`CLIENT_PROTOCOL.md:632`; this was web bug #292). So an entry is stored only when a
+    /// buffer row is already present, and the frame is otherwise dropped.
+    ///
+    /// Case folding comes free from `BufferKey.id`, which lowercases the target: a tag for
+    /// `#Chan` lands on a buffer joined as `#chan`, and one cased `Bob` finds the DM opened as
+    /// `bob`. Servers are inconsistent here and it has bitten before (web #289).
+    private static func applyTyping(
+        _ state: ChatState,
+        networkId: Int?,
+        target: String,
+        nick: String,
+        activity: TypingActivity?,
+        userhost: String?,
+        now: Date
+    ) -> ChatState {
+        let key = BufferKey(networkId: networkId, target: target).id
+        guard state.buffers[key] != nil else { return state }
+        var next = state
+        var entries = next.typing[key] ?? [:]
+        // One entry per peer regardless of how the server cased them across two tags.
+        let canon = nick.lowercased()
+
+        guard let activity else {
+            // `done`, or a value we don't recognize: they've stopped. Removing beats storing a
+            // terminal state — an entry parked here with no lease left to run out is precisely
+            // the stuck indicator the web had to go back and fix.
+            entries.removeValue(forKey: canon)
+            next.typing[key] = entries.isEmpty ? nil : entries
+            return next
+        }
+
+        // A refresh preserves the original start time so the displayed order doesn't shuffle
+        // mid-run — but only while the previous entry is still live. Once a peer's lease has
+        // lapsed they stopped and started again, and that's a new run which belongs at the end
+        // of the list rather than back at its original place.
+        let previous = entries[canon]
+        let startedAt = previous.flatMap { $0.isLive(at: now) ? $0.startedAt : nil } ?? now
+        entries[canon] = TypingEntry(
+            nick: nick,
+            activity: activity,
+            startedAt: startedAt,
+            expiresAt: now.addingTimeInterval(activity.lease),
+            userhost: userhost
+        )
+        next.typing[key] = entries
+        return next
+    }
 
     private static func applyNetworks(_ state: ChatState, _ networks: [Network]) -> ChatState {
         var next = state
