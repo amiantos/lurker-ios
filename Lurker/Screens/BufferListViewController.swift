@@ -299,11 +299,14 @@ final class BufferListViewController: UICollectionViewController {
     /// Show a centered placeholder when the list has no rows, so a blank screen always says
     /// which kind of blank it is.
     ///
-    /// Keyed on whether the *snapshot* has landed rather than on the socket being up: the
-    /// socket reports connected before the snapshot is applied, and keying on it would flash
-    /// "No networks yet" at every launch in that gap. Why the connection might be the reason
-    /// nothing has landed is the banner's job to say, not this one's — so an offline launch
-    /// shows the spinner *and* the banner, each answering its own question.
+    /// Keyed on `backlogComplete` — the `backlog-complete` terminal frame — and neither on the
+    /// socket being up nor on the `snapshot` frame having arrived. Both of those are prefixes
+    /// of the answer rather than the answer, and each flashes the empty state on a different
+    /// kind of account; `ChatState.backlogComplete` spells out which and why.
+    ///
+    /// Whether the connection is the reason nothing has landed is the banner's question, not
+    /// this one's — so an offline launch shows the spinner *and* the banner, each answering
+    /// its own.
     private func updatePlaceholder() {
         let placeholder = BufferListPlaceholder.of(
             hasBuffers: !sections.isEmpty,
