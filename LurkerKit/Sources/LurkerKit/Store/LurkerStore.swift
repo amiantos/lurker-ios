@@ -29,6 +29,19 @@ public struct ChatState: Sendable {
     public var maxEventId: Int = 0
     public var networks: [Int: Network] = [:]
     public var buffers: [String: Buffer] = [:]
+    /// Whether a `snapshot` has landed this session — i.e. `networks`/`buffers` are the
+    /// server's answer rather than the absence of one.
+    ///
+    /// The buffer list needs this to tell "still arriving" from "you genuinely have no
+    /// buffers", and neither `connection` nor emptiness can: the socket reports `.connected`
+    /// *before* the snapshot is applied, so a connection-keyed rule flashes the empty state in
+    /// that gap — the same trap `BufferPlaceholder` documents for the message list.
+    ///
+    /// Latched, never cleared on a drop. A reconnect resends the snapshot, but the roster we
+    /// already have stays on screen while it does, so going back to "loading" would blank a
+    /// list that has perfectly good content in it. `reset()` builds a fresh `ChatState`, so
+    /// sign-out clears it.
+    public var snapshotLoaded = false
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
     /// The friends list, sorted case-insensitively by display name. Server-authoritative:
@@ -387,6 +400,9 @@ final class LurkerStore {
 
     private static func applySnapshot(_ state: ChatState, _ networks: [NetworkSnapshot]) -> ChatState {
         var next = state
+        // Even an empty snapshot is an answer: an account with no networks configured has
+        // genuinely nothing to list, and that's a state to say out loud rather than spin on.
+        next.snapshotLoaded = true
         for snapshot in networks {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state
