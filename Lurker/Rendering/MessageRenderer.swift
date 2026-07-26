@@ -253,7 +253,7 @@ enum MessageRenderer {
     /// (half at each end, so two adjacent cells add up to the same gap). Any drift between the two
     /// and the rhythm stutters at every message boundary, which is what stops a log reading as a
     /// grid — a wrapped line and a new message have to be equally far apart.
-    static let compactLineGap: CGFloat = 6
+    static let compactLineGap: CGFloat = 4
 
     /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
     /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized

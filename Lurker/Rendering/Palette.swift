@@ -43,12 +43,6 @@ enum Palette {
     /// and the trailing side confirms the line is ours. `.systemFill` was too close to tell.
     static let outgoingBubble = UIColor.systemGray4
 
-    /// The band behind an alternate row in the compact style.
-    ///
-    /// A lift, not a wash: striping earns its keep by walking the eye from a wrapped line back to
-    /// its own message, and anything stronger turns a dense log into a barcode.
-    static let altRow = UIColor.quaternarySystemFill
-
     /// Body text on the *unbanded* rows — the foreground half of the zebra.
     ///
     /// The two halves are paired rather than opposed: the banded row is the lighter one, so it

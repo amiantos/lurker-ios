@@ -46,7 +46,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
     private let messageText = MessageTextView()
-    /// Carries the matched wash and the zebra band — see `configure`.
+    /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
 
     /// How far the body sits in from the author above it: exactly one character of the monospaced
@@ -95,7 +95,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         fill.addSubview(column)
 
         NSLayoutConstraint.activate([
-            // The band is full-bleed and flush to the cell, so two banded rows meet with no seam.
+            // Full-bleed and flush to the cell, so two washed rows meet with no seam.
             fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             fill.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             fill.topAnchor.constraint(equalTo: contentView.topAnchor),
@@ -136,19 +136,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
         // Half the line gap at each end, so two adjacent cells put exactly one gap between their
         // text — the same distance `MessageRenderer` puts between two wrapped lines of one message.
-        // A header takes that leading half itself, so the body under it stays tight to its author.
+        // The body keeps that half above it whether or not there's a header, which is what sets an
+        // author's name off from their words instead of clamping them together.
         let padding = MessageRenderer.compactLineGap / 2
         column.layoutMargins = UIEdgeInsets(top: header == nil ? 0 : padding, left: 0, bottom: 0, right: 0)
         messageText.textContainerInset = UIEdgeInsets(
-            top: header == nil ? padding : 0, left: Self.bodyIndent, bottom: padding, right: 0
+            top: padding, left: Self.bodyIndent, bottom: padding, right: 0
         )
 
         messageText.attributedText = attributed
-        fill.backgroundColor = if highlighted {
-            alt ? Palette.highlightRowAlt : Palette.highlightRow
-        } else {
-            alt ? Palette.altRow : .clear
-        }
+        // No background band: the author header marks where a block starts, which is the job the
+        // stripe was doing. Only a matched rule paints a row now.
+        fill.backgroundColor = highlighted ? (alt ? Palette.highlightRowAlt : Palette.highlightRow) : .clear
         messageText.accessibilityLabel = [header?.nick, attributed.string, header?.time]
             .compactMap { $0 }
             .joined(separator: ", ")
