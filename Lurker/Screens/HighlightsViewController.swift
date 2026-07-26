@@ -12,9 +12,10 @@ import UIKit
 /// Rendered in the app's own message-list language rather than a separate list style: each hit is
 /// a real `CompactCell` (the message list's cell), so a highlight reads as a slice of the
 /// conversation — the author header, the indent, nicks and mIRC colors intact. Grouped by
-/// channel+day like iMessage search (`Network/#channel` left, day right), with a chevron for the
-/// jump. The matched wash is suppressed here: every row matched, so it would only be a monotone
-/// wall — this is exactly the shape search and bookmarks reuse.
+/// channel+day like iMessage search (`Network/#channel` left, day right). No disclosure chevron:
+/// it cost every row the width of an indicator, which a monospaced line notices, and the section
+/// header already says these are pointers into conversations elsewhere. The matched wash is
+/// suppressed too — every row matched, so it would only be a monotone wall.
 ///
 /// Highlights are a REST read (`GET /api/highlights`), paginated by a `before` cursor rather
 /// than streamed — so this fetches on open and pages as you scroll, with pull-to-refresh to
@@ -273,7 +274,6 @@ final class HighlightsViewController: UITableViewController {
             interactive: false,
             traits: traitCollection
         )
-        cell.accessoryType = .disclosureIndicator
         return cell
     }
 

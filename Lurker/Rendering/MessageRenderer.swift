@@ -373,12 +373,13 @@ enum MessageRenderer {
 
     // MARK: - Line building blocks
 
-    /// A nick in its own color (or the tint, when it's you). Falls back to "someone" for the
-    /// nick-less event that shouldn't happen but mustn't render blank.
+    /// A nick in its own color. Falls back to "someone" for the nick-less event that shouldn't
+    /// happen but mustn't render blank.
     private static func nickToken(_ nick: String?, isSelf: Bool = false, base: UIFont) -> NSAttributedString {
         let name = (nick?.isEmpty == false) ? nick! : "someone"
-        let color = isSelf ? UIColor.tintColor : hashedColor(nick ?? "")
-        return NSAttributedString(string: name, attributes: [.font: base, .foregroundColor: color])
+        return NSAttributedString(
+            string: name, attributes: [.font: base, .foregroundColor: nickColor(nick, isSelf: isSelf)]
+        )
     }
 
     private static func muted(_ text: String, base: UIFont) -> NSAttributedString {
@@ -553,8 +554,20 @@ enum MessageRenderer {
     // MARK: - Colors
 
     static func nickColor(_ message: Message) -> UIColor {
-        if message.isSelf { return .tintColor }
-        return hashedColor(message.nick ?? "")
+        nickColor(message.nick, isSelf: message.isSelf)
+    }
+
+    /// Your own nick is the plain foreground, not the accent.
+    ///
+    /// Matches the web, whose `look.nick.self_color` defaults to `var(--fg)`. The accent is the
+    /// app's voice — the send button, a live control — and wearing it in the log made every line
+    /// you'd written look like a piece of UI rather than a thing you said. It's also the one nick
+    /// you never need to pick out of a crowd.
+    ///
+    /// (The in-body pass agrees by omission: `NickHighlighter` is built without your own nick, so
+    /// a self-mention keeps the body's color rather than taking a palette one.)
+    static func nickColor(_ nick: String?, isSelf: Bool) -> UIColor {
+        isSelf ? .label : hashedColor(nick ?? "")
     }
 
     /// The nick palette as trait-keyed colors, built once and indexed by the djb2 hash. A
