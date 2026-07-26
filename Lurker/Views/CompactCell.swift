@@ -48,6 +48,14 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let messageText = MessageTextView()
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
+    /// An optical correction on the bottom of a block's fill.
+    ///
+    /// Equal padding above and below doesn't *look* equal: a line box carries its descender space
+    /// below the baseline, so text sits high in it and the bottom of the band reads tighter than
+    /// the top even when both are the same number. One point, measured by eye rather than derived
+    /// — which is what an optical correction is.
+    private static let washBottomNudge: CGFloat = 1
+
     /// Held so the block gap can be taken *outside* the wash: the fill stops at the text, and the
     /// separating space below is plain background. Otherwise a matched block's band hangs three
     /// quarters of a line below its last word.
@@ -151,7 +159,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.textContainerInset = UIEdgeInsets(
             top: header == nil ? padding : MessageRenderer.compactHeaderGap,
             left: 0, // indentation is the paragraph style's — see `MessageRenderer.spaced`
-            bottom: padding + (endsBlock ? wash : 0),
+            bottom: padding + (endsBlock ? wash + Self.washBottomNudge : 0),
             right: 0
         )
         // The rest of the gap — the part that isn't inside either block's fill — is reserved by
