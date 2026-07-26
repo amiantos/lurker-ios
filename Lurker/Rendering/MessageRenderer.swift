@@ -298,7 +298,6 @@ enum MessageRenderer {
         let base = compactFont()
         let line = NSMutableAttributedString()
         line.append(timeColumn(summary.date, base: base))
-        line.append(muted("-- ", base: base))
         line.append(renderConsolidation(summary, base: base))
         return line
     }
@@ -309,23 +308,39 @@ enum MessageRenderer {
         let base = compactFont()
         guard let typists = renderTyping(nicks, base: base) else { return nil }
         let line = NSMutableAttributedString()
-        line.append(timeColumn(nil, base: base))
-        line.append(muted("-- ", base: base))
         line.append(typists)
         return line
     }
 
-    /// `14:32 `, muted — and nothing at all when the event has no time.
+    /// `14:32:07 `, and nothing at all when the event has no time.
+    ///
+    /// Fixed 24-hour seconds, not the locale's short time: a log is scanned in columns, and
+    /// `3:07 PM` is both wider and ragged between locales. Deliberately hard-coded for now — when
+    /// the format becomes a choice it belongs in an app-only settings area, not borrowed from the
+    /// web client's `look.*` keys.
     ///
     /// No padding to hold the column open on a dateless row (the typing line is the only one).
     /// Lines wrap to the leading margin rather than under the text, so a blank time column would
     /// be the single indent on the screen, which reads as a stray tab rather than as alignment.
     private static func timeColumn(_ date: Date?, base: UIFont) -> NSAttributedString {
-        guard let text = timestamp(date) else { return NSAttributedString() }
+        guard let date else { return NSAttributedString() }
         return NSAttributedString(
-            string: text + " ", attributes: [.font: base, .foregroundColor: UIColor.tertiaryLabel]
+            string: compactTimeFormatter.string(from: date) + " ",
+            // A step lighter than the `.tertiaryLabel` the bubble style's reveal uses: there it's a
+            // detail you went looking for, here it's on every line and has to be readable at a
+            // glance without competing with the text.
+            attributes: [.font: base, .foregroundColor: UIColor.secondaryLabel]
         )
     }
+
+    /// POSIX locale so the 24-hour format survives a device set to 12-hour time — `HH` would
+    /// otherwise still render as 12-hour with some region settings.
+    private static let compactTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter
+    }()
 
     /// Who is speaking, in the terminal conventions: `<nick>` for a message, `-nick-` for a notice
     /// (IRC's own mark, the same one the bubble style puts in its caption), and `--` for the
@@ -342,7 +357,9 @@ enum MessageRenderer {
             line.append(nickToken(message.nick, isSelf: message.isSelf, base: base))
             line.append(muted("> ", base: base))
         default:
-            line.append(muted("-- ", base: base))
+            // Server text speaks in its own voice and needs no mark — the old `--` was noise on
+            // every MOTD line. Direction arrows below stay: those carry information.
+            break
         }
         return line
     }
@@ -354,7 +371,7 @@ enum MessageRenderer {
         let glyph = switch type {
         case .join: "--> "
         case .part, .quit, .kick: "<-- "
-        default: "-- "
+        default: "" // a mode or topic change isn't directional; a bare `--` said nothing
         }
         return muted(glyph, base: base)
     }

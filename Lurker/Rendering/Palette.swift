@@ -42,4 +42,12 @@ enum Palette {
     /// (lighter than the near-black incoming in dark, darker than the light incoming in light)
     /// and the trailing side confirms the line is ours. `.systemFill` was too close to tell.
     static let outgoingBubble = UIColor.systemGray4
+
+    /// The zebra band behind alternate rows in the compact style.
+    ///
+    /// Parity comes from the server (`Message.alt`), so this only has to be the *colour* — and it
+    /// has to be nearly nothing: striping earns its keep by helping the eye track a wrapped line
+    /// back to its own row, and anything stronger turns a dense log into a barcode. A system fill
+    /// rather than a fixed grey, so it lands correctly on both themes.
+    static let altRow = UIColor.quaternarySystemFill
 }

@@ -1935,26 +1935,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         (message.originNetworkId ?? buffer.networkId).flatMap { networks[$0]?.name }
     }
 
-    /// A centered marker row — the unread divider, a day change, the start of history.
-    ///
-    /// One cell for all three because they're one thing to a reader: a break in the flow that
-    /// names itself. Only the label and its weight differ — the unread marker is the one you
-    /// are meant to find, so it alone is colored and bold; the others are quiet furniture.
-    private func markerCell(_ text: String, color: UIColor, bold: Bool) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: "divider")!
-        var content = cell.defaultContentConfiguration()
-        content.text = text
-        content.textProperties.color = color
-        let caption = UIFont.preferredFont(forTextStyle: .caption1)
-        content.textProperties.font = bold
-            ? caption.fontDescriptor.withSymbolicTraits(.traitBold)
-                .map { UIFont(descriptor: $0, size: 0) } ?? caption
-            : caption
-        content.textProperties.alignment = .center
-        cell.contentConfiguration = content
-        cell.backgroundColor = .clear
-        return cell
-    }
 }
 
 // MARK: - The shared title pill

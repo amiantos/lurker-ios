@@ -349,6 +349,8 @@ enum FrameParser {
             time: time,
             date: ISOTime.parse(time),
             matched: event.bool("matched"),
+            // A real column too (`CLIENT_PROTOCOL.md:308`), set only for the striped types.
+            alt: event.bool("alt"),
             level: type == .system ? SystemLevel.from(event.stringOrNull("level")) : nil,
             // Gated like `level`, matching the server: `systemLineToEvent` is the only
             // producer of this field and only ever builds `type: "system"` events, so

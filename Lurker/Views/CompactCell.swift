@@ -22,6 +22,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     static let reuseID = "compact"
 
     private let messageText = MessageTextView()
+    /// Carries the row's fill — the zebra stripe, or the warm wash when a rule matched.
+    ///
+    /// A view rather than `contentView.backgroundColor` so the cell's vertical padding sits
+    /// *outside* it: the gap between lines stays the list's background, and a highlighted line
+    /// reads as a band around its own text instead of a slab that touches its neighbours.
+    private let fill = UIView()
+
+    /// The gap between lines. Small on purpose — the density is the feature — but enough that a
+    /// highlighted or striped row is a band rather than part of a block.
+    private static let verticalGap: CGFloat = 2
+    /// Breathing room inside the fill, so text isn't flush against the top of its own stripe.
+    private static let textPadding: CGFloat = 2
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -34,11 +46,20 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.textContainer.lineFragmentPadding = 0
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
         messageText.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(messageText)
+        fill.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(fill)
+        fill.addSubview(messageText)
 
         NSLayoutConstraint.activate([
-            messageText.topAnchor.constraint(equalTo: contentView.topAnchor),
-            messageText.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            // Full bleed horizontally: a stripe that stopped at the text margin would read as a
+            // highlighted *word* rather than a row.
+            fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            fill.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            fill.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.verticalGap / 2),
+            fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Self.verticalGap / 2),
+
+            messageText.topAnchor.constraint(equalTo: fill.topAnchor),
+            messageText.bottomAnchor.constraint(equalTo: fill.bottomAnchor),
             messageText.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
             messageText.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
         ])
@@ -47,13 +68,21 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// `highlighted` washes the line the way the other styles wash a matched message. Kept as a
-    /// full-bleed band rather than anything bubble-shaped: there are no shapes in here.
-    func configure(_ attributed: NSAttributedString, highlighted: Bool = false) {
-        // Tight: the density is the feature. Enough to keep lines from touching, no more.
-        messageText.textContainerInset = UIEdgeInsets(top: 2, left: 0, bottom: 2, right: 0)
+    /// `highlighted` washes the line the way the other styles wash a matched message; `striped`
+    /// is the zebra band. Both are full-bleed rather than anything bubble-shaped — there are no
+    /// shapes in here — and a match wins, because it's the one you're meant to find.
+    func configure(_ attributed: NSAttributedString, highlighted: Bool = false, striped: Bool = false) {
+        messageText.textContainerInset = UIEdgeInsets(
+            top: Self.textPadding, left: 0, bottom: Self.textPadding, right: 0
+        )
         messageText.attributedText = attributed
-        contentView.backgroundColor = highlighted ? Palette.highlightBubble : .clear
+        fill.backgroundColor = if highlighted {
+            Palette.highlightBubble
+        } else if striped {
+            Palette.altRow
+        } else {
+            .clear
+        }
         messageText.accessibilityLabel = attributed.string
     }
 
@@ -65,5 +94,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         super.prepareForReuse()
         // An in-flight jump flash (#42) would otherwise pulse on an unrelated line.
         contentView.layer.removeAllAnimations()
+        fill.layer.removeAllAnimations()
     }
 }
