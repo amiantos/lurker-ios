@@ -113,7 +113,6 @@ final class BufferInfoViewController: UITableViewController {
             // picker even though it has nothing else.
             sections = [appearance]
         }
-        tableView.backgroundView = sections.isEmpty ? emptyLabel : nil
         tableView.reloadData()
     }
 
@@ -135,15 +134,6 @@ final class BufferInfoViewController: UITableViewController {
             rows: [.notifyPlaceholder(title: "Notify me about every message")]
         )
     }
-
-    private lazy var emptyLabel: UILabel = {
-        let label = UILabel()
-        label.text = "This buffer has no settings."
-        label.textColor = .secondaryLabel
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        return label
-    }()
 
     // MARK: - Table
 

@@ -221,13 +221,16 @@ struct CompactListStyle: MessageListStyling {
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
         switch row {
         case .bubble(let message, let position):
+            // Once, not three times: it walks the neighbouring rows, builds a caption and hits
+            // `Calendar`, and this runs for every visible cell on every reload.
+            let blockHeader = header(for: message, position: position, at: index, context: context)
             cell.configure(
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter
                 ),
-                header: header(for: message, position: position, at: index, context: context),
-                startsBlock: header(for: message, position: position, at: index, context: context) != nil,
+                header: blockHeader,
+                startsBlock: blockHeader != nil,
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched
             )
@@ -238,14 +241,15 @@ struct CompactListStyle: MessageListStyling {
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter
                 ),
-                // A `/me` or an activity line is a block of one: nothing groups with it.
-                header: nil, startsBlock: true, endsBlock: endsBlock(at: index, context: context),
+                header: nil, startsBlock: startsBlock(at: index, context: context),
+                endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched
             )
         case .consolidated(let summary):
             cell.configure(
                 MessageRenderer.renderCompactConsolidation(summary), header: nil,
-                startsBlock: true, endsBlock: endsBlock(at: index, context: context)
+                startsBlock: startsBlock(at: index, context: context),
+                endsBlock: endsBlock(at: index, context: context)
             )
         case .typing(let nicks):
             cell.configure(
@@ -271,12 +275,15 @@ struct CompactListStyle: MessageListStyling {
 
         let prefix = message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
         // `caption` for the nick-less lines — server text names its network rather than a person,
-        // exactly as the bubble style captions it.
-        let name = MessageRenderer.caption(
+        // exactly as the bubble style captions it. Nil means there's nothing to call this line:
+        // server text whose network hasn't resolved yet, most often. The bubble style leaves such
+        // a run uncaptioned, and so does this — an empty header is a blank line above the text,
+        // with a stray right-aligned timestamp beside it on a minute change.
+        guard let name = MessageRenderer.caption(
             message, networkName: context.networkName(message), modePrefix: prefix
-        )
+        ) else { return nil }
         return CompactCell.Header(
-            nick: name ?? "",
+            nick: name,
             color: MessageRenderer.captionColor(message, networkName: context.networkName(message)),
             // Called rather than passed as a function value: an unapplied reference to a
             // main-actor method crosses isolation on its own, which the compiler warns about even
@@ -285,19 +292,29 @@ struct CompactListStyle: MessageListStyling {
         )
     }
 
-    /// Whether the row at `index` is the last of its author block — i.e. whatever follows starts
-    /// a new one, or there's nothing after it at all.
+    /// Whether the row at `index` is the last of its block — i.e. whatever follows starts a new
+    /// one, or there's nothing after it at all.
     ///
     /// Asked of the *next* row rather than tracked as state, because a table builds its cells in
     /// whatever order it likes and a running flag would be wrong on the way back up.
     private func endsBlock(at index: Int, context: MessageListContext) -> Bool {
         guard let next = context.row(index + 1) else { return true }
+        // A run of status narration is one block, the same call the bubble style makes with its
+        // tight `inner` spacing. Without this a netsplit with consolidation off puts three quarters
+        // of a line between every join — looser in "compact" than in bubbles, which is backwards.
+        if context.isStatusRow(index), context.isStatusRow(index + 1) { return false }
         guard case .bubble(let message, let position) = next else {
-            // A divider, a `/me`, a join, the typing line: each stands alone, so the row above it
-            // is the end of whatever it was part of.
+            // A divider, a `/me`, the typing line: each stands alone, so the row above it is the
+            // end of whatever it was part of.
             return true
         }
         return header(for: message, position: position, at: index + 1, context: context) != nil
+    }
+
+    /// Whether a header-less row opens a block. Only status narration ever doesn't: a run of joins
+    /// is one block, so only its first row carries the block's leading air.
+    private func startsBlock(at index: Int, context: MessageListContext) -> Bool {
+        !(context.isStatusRow(index) && context.isStatusRow(index - 1))
     }
 
     /// The nearest message above `index`, skipping the rows that carry none (dividers). Those are
@@ -307,8 +324,11 @@ struct CompactListStyle: MessageListStyling {
         return previous.message
     }
 
-    /// Whether these two instants fall in different minutes. A missing clock on either side counts
-    /// as changed: better a redundant stamp than a run that silently swallows one.
+    /// Whether these two instants fall in different minutes.
+    ///
+    /// A message with no clock never counts as a change: it has no stamp to show, so breaking the
+    /// block for it would cost a header and gain nothing. A message *following* one with no clock
+    /// does count, so the first line that knows what time it is says so.
     private func changedMinute(_ date: Date?, _ previous: Date?) -> Bool {
         guard let date, let previous else { return date != nil }
         return !Calendar.current.isDate(date, equalTo: previous, toGranularity: .minute)

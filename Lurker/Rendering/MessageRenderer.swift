@@ -255,12 +255,6 @@ enum MessageRenderer {
     /// grid — a wrapped line and a new message have to be equally far apart.
     static let compactLineGap: CGFloat = 3
 
-    /// One character of the monospaced face — the amount a message body sits in from its author,
-    /// and the amount a wrapped narration line sits in from where it started.
-    static var compactIndent: CGFloat {
-        (" " as NSString).size(withAttributes: [.font: compactFont()]).width
-    }
-
     /// The gap between an author header and the first line of their message.
     ///
     /// Its own constant rather than half the line gap: the header is a different kind of thing
@@ -288,11 +282,31 @@ enum MessageRenderer {
     /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
     /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
     /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
-    static func compactFont() -> UIFont {
+    ///
+    /// Cached with the character width beside it, because between them they're asked for five
+    /// times per row on the `cellForRowAt` path — building a font and measuring a glyph each time,
+    /// for every visible cell on every reload. Keyed on the content size category, so a Dynamic
+    /// Type change rebuilds them and nothing else does.
+    static func compactFont() -> UIFont { compactMetrics().font }
+
+    /// One character of that face — the amount a message body sits in from its author, and the
+    /// amount a wrapped narration line sits in from where it started.
+    static var compactIndent: CGFloat { compactMetrics().indent }
+
+    private static var cachedCompactMetrics: (category: UIContentSizeCategory, font: UIFont, indent: CGFloat)?
+
+    private static func compactMetrics() -> (font: UIFont, indent: CGFloat) {
+        let category = UITraitCollection.current.preferredContentSizeCategory
+        if let cached = cachedCompactMetrics, cached.category == category {
+            return (cached.font, cached.indent)
+        }
         let reference = UIFont.preferredFont(forTextStyle: .subheadline)
-        return UIFontMetrics(forTextStyle: .subheadline).scaledFont(
+        let font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(
             for: .monospacedSystemFont(ofSize: reference.pointSize, weight: .regular)
         )
+        let indent = (" " as NSString).size(withAttributes: [.font: font]).width
+        cachedCompactMetrics = (category, font, indent)
+        return (font, indent)
     }
 
     /// The body of a compact row — the text alone, with no time and no author.

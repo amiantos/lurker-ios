@@ -156,10 +156,18 @@ extension UserDefaults {
     /// UserDefaults for every channel ever parted. Local to the device, like favorites — see
     /// `MessageListStylePreferences`.
     var messageListStyles: MessageListStylePreferences {
-        guard let data = data(forKey: UserPreferences.Key.messageListStyles),
-              let decoded = try? JSONDecoder().decode(MessageListStylePreferences.self, from: data)
-        else { return MessageListStylePreferences() }
-        return decoded
+        guard let data = data(forKey: UserPreferences.Key.messageListStyles) else {
+            return MessageListStylePreferences()
+        }
+        do {
+            return try JSONDecoder().decode(MessageListStylePreferences.self, from: data)
+        } catch {
+            // Logged rather than swallowed: this is the side that loses data. A blob that won't
+            // decode silently reverts every buffer to the default, and the next write overwrites
+            // it for good — so if it ever happens there should be a trace of why.
+            NSLog("[prefs] could not read message list styles: %@", error.localizedDescription)
+            return MessageListStylePreferences()
+        }
     }
 
     func messageListStyle(for key: BufferKey) -> MessageListStyle {

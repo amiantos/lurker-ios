@@ -1915,18 +1915,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if atBottom { scrollToBottom() }
     }
 
-    /// Vertical padding for a status line, by where it sits in a run of consecutive status
-    /// rows. Like a bubble run, a status block opens a gap above its first line and below
-    /// its last, but sits tight internally — so a cluster of joins/modes/topics reads as one
-    /// block with air around it rather than as loose lines threaded through the conversation.
-    private func statusBlockSpacing(at index: Int) -> (top: CGFloat, bottom: CGFloat) {
-        let edge: CGFloat = 10, inner: CGFloat = 2
-        return (
-            top: isStatusRow(index - 1) ? inner : edge,
-            bottom: isStatusRow(index + 1) ? inner : edge
-        )
-    }
-
     /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range
     /// reads as "not status", which is what gives the first and last rows their outer edge.
     private func isStatusRow(_ index: Int) -> Bool {

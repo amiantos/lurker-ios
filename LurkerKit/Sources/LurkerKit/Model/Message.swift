@@ -18,13 +18,6 @@ public struct Message: Equatable, Sendable {
     public let date: Date?
     /// A highlight rule matched this line — renders as a mention.
     public let matched: Bool
-    /// Which band of the zebra stripe this line sits in, for a style that stripes rows.
-    ///
-    /// Server-authoritative, and deliberately not derived: it's a real column, computed at insert
-    /// time per `(network_id, target)` across only message/action/notice, so parity survives a
-    /// client-side filter hiding rows and matches whatever the web is showing for the same buffer.
-    /// Counting rows locally would desync the moment two clients filtered differently.
-    public let alt: Bool
     /// Severity, carried only by system-buffer lines. The server does NOT encode severity
     /// in `type` — an error is `type: "system"` with `level: "error"` — so styling a
     /// system line means reading this, never the type.
@@ -69,7 +62,6 @@ public struct Message: Equatable, Sendable {
         time: String? = nil,
         date: Date? = nil,
         matched: Bool = false,
-        alt: Bool = false,
         level: SystemLevel? = nil,
         originNetworkId: Int? = nil,
         newNick: String? = nil,
@@ -89,7 +81,6 @@ public struct Message: Equatable, Sendable {
         self.time = time
         self.date = date
         self.matched = matched
-        self.alt = alt
         self.level = level
         self.originNetworkId = originNetworkId
         self.newNick = newNick
