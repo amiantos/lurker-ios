@@ -48,6 +48,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let messageText = MessageTextView()
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
+    /// Held so the block gap can be taken *outside* the wash: the fill stops at the text, and the
+    /// separating space below is plain background. Otherwise a matched block's band hangs three
+    /// quarters of a line below its last word.
+    private var fillBottom: NSLayoutConstraint!
 
     /// How far the body sits in from the author above it: exactly one character of the monospaced
     /// face, so the indent lands on the same grid as the text rather than at an arbitrary offset.
@@ -94,12 +98,13 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         contentView.addSubview(fill)
         fill.addSubview(column)
 
+        fillBottom = fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         NSLayoutConstraint.activate([
             // Full-bleed and flush to the cell, so two washed rows meet with no seam.
             fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             fill.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             fill.topAnchor.constraint(equalTo: contentView.topAnchor),
-            fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            fillBottom,
 
             column.topAnchor.constraint(equalTo: fill.topAnchor),
             column.bottomAnchor.constraint(equalTo: fill.bottomAnchor),
@@ -113,13 +118,16 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
     /// A nil `header` renders the body alone — a continuation, or a line that names its own actor.
     ///
-    /// `highlighted` is the matched-rule wash, `alt` the zebra parity. Both are full-bleed, and a
-    /// match wins, because it's the one you're meant to find.
+    /// `highlighted` is the matched-rule wash, full-bleed rather than anything bubble-shaped.
+    ///
+    /// `endsBlock` adds the gap that separates one author block from the next. It's a *bottom*
+    /// margin rather than a top one on the following header, so the last block in a buffer is
+    /// pushed clear of the composer too instead of sitting against it.
     func configure(
         _ attributed: NSAttributedString,
         header: Header?,
         highlighted: Bool = false,
-        alt: Bool = false
+        endsBlock: Bool = false
     ) {
         let font = MessageRenderer.compactFont()
         headerRow.isHidden = header == nil
@@ -143,11 +151,14 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.textContainerInset = UIEdgeInsets(
             top: padding, left: Self.bodyIndent, bottom: padding, right: 0
         )
+        // Reserved by the cell but excluded from the fill, so the gap between blocks is background
+        // rather than an extension of a matched block's wash.
+        fillBottom.constant = endsBlock ? -MessageRenderer.compactBlockGap : 0
 
         messageText.attributedText = attributed
-        // No background band: the author header marks where a block starts, which is the job the
-        // stripe was doing. Only a matched rule paints a row now.
-        fill.backgroundColor = highlighted ? (alt ? Palette.highlightRowAlt : Palette.highlightRow) : .clear
+        // No zebra of any kind: the author header marks where a block starts, which is the job the
+        // striping was doing. Only a matched rule paints a row.
+        fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
         messageText.accessibilityLabel = [header?.nick, attributed.string, header?.time]
             .compactMap { $0 }
             .joined(separator: ", ")

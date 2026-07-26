@@ -255,6 +255,13 @@ enum MessageRenderer {
     /// grid — a wrapped line and a new message have to be equally far apart.
     static let compactLineGap: CGFloat = 4
 
+    /// The gap after the last message of an author block, so blocks read as blocks.
+    ///
+    /// Three quarters of a line rather than a whole one: a full blank line between every block is
+    /// most of the height a bubble list spends, which is the thing this style exists to avoid.
+    /// Scaled off the face so it tracks Dynamic Type with everything else.
+    static var compactBlockGap: CGFloat { ceil(compactFont().lineHeight * 0.75) }
+
     /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
     /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
     /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
@@ -278,11 +285,6 @@ enum MessageRenderer {
         highlighter: NickHighlighter? = nil
     ) -> NSAttributedString {
         let base = compactFont()
-        // The foreground half of the zebra, paired with the background half: a banded (lighter)
-        // row keeps full-strength text, an unbanded one takes the dim. Applied as the body's
-        // *fallback* colour, so it behaves like the web's `--alt-fg` — a nick, an mIRC-coloured
-        // run, or a `/me`'s tint all own their colour and win over it.
-        let bodyColor: UIColor = message.alt ? .label : Palette.plainRowText
 
         // A line that names its own actor keeps doing so: it has no header to be named by.
         if message.type == .action {
@@ -301,7 +303,7 @@ enum MessageRenderer {
             return spaced(line)
         }
         return spaced(NSMutableAttributedString(
-            attributedString: body(message, base: base, fallback: bodyColor, highlighter: highlighter)
+            attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
         ))
     }
 

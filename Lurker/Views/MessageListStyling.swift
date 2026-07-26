@@ -41,11 +41,19 @@ struct MessageListContext {
 /// the long-press recognizer lives on the table, and a cell only has to conform to
 /// `MessageBodyHosting` for link presses to keep working.
 protocol MessageListStyling {
+    /// What the list sits on. Part of the style because it's part of the list — the chrome above
+    /// it is untouched either way.
+    var listBackground: UIColor { get }
     /// The cell classes this style dequeues. Called before it first renders.
     func register(in tableView: UITableView)
     func cell(
         for row: MessageRow, at index: Int, in tableView: UITableView, context: MessageListContext
     ) -> UITableViewCell
+}
+
+extension MessageListStyling {
+    /// The system's, unless a style says otherwise.
+    var listBackground: UIColor { .systemBackground }
 }
 
 extension MessageListStyle {
@@ -199,6 +207,8 @@ struct BubbleListStyle: MessageListStyling {
 /// is the point of them being computed once by `MessageRows`: a style takes what it needs.
 struct CompactListStyle: MessageListStyling {
 
+    var listBackground: UIColor { Palette.compactListBackground }
+
     func register(in tableView: UITableView) {
         tableView.register(CompactCell.self, forCellReuseIdentifier: CompactCell.reuseID)
     }
@@ -218,7 +228,7 @@ struct CompactListStyle: MessageListStyling {
                 ),
                 header: header(for: message, position: position, at: index, context: context),
                 highlighted: message.matched,
-                alt: message.alt
+                endsBlock: endsBlock(at: index, context: context)
             )
         case .line(let message):
             // A `/me` and the activity lines name their own actor, so they take no header.
@@ -227,12 +237,19 @@ struct CompactListStyle: MessageListStyling {
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter
                 ),
-                header: nil, highlighted: message.matched, alt: message.alt
+                header: nil, highlighted: message.matched,
+                endsBlock: endsBlock(at: index, context: context)
             )
         case .consolidated(let summary):
-            cell.configure(MessageRenderer.renderCompactConsolidation(summary), header: nil)
+            cell.configure(
+                MessageRenderer.renderCompactConsolidation(summary), header: nil,
+                endsBlock: endsBlock(at: index, context: context)
+            )
         case .typing(let nicks):
-            cell.configure(MessageRenderer.renderCompactTyping(nicks) ?? NSAttributedString(), header: nil)
+            cell.configure(
+                MessageRenderer.renderCompactTyping(nicks) ?? NSAttributedString(), header: nil,
+                endsBlock: endsBlock(at: index, context: context)
+            )
         case .unreadDivider, .dateDivider, .startOfHistory:
             preconditionFailure("markers are handled above")
         }
@@ -261,6 +278,21 @@ struct CompactListStyle: MessageListStyling {
             color: MessageRenderer.captionColor(message, networkName: context.networkName(message)),
             time: minuteChanged ? message.date.map(MessageRenderer.compactHeaderTime) : nil
         )
+    }
+
+    /// Whether the row at `index` is the last of its author block — i.e. whatever follows starts
+    /// a new one, or there's nothing after it at all.
+    ///
+    /// Asked of the *next* row rather than tracked as state, because a table builds its cells in
+    /// whatever order it likes and a running flag would be wrong on the way back up.
+    private func endsBlock(at index: Int, context: MessageListContext) -> Bool {
+        guard let next = context.row(index + 1) else { return true }
+        guard case .bubble(let message, let position) = next else {
+            // A divider, a `/me`, a join, the typing line: each stands alone, so the row above it
+            // is the end of whatever it was part of.
+            return true
+        }
+        return header(for: message, position: position, at: index + 1, context: context) != nil
     }
 
     /// The nearest message above `index`, skipping the rows that carry none (dividers). Those are

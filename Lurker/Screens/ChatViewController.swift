@@ -1889,6 +1889,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         listStyle = style
         styling = style.styling
         styling.register(in: tableView)
+        // The list's own backdrop, not the screen's: everything above it — composer, pill,
+        // banners — stays on the system background whichever style is showing.
+        tableView.backgroundColor = styling.listBackground
 
         updateRevealGesture()
 
