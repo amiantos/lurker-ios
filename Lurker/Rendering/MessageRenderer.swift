@@ -246,6 +246,15 @@ enum MessageRenderer {
 
     // MARK: - Compact (terminal) style
 
+    /// The gap between two consecutive lines in the compact style.
+    ///
+    /// One constant because it has to be one number: it's applied *inside* a message as
+    /// `lineSpacing` (between wrapped lines) and *around* one as `CompactCell`'s vertical inset
+    /// (half at each end, so two adjacent cells add up to the same gap). Any drift between the two
+    /// and the rhythm stutters at every message boundary, which is what stops a log reading as a
+    /// grid — a wrapped line and a new message have to be equally far apart.
+    static let compactLineGap: CGFloat = 6
+
     /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
     /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
     /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
@@ -273,10 +282,11 @@ enum MessageRenderer {
         highlighter: NickHighlighter? = nil
     ) -> NSAttributedString {
         let base = compactFont()
-        // Zebra striping, in the foreground rather than behind it (see `Palette.altRowText`).
-        // Applied as the body's *fallback* colour, so it does what the web's `--alt-fg` does: a
-        // nick, an mIRC-coloured run, or a `/me`'s tint all own their colour and win over it.
-        let bodyColor: UIColor = message.alt ? Palette.altRowText : .label
+        // The foreground half of the zebra, paired with the background half: a banded (lighter)
+        // row keeps full-strength text, an unbanded one takes the dim. Applied as the body's
+        // *fallback* colour, so it behaves like the web's `--alt-fg` — a nick, an mIRC-coloured
+        // run, or a `/me`'s tint all own their colour and win over it.
+        let bodyColor: UIColor = message.alt ? .label : Palette.plainRowText
         let line = NSMutableAttributedString()
         line.append(timeColumn(message.date, base: base))
 
@@ -294,7 +304,7 @@ enum MessageRenderer {
             line.append(speaker(message, networkName: networkName, base: base))
             line.append(body(message, base: base, fallback: bodyColor, highlighter: highlighter))
         }
-        return line
+        return spaced(line)
     }
 
     /// A collapsed run in the terminal feed, under the same time column as everything else.
@@ -303,7 +313,7 @@ enum MessageRenderer {
         let line = NSMutableAttributedString()
         line.append(timeColumn(summary.date, base: base))
         line.append(renderConsolidation(summary, base: base))
-        return line
+        return spaced(line)
     }
 
     /// The typing line in the terminal feed. No time — it isn't a moment — but it keeps the
@@ -313,6 +323,19 @@ enum MessageRenderer {
         guard let typists = renderTyping(nicks, base: base) else { return nil }
         let line = NSMutableAttributedString()
         line.append(typists)
+        return spaced(line)
+    }
+
+    /// Space a compact line's wrapped rows apart by `compactLineGap`, so they sit the same
+    /// distance from each other as they do from the message above and below.
+    ///
+    /// Set on the whole range last, which also clears any paragraph style a shared builder applied
+    /// for the bubble style (a `/me`'s hanging indent, for one) — the compact style wraps to the
+    /// margin and wants none of it.
+    private static func spaced(_ line: NSMutableAttributedString) -> NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = compactLineGap
+        line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
         return line
     }
 

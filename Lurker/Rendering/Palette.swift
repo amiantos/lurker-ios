@@ -43,17 +43,25 @@ enum Palette {
     /// and the trailing side confirms the line is ours. `.systemFill` was too close to tell.
     static let outgoingBubble = UIColor.systemGray4
 
-    /// Body text on alternate rows in the compact style — the zebra, done in the foreground.
+    /// The band behind an alternate row in the compact style.
     ///
-    /// Which is what the web actually does: `look.color.message.alt_bg` defaults to `var(--bg)`,
-    /// i.e. background striping off, and the effect comes from `alt_fg` (`#c4c4c4` against a
-    /// `#fcfcfa` foreground) — "a slightly dimmed foreground. Nick colors and inline-highlighted
-    /// segments still override this."
+    /// A lift, not a wash: striping earns its keep by walking the eye from a wrapped line back to
+    /// its own message, and anything stronger turns a dense log into a barcode.
+    static let altRow = UIColor.quaternarySystemFill
+
+    /// Body text on the *unbanded* rows — the foreground half of the zebra.
     ///
-    /// 78% matches that ratio. `.secondaryLabel` was the obvious reach and is wrong: at 60% it
-    /// lands nearer the web's *muted* token (`#939293`) than its alt one, which reads as "this
-    /// line matters less" rather than as banding.
-    static let altRowText = UIColor.label.withAlphaComponent(0.78)
+    /// The two halves are paired rather than opposed: the banded row is the lighter one, so it
+    /// keeps full-strength text, and the row without a band takes the dimmed text. Dimming the
+    /// banded row instead cancels the effect out — a lighter background under darker text lands
+    /// back at roughly the contrast of its neighbour, and the stripe stops reading as one.
+    ///
+    /// The dim itself comes from the web, where the zebra is a foreground effect by default
+    /// (`alt_bg` is `var(--bg)`): `alt_fg` is `#c4c4c4` against a `#fcfcfa` foreground, "a slightly
+    /// dimmed foreground. Nick colors and inline-highlighted segments still override this." 78%
+    /// matches that ratio. `.secondaryLabel` was the obvious reach and is wrong — at 60% it lands
+    /// nearer the web's *muted* token (`#939293`), which reads as "this line matters less".
+    static let plainRowText = UIColor.label.withAlphaComponent(0.78)
 
     /// The matched-line wash in the compact style, which stripes with the rows.
     ///

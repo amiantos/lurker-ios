@@ -30,9 +30,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// single washed line a band around its text rather than a tight collar.
     private let fill = UIView()
 
-    /// Vertical air around the text, inside its own fill. Small on purpose — the density is the
-    /// feature — but enough that a washed line isn't clamped to its glyphs.
-    private static let textPadding: CGFloat = 3
+    /// Half the line gap at each end, so two adjacent cells put exactly one `compactLineGap`
+    /// between their text — the same distance `MessageRenderer` puts between two wrapped lines of
+    /// a single message. Splitting it across the two cells is what keeps a matched row's wash
+    /// centred on its own text instead of hanging below it.
+    private static var textPadding: CGFloat { MessageRenderer.compactLineGap / 2 }
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -78,9 +80,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             top: Self.textPadding, left: 0, bottom: Self.textPadding, right: 0
         )
         messageText.attributedText = attributed
-        fill.backgroundColor = highlighted
-            ? (alt ? Palette.highlightRowAlt : Palette.highlightRow)
-            : .clear
+        fill.backgroundColor = if highlighted {
+            alt ? Palette.highlightRowAlt : Palette.highlightRow
+        } else {
+            alt ? Palette.altRow : .clear
+        }
         messageText.accessibilityLabel = attributed.string
     }
 
