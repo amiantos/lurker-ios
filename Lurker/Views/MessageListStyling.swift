@@ -278,7 +278,10 @@ struct CompactListStyle: MessageListStyling {
         return CompactCell.Header(
             nick: name ?? "",
             color: MessageRenderer.captionColor(message, networkName: context.networkName(message)),
-            time: minuteChanged ? message.date.map(MessageRenderer.compactHeaderTime) : nil
+            // Called rather than passed as a function value: an unapplied reference to a
+            // main-actor method crosses isolation on its own, which the compiler warns about even
+            // though every caller here is already on the main actor.
+            time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil
         )
     }
 
