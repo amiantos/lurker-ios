@@ -11,6 +11,13 @@ import XCTest
 /// alert, and everything a user could be surprised by lives in these rules.
 final class MessageListStyleTests: XCTestCase {
 
+    /// Pinned, because it decides what every existing install sees: a buffer nobody has explicitly
+    /// set follows the default, so moving it moves them.
+    func testCompactIsTheDefault() {
+        XCTAssertEqual(MessageListStylePreferences().defaultStyle, .compact)
+        XCTAssertEqual(MessageListStylePreferences().style(for: "1:#lurker"), .compact)
+    }
+
     func testBuffersWithNoChoiceFollowTheDefault() {
         let prefs = MessageListStylePreferences(defaultStyle: .compact)
         XCTAssertEqual(prefs.style(for: "1:#lurker"), .compact)

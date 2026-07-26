@@ -17,11 +17,11 @@ import Foundation
 /// would be the wrong shape for this seam.
 public enum MessageListStyle: String, CaseIterable, Codable, Sendable {
     /// Chat bubbles, captioned once per run, with the timestamp parked off the right edge until
-    /// the list is dragged. The default, and what the app shipped with.
+    /// the list is dragged. What the app shipped with, and no longer the default.
     case bubbles
-    /// A flat terminal feed — one full-width monospaced line per event, timestamp inline at the
-    /// head of every one. No bubbles, no captions, no grouping: an irssi/weechat log, which is
-    /// both denser and closer to what an IRC client has always looked like.
+    /// An author header with the time on it, the message indented underneath, several messages
+    /// stacking under one header. Monospaced, and denser than bubbles by a wide margin — a phone's
+    /// width goes to the words rather than to chrome. The default since it landed.
     case compact
 
     public var title: String {
@@ -51,12 +51,16 @@ public enum MessageListStyle: String, CaseIterable, Codable, Sendable {
 /// Local to the device, like favorites — deliberately not a server setting and deliberately not
 /// tied to the web client's `look.*` keys. How a phone draws a list is the phone's business.
 public struct MessageListStylePreferences: Equatable, Codable, Sendable {
-    /// The style for any buffer with no choice of its own.
+    /// The style for any buffer with no choice of its own. Compact, unless the user has moved it.
+    ///
+    /// Changing this default changes what *existing* installs see, since a buffer nobody has
+    /// explicitly set follows it — which is the intent here: compact is the shape the client is
+    /// going to be, and bubbles is the thing you opt back into.
     public private(set) var defaultStyle: MessageListStyle
     /// Buffer key (`BufferKey.id`) → the style that buffer was explicitly given.
     public private(set) var overrides: [String: MessageListStyle]
 
-    public init(defaultStyle: MessageListStyle = .bubbles, overrides: [String: MessageListStyle] = [:]) {
+    public init(defaultStyle: MessageListStyle = .compact, overrides: [String: MessageListStyle] = [:]) {
         self.defaultStyle = defaultStyle
         self.overrides = overrides
     }
