@@ -53,12 +53,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// quarters of a line below its last word.
     private var fillBottom: NSLayoutConstraint!
 
-    /// How far the body sits in from the author above it: exactly one character of the monospaced
-    /// face, so the indent lands on the same grid as the text rather than at an arbitrary offset.
-    private static var bodyIndent: CGFloat {
-        (" " as NSString).size(withAttributes: [.font: MessageRenderer.compactFont()]).width
-    }
-
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         selectionStyle = .none
@@ -120,14 +114,17 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     ///
     /// `highlighted` is the matched-rule wash, full-bleed rather than anything bubble-shaped.
     ///
-    /// `endsBlock` adds the gap that separates one author block from the next. It's a *bottom*
-    /// margin rather than a top one on the following header, so the last block in a buffer is
-    /// pushed clear of the composer too instead of sitting against it.
+    /// `startsBlock` and `endsBlock` mark the ends of an author block. They do two things: put the
+    /// separating gap after the last row (a *bottom* margin rather than a top one on the next
+    /// header, so the final block is pushed clear of the composer instead of sitting against it),
+    /// and keep a third of that gap inside the fill at each end, so a matched block's wash is a
+    /// band its text sits inside rather than a highlighter dragged across it.
     func configure(
         _ attributed: NSAttributedString,
         header: Header?,
-        highlighted: Bool = false,
-        endsBlock: Bool = false
+        startsBlock: Bool = true,
+        endsBlock: Bool = false,
+        highlighted: Bool = false
     ) {
         let font = MessageRenderer.compactFont()
         headerRow.isHidden = header == nil
@@ -147,16 +144,19 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // A header takes a slightly wider gap of its own (`compactHeaderGap`), because a name and
         // the words under it are less alike than two body lines are.
         let padding = MessageRenderer.compactLineGap / 2
-        column.layoutMargins = UIEdgeInsets(top: header == nil ? 0 : padding, left: 0, bottom: 0, right: 0)
+        let wash = MessageRenderer.compactWashPadding
+        column.layoutMargins = UIEdgeInsets(
+            top: (header == nil ? 0 : padding) + (startsBlock ? wash : 0), left: 0, bottom: 0, right: 0
+        )
         messageText.textContainerInset = UIEdgeInsets(
             top: header == nil ? padding : MessageRenderer.compactHeaderGap,
-            left: Self.bodyIndent,
-            bottom: padding,
+            left: 0, // indentation is the paragraph style's — see `MessageRenderer.spaced`
+            bottom: padding + (endsBlock ? wash : 0),
             right: 0
         )
-        // Reserved by the cell but excluded from the fill, so the gap between blocks is background
-        // rather than an extension of a matched block's wash.
-        fillBottom.constant = endsBlock ? -MessageRenderer.compactBlockGap : 0
+        // The rest of the gap — the part that isn't inside either block's fill — is reserved by
+        // the cell and excluded from it, so what separates two blocks is background.
+        fillBottom.constant = endsBlock ? -(MessageRenderer.compactBlockGap - 2 * wash) : 0
 
         messageText.attributedText = attributed
         // No zebra of any kind: the author header marks where a block starts, which is the job the

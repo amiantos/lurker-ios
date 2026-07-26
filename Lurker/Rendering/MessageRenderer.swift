@@ -255,12 +255,28 @@ enum MessageRenderer {
     /// grid — a wrapped line and a new message have to be equally far apart.
     static let compactLineGap: CGFloat = 3
 
+    /// One character of the monospaced face — the amount a message body sits in from its author,
+    /// and the amount a wrapped narration line sits in from where it started.
+    static var compactIndent: CGFloat {
+        (" " as NSString).size(withAttributes: [.font: compactFont()]).width
+    }
+
     /// The gap between an author header and the first line of their message.
     ///
     /// Its own constant rather than half the line gap: the header is a different kind of thing
     /// from the words under it, so it wants a little more air than two body lines want from each
     /// other — and the line gap is now tight enough that sharing it clamped the name to the text.
     static let compactHeaderGap: CGFloat = 4
+
+    /// How much of the block gap belongs *inside* a block's own background rather than between
+    /// two of them.
+    ///
+    /// A matched block whose wash starts at the cap-height of its first line and stops at the
+    /// baseline of its last reads as a highlighter dragged across the text. Giving the fill a third
+    /// of the gap at each end makes it a band the text sits inside. The remaining third stays
+    /// outside as background, so the distance between two blocks is unchanged — the gap is split,
+    /// not added to.
+    static var compactWashPadding: CGFloat { compactBlockGap / 3 }
 
     /// The gap after the last message of an author block, so blocks read as blocks.
     ///
@@ -301,28 +317,39 @@ enum MessageRenderer {
                 string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
             line.append(body(message, base: base, fallback: color, highlighter: highlighter))
-            return spaced(line)
+            return spaced(line, flushFirstLine: true)
         }
         if message.type.isActivity {
-            let line = NSMutableAttributedString()
-            line.append(marker(for: message.type, base: base))
-            line.append(renderActivity(message, base: base, settings: settings))
-            return spaced(line)
+            // No arrow column. "alice joined" already says which direction it went, and the
+            // narration starts flush with the nicks above it now, so the arrows were an extra
+            // column of punctuation buying nothing.
+            return spaced(
+                NSMutableAttributedString(
+                    attributedString: renderActivity(message, base: base, settings: settings)
+                ),
+                flushFirstLine: true
+            )
         }
-        return spaced(NSMutableAttributedString(
-            attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
-        ))
+        return spaced(
+            NSMutableAttributedString(
+                attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
+            ),
+            flushFirstLine: false
+        )
     }
 
     /// A collapsed run in the compact style — header-less, like the activity lines it stands for.
     static func renderCompactConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
-        spaced(NSMutableAttributedString(attributedString: renderConsolidation(summary, base: compactFont())))
+        spaced(
+            NSMutableAttributedString(attributedString: renderConsolidation(summary, base: compactFont())),
+            flushFirstLine: true
+        )
     }
 
     /// The typing line in the compact style.
     static func renderCompactTyping(_ nicks: [String]) -> NSAttributedString? {
         guard let typists = renderTyping(nicks, base: compactFont()) else { return nil }
-        return spaced(NSMutableAttributedString(attributedString: typists))
+        return spaced(NSMutableAttributedString(attributedString: typists), flushFirstLine: true)
     }
 
     /// `14:42` for a compact header.
@@ -343,28 +370,23 @@ enum MessageRenderer {
     }()
 
     /// Space a body's wrapped rows apart by `compactLineGap`, so they sit the same distance from
-    /// each other as they do from the row above and below.
+    /// each other as they do from the row above and below — and indent it.
+    ///
+    /// Indentation is a paragraph style rather than the cell's inset because the two kinds of row
+    /// want different first lines. A message body is indented throughout, sitting under its author.
+    /// Narration that names its own actor — a `/me`, a join, a collapsed run — starts flush with
+    /// where a nick would be, since it *is* the nick line, and only its wrapped continuations tuck
+    /// in. Both wrap to the same column either way.
     ///
     /// Set on the whole range last, which also clears any paragraph style a shared builder applied
-    /// for the bubble style (a `/me`'s hanging indent, for one) — the compact style wraps to the
-    /// margin and wants none of it.
-    private static func spaced(_ line: NSMutableAttributedString) -> NSAttributedString {
+    /// for the bubble style (a `/me`'s own hanging indent, for one).
+    private static func spaced(_ line: NSMutableAttributedString, flushFirstLine: Bool) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
         style.lineSpacing = compactLineGap
+        style.headIndent = compactIndent
+        style.firstLineHeadIndent = flushFirstLine ? 0 : compactIndent
         line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
         return line
-    }
-
-    /// The arrow column: `-->` joining, `<--` leaving, nothing for anything else. Directional
-    /// membership churn is what a log gets scanned for, and arrows read at a glance where the
-    /// words don't.
-    private static func marker(for type: EventType, base: UIFont) -> NSAttributedString {
-        let glyph = switch type {
-        case .join: "--> "
-        case .part, .quit, .kick: "<-- "
-        default: ""
-        }
-        return muted(glyph, base: base)
     }
 
     // MARK: - Line building blocks

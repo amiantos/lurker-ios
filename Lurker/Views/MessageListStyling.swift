@@ -227,8 +227,9 @@ struct CompactListStyle: MessageListStyling {
                     highlighter: context.highlighter
                 ),
                 header: header(for: message, position: position, at: index, context: context),
-                highlighted: message.matched,
-                endsBlock: endsBlock(at: index, context: context)
+                startsBlock: header(for: message, position: position, at: index, context: context) != nil,
+                endsBlock: endsBlock(at: index, context: context),
+                highlighted: message.matched
             )
         case .line(let message):
             // A `/me` and the activity lines name their own actor, so they take no header.
@@ -237,18 +238,19 @@ struct CompactListStyle: MessageListStyling {
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter
                 ),
-                header: nil, highlighted: message.matched,
-                endsBlock: endsBlock(at: index, context: context)
+                // A `/me` or an activity line is a block of one: nothing groups with it.
+                header: nil, startsBlock: true, endsBlock: endsBlock(at: index, context: context),
+                highlighted: message.matched
             )
         case .consolidated(let summary):
             cell.configure(
                 MessageRenderer.renderCompactConsolidation(summary), header: nil,
-                endsBlock: endsBlock(at: index, context: context)
+                startsBlock: true, endsBlock: endsBlock(at: index, context: context)
             )
         case .typing(let nicks):
             cell.configure(
                 MessageRenderer.renderCompactTyping(nicks) ?? NSAttributedString(), header: nil,
-                endsBlock: endsBlock(at: index, context: context)
+                startsBlock: true, endsBlock: endsBlock(at: index, context: context)
             )
         case .unreadDivider, .dateDivider, .startOfHistory:
             preconditionFailure("markers are handled above")
