@@ -253,7 +253,14 @@ enum MessageRenderer {
     /// (half at each end, so two adjacent cells add up to the same gap). Any drift between the two
     /// and the rhythm stutters at every message boundary, which is what stops a log reading as a
     /// grid — a wrapped line and a new message have to be equally far apart.
-    static let compactLineGap: CGFloat = 4
+    static let compactLineGap: CGFloat = 3
+
+    /// The gap between an author header and the first line of their message.
+    ///
+    /// Its own constant rather than half the line gap: the header is a different kind of thing
+    /// from the words under it, so it wants a little more air than two body lines want from each
+    /// other — and the line gap is now tight enough that sharing it clamped the name to the text.
+    static let compactHeaderGap: CGFloat = 4
 
     /// The gap after the last message of an author block, so blocks read as blocks.
     ///

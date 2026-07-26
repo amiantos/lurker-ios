@@ -144,12 +144,15 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
         // Half the line gap at each end, so two adjacent cells put exactly one gap between their
         // text — the same distance `MessageRenderer` puts between two wrapped lines of one message.
-        // The body keeps that half above it whether or not there's a header, which is what sets an
-        // author's name off from their words instead of clamping them together.
+        // A header takes a slightly wider gap of its own (`compactHeaderGap`), because a name and
+        // the words under it are less alike than two body lines are.
         let padding = MessageRenderer.compactLineGap / 2
         column.layoutMargins = UIEdgeInsets(top: header == nil ? 0 : padding, left: 0, bottom: 0, right: 0)
         messageText.textContainerInset = UIEdgeInsets(
-            top: padding, left: Self.bodyIndent, bottom: padding, right: 0
+            top: header == nil ? padding : MessageRenderer.compactHeaderGap,
+            left: Self.bodyIndent,
+            bottom: padding,
+            right: 0
         )
         // Reserved by the cell but excluded from the fill, so the gap between blocks is background
         // rather than an extension of a matched block's wash.
