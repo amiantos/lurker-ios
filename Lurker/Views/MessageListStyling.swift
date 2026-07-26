@@ -23,6 +23,10 @@ struct MessageListContext {
     let reveal: CGFloat
     /// Whether the row at an index is status narration, for styles that space runs of it apart.
     let isStatusRow: (Int) -> Bool
+    /// The row at an index, or nil out of range — for a style that has to look at a row's
+    /// neighbours to lay it out. The compact style needs the one above to decide whether a message
+    /// starts a new author block.
+    let row: (Int) -> MessageRow?
 }
 
 /// How one message-list style turns rows into cells.
@@ -182,11 +186,17 @@ struct BubbleListStyle: MessageListStyling {
 
 // MARK: - Compact
 
-/// The terminal feed: every row is one full-width monospaced line with its time at the head.
+/// The PWA's mobile compact shape: an author header with the time on it, then the message indented
+/// underneath, several messages stacking under one header.
 ///
-/// No bubbles, no captions, no grouping, and no reveal gesture — see `CompactCell`. The row stream
-/// still arrives with `RunPosition`s attached and this ignores them, which is the point of run
-/// positions being computed once by `MessageRows`: a style takes what it needs.
+/// A header is drawn when the author block changes — which is `RunPosition.isFirst`, the same
+/// answer the bubble style uses to decide whether to caption a run — **or** when the minute
+/// changes. The second half is what makes the timestamp rule work: stamps only appear when the
+/// minute rolls over, and a stamp needs a header to sit on, so a run crossing a minute boundary
+/// breaks rather than losing the time.
+///
+/// The row stream still arrives with `RunPosition`s attached and this uses only `isFirst`, which
+/// is the point of them being computed once by `MessageRows`: a style takes what it needs.
 struct CompactListStyle: MessageListStyling {
 
     func register(in tableView: UITableView) {
@@ -200,23 +210,70 @@ struct CompactListStyle: MessageListStyling {
 
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
         switch row {
-        // Dialogue and narration draw identically here — that uniformity is the style.
-        case .bubble(let message, _), .line(let message):
+        case .bubble(let message, let position):
             cell.configure(
-                MessageRenderer.renderCompact(
-                    message, networkName: context.networkName(message),
-                    traits: context.traits, settings: context.settings, highlighter: context.highlighter
+                MessageRenderer.renderCompactBody(
+                    message, traits: context.traits, settings: context.settings,
+                    highlighter: context.highlighter
                 ),
+                header: header(for: message, position: position, at: index, context: context),
                 highlighted: message.matched,
                 alt: message.alt
             )
+        case .line(let message):
+            // A `/me` and the activity lines name their own actor, so they take no header.
+            cell.configure(
+                MessageRenderer.renderCompactBody(
+                    message, traits: context.traits, settings: context.settings,
+                    highlighter: context.highlighter
+                ),
+                header: nil, highlighted: message.matched, alt: message.alt
+            )
         case .consolidated(let summary):
-            cell.configure(MessageRenderer.renderCompactConsolidation(summary))
+            cell.configure(MessageRenderer.renderCompactConsolidation(summary), header: nil)
         case .typing(let nicks):
-            cell.configure(MessageRenderer.renderCompactTyping(nicks) ?? NSAttributedString())
+            cell.configure(MessageRenderer.renderCompactTyping(nicks) ?? NSAttributedString(), header: nil)
         case .unreadDivider, .dateDivider, .startOfHistory:
             preconditionFailure("markers are handled above")
         }
         return cell
+    }
+
+    /// The header for a message, or nil when it continues the block above it.
+    ///
+    /// The time is carried only when the minute differs from the previous message's — that's the
+    /// format's whole idea, and it's why a minute change forces a header even mid-run.
+    private func header(
+        for message: Message, position: RunPosition, at index: Int, context: MessageListContext
+    ) -> CompactCell.Header? {
+        let previous = previousMessage(before: index, context: context)
+        let minuteChanged = changedMinute(message.date, previous?.date)
+        guard position.isFirst || minuteChanged else { return nil }
+
+        let prefix = message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
+        // `caption` for the nick-less lines — server text names its network rather than a person,
+        // exactly as the bubble style captions it.
+        let name = MessageRenderer.caption(
+            message, networkName: context.networkName(message), modePrefix: prefix
+        )
+        return CompactCell.Header(
+            nick: name ?? "",
+            color: MessageRenderer.captionColor(message, networkName: context.networkName(message)),
+            time: minuteChanged ? message.date.map(MessageRenderer.compactHeaderTime) : nil
+        )
+    }
+
+    /// The nearest message above `index`, skipping the rows that carry none (dividers). Those are
+    /// hard breaks in the flow anyway: a header under one is wanted regardless.
+    private func previousMessage(before index: Int, context: MessageListContext) -> Message? {
+        guard index > 0, let previous = context.row(index - 1) else { return nil }
+        return previous.message
+    }
+
+    /// Whether these two instants fall in different minutes. A missing clock on either side counts
+    /// as changed: better a redundant stamp than a run that silently swallows one.
+    private func changedMinute(_ date: Date?, _ previous: Date?) -> Bool {
+        guard let date, let previous else { return date != nil }
+        return !Calendar.current.isDate(date, equalTo: previous, toGranularity: .minute)
     }
 }

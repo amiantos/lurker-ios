@@ -265,18 +265,14 @@ enum MessageRenderer {
         )
     }
 
-    /// One line of the terminal feed: `14:32 <alice> hello`.
+    /// The body of a compact row — the text alone, with no time and no author.
     ///
-    /// Every row is the same shape — a time, a short marker saying what kind of event it is, then
-    /// the text — which is the whole point of the style: no bubbles, no captions, no grouping, so
-    /// density comes from the absence of chrome rather than from hiding anything.
-    ///
-    /// The wording inside is the *same* wording the bubble style uses, because it comes from the
-    /// same builders (`body`, `renderActivity`, `renderConsolidation`). Only the frame around it
-    /// differs, so a line can't say two different things depending on which style you're in.
-    static func renderCompact(
+    /// Those are the cell's (`CompactCell` draws the header), which is what lets several messages
+    /// from one person stack under a single nick. What comes back is the same text the bubble
+    /// style would render, in the monospaced face: same mIRC colours, same auto-linking, same
+    /// nick colouring inside the body.
+    static func renderCompactBody(
         _ message: Message,
-        networkName: String? = nil,
         traits: UITraitCollection = .current,
         settings: Settings = Settings(),
         highlighter: NickHighlighter? = nil
@@ -287,47 +283,58 @@ enum MessageRenderer {
         // *fallback* colour, so it behaves like the web's `--alt-fg` — a nick, an mIRC-coloured
         // run, or a `/me`'s tint all own their colour and win over it.
         let bodyColor: UIColor = message.alt ? .label : Palette.plainRowText
-        let line = NSMutableAttributedString()
-        line.append(timeColumn(message.date, base: base))
 
+        // A line that names its own actor keeps doing so: it has no header to be named by.
         if message.type == .action {
-            // The actor is inside the sentence, so it takes the marker slot rather than a nick.
             let color = nickColor(message)
+            let line = NSMutableAttributedString()
             line.append(NSAttributedString(
                 string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
             line.append(body(message, base: base, fallback: color, highlighter: highlighter))
-        } else if message.type.isActivity {
+            return spaced(line)
+        }
+        if message.type.isActivity {
+            let line = NSMutableAttributedString()
             line.append(marker(for: message.type, base: base))
             line.append(renderActivity(message, base: base, settings: settings))
-        } else {
-            line.append(speaker(message, networkName: networkName, base: base))
-            line.append(body(message, base: base, fallback: bodyColor, highlighter: highlighter))
+            return spaced(line)
         }
-        return spaced(line)
+        return spaced(NSMutableAttributedString(
+            attributedString: body(message, base: base, fallback: bodyColor, highlighter: highlighter)
+        ))
     }
 
-    /// A collapsed run in the terminal feed, under the same time column as everything else.
+    /// A collapsed run in the compact style — header-less, like the activity lines it stands for.
     static func renderCompactConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
-        let base = compactFont()
-        let line = NSMutableAttributedString()
-        line.append(timeColumn(summary.date, base: base))
-        line.append(renderConsolidation(summary, base: base))
-        return spaced(line)
+        spaced(NSMutableAttributedString(attributedString: renderConsolidation(summary, base: compactFont())))
     }
 
-    /// The typing line in the terminal feed. No time — it isn't a moment — but it keeps the
-    /// column, so it doesn't hang off the left edge under the log.
+    /// The typing line in the compact style.
     static func renderCompactTyping(_ nicks: [String]) -> NSAttributedString? {
-        let base = compactFont()
-        guard let typists = renderTyping(nicks, base: base) else { return nil }
-        let line = NSMutableAttributedString()
-        line.append(typists)
-        return spaced(line)
+        guard let typists = renderTyping(nicks, base: compactFont()) else { return nil }
+        return spaced(NSMutableAttributedString(attributedString: typists))
     }
 
-    /// Space a compact line's wrapped rows apart by `compactLineGap`, so they sit the same
-    /// distance from each other as they do from the message above and below.
+    /// `14:42` for a compact header.
+    ///
+    /// Minutes, not seconds: the stamp only appears when the minute changes, so a seconds field
+    /// would be showing the precise moment of whichever message happened to start the minute —
+    /// precision the format doesn't actually carry. Fixed 24-hour through a POSIX locale, since
+    /// `HH` still renders 12-hour under some region settings.
+    static func compactHeaderTime(_ date: Date) -> String {
+        compactTimeFormatter.string(from: date)
+    }
+
+    private static let compactTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    /// Space a body's wrapped rows apart by `compactLineGap`, so they sit the same distance from
+    /// each other as they do from the row above and below.
     ///
     /// Set on the whole range last, which also clears any paragraph style a shared builder applied
     /// for the bubble style (a `/me`'s hanging indent, for one) — the compact style wraps to the
@@ -339,66 +346,14 @@ enum MessageRenderer {
         return line
     }
 
-    /// `14:32:07 `, and nothing at all when the event has no time.
-    ///
-    /// Fixed 24-hour seconds, not the locale's short time: a log is scanned in columns, and
-    /// `3:07 PM` is both wider and ragged between locales. Deliberately hard-coded for now — when
-    /// the format becomes a choice it belongs in an app-only settings area, not borrowed from the
-    /// web client's `look.*` keys.
-    ///
-    /// No padding to hold the column open on a dateless row (the typing line is the only one).
-    /// Lines wrap to the leading margin rather than under the text, so a blank time column would
-    /// be the single indent on the screen, which reads as a stray tab rather than as alignment.
-    private static func timeColumn(_ date: Date?, base: UIFont) -> NSAttributedString {
-        guard let date else { return NSAttributedString() }
-        return NSAttributedString(
-            string: compactTimeFormatter.string(from: date) + " ",
-            // A step lighter than the `.tertiaryLabel` the bubble style's reveal uses: there it's a
-            // detail you went looking for, here it's on every line and has to be readable at a
-            // glance without competing with the text.
-            attributes: [.font: base, .foregroundColor: UIColor.secondaryLabel]
-        )
-    }
-
-    /// POSIX locale so the 24-hour format survives a device set to 12-hour time — `HH` would
-    /// otherwise still render as 12-hour with some region settings.
-    private static let compactTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }()
-
-    /// Who is speaking, in the terminal conventions: `<nick>` for a message, `-nick-` for a notice
-    /// (IRC's own mark, the same one the bubble style puts in its caption), and `--` for the
-    /// server talking in its own voice.
-    private static func speaker(_ message: Message, networkName: String?, base: UIFont) -> NSAttributedString {
-        let line = NSMutableAttributedString()
-        switch message.type {
-        case .notice:
-            line.append(muted("-", base: base))
-            line.append(nickToken(message.nick, isSelf: message.isSelf, base: base))
-            line.append(muted("- ", base: base))
-        case .message:
-            line.append(muted("<", base: base))
-            line.append(nickToken(message.nick, isSelf: message.isSelf, base: base))
-            line.append(muted("> ", base: base))
-        default:
-            // Server text speaks in its own voice and needs no mark — the old `--` was noise on
-            // every MOTD line. Direction arrows below stay: those carry information.
-            break
-        }
-        return line
-    }
-
-    /// The arrow column: `-->` joining, `<--` leaving, `--` for everything else. Directional
-    /// membership churn is the one thing a log is scanned for, and the arrows are readable at a
-    /// glance in a way the words aren't.
+    /// The arrow column: `-->` joining, `<--` leaving, nothing for anything else. Directional
+    /// membership churn is what a log gets scanned for, and arrows read at a glance where the
+    /// words don't.
     private static func marker(for type: EventType, base: UIFont) -> NSAttributedString {
         let glyph = switch type {
         case .join: "--> "
         case .part, .quit, .kick: "<-- "
-        default: "" // a mode or topic change isn't directional; a bare `--` said nothing
+        default: ""
         }
         return muted(glyph, base: base)
     }

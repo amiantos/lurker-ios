@@ -1853,7 +1853,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             settings: settings,
             traits: traitCollection,
             reveal: reveal,
-            isStatusRow: { [weak self] index in self?.isStatusRow(index) ?? false }
+            isStatusRow: { [weak self] index in self?.isStatusRow(index) ?? false },
+            row: { [weak self] index in
+                guard let self, rows.indices.contains(index) else { return nil }
+                return rows[index]
+            }
         )
     }
 
