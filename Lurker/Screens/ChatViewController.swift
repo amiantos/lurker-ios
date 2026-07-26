@@ -14,8 +14,7 @@ import UIKit
 /// it gets the back button and the interactive pop for free (#49). Switching buffers replaces
 /// this screen rather than stacking another on top of it (see `UINavigationController
 /// .showBuffer`), so the stack is exactly two deep whenever a buffer is open, never more.
-final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate,
-    UIGestureRecognizerDelegate {
+final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let viewModel: ChatViewModel
     /// Readable from outside so navigation can tell "open this buffer" from "you're already
     /// in it" without rebuilding the screen to find out — see `showBuffer`.
@@ -118,11 +117,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Empty unless `look.nick.show_mode_prefix` is on — which it isn't by default — so the
     /// whole feature costs nothing until someone asks for it.
     private var modePrefixes: [String: String] = [:]
-    /// How this buffer draws its messages, and the renderer for it. Per-buffer and local to the
-    /// device (`MessageListStylePreferences`) — a style reaches the list and nothing else, so
-    /// changing it is a re-register and a reload, never a rebuild of the screen.
-    private var listStyle: MessageListStyle = .bubbles
-    private var styling: any MessageListStyling = BubbleListStyle()
+    /// Turns rows into cells. Stateless; kept as a property rather than made anew per row.
+    private let listRenderer = MessageListRenderer()
 
     /// Colors known nicks mentioned in message bodies. Rebuilt only when this buffer's
     /// coloring set changes, since compiling the match regex is the costly part.
@@ -139,10 +135,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Whether we've asked for this buffer's history on the *current* connection. Cleared
     /// when the socket drops, because a reconnect resyncs buffers as shells again.
     private var openRequested = false
-    /// How far the timestamps are currently slid in. Held here, not per-cell, so a cell
-    /// recycled mid-drag comes back at the same offset as its neighbors.
-    private var reveal: CGFloat = 0
-    private var revealPan: UIPanGestureRecognizer!
     /// Cleared once the buffer has been parked at its newest message.
     ///
     /// Opening a buffer has to land at the bottom, and neither obvious place to do it works
@@ -215,9 +207,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         tableView.dataSource = self
         tableView.delegate = self
-        // The markers are shared by every style; the rest belong to whichever one is active.
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: MessageListMarker.reuseID)
-        applyListStyle(UserPreferences.standard.messageListStyle(for: buffer.key), reloading: false)
+        listRenderer.register(in: tableView)
+        // The list's own backdrop, not the screen's: the composer, pill and banners above it stay
+        // on the system background.
+        tableView.backgroundColor = listRenderer.listBackground
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
         // The iMessage dismissal: drag down through the conversation and the keyboard
@@ -233,14 +226,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // messages beneath it (see `ConnectionBanner`).
         connectionBanner.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(connectionBanner)
-
-        // Nick and mIRC colors are trait-keyed and adapt in place when redrawn, but a `/me`
-        // marker is a baked image that can't — so on a light/dark switch, reconfigure the
-        // visible rows to rebuild those markers. Reconfigure, not reloadData: it keeps the
-        // scroll position instead of dropping the reader wherever a fresh reload lands.
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
-            self.tableView.reconfigureRows(at: self.tableView.indexPathsForVisibleRows ?? [])
-        }
 
         composer.placeholder = composerPlaceholder
         composer.onSend = { [weak self] text in self?.send(text) }
@@ -1496,24 +1481,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// and this is pushed on top, so that edge belongs to the system's interactive pop —
     /// which goes to the same place, and is the gesture people already try.
     private func addEdgeSwipes() {
-        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) -> UIScreenEdgePanGestureRecognizer {
+        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) {
             let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
             swipe.edges = edge
             view.addGestureRecognizer(swipe)
-            return swipe
         }
-        let rightEdge = edgeSwipe(.right, #selector(swipedFromRight))
-
-        // Drag left anywhere to pull the timestamps in. This overlaps the right-edge swipe
-        // — both are leftward drags — so it defers: starting at the edge opens the nick
-        // list, starting anywhere else reveals times. An edge recognizer fails instantly
-        // when the touch doesn't begin in its strip, so the wait costs nothing.
-        revealPan = UIPanGestureRecognizer(target: self, action: #selector(revealPanned))
-        revealPan.delegate = self
-        revealPan.require(toFail: rightEdge)
-        // Added only if the active style reveals timestamps — the compact style stamps every line,
-        // so the gesture would be inert and still compete with the scroll.
-        updateRevealGesture()
+        edgeSwipe(.right, #selector(swipedFromRight))
 
         // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
         // so it costs nothing per row and survives reuse — and so whatever draws a message next
@@ -1522,50 +1495,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.addGestureRecognizer(
             UILongPressGestureRecognizer(target: self, action: #selector(messageLongPressed))
         )
-    }
-
-    @objc private func revealPanned(_ pan: UIPanGestureRecognizer) {
-        switch pan.state {
-        case .changed:
-            // Leftward only, and it stops at the peek width rather than tracking the finger
-            // off the screen.
-            apply(reveal: min(max(-pan.translation(in: view).x, 0), TimestampReveal.maxOffset))
-        case .ended, .cancelled, .failed:
-            // Always springs back — this is a peek, not a mode you can get stuck in.
-            UIView.animate(withDuration: 0.3, delay: 0, usingSpringWithDamping: 0.85, initialSpringVelocity: 0) {
-                self.apply(reveal: 0)
-            }
-        default:
-            break
-        }
-    }
-
-    private func apply(reveal offset: CGFloat) {
-        reveal = offset
-        // Every kind of row reveals now, but what actually moves differs: our own bubbles
-        // slide aside because they sit where the time is arriving, while a full-width line
-        // holds still and lets the time come into the gutter it already reserves. Each cell
-        // decides for itself — see `setReveal`.
-        for case let cell as TimestampRevealing in tableView.visibleCells {
-            cell.setReveal(offset)
-        }
-    }
-
-    /// Claim the drag only when it's clearly a leftward horizontal one, so vertical scrolls
-    /// still belong to the table.
-    func gestureRecognizerShouldBegin(_ recognizer: UIGestureRecognizer) -> Bool {
-        guard recognizer === revealPan, let pan = recognizer as? UIPanGestureRecognizer else { return true }
-        let velocity = pan.velocity(in: view)
-        return velocity.x < 0 && abs(velocity.x) > abs(velocity.y)
-    }
-
-    /// Run alongside the table's own pan rather than displacing it — a mostly-horizontal
-    /// drag barely scrolls, and fighting the scroll recognizer would cost the flick.
-    func gestureRecognizer(
-        _ recognizer: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-    ) -> Bool {
-        true
     }
 
     @objc private func swipedFromRight(_ recognizer: UIScreenEdgePanGestureRecognizer) {
@@ -1583,9 +1512,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Runs after this sheet has finished dismissing, so `showMemberList`'s guard sees a
         // clear screen.
         info.onShowMembers = { [weak self] in self?.showMemberList() }
-        // Live, while the sheet is still up: the list is behind it, so you see the style you
-        // picked before deciding whether to apply it everywhere.
-        info.onChangeStyle = { [weak self] style in self?.applyListStyle(style) }
         let sheet = UINavigationController(rootViewController: info)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
@@ -1841,10 +1767,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        styling.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
+        listRenderer.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
     }
 
-    /// What the active style needs from this screen to draw a row.
+    /// What the renderer needs from this screen to draw a row.
     private var listContext: MessageListContext {
         MessageListContext(
             networkName: { [weak self] message in self?.networkName(for: message) },
@@ -1852,67 +1778,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             modePrefixes: modePrefixes,
             settings: settings,
             traits: traitCollection,
-            reveal: reveal,
             isStatusRow: { [weak self] index in self?.isStatusRow(index) ?? false },
             row: { [weak self] index in
                 guard let self, rows.indices.contains(index) else { return nil }
                 return rows[index]
             }
         )
-    }
-
-    /// Install or remove the drag-to-reveal timestamp gesture to match the active style.
-    ///
-    /// Tolerates the recognizer not existing yet, because it doesn't: the style is applied in
-    /// `viewDidLoad` before `addEdgeSwipes` builds the gesture (the style has to be known before
-    /// the first `cellForRowAt`, and the gesture needs the edge swipe to order itself against). So
-    /// this runs twice — once as a no-op, then again from `addEdgeSwipes` — rather than either
-    /// caller assuming the other went first.
-    private func updateRevealGesture() {
-        guard let revealPan else { return }
-        if listStyle.revealsTimestamps {
-            if revealPan.view == nil { tableView.addGestureRecognizer(revealPan) }
-        } else {
-            tableView.removeGestureRecognizer(revealPan)
-            apply(reveal: 0) // a style swapped mid-drag would otherwise leave the rows slid over
-        }
-    }
-
-    /// Switch this buffer's message list to `style`.
-    ///
-    /// Everything above the list is untouched — the composer, the pill, the banners and the pills
-    /// are a layer of glass over a list that swaps out underneath them. The reveal gesture is the
-    /// one piece of chrome that belongs to a style rather than to the screen, because it only means
-    /// anything where the timestamps are hidden; the compact style stamps every line, so it isn't
-    /// installed rather than installed-and-inert.
-    func applyListStyle(_ style: MessageListStyle, reloading: Bool = true) {
-        listStyle = style
-        styling = style.styling
-        styling.register(in: tableView)
-        // The list's own backdrop, not the screen's: everything above it — composer, pill,
-        // banners — stays on the system background whichever style is showing.
-        tableView.backgroundColor = styling.listBackground
-
-        updateRevealGesture()
-
-        guard reloading else { return }
-        // Keep the reader on the line they were reading. Every row height changes at once here —
-        // far more than a history prepend moves them — so restoring a content offset would land
-        // somewhere unrelated. Same anchor dance `apply` does across a prepend, for the same
-        // reason, minus the height-delta fallback: nothing was prepended, so there's no delta.
-        let atBottom = isNearBottom
-        let anchor = atBottom ? nil : topVisibleAnchor()
-        UIView.performWithoutAnimation {
-            tableView.reloadData()
-            tableView.layoutIfNeeded()
-            if let anchor, let index = rowIndex(containing: anchor.id) {
-                tableView.contentOffset.y =
-                    tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - anchor.offset
-            }
-            clampToContent()
-        }
-        // Following the conversation means staying at the tail, which is now a different offset.
-        if atBottom { scrollToBottom() }
     }
 
     /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range

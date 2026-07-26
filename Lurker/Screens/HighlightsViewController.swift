@@ -9,12 +9,13 @@ import UIKit
 /// itself (who, where, what), so you can catch up on mentions without opening each channel;
 /// tapping one jumps to that conversation.
 ///
-/// Rendered in the app's own message-list language rather than a separate list style: each
-/// hit is a real `BubbleCell` (the message list's cell), so a highlight reads as a slice of
-/// the conversation — leading/filled for others, trailing for you, nicks and mIRC colors
-/// intact. Grouped by channel+day like iMessage search (`Network/#channel` left, day right),
-/// with a chevron for the jump. The highlight wash is suppressed here: every row matched, so
-/// it would only be a monotone wall — this is exactly the shape search and bookmarks reuse.
+/// Rendered in the app's own message-list language rather than a separate list style: each hit is
+/// a real `CompactCell` (the message list's cell), so a highlight reads as a slice of the
+/// conversation — the author header, the indent, nicks and mIRC colors intact. Grouped by
+/// channel+day like iMessage search (`Network/#channel` left, day right). No disclosure chevron:
+/// it cost every row the width of an indicator, which a monospaced line notices, and the section
+/// header already says these are pointers into conversations elsewhere. The matched wash is
+/// suppressed too — every row matched, so it would only be a monotone wall.
 ///
 /// Highlights are a REST read (`GET /api/highlights`), paginated by a `before` cursor rather
 /// than streamed — so this fetches on open and pages as you scroll, with pull-to-refresh to
@@ -75,11 +76,14 @@ final class HighlightsViewController: UITableViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
-        tableView.register(BubbleCell.self, forCellReuseIdentifier: BubbleCell.reuseID)
+        tableView.register(CompactCell.self, forCellReuseIdentifier: CompactCell.reuseID)
+        // The same backdrop the message list uses, since a hit is supposed to read as a slice of
+        // one — on the system background it read as a different surface quoting the conversation.
+        tableView.backgroundColor = MessageListRenderer().listBackground
         tableView.register(HighlightSectionHeader.self, forHeaderFooterViewReuseIdentifier: HighlightSectionHeader.reuseID)
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 60
-        // The bubbles are the visual units; a full-width separator between them would read as
+        // The message rows are the visual units; a full-width separator between them would read as
         // a settings table, not a feed. The section headers carry the structure.
         tableView.separatorStyle = .none
 
@@ -247,19 +251,46 @@ final class HighlightsViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: BubbleCell.reuseID, for: indexPath) as! BubbleCell
+        let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID, for: indexPath) as! CompactCell
         let section = sections[indexPath.section]
         let item = section.items[indexPath.row]
-        // .solo — each match is its own run — and showsHighlight:false so the wash stays off
-        // (every row matched, so it would be a monotone wall). `interactive:false` so a tap on
-        // the bubble triggers the row's jump instead of the text view swallowing it. The chevron
-        // marks the jump. `section.networkName` is the roster-resolved name, so a system/motd
-        // highlight on an older server (no networkName on the row) still captions its network.
+        // Every hit is its own block — they come from different buffers and hours — so each gets a
+        // header and each carries its time, rather than the message list's "only when the minute
+        // changed" rule, which means nothing across unrelated conversations.
+        //
+        // `highlighted: false` keeps the matched wash off: every row here matched, so it would be
+        // a monotone wall. `interactive: false` so a tap reaches the row's jump instead of the text
+        // view hit-testing for a link. `section.networkName` is the roster-resolved name, so a
+        // system/motd hit on an older server (no networkName on the row) still names its network.
+        //
+        // No *nick* for a `/me` or an activity line, exactly as the message list does it: those
+        // print their actor inside the sentence, so naming them again above `* alice waves` would
+        // say it twice. `isBubble` is the same test the list routes on — "does this line need to
+        // be told who said it" — and a `/me` reaches this screen whenever a rule matches one.
+        //
+        // The header itself stays, carrying the time alone. In the list a header-less row can go
+        // without a stamp because the rows around it have one; here every row is a standalone hit
+        // from a different buffer and hour, and the section header gives only the day.
+        let name = item.message.type.isBubble
+            ? MessageRenderer.caption(item.message, networkName: section.networkName)
+            : nil
+        let time = item.message.date.map { MessageRenderer.compactHeaderTime($0) }
         cell.configure(
-            item.message, position: .solo, networkName: section.networkName,
-            showsHighlight: false, interactive: false
+            MessageRenderer.renderCompactBody(item.message, traits: traitCollection),
+            header: name == nil && time == nil ? nil : CompactCell.Header(
+                nick: name ?? "",
+                color: MessageRenderer.captionColor(item.message, networkName: section.networkName),
+                time: time
+            ),
+            startsBlock: true,
+            endsBlock: true,
+            interactive: false,
+            traits: traitCollection
         )
-        cell.accessoryType = .disclosureIndicator
+        // Tapping jumps, so the row has to acknowledge the touch. `CompactCell` defaults to no
+        // selection style because a message list isn't a list of choices; this one is, and with
+        // the disclosure chevron gone this is the only thing marking a row as tappable.
+        cell.selectionStyle = .default
         return cell
     }
 

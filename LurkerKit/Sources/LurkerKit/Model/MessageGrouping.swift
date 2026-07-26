@@ -5,10 +5,10 @@ import Foundation
 
 /// Which messages collapse into one visual run.
 ///
-/// This is the load-bearing half of bubble rendering, not a polish detail. A 1:1 messenger
-/// can give every message its own nick header and full spacing because there are only two
-/// participants and they alternate. An IRC channel has dozens, so without runs you get a
-/// nick header per line and the list roughly doubles in height for no added information.
+/// Load-bearing, not a polish detail. A 1:1 messenger can give every message its own nick header
+/// and full spacing because there are only two participants and they alternate. An IRC channel has
+/// dozens, so without runs you get a header per line and the list roughly doubles in height for no
+/// added information.
 public enum MessageGrouping {
     /// A gap longer than this breaks a run even for the same author. Without it, two
     /// messages from the same nick three hours apart would render as one conversation.
@@ -16,11 +16,11 @@ public enum MessageGrouping {
 
     /// Whether `message` continues the run that `previous` is part of.
     ///
-    /// Only bubbles group: an action is a full-width line, so it breaks any run it lands in
-    /// (which is correct — "* nick waves" between two of nick's messages is a real
-    /// interruption).
+    /// Only lines with a separate author group (`EventType.isBubble`): an action names its own
+    /// actor, so it breaks any run it lands in — which is correct, since "* nick waves" between
+    /// two of nick's messages is a real interruption.
     ///
-    /// The types must match, not merely both be bubbles. A message and a notice from the
+    /// The types must match, not merely both be headed. A message and a notice from the
     /// same nick are different kinds of utterance — NOTICE is what a bot uses precisely to
     /// say "this is not a reply to talk back to" — and grouping them would caption the run
     /// once and render the rest identically, erasing the distinction the sender chose.
@@ -45,8 +45,12 @@ public enum MessageGrouping {
     }
 }
 
-/// Where a message sits in its run — what the cell needs to know to round the right
-/// corners and decide whether to show the nick header and the timestamp.
+/// Where a message sits in its run.
+///
+/// `isFirst` is what decides whether a message opens an author block, and so whether it draws a
+/// header. `isLast` is computed for symmetry and currently read by nothing — the list works out
+/// where a block *ends* from the following row, because a block can also be ended by a minute
+/// change, which a run position knows nothing about.
 public struct RunPosition: Equatable, Sendable {
     public let isFirst: Bool
     public let isLast: Bool

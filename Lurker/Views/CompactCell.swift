@@ -21,15 +21,13 @@ import UIKit
 ///
 /// That rule is also why a header appears on an author change **or** a minute change: a stamp needs
 /// a header to sit on, so a run crossing a minute boundary starts a new one rather than losing the
-/// time. See `CompactListStyle`.
+/// time. See `MessageListRenderer`, which decides.
 ///
 /// Anything that names its own actor — a `/me`, a join, a collapsed run — is header-less and draws
 /// as a body line, because a nick header above "alice waves" would say her name twice.
 ///
-/// Two things it deliberately doesn't have: no timestamp reveal (the times are already here — see
-/// `MessageListStyle.revealsTimestamps`, which is why that gesture isn't installed at all in this
-/// style), and no bubble run positions, which describe corner rounding this style has no corners
-/// for.
+/// There's no drag-to-reveal timestamp gesture anywhere in the app any more: the times are already
+/// here, on the block headers.
 final class CompactCell: UITableViewCell, MessageBodyHosting {
     static let reuseID = "compact"
 
@@ -133,8 +131,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         startsBlock: Bool = true,
         endsBlock: Bool = false,
         highlighted: Bool = false,
+        interactive: Bool = true,
         traits: UITraitCollection
     ) {
+        // A results list turns this off so a tap anywhere reaches the row's own selection (the
+        // jump) instead of being swallowed by the text view hit-testing for a link.
+        messageText.isUserInteractionEnabled = interactive
         // The screen's live traits, handed down with the row — a cell's own `traitCollection` isn't
         // settled while it's being configured, and neither is `UITraitCollection.current`.
         let font = MessageRenderer.compactFont(compatibleWith: traits)
@@ -175,8 +177,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
+        // Empties dropped as well as nils: a header can carry a time with no nick (a `/me` in the
+        // highlights feed), and an unfiltered join would open the spoken label with a comma.
         messageText.accessibilityLabel = [header?.nick, attributed.string, header?.time]
             .compactMap { $0 }
+            .filter { !$0.isEmpty }
             .joined(separator: ", ")
     }
 
