@@ -29,6 +29,10 @@ final class BufferInfoViewController: UITableViewController {
     /// was tapped.
     var onShowMembers: (() -> Void)?
 
+    /// The user picked a message-list style. The chat screen owns applying it, because the list is
+    /// its view — this screen only knows which one was chosen, and has already saved it.
+    var onChangeStyle: ((MessageListStyle) -> Void)?
+
     private var sections: [Section] = []
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
@@ -72,6 +76,7 @@ final class BufferInfoViewController: UITableViewController {
         case members(Int)
         case whois
         case notifyPlaceholder(title: String)
+        case listStyle(MessageListStyle)
     }
 
     private struct Section {
@@ -93,20 +98,33 @@ final class BufferInfoViewController: UITableViewController {
             sections = [
                 Section(header: "Topic", footer: nil, rows: [.topic(live.topic)]),
                 Section(header: nil, footer: nil, rows: [.members(memberCount)]),
+                appearance,
                 notifications,
             ]
         case .dm:
             sections = [
                 Section(header: nil, footer: nil, rows: [.whois]),
+                appearance,
                 notifications,
             ]
         case .server, .system:
-            // Nothing here is a setting: a server log and the app's own buffer have no
-            // topic, no members, and nothing to notify about.
-            sections = []
+            // No topic, no members, nothing to notify about — but a server log is the buffer
+            // people are most likely to want as a plain terminal feed, so it gets the style
+            // picker even though it has nothing else.
+            sections = [appearance]
         }
-        tableView.backgroundView = sections.isEmpty ? emptyLabel : nil
         tableView.reloadData()
+    }
+
+    /// The one real setting on this screen. Per-buffer by default, with "apply to all" behind the
+    /// confirmation — which is where the Finder-like model is explained, since a picker alone can't
+    /// say whether it's changing one thing or everything.
+    private var appearance: Section {
+        Section(
+            header: "Message list",
+            footer: "Applies to this buffer. You'll be asked whether to use it everywhere.",
+            rows: [.listStyle(UserPreferences.standard.messageListStyle(for: buffer.key))]
+        )
     }
 
     private var notifications: Section {
@@ -116,15 +134,6 @@ final class BufferInfoViewController: UITableViewController {
             rows: [.notifyPlaceholder(title: "Notify me about every message")]
         )
     }
-
-    private lazy var emptyLabel: UILabel = {
-        let label = UILabel()
-        label.text = "This buffer has no settings."
-        label.textColor = .secondaryLabel
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        return label
-    }()
 
     // MARK: - Table
 
@@ -178,6 +187,23 @@ final class BufferInfoViewController: UITableViewController {
             content.textProperties.color = .tertiaryLabel
             cell.contentConfiguration = content
 
+        case .listStyle(let current):
+            var content = UIListContentConfiguration.cell()
+            content.text = "Style"
+            cell.contentConfiguration = content
+            let picker = UISegmentedControl(items: MessageListStyle.allCases.map(\.title))
+            picker.selectedSegmentIndex = MessageListStyle.allCases.firstIndex(of: current) ?? 0
+            picker.addAction(
+                UIAction { [weak self] action in
+                    guard let picker = action.sender as? UISegmentedControl,
+                          MessageListStyle.allCases.indices.contains(picker.selectedSegmentIndex)
+                    else { return }
+                    self?.pick(MessageListStyle.allCases[picker.selectedSegmentIndex])
+                },
+                for: .valueChanged
+            )
+            cell.accessoryView = picker
+
         case .notifyPlaceholder(let title):
             var content = UIListContentConfiguration.cell()
             content.text = title
@@ -189,6 +215,29 @@ final class BufferInfoViewController: UITableViewController {
             cell.accessoryView = toggle
         }
         return cell
+    }
+
+    /// Save the pick for this buffer, then ask whether it should be everywhere.
+    ///
+    /// This buffer is changed first and unconditionally, so Cancel leaves you with exactly what you
+    /// picked *here* rather than undoing the tap you just made — the choice in the alert is about
+    /// the other buffers, not about this one.
+    private func pick(_ style: MessageListStyle) {
+        UserPreferences.standard.setMessageListStyle(style, for: buffer.key)
+        onChangeStyle?(style)
+
+        let alert = UIAlertController(
+            title: "Use \(style.title) everywhere?",
+            message: "Apply this style to all buffers, or keep it just for this one.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "All Buffers", style: .default) { _ in
+            // Also clears every per-buffer exception, so "all" means all — see
+            // `MessageListStylePreferences.applyToAll`.
+            UserPreferences.standard.setMessageListStyleForAllBuffers(style)
+        })
+        alert.addAction(UIAlertAction(title: "Just This Buffer", style: .cancel))
+        present(alert, animated: true)
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {

@@ -190,8 +190,9 @@ enum MessageRenderer {
     /// A collapsed run — "alice, bob and 3 others joined; dave left". Nicks keep their
     /// colors; the categories and connectives are muted. Mirrors how the web client colors
     /// its `NickRef`s and leaves the rest as meta text.
-    static func renderConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
+    static func renderConsolidation(
+        _ summary: ConsolidationSummary, base: UIFont = .preferredFont(forTextStyle: .subheadline)
+    ) -> NSAttributedString {
         let clauses = summary.groups.map { identityClause($0, base: base) }
 
         let line = NSMutableAttributedString()
@@ -216,9 +217,10 @@ enum MessageRenderer {
     ///
     /// Returns nil for an empty list so the caller has one thing to check rather than
     /// rendering a stray " is typing…".
-    static func renderTyping(_ nicks: [String]) -> NSAttributedString? {
+    static func renderTyping(
+        _ nicks: [String], base: UIFont = .preferredFont(forTextStyle: .subheadline)
+    ) -> NSAttributedString? {
         guard !nicks.isEmpty else { return nil }
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
         // Past three names the list stops being scannable and starts being a wall — the same
         // judgement `Consolidation` makes about a join flood, and the same phrasing.
         let visible = nicks.prefix(3)
@@ -239,6 +241,197 @@ enum MessageRenderer {
         }
         // Singular only for one name: "alice and bob are", "alice, bob, and 2 others are".
         line.append(muted(nicks.count == 1 ? " is typing…" : " are typing…", base: base))
+        return line
+    }
+
+    // MARK: - Compact (terminal) style
+
+    /// The gap between two consecutive lines in the compact style.
+    ///
+    /// One constant because it has to be one number: it's applied *inside* a message as
+    /// `lineSpacing` (between wrapped lines) and *around* one as `CompactCell`'s vertical inset
+    /// (half at each end, so two adjacent cells add up to the same gap). Any drift between the two
+    /// and the rhythm stutters at every message boundary, which is what stops a log reading as a
+    /// grid — a wrapped line and a new message have to be equally far apart.
+    static let compactLineGap: CGFloat = 3
+
+    /// The gap between an author header and the first line of their message.
+    ///
+    /// Its own constant rather than half the line gap: the header is a different kind of thing
+    /// from the words under it, so it wants a little more air than two body lines want from each
+    /// other — and the line gap is now tight enough that sharing it clamped the name to the text.
+    static let compactHeaderGap: CGFloat = 4
+
+    /// How much of the block gap belongs *inside* a block's own background rather than between
+    /// two of them.
+    ///
+    /// A matched block whose wash starts at the cap-height of its first line and stops at the
+    /// baseline of its last reads as a highlighter dragged across the text. Giving the fill a third
+    /// of the gap at each end makes it a band the text sits inside. The remaining third stays
+    /// outside as background, so the distance between two blocks is unchanged — the gap is split,
+    /// not added to.
+    static func compactWashPadding(compatibleWith traits: UITraitCollection = .current) -> CGFloat {
+        compactBlockGap(compatibleWith: traits) / 3
+    }
+
+    /// The gap after the last message of an author block, so blocks read as blocks.
+    ///
+    /// Three quarters of a line rather than a whole one: a full blank line between every block is
+    /// most of the height a bubble list spends, which is the thing this style exists to avoid.
+    /// Scaled off the face so it tracks Dynamic Type with everything else.
+    static func compactBlockGap(compatibleWith traits: UITraitCollection = .current) -> CGFloat {
+        ceil(compactFont(compatibleWith: traits).lineHeight * 0.75)
+    }
+
+    /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
+    /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
+    /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
+    ///
+    /// Resolved against the caller's `traits`, never `UITraitCollection.current` — the same rule
+    /// `render` follows above, and for the same reason: `.current` isn't reliably set during
+    /// `cellForRowAt`, which is exactly where every one of these is asked for.
+    ///
+    /// Cached with the character width beside it, because between them they're wanted five times
+    /// per row — building a font and measuring a glyph each time, for every visible cell on every
+    /// reload. Keyed on the content size category *of those traits*, so a Dynamic Type change
+    /// rebuilds them and a stray resolution can't leave a wrong entry behind.
+    static func compactFont(compatibleWith traits: UITraitCollection = .current) -> UIFont {
+        compactMetrics(traits).font
+    }
+
+    /// One character of that face — the amount a message body sits in from its author, and the
+    /// amount a wrapped narration line sits in from where it started.
+    static func compactIndent(compatibleWith traits: UITraitCollection = .current) -> CGFloat {
+        compactMetrics(traits).indent
+    }
+
+    private static var cachedCompactMetrics: (category: UIContentSizeCategory, font: UIFont, indent: CGFloat)?
+
+    private static func compactMetrics(_ traits: UITraitCollection) -> (font: UIFont, indent: CGFloat) {
+        let category = traits.preferredContentSizeCategory
+        if let cached = cachedCompactMetrics, cached.category == category {
+            return (cached.font, cached.indent)
+        }
+        let reference = UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits)
+        let font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(
+            for: .monospacedSystemFont(ofSize: reference.pointSize, weight: .regular),
+            compatibleWith: traits
+        )
+        let indent = (" " as NSString).size(withAttributes: [.font: font]).width
+        cachedCompactMetrics = (category, font, indent)
+        return (font, indent)
+    }
+
+    /// The body of a compact row — the text alone, with no time and no author.
+    ///
+    /// Those are the cell's (`CompactCell` draws the header), which is what lets several messages
+    /// from one person stack under a single nick. What comes back is the same text the bubble
+    /// style would render, in the monospaced face: same mIRC colours, same auto-linking, same
+    /// nick colouring inside the body.
+    static func renderCompactBody(
+        _ message: Message,
+        traits: UITraitCollection = .current,
+        settings: Settings = Settings(),
+        highlighter: NickHighlighter? = nil
+    ) -> NSAttributedString {
+        let base = compactFont(compatibleWith: traits)
+
+        // A line that names its own actor keeps doing so: it has no header to be named by.
+        if message.type == .action {
+            let color = nickColor(message)
+            let line = NSMutableAttributedString()
+            line.append(NSAttributedString(
+                string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
+            ))
+            line.append(body(message, base: base, fallback: color, highlighter: highlighter))
+            // Two, to clear the `* ` this line opens with.
+            return spaced(line, flushFirstLine: true, indentCharacters: 2, traits: traits)
+        }
+        if message.type.isActivity {
+            // No arrow column. "alice joined" already says which direction it went, and the
+            // narration starts flush with the nicks above it now, so the arrows were an extra
+            // column of punctuation buying nothing.
+            return spaced(
+                NSMutableAttributedString(
+                    attributedString: renderActivity(message, base: base, settings: settings)
+                ),
+                flushFirstLine: true, traits: traits
+            )
+        }
+        return spaced(
+            NSMutableAttributedString(
+                attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
+            ),
+            flushFirstLine: false, traits: traits
+        )
+    }
+
+    /// A collapsed run in the compact style — header-less, like the activity lines it stands for.
+    static func renderCompactConsolidation(
+        _ summary: ConsolidationSummary, traits: UITraitCollection = .current
+    ) -> NSAttributedString {
+        spaced(
+            NSMutableAttributedString(
+                attributedString: renderConsolidation(summary, base: compactFont(compatibleWith: traits))
+            ),
+            flushFirstLine: true, traits: traits
+        )
+    }
+
+    /// The typing line in the compact style.
+    static func renderCompactTyping(
+        _ nicks: [String], traits: UITraitCollection = .current
+    ) -> NSAttributedString? {
+        guard let typists = renderTyping(nicks, base: compactFont(compatibleWith: traits)) else { return nil }
+        return spaced(
+            NSMutableAttributedString(attributedString: typists), flushFirstLine: true, traits: traits
+        )
+    }
+
+    /// `14:42` for a compact header.
+    ///
+    /// Minutes, not seconds: the stamp only appears when the minute changes, so a seconds field
+    /// would be showing the precise moment of whichever message happened to start the minute —
+    /// precision the format doesn't actually carry. Fixed 24-hour through a POSIX locale, since
+    /// `HH` still renders 12-hour under some region settings.
+    static func compactHeaderTime(_ date: Date) -> String {
+        compactTimeFormatter.string(from: date)
+    }
+
+    private static let compactTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    /// Space a body's wrapped rows apart by `compactLineGap`, so they sit the same distance from
+    /// each other as they do from the row above and below — and indent it.
+    ///
+    /// Indentation is a paragraph style rather than the cell's inset because the two kinds of row
+    /// want different first lines. A message body is indented throughout, sitting under its author.
+    /// Narration that names its own actor — a `/me`, a join, a collapsed run — starts flush with
+    /// where a nick would be, since it *is* the nick line, and only its wrapped continuations tuck
+    /// in.
+    ///
+    /// `indentCharacters` is how far. One for most things; two for a `/me`, whose `* ` prefix is
+    /// two characters wide, so a one-character hang put the wrap under the space rather than under
+    /// the words.
+    ///
+    /// Set on the whole range last, which also clears any paragraph style a shared builder applied
+    /// for the bubble style (a `/me`'s own hanging indent, for one).
+    private static func spaced(
+        _ line: NSMutableAttributedString,
+        flushFirstLine: Bool,
+        indentCharacters: Int = 1,
+        traits: UITraitCollection
+    ) -> NSAttributedString {
+        let indent = compactIndent(compatibleWith: traits) * CGFloat(indentCharacters)
+        let style = NSMutableParagraphStyle()
+        style.lineSpacing = compactLineGap
+        style.headIndent = indent
+        style.firstLineHeadIndent = flushFirstLine ? 0 : indent
+        line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
         return line
     }
 

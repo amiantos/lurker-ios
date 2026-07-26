@@ -42,4 +42,16 @@ enum Palette {
     /// (lighter than the near-black incoming in dark, darker than the light incoming in light)
     /// and the trailing side confirms the line is ours. `.systemFill` was too close to tell.
     static let outgoingBubble = UIColor.systemGray4
+
+    /// The compact list's own backdrop in dark mode.
+    ///
+    /// The web client's `look.color.bg` default (`#212022`) rather than the system's near-black:
+    /// a dense monospaced log on pure black is all edge, and the charcoal is what the PWA has
+    /// always shown on a phone, so the two clients look like the same product side by side.
+    ///
+    /// Light mode keeps `.systemBackground`. The web's light theme isn't a simple inversion of
+    /// this token, and guessing at one here would be inventing a palette rather than matching one.
+    static let compactListBackground = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(hex: "#212022")! : .systemBackground
+    }
 }
