@@ -26,10 +26,8 @@ import UIKit
 /// Anything that names its own actor — a `/me`, a join, a collapsed run — is header-less and draws
 /// as a body line, because a nick header above "alice waves" would say her name twice.
 ///
-/// Two things it deliberately doesn't have: no timestamp reveal (the times are already here — see
-/// `MessageListStyle.revealsTimestamps`, which is why that gesture isn't installed at all in this
-/// style), and no bubble run positions, which describe corner rounding this style has no corners
-/// for.
+/// There's no drag-to-reveal timestamp gesture anywhere in the app any more: the times are already
+/// here, on the block headers.
 final class CompactCell: UITableViewCell, MessageBodyHosting {
     static let reuseID = "compact"
 
@@ -133,8 +131,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         startsBlock: Bool = true,
         endsBlock: Bool = false,
         highlighted: Bool = false,
+        interactive: Bool = true,
         traits: UITraitCollection
     ) {
+        // A results list turns this off so a tap anywhere reaches the row's own selection (the
+        // jump) instead of being swallowed by the text view hit-testing for a link.
+        messageText.isUserInteractionEnabled = interactive
         // The screen's live traits, handed down with the row — a cell's own `traitCollection` isn't
         // settled while it's being configured, and neither is `UITraitCollection.current`.
         let font = MessageRenderer.compactFont(compatibleWith: traits)

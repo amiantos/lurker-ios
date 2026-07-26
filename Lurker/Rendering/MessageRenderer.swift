@@ -5,15 +5,13 @@ import Foundation
 import LurkerKit
 import UIKit
 
-/// Turns a `Message` into styled text, mirroring the web client: a colored nick prefix
-/// (per-type), then the body with mIRC formatting, colors, and auto-linked URLs. One font
-/// size throughout — hierarchy comes from weight, italics, and color, never size.
+/// Turns a `Message` into styled text, mirroring the web client: mIRC formatting, colors, and
+/// auto-linked URLs. One font size throughout — hierarchy comes from weight, italics, and color,
+/// never size.
 ///
-/// Two entry points, because a message renders one of two ways:
-///  - `renderBubble` — just the body. `BubbleCell` draws the nick and time itself, once
-///    per run, so they must not also be baked into the text.
-///  - `render` — the whole line, prefix included, for the events that stay full-width
-///    (actions, notices, and the system buffer).
+/// The list draws in one shape (see `MessageListRenderer`), so what comes back is a *body*: the
+/// author and the time belong to the cell, drawn once per block, and must not also be baked into
+/// the text. `caption`/`captionColor` say what to call a line's author for that header.
 extension NSAttributedString.Key {
     /// A URL this client will open itself, stamped by `MessageRenderer` and read back by
     /// `MessageTextView.url(at:)`.
@@ -27,20 +25,7 @@ enum MessageRenderer {
 
     // MARK: - Bubbles
 
-    /// The body alone, for a bubble. Both bubbles are now neutral fills, so text is `.label`
-    /// on either — an mIRC-colored run still wins, because the sender chose that color on
-    /// purpose, and named nicks get their palette color over the neutral surface.
-    ///
-    /// One color and one font inside every bubble, whatever the line is: the bubble already
-    /// says what kind of line it is by its caption and that caption's color, so tinting the
-    /// words too said it twice, and a per-type font (monospaced server text) was a second
-    /// type system to maintain. A customizable font is a later feature.
-    static func renderBubble(_ message: Message, highlighter: NickHighlighter? = nil) -> NSAttributedString {
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        return body(message, base: base, fallback: .label, highlighter: highlighter)
-    }
-
-    /// What captions a bubble's run. Nil leaves it uncaptioned.
+    /// What names a message's author in its block header. Nil leaves the block unheaded.
     ///
     /// `modePrefix` is the speaker's channel-mode glyph (`@`, `+`, …) when
     /// `look.nick.show_mode_prefix` is on and they're a current member — the caller resolves
@@ -70,55 +55,6 @@ enum MessageRenderer {
         case .motd, .other: .secondaryLabel
         default: nickColor(message)
         }
-    }
-
-    // MARK: - Full-width lines
-
-    /// A full-width line. Two kinds reach it: an `action` (`/me`), and the structural
-    /// `isActivity` events — joins, parts, quits, nick changes, modes, kicks, topics,
-    /// invites. An action is tinted content; an activity line is muted narration with the
-    /// names it mentions in their nick colors.
-    ///
-    /// No timestamp. `LineCell` reserves a trailing gutter and the time slides into it on a
-    /// drag, the same as a bubble; it used to be stamped inline down the left, which put a
-    /// column of identical times beside a block of server text.
-    /// `traits` flatten the actor's (now trait-keyed) color into the baked `/me` asterisk
-    /// image. The caller passes its own live traits rather than letting it fall back to
-    /// `UITraitCollection.current`, which isn't reliably set during `cellForRowAt`.
-    static func render(
-        _ message: Message, traits: UITraitCollection = .current, settings: Settings = Settings()
-    ) -> NSAttributedString {
-        let base = UIFont.preferredFont(forTextStyle: .subheadline)
-        return message.type == .action
-            ? renderAction(message, base: base, traits: traits)
-            : renderActivity(message, base: base, settings: settings)
-    }
-
-    /// "* alice waves" — an asterisk marker, then the actor and what they did, the whole
-    /// line in their color and italic. An action is content, not metadata: alice *did* this,
-    /// so it's tinted like she said it. The tint is what separates it from a bubble.
-    private static func renderAction(
-        _ message: Message, base: UIFont, traits: UITraitCollection
-    ) -> NSAttributedString {
-        let color = nickColor(message)
-        let prefixText = NSMutableAttributedString()
-        prefixText.append(asterisk(color: color, base: base, traits: traits))
-        prefixText.append(NSAttributedString(
-            string: " " + (message.nick ?? "*") + " ", attributes: [.font: base.italic, .foregroundColor: color]
-        ))
-
-        let line = NSMutableAttributedString()
-        line.append(prefixText)
-        line.append(body(message, base: base.italic, fallback: color))
-
-        // Wrap continuation lines clear of the prefix rather than back under it — but capped
-        // at a two-glyph column, so a long nick doesn't hang the wrap halfway across the
-        // screen. The prefix is measured exactly (built as its own string) rather than found
-        // by scanning the assembled line.
-        let style = NSMutableParagraphStyle()
-        style.headIndent = min(ceil(prefixText.size().width), glyphColumnWidth(base))
-        line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
-        return line
     }
 
     /// A structural line — "alice joined", "bob is now bob_afk", "chan set +o dave". The
@@ -506,36 +442,6 @@ enum MessageRenderer {
         case .renamed: "" // the → in the name conveys it
         case .rehosted: " changed host"
         }
-    }
-
-    /// The width of a two-glyph prefix column at the current type size — the cap on how far
-    /// a wrapped line's continuation indents. Computed so it tracks Dynamic Type.
-    private static func glyphColumnWidth(_ base: UIFont) -> CGFloat {
-        ceil(NSAttributedString(string: "--  ", attributes: [.font: base.bold]).size().width)
-    }
-
-    /// The action marker, as SF Symbols' `asterisk` rather than the `*` character.
-    ///
-    /// A typed asterisk is a superscript glyph — it sits up on the cap line, sized for a
-    /// footnote reference, and next to a nick it reads as a typo rather than a marker. The
-    /// symbol is drawn on the text baseline at the weight of the surrounding font.
-    ///
-    /// The color is baked in (`alwaysOriginal`) because a text attachment's image ignores
-    /// `.foregroundColor` — but nick colors are now trait-keyed, and a baked image can't
-    /// re-resolve on a light/dark switch. So it's flattened against `traits` (the caller's
-    /// live trait collection); a theme toggle reconfigures the visible rows
-    /// (`ChatViewController`) so the marker is rebuilt with the new traits.
-    private static func asterisk(color: UIColor, base: UIFont, traits: UITraitCollection) -> NSAttributedString {
-        let configuration = UIImage.SymbolConfiguration(font: base, scale: .small)
-        let resolved = color.resolvedColor(with: traits)
-        guard let image = UIImage(systemName: "asterisk", withConfiguration: configuration)?
-            .withTintColor(resolved, renderingMode: .alwaysOriginal)
-        else {
-            // Never seen in practice; the character is the honest fallback if the symbol
-            // ever isn't there, rather than a line that silently loses its marker.
-            return NSAttributedString(string: "*", attributes: [.font: base, .foregroundColor: color])
-        }
-        return NSAttributedString(attachment: NSTextAttachment(image: image))
     }
 
     // MARK: - Body

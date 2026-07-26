@@ -134,8 +134,7 @@ public struct Message: Equatable, Sendable {
     /// The server streams state-only events to a buffer alongside its log lines — a
     /// `usermode` carrying `modes`, an `away-state` carrying an `away` object, `lag`,
     /// `peer-presence` — none of which have a `text` field. The client parses them as
-    /// `.other` (it consumes none of them yet) and, left in, each renders as an empty
-    /// bubble. The web client either folds them into state or filters them; this is how
+    /// `.other` (it consumes none of them yet) and, left in, each renders as an empty line. The web client either folds them into state or filters them; this is how
     /// the client keeps them off screen without modeling every one.
     public var isRenderable: Bool {
         switch type {
@@ -215,8 +214,8 @@ public enum EventType: String, Sendable {
 
     /// Structural "narration" about the room: membership churn and channel state. Each
     /// names its actor inside the synthesized sentence ("alice joined", "bob is now
-    /// bob_afk", "mode by chan: +o"), so — exactly like an `action` — it renders as a
-    /// full-width line rather than a nick-captioned bubble, which would say the name twice.
+    /// bob_afk", "mode by chan: +o"), so — exactly like an `action` — it renders header-less,
+    /// since an author header would say the name twice.
     ///
     /// This set also defines what participates in join consolidation (see `Consolidation`):
     /// a run of consecutive activity lines collapses into one net-effect summary.
@@ -227,18 +226,22 @@ public enum EventType: String, Sendable {
         }
     }
 
-    /// Whether this renders as a bubble. Speech and server text do; narration doesn't.
+    /// Whether the line's author is separate from its text — which is what earns it an author
+    /// header in the list, and what lets several of them stack under one.
     ///
-    /// Bubbles are one thing rather than a taxonomy sorted by how "conversational" a line
-    /// was judged to be — that taxonomy kept drawing plain conversation as log output: your
-    /// DM to NickServ bubbled while its reply didn't, and a `-SaslServ-` notice sat as a
-    /// bare line under a run of bubbles for no reason a reader could see. So message,
-    /// notice, and the server buffer's own text (motd/system/error/…) all bubble, captioned
-    /// by their author — a nick, or the network speaking in its own voice.
+    /// (Named `isBubble` from when the list drew these as chat bubbles. The distinction outlived
+    /// the bubbles: it's still exactly "does this line need to be told who said it".)
     ///
-    /// The exceptions are `action` and the `isActivity` events: they put the actor inside
-    /// the sentence, so a nick-captioned bubble would name them twice. They stay full-width
-    /// lines — as they do in IRCCloud, Slack and Telegram.
+    /// One category rather than a taxonomy sorted by how "conversational" a line was judged to
+    /// be — that taxonomy kept drawing plain conversation as log output: your DM to NickServ was
+    /// captioned while its reply wasn't, and a `-SaslServ-` notice sat bare under a run of
+    /// captioned lines for no reason a reader could see. So message, notice, and the server
+    /// buffer's own text (motd/system/error/…) all take a header — a nick, or the network
+    /// speaking in its own voice.
+    ///
+    /// The exceptions are `action` and the `isActivity` events: they put the actor inside the
+    /// sentence, so a header would name them twice. They render header-less, flush with where a
+    /// nick would be — as they do in IRCCloud, Slack and Telegram.
     public var isBubble: Bool { self != .action && !isActivity }
 
     public static func from(_ raw: String?) -> EventType {
