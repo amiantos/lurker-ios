@@ -177,8 +177,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
+        // Empties dropped as well as nils: a header can carry a time with no nick (a `/me` in the
+        // highlights feed), and an unfiltered join would open the spoken label with a comma.
         messageText.accessibilityLabel = [header?.nick, attributed.string, header?.time]
             .compactMap { $0 }
+            .filter { !$0.isEmpty }
             .joined(separator: ", ")
     }
 

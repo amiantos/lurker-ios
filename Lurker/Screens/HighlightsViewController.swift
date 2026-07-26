@@ -263,22 +263,25 @@ final class HighlightsViewController: UITableViewController {
         // view hit-testing for a link. `section.networkName` is the roster-resolved name, so a
         // system/motd hit on an older server (no networkName on the row) still names its network.
         //
-        // Header-less for a `/me` or an activity line, exactly as the message list does it: those
-        // print their actor inside the sentence, so a header above `* alice waves` would say her
-        // name twice. `isBubble` is the same test the list routes on — "does this line need to be
-        // told who said it" — and a `/me` reaches this screen whenever a rule matches one.
+        // No *nick* for a `/me` or an activity line, exactly as the message list does it: those
+        // print their actor inside the sentence, so naming them again above `* alice waves` would
+        // say it twice. `isBubble` is the same test the list routes on — "does this line need to
+        // be told who said it" — and a `/me` reaches this screen whenever a rule matches one.
+        //
+        // The header itself stays, carrying the time alone. In the list a header-less row can go
+        // without a stamp because the rows around it have one; here every row is a standalone hit
+        // from a different buffer and hour, and the section header gives only the day.
         let name = item.message.type.isBubble
             ? MessageRenderer.caption(item.message, networkName: section.networkName)
             : nil
+        let time = item.message.date.map { MessageRenderer.compactHeaderTime($0) }
         cell.configure(
             MessageRenderer.renderCompactBody(item.message, traits: traitCollection),
-            header: name.map {
-                CompactCell.Header(
-                    nick: $0,
-                    color: MessageRenderer.captionColor(item.message, networkName: section.networkName),
-                    time: item.message.date.map { MessageRenderer.compactHeaderTime($0) }
-                )
-            },
+            header: name == nil && time == nil ? nil : CompactCell.Header(
+                nick: name ?? "",
+                color: MessageRenderer.captionColor(item.message, networkName: section.networkName),
+                time: time
+            ),
             startsBlock: true,
             endsBlock: true,
             interactive: false,
