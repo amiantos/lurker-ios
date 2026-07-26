@@ -77,10 +77,13 @@ final class HighlightsViewController: UITableViewController {
             systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
         tableView.register(CompactCell.self, forCellReuseIdentifier: CompactCell.reuseID)
+        // The same backdrop the message list uses, since a hit is supposed to read as a slice of
+        // one — on the system background it read as a different surface quoting the conversation.
+        tableView.backgroundColor = MessageListRenderer().listBackground
         tableView.register(HighlightSectionHeader.self, forHeaderFooterViewReuseIdentifier: HighlightSectionHeader.reuseID)
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 60
-        // The bubbles are the visual units; a full-width separator between them would read as
+        // The message rows are the visual units; a full-width separator between them would read as
         // a settings table, not a feed. The section headers carry the structure.
         tableView.separatorStyle = .none
 
@@ -259,7 +262,14 @@ final class HighlightsViewController: UITableViewController {
         // a monotone wall. `interactive: false` so a tap reaches the row's jump instead of the text
         // view hit-testing for a link. `section.networkName` is the roster-resolved name, so a
         // system/motd hit on an older server (no networkName on the row) still names its network.
-        let name = MessageRenderer.caption(item.message, networkName: section.networkName)
+        //
+        // Header-less for a `/me` or an activity line, exactly as the message list does it: those
+        // print their actor inside the sentence, so a header above `* alice waves` would say her
+        // name twice. `isBubble` is the same test the list routes on — "does this line need to be
+        // told who said it" — and a `/me` reaches this screen whenever a rule matches one.
+        let name = item.message.type.isBubble
+            ? MessageRenderer.caption(item.message, networkName: section.networkName)
+            : nil
         cell.configure(
             MessageRenderer.renderCompactBody(item.message, traits: traitCollection),
             header: name.map {
@@ -274,6 +284,10 @@ final class HighlightsViewController: UITableViewController {
             interactive: false,
             traits: traitCollection
         )
+        // Tapping jumps, so the row has to acknowledge the touch. `CompactCell` defaults to no
+        // selection style because a message list isn't a list of choices; this one is, and with
+        // the disclosure chevron gone this is the only thing marking a row as tappable.
+        cell.selectionStyle = .default
         return cell
     }
 

@@ -23,7 +23,7 @@ extension NSAttributedString.Key {
 
 enum MessageRenderer {
 
-    // MARK: - Bubbles
+    // MARK: - Authors
 
     /// What names a message's author in its block header. Nil leaves the block unheaded.
     ///
@@ -354,8 +354,8 @@ enum MessageRenderer {
     /// two characters wide, so a one-character hang put the wrap under the space rather than under
     /// the words.
     ///
-    /// Set on the whole range last, which also clears any paragraph style a shared builder applied
-    /// for the bubble style (a `/me`'s own hanging indent, for one).
+    /// Set on the whole range last, so it wins over any paragraph style a shared builder left on
+    /// the text.
     private static func spaced(
         _ line: NSMutableAttributedString,
         flushFirstLine: Bool,
@@ -522,13 +522,6 @@ enum MessageRenderer {
         formatter.timeStyle = .short // locale-aware 12/24h, shown in local time
         return formatter
     }()
-
-    /// A short local time (nil if the event had no readable one). Parsing already happened
-    /// at the wire boundary (`ISOTime`), so this only formats.
-    static func timestamp(_ date: Date?) -> String? {
-        guard let date else { return nil }
-        return timeFormatter.string(from: date)
-    }
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()

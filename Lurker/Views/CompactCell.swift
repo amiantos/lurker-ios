@@ -21,7 +21,7 @@ import UIKit
 ///
 /// That rule is also why a header appears on an author change **or** a minute change: a stamp needs
 /// a header to sit on, so a run crossing a minute boundary starts a new one rather than losing the
-/// time. See `CompactListStyle`.
+/// time. See `MessageListRenderer`, which decides.
 ///
 /// Anything that names its own actor — a `/me`, a join, a collapsed run — is header-less and draws
 /// as a body line, because a nick header above "alice waves" would say her name twice.

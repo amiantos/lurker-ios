@@ -105,8 +105,24 @@ final class BufferInfoViewController: UITableViewController {
             // members, and nothing to notify about.
             sections = []
         }
+        tableView.backgroundView = sections.isEmpty ? emptyLabel : nil
         tableView.reloadData()
     }
+
+    /// Shown instead of an empty table for a server log or the system buffer, which have no topic,
+    /// no members and nothing to notify about.
+    ///
+    /// The pill opens this sheet from every buffer — that consistency is the point of the pill —
+    /// so the honest answer to "what is there to configure here" has to be a sentence rather than
+    /// a blank sheet with a Done button.
+    private lazy var emptyLabel: UILabel = {
+        let label = UILabel()
+        label.text = "This buffer has no settings."
+        label.textColor = .secondaryLabel
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        return label
+    }()
 
     private var notifications: Section {
         Section(

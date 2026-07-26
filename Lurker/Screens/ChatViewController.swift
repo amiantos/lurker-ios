@@ -14,8 +14,7 @@ import UIKit
 /// it gets the back button and the interactive pop for free (#49). Switching buffers replaces
 /// this screen rather than stacking another on top of it (see `UINavigationController
 /// .showBuffer`), so the stack is exactly two deep whenever a buffer is open, never more.
-final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate,
-    UIGestureRecognizerDelegate {
+final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let viewModel: ChatViewModel
     /// Readable from outside so navigation can tell "open this buffer" from "you're already
     /// in it" without rebuilding the screen to find out — see `showBuffer`.
@@ -227,14 +226,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // messages beneath it (see `ConnectionBanner`).
         connectionBanner.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(connectionBanner)
-
-        // Nick and mIRC colors are trait-keyed and adapt in place when redrawn, but a `/me`
-        // marker is a baked image that can't — so on a light/dark switch, reconfigure the
-        // visible rows to rebuild those markers. Reconfigure, not reloadData: it keeps the
-        // scroll position instead of dropping the reader wherever a fresh reload lands.
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
-            self.tableView.reconfigureRows(at: self.tableView.indexPathsForVisibleRows ?? [])
-        }
 
         composer.placeholder = composerPlaceholder
         composer.onSend = { [weak self] text in self?.send(text) }
@@ -1490,17 +1481,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// and this is pushed on top, so that edge belongs to the system's interactive pop —
     /// which goes to the same place, and is the gesture people already try.
     private func addEdgeSwipes() {
-        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) -> UIScreenEdgePanGestureRecognizer {
+        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) {
             let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
             swipe.edges = edge
             view.addGestureRecognizer(swipe)
-            return swipe
         }
-        let rightEdge = edgeSwipe(.right, #selector(swipedFromRight))
-
-        // No drag-to-reveal gesture: every line carries its own time now, so there is nothing
-        // parked off the edge to pull in. `rightEdge` no longer has anything ordered against it.
-        _ = rightEdge
+        edgeSwipe(.right, #selector(swipedFromRight))
 
         // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
         // so it costs nothing per row and survives reuse — and so whatever draws a message next
@@ -1509,15 +1495,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.addGestureRecognizer(
             UILongPressGestureRecognizer(target: self, action: #selector(messageLongPressed))
         )
-    }
-
-    /// Run alongside the table's own pan rather than displacing it — a mostly-horizontal
-    /// drag barely scrolls, and fighting the scroll recognizer would cost the flick.
-    func gestureRecognizer(
-        _ recognizer: UIGestureRecognizer,
-        shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-    ) -> Bool {
-        true
     }
 
     @objc private func swipedFromRight(_ recognizer: UIScreenEdgePanGestureRecognizer) {
