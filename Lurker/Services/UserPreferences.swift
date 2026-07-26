@@ -189,8 +189,9 @@ extension UserDefaults {
     }
 
     private func save(_ styles: MessageListStylePreferences) {
-        // A failure here would silently reset everyone to bubbles on the next read, so it's worth
-        // a line in the log rather than a bare `try?`.
+        // A failure here would silently reset every buffer to the default style on the next read,
+        // so it's worth a line in the log rather than a bare `try?`. (Named as "the default"
+        // rather than as a style: which one that is has already changed once.)
         do {
             set(try JSONEncoder().encode(styles), forKey: UserPreferences.Key.messageListStyles)
         } catch {

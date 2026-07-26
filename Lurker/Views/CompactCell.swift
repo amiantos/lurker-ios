@@ -132,9 +132,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         header: Header?,
         startsBlock: Bool = true,
         endsBlock: Bool = false,
-        highlighted: Bool = false
+        highlighted: Bool = false,
+        traits: UITraitCollection
     ) {
-        let font = MessageRenderer.compactFont()
+        // The screen's live traits, handed down with the row — a cell's own `traitCollection` isn't
+        // settled while it's being configured, and neither is `UITraitCollection.current`.
+        let font = MessageRenderer.compactFont(compatibleWith: traits)
         headerRow.isHidden = header == nil
         if let header {
             nickLabel.font = font.semibold
@@ -152,7 +155,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // A header takes a slightly wider gap of its own (`compactHeaderGap`), because a name and
         // the words under it are less alike than two body lines are.
         let padding = MessageRenderer.compactLineGap / 2
-        let wash = MessageRenderer.compactWashPadding
+        let wash = MessageRenderer.compactWashPadding(compatibleWith: traits)
         column.layoutMargins = UIEdgeInsets(
             top: (header == nil ? 0 : padding) + (startsBlock ? wash : 0), left: 0, bottom: 0, right: 0
         )
@@ -164,7 +167,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         )
         // The rest of the gap — the part that isn't inside either block's fill — is reserved by
         // the cell and excluded from it, so what separates two blocks is background.
-        fillBottom.constant = endsBlock ? -(MessageRenderer.compactBlockGap - 2 * wash) : 0
+        fillBottom.constant = endsBlock
+            ? -(MessageRenderer.compactBlockGap(compatibleWith: traits) - 2 * wash)
+            : 0
 
         messageText.attributedText = attributed
         // No zebra of any kind: the author header marks where a block starts, which is the job the

@@ -270,39 +270,52 @@ enum MessageRenderer {
     /// of the gap at each end makes it a band the text sits inside. The remaining third stays
     /// outside as background, so the distance between two blocks is unchanged — the gap is split,
     /// not added to.
-    static var compactWashPadding: CGFloat { compactBlockGap / 3 }
+    static func compactWashPadding(compatibleWith traits: UITraitCollection = .current) -> CGFloat {
+        compactBlockGap(compatibleWith: traits) / 3
+    }
 
     /// The gap after the last message of an author block, so blocks read as blocks.
     ///
     /// Three quarters of a line rather than a whole one: a full blank line between every block is
     /// most of the height a bubble list spends, which is the thing this style exists to avoid.
     /// Scaled off the face so it tracks Dynamic Type with everything else.
-    static var compactBlockGap: CGFloat { ceil(compactFont().lineHeight * 0.75) }
+    static func compactBlockGap(compatibleWith traits: UITraitCollection = .current) -> CGFloat {
+        ceil(compactFont(compatibleWith: traits).lineHeight * 0.75)
+    }
 
     /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
     /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
     /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
     ///
-    /// Cached with the character width beside it, because between them they're asked for five
-    /// times per row on the `cellForRowAt` path — building a font and measuring a glyph each time,
-    /// for every visible cell on every reload. Keyed on the content size category, so a Dynamic
-    /// Type change rebuilds them and nothing else does.
-    static func compactFont() -> UIFont { compactMetrics().font }
+    /// Resolved against the caller's `traits`, never `UITraitCollection.current` — the same rule
+    /// `render` follows above, and for the same reason: `.current` isn't reliably set during
+    /// `cellForRowAt`, which is exactly where every one of these is asked for.
+    ///
+    /// Cached with the character width beside it, because between them they're wanted five times
+    /// per row — building a font and measuring a glyph each time, for every visible cell on every
+    /// reload. Keyed on the content size category *of those traits*, so a Dynamic Type change
+    /// rebuilds them and a stray resolution can't leave a wrong entry behind.
+    static func compactFont(compatibleWith traits: UITraitCollection = .current) -> UIFont {
+        compactMetrics(traits).font
+    }
 
     /// One character of that face — the amount a message body sits in from its author, and the
     /// amount a wrapped narration line sits in from where it started.
-    static var compactIndent: CGFloat { compactMetrics().indent }
+    static func compactIndent(compatibleWith traits: UITraitCollection = .current) -> CGFloat {
+        compactMetrics(traits).indent
+    }
 
     private static var cachedCompactMetrics: (category: UIContentSizeCategory, font: UIFont, indent: CGFloat)?
 
-    private static func compactMetrics() -> (font: UIFont, indent: CGFloat) {
-        let category = UITraitCollection.current.preferredContentSizeCategory
+    private static func compactMetrics(_ traits: UITraitCollection) -> (font: UIFont, indent: CGFloat) {
+        let category = traits.preferredContentSizeCategory
         if let cached = cachedCompactMetrics, cached.category == category {
             return (cached.font, cached.indent)
         }
-        let reference = UIFont.preferredFont(forTextStyle: .subheadline)
+        let reference = UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits)
         let font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(
-            for: .monospacedSystemFont(ofSize: reference.pointSize, weight: .regular)
+            for: .monospacedSystemFont(ofSize: reference.pointSize, weight: .regular),
+            compatibleWith: traits
         )
         let indent = (" " as NSString).size(withAttributes: [.font: font]).width
         cachedCompactMetrics = (category, font, indent)
@@ -321,7 +334,7 @@ enum MessageRenderer {
         settings: Settings = Settings(),
         highlighter: NickHighlighter? = nil
     ) -> NSAttributedString {
-        let base = compactFont()
+        let base = compactFont(compatibleWith: traits)
 
         // A line that names its own actor keeps doing so: it has no header to be named by.
         if message.type == .action {
@@ -332,7 +345,7 @@ enum MessageRenderer {
             ))
             line.append(body(message, base: base, fallback: color, highlighter: highlighter))
             // Two, to clear the `* ` this line opens with.
-            return spaced(line, flushFirstLine: true, indentCharacters: 2)
+            return spaced(line, flushFirstLine: true, indentCharacters: 2, traits: traits)
         }
         if message.type.isActivity {
             // No arrow column. "alice joined" already says which direction it went, and the
@@ -342,29 +355,37 @@ enum MessageRenderer {
                 NSMutableAttributedString(
                     attributedString: renderActivity(message, base: base, settings: settings)
                 ),
-                flushFirstLine: true
+                flushFirstLine: true, traits: traits
             )
         }
         return spaced(
             NSMutableAttributedString(
                 attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
             ),
-            flushFirstLine: false
+            flushFirstLine: false, traits: traits
         )
     }
 
     /// A collapsed run in the compact style — header-less, like the activity lines it stands for.
-    static func renderCompactConsolidation(_ summary: ConsolidationSummary) -> NSAttributedString {
+    static func renderCompactConsolidation(
+        _ summary: ConsolidationSummary, traits: UITraitCollection = .current
+    ) -> NSAttributedString {
         spaced(
-            NSMutableAttributedString(attributedString: renderConsolidation(summary, base: compactFont())),
-            flushFirstLine: true
+            NSMutableAttributedString(
+                attributedString: renderConsolidation(summary, base: compactFont(compatibleWith: traits))
+            ),
+            flushFirstLine: true, traits: traits
         )
     }
 
     /// The typing line in the compact style.
-    static func renderCompactTyping(_ nicks: [String]) -> NSAttributedString? {
-        guard let typists = renderTyping(nicks, base: compactFont()) else { return nil }
-        return spaced(NSMutableAttributedString(attributedString: typists), flushFirstLine: true)
+    static func renderCompactTyping(
+        _ nicks: [String], traits: UITraitCollection = .current
+    ) -> NSAttributedString? {
+        guard let typists = renderTyping(nicks, base: compactFont(compatibleWith: traits)) else { return nil }
+        return spaced(
+            NSMutableAttributedString(attributedString: typists), flushFirstLine: true, traits: traits
+        )
     }
 
     /// `14:42` for a compact header.
@@ -400,9 +421,12 @@ enum MessageRenderer {
     /// Set on the whole range last, which also clears any paragraph style a shared builder applied
     /// for the bubble style (a `/me`'s own hanging indent, for one).
     private static func spaced(
-        _ line: NSMutableAttributedString, flushFirstLine: Bool, indentCharacters: Int = 1
+        _ line: NSMutableAttributedString,
+        flushFirstLine: Bool,
+        indentCharacters: Int = 1,
+        traits: UITraitCollection
     ) -> NSAttributedString {
-        let indent = compactIndent * CGFloat(indentCharacters)
+        let indent = compactIndent(compatibleWith: traits) * CGFloat(indentCharacters)
         let style = NSMutableParagraphStyle()
         style.lineSpacing = compactLineGap
         style.headIndent = indent

@@ -58,7 +58,8 @@ final class MessageListStyleTests: XCTestCase {
     }
 
     /// Round-trips, because these live in UserDefaults as JSON and a decode failure would silently
-    /// reset everyone to bubbles.
+    /// reset every buffer to the default style — and then the next write would make that
+    /// permanent.
     func testPreferencesSurviveEncoding() throws {
         var prefs = MessageListStylePreferences(defaultStyle: .compact)
         prefs.set(.bubbles, for: "1:#lurker")

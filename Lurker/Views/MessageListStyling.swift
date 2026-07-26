@@ -232,7 +232,8 @@ struct CompactListStyle: MessageListStyling {
                 header: blockHeader,
                 startsBlock: blockHeader != nil,
                 endsBlock: endsBlock(at: index, context: context),
-                highlighted: message.matched
+                highlighted: message.matched,
+                traits: context.traits
             )
         case .line(let message):
             // A `/me` and the activity lines name their own actor, so they take no header.
@@ -243,18 +244,24 @@ struct CompactListStyle: MessageListStyling {
                 ),
                 header: nil, startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
-                highlighted: message.matched
+                highlighted: message.matched,
+                traits: context.traits
             )
         case .consolidated(let summary):
             cell.configure(
-                MessageRenderer.renderCompactConsolidation(summary), header: nil,
+                MessageRenderer.renderCompactConsolidation(summary, traits: context.traits),
+                header: nil,
                 startsBlock: startsBlock(at: index, context: context),
-                endsBlock: endsBlock(at: index, context: context)
+                endsBlock: endsBlock(at: index, context: context),
+                traits: context.traits
             )
         case .typing(let nicks):
             cell.configure(
-                MessageRenderer.renderCompactTyping(nicks) ?? NSAttributedString(), header: nil,
-                startsBlock: true, endsBlock: endsBlock(at: index, context: context)
+                MessageRenderer.renderCompactTyping(nicks, traits: context.traits) ?? NSAttributedString(),
+                header: nil,
+                startsBlock: startsBlock(at: index, context: context),
+                endsBlock: endsBlock(at: index, context: context),
+                traits: context.traits
             )
         case .unreadDivider, .dateDivider, .startOfHistory:
             preconditionFailure("markers are handled above")
