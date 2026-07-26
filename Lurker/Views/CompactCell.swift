@@ -22,18 +22,17 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     static let reuseID = "compact"
 
     private let messageText = MessageTextView()
-    /// Carries the row's fill — the zebra stripe, or the warm wash when a rule matched.
+    /// Carries the warm wash when a rule matched.
     ///
-    /// A view rather than `contentView.backgroundColor` so the cell's vertical padding sits
-    /// *outside* it: the gap between lines stays the list's background, and a highlighted line
-    /// reads as a band around its own text instead of a slab that touches its neighbours.
+    /// Pinned flush to the cell's edges, so two washed rows in a row meet with no seam — a 1pt
+    /// line of background between them read as a rendering artifact rather than as separation.
+    /// The breathing room lives *inside* the fill instead (`textPadding`), which is what makes a
+    /// single washed line a band around its text rather than a tight collar.
     private let fill = UIView()
 
-    /// The gap between lines. Small on purpose — the density is the feature — but enough that a
-    /// highlighted or striped row is a band rather than part of a block.
-    private static let verticalGap: CGFloat = 2
-    /// Breathing room inside the fill, so text isn't flush against the top of its own stripe.
-    private static let textPadding: CGFloat = 2
+    /// Vertical air around the text, inside its own fill. Small on purpose — the density is the
+    /// feature — but enough that a washed line isn't clamped to its glyphs.
+    private static let textPadding: CGFloat = 3
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -55,8 +54,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             // highlighted *word* rather than a row.
             fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             fill.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            fill.topAnchor.constraint(equalTo: contentView.topAnchor, constant: Self.verticalGap / 2),
-            fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -Self.verticalGap / 2),
+            fill.topAnchor.constraint(equalTo: contentView.topAnchor),
+            fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
             messageText.topAnchor.constraint(equalTo: fill.topAnchor),
             messageText.bottomAnchor.constraint(equalTo: fill.bottomAnchor),
@@ -68,21 +67,20 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// `highlighted` washes the line the way the other styles wash a matched message; `striped`
-    /// is the zebra band. Both are full-bleed rather than anything bubble-shaped — there are no
-    /// shapes in here — and a match wins, because it's the one you're meant to find.
-    func configure(_ attributed: NSAttributedString, highlighted: Bool = false, striped: Bool = false) {
+    /// `highlighted` washes the line the way the other styles wash a matched message, full-bleed
+    /// rather than anything bubble-shaped since there are no shapes in here. `alt` picks the
+    /// striped shade of that wash, so the zebra survives inside a run of matched lines.
+    ///
+    /// The zebra itself isn't here — it's a foreground effect baked into the text by
+    /// `MessageRenderer.renderCompact`, which is what the web does.
+    func configure(_ attributed: NSAttributedString, highlighted: Bool = false, alt: Bool = false) {
         messageText.textContainerInset = UIEdgeInsets(
             top: Self.textPadding, left: 0, bottom: Self.textPadding, right: 0
         )
         messageText.attributedText = attributed
-        fill.backgroundColor = if highlighted {
-            Palette.highlightBubble
-        } else if striped {
-            Palette.altRow
-        } else {
-            .clear
-        }
+        fill.backgroundColor = highlighted
+            ? (alt ? Palette.highlightRowAlt : Palette.highlightRow)
+            : .clear
         messageText.accessibilityLabel = attributed.string
     }
 

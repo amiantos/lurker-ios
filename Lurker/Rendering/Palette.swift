@@ -43,11 +43,24 @@ enum Palette {
     /// and the trailing side confirms the line is ours. `.systemFill` was too close to tell.
     static let outgoingBubble = UIColor.systemGray4
 
-    /// The zebra band behind alternate rows in the compact style.
+    /// Body text on alternate rows in the compact style — the zebra, done in the foreground.
     ///
-    /// Parity comes from the server (`Message.alt`), so this only has to be the *colour* — and it
-    /// has to be nearly nothing: striping earns its keep by helping the eye track a wrapped line
-    /// back to its own row, and anything stronger turns a dense log into a barcode. A system fill
-    /// rather than a fixed grey, so it lands correctly on both themes.
-    static let altRow = UIColor.quaternarySystemFill
+    /// Which is what the web actually does: `look.color.message.alt_bg` defaults to `var(--bg)`,
+    /// i.e. background striping off, and the effect comes from `alt_fg` (`#c4c4c4` against a
+    /// `#fcfcfa` foreground) — "a slightly dimmed foreground. Nick colors and inline-highlighted
+    /// segments still override this."
+    ///
+    /// 78% matches that ratio. `.secondaryLabel` was the obvious reach and is wrong: at 60% it
+    /// lands nearer the web's *muted* token (`#939293`) than its alt one, which reads as "this
+    /// line matters less" rather than as banding.
+    static let altRowText = UIColor.label.withAlphaComponent(0.78)
+
+    /// The matched-line wash in the compact style, which stripes with the rows.
+    ///
+    /// The web's exact pair: 12% on a normal row, 18% on an alt one, so the zebra survives inside
+    /// a highlight instead of the wash flattening two adjacent matched lines into one block.
+    /// `highlightBubble` keeps its own single value — the bubble style doesn't stripe, which is
+    /// why it sits between these two.
+    static let highlightRow = warn.withAlphaComponent(0.12)
+    static let highlightRowAlt = warn.withAlphaComponent(0.18)
 }

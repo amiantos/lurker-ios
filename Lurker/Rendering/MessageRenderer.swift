@@ -273,6 +273,10 @@ enum MessageRenderer {
         highlighter: NickHighlighter? = nil
     ) -> NSAttributedString {
         let base = compactFont()
+        // Zebra striping, in the foreground rather than behind it (see `Palette.altRowText`).
+        // Applied as the body's *fallback* colour, so it does what the web's `--alt-fg` does: a
+        // nick, an mIRC-coloured run, or a `/me`'s tint all own their colour and win over it.
+        let bodyColor: UIColor = message.alt ? Palette.altRowText : .label
         let line = NSMutableAttributedString()
         line.append(timeColumn(message.date, base: base))
 
@@ -288,7 +292,7 @@ enum MessageRenderer {
             line.append(renderActivity(message, base: base, settings: settings))
         } else {
             line.append(speaker(message, networkName: networkName, base: base))
-            line.append(body(message, base: base, fallback: .label, highlighter: highlighter))
+            line.append(body(message, base: base, fallback: bodyColor, highlighter: highlighter))
         }
         return line
     }

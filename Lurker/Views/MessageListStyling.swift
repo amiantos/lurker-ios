@@ -208,7 +208,7 @@ struct CompactListStyle: MessageListStyling {
                     traits: context.traits, settings: context.settings, highlighter: context.highlighter
                 ),
                 highlighted: message.matched,
-                striped: message.alt
+                alt: message.alt
             )
         case .consolidated(let summary):
             cell.configure(MessageRenderer.renderCompactConsolidation(summary))
