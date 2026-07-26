@@ -331,7 +331,8 @@ enum MessageRenderer {
                 string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
             line.append(body(message, base: base, fallback: color, highlighter: highlighter))
-            return spaced(line, flushFirstLine: true)
+            // Two, to clear the `* ` this line opens with.
+            return spaced(line, flushFirstLine: true, indentCharacters: 2)
         }
         if message.type.isActivity {
             // No arrow column. "alice joined" already says which direction it went, and the
@@ -390,15 +391,22 @@ enum MessageRenderer {
     /// want different first lines. A message body is indented throughout, sitting under its author.
     /// Narration that names its own actor — a `/me`, a join, a collapsed run — starts flush with
     /// where a nick would be, since it *is* the nick line, and only its wrapped continuations tuck
-    /// in. Both wrap to the same column either way.
+    /// in.
+    ///
+    /// `indentCharacters` is how far. One for most things; two for a `/me`, whose `* ` prefix is
+    /// two characters wide, so a one-character hang put the wrap under the space rather than under
+    /// the words.
     ///
     /// Set on the whole range last, which also clears any paragraph style a shared builder applied
     /// for the bubble style (a `/me`'s own hanging indent, for one).
-    private static func spaced(_ line: NSMutableAttributedString, flushFirstLine: Bool) -> NSAttributedString {
+    private static func spaced(
+        _ line: NSMutableAttributedString, flushFirstLine: Bool, indentCharacters: Int = 1
+    ) -> NSAttributedString {
+        let indent = compactIndent * CGFloat(indentCharacters)
         let style = NSMutableParagraphStyle()
         style.lineSpacing = compactLineGap
-        style.headIndent = compactIndent
-        style.firstLineHeadIndent = flushFirstLine ? 0 : compactIndent
+        style.headIndent = indent
+        style.firstLineHeadIndent = flushFirstLine ? 0 : indent
         line.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: line.length))
         return line
     }
