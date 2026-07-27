@@ -727,6 +727,25 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages["1::bob"]?.map(\.text), ["hey"])
     }
 
+    func testRosterSettledOnlyOnceABurstHasFinishedAndNoneIsInFlight() {
+        // What a by-key screen (launch restore, notification tap) needs before it can read
+        // absence as "this buffer isn't open" instead of "its frame hasn't arrived".
+        let store = LurkerStore()
+        XCTAssertFalse(store.state.rosterSettled, "nothing has arrived yet")
+
+        store.apply(.snapshot([]))
+        XCTAssertFalse(store.state.rosterSettled, "burst in flight")
+
+        store.apply(.backlogComplete)
+        XCTAssertTrue(store.state.rosterSettled, "the server listed everything it has")
+
+        // A later burst reopens the window: `backlogComplete` latches for the session, so
+        // it alone would keep claiming proof while `buffers` is mid-rebuild.
+        store.apply(.snapshot([]))
+        XCTAssertTrue(store.state.backlogComplete, "still latched...")
+        XCTAssertFalse(store.state.rosterSettled, "...but the roster is being rebuilt")
+    }
+
     func testReachabilityIsIndependentOfTheSocket() {
         // Two different truths: the socket only ever reports connecting/connected/
         // reconnecting, so it can never say "there is no internet".

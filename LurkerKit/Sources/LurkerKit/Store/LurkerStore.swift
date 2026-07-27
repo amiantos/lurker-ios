@@ -76,6 +76,16 @@ public struct ChatState: Sendable {
     /// quiet without sending anything — so it's left to be cleaned up by the events above
     /// rather than by a sweep that would only exist to tidy a map nobody reads directly.
     public var typing: [String: [String: TypingEntry]] = [:]
+    /// Whether the roster is settled: a burst has completed and none is in flight, so
+    /// `buffers` is the server's whole answer *right now* and a missing key is proof the
+    /// buffer isn't open.
+    ///
+    /// `backlogComplete` alone isn't that proof — it latches for the session, so it stays
+    /// true while a *later* burst (a reconnect, an in-band resync) is still arriving and
+    /// `buffers` is mid-rebuild. Reading absence during that window would condemn buffers
+    /// whose frames simply hadn't landed yet. Both conditions together are what §4.3's
+    /// "absence is proof" actually licenses.
+    public var rosterSettled: Bool { backlogComplete && !burstActive }
     /// Buffer keys the server has named in the snapshot burst currently in flight, so
     /// `backlog-complete` can prune the ones it *didn't* — see `pruneToBurst`.
     var burstSeen: Set<String> = []
@@ -115,7 +125,7 @@ public struct ChatState: Sendable {
     /// Drop every buffer the just-finished snapshot burst didn't mention.
     ///
     /// The burst enumerates exactly the user's OPEN buffers — the server skips closed rows
-    /// when building it (`wsHub.ts:646`) — so after `backlog-complete`, a buffer we hold that
+    /// when building it (`wsHub.ts:651`) — so after `backlog-complete`, a buffer we hold that
     /// got no frame is one the server no longer considers open. That is the *only* way we
     /// learn about a close that happened while this device wasn't listening, and on a phone
     /// that's the common case: `buffer-closed` is fanned out to connected sockets only, and
@@ -500,6 +510,14 @@ final class LurkerStore {
                 buffer.topic = channel.topic
                 next.buffers[key] = buffer
                 next.members[key] = channel.members
+                // Third path that can materialize a row, so it owes `burstSeen` an entry
+                // like the other two — otherwise the burst's closing prune could drop a
+                // buffer the snapshot itself just created. Unreachable against today's
+                // server (this list and the burst's enumeration are built from the same
+                // live `conn.channels` map, so anything here also gets its own frame), but
+                // that's a cross-repo invariant this client can't enforce and shouldn't
+                // silently depend on.
+                next.burstSeen.insert(key)
             }
             // The snapshot is authoritative for this network's presence — replace wholesale,
             // so a reconnect drops any stale rows for peers no longer watched.

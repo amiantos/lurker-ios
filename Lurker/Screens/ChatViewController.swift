@@ -504,23 +504,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return networks[networkId]?.name ?? "Message"
     }
 
-    /// Leave this screen when the buffer it is showing stops existing — i.e. the user closed
-    /// it from another device and a `buffer-closed` frame dropped the row (`ChatState`
-    /// removes buffer rows in exactly two places: this, and `reset()` on sign-out — both of
-    /// which should take the reader off a buffer screen).
+    /// Leave this screen when the buffer it is showing isn't open any more.
     ///
-    /// Gated on `sawBufferRow` rather than on absence alone, because absence is the normal
-    /// state early on: `state.buffer(for:)` synthesizes an empty row so a screen reached by
-    /// *key* — a launch restore, a notification tap — can exist before its `backlog` frame
-    /// lands. Popping on that would make a cold launch bounce straight back to the list.
-    /// Once we've actually seen the row, though, its disappearance is unambiguous.
+    /// `ChatState` drops buffer rows in four places, and all of them should take the reader
+    /// off a buffer screen: `buffer-closed` (another device closed it), `removeBuffer` (this
+    /// device did), `pruneToBurst` (a reconnect revealed a close we slept through), and
+    /// `reset()` on sign-out — which is handled by SceneDelegate instead, see below.
+    ///
+    /// Absence alone is not the trigger, because absence is also the normal state early on:
+    /// `state.buffer(for:)` synthesizes an empty row so a screen reached by *key* can exist
+    /// before its `backlog` frame lands, and popping on that would bounce every cold launch
+    /// back to the list. It takes one of the two proofs in the guard below.
     ///
     /// Returns true when it popped, so `apply` can stop: the rest of it reads
     /// `state.messages[key]`, which is empty by now, and would repaint the screen blank on
     /// the way out.
     private func handleBufferDisappeared(_ state: ChatState) -> Bool {
         guard state.buffers[buffer.key.id] != nil else {
-            guard sawBufferRow else { return false }
+            // Two ways to know the buffer isn't coming:
+            //
+            //  - We held a row and it was taken away (a close, live or reconciled).
+            //  - We never held one, but the roster is settled — so the server has now
+            //    listed everything it has and this key wasn't in it (§4.3, lurker #635).
+            //
+            // The second is the whole point of `backlog-complete`, and without it this
+            // screen still spins forever on exactly the case commit 2 is about: arriving
+            // BY KEY (launch restore, notification tap) at a buffer that was closed while
+            // the phone was away. `sawBufferRow` never becomes true there, because the row
+            // never existed on this run.
+            guard sawBufferRow || state.rosterSettled else { return false }
             // Sign-out empties `buffers` too, via `store.reset()`. Leave that case entirely
             // to SceneDelegate, which swaps the whole stack for the login screen — popping
             // here as well would run two stack transitions at once. `logout()` sets
