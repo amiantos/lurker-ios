@@ -221,7 +221,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // messages beneath it (see `ConnectionBanner`). It shares that slot with the unread
         // banner and wins it, so its comings and goings re-decide who's on screen.
         connectionBanner.translatesAutoresizingMaskIntoConstraints = false
-        connectionBanner.onVisibilityChange = { [weak self] in self?.updateFloatingPills() }
+        // Hopped to the next turn, not run inline: the banner's `update` is called from the
+        // middle of `apply`, where `rows`/`dividerRow` have been rebuilt but the table hasn't
+        // reloaded yet — deciding the unread banner against that mismatch reads visibility for
+        // one row set with the indices of another.
+        connectionBanner.onVisibilityChange = { [weak self] in
+            DispatchQueue.main.async { self?.updateFloatingPills() }
+        }
         view.addSubview(connectionBanner)
 
         composer.placeholder = composerPlaceholder
@@ -989,11 +995,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let showLatest = (isDetached || !isNearBottom) && !rows.isEmpty
         jumpButton.setVisible(showLatest, animated: true)
         jumpButton.setNewCount(newWhileDetached)
-        // The unread banner (#45): a first-unread row exists and the reader hasn't reached it.
-        // A non-nil `firstUnreadRow` already implies rows exist and a divider is built. It yields
-        // the slot whenever the connection banner wants it — the wire being down is the more
-        // urgent thing to say, and the unreads will still be there afterwards.
-        let showUnread = firstUnreadRow != nil && !isDividerVisible && !connectionBanner.isVisible
+        // Reaching the divider spends the banner for good — checked before the show below, so a
+        // divider that's on screen the moment the buffer opens never raises it at all.
+        if isDividerVisible { dividerSeen = true }
+        // The unread banner (#45): a first-unread row exists, it's above the reader, and they
+        // haven't been to it yet. A non-nil `firstUnreadRow` already implies rows exist and a
+        // divider is built. It yields the slot whenever the connection banner wants it — the wire
+        // being down is the more urgent thing to say, and the unreads will still be there
+        // afterwards — and stays down for the length of a jump: `jumpToFirstUnread` hides it to
+        // acknowledge the tap, and the scrolls that converge on the anchor run straight back
+        // through here, which would otherwise flap it back on until the divider landed.
+        let showUnread = firstUnreadRow != nil && !dividerSeen && isDividerAboveViewport
+            && pendingJumpId == nil && !connectionBanner.isVisible
         unreadBanner.setVisible(showUnread, animated: true)
     }
 
@@ -1112,11 +1125,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// Whether the unread divider is currently on screen — the reader has reached (or is at)
-    /// their first unread, so the "jump to unread" pill has done its job and should retire.
+    /// their first unread, so the unread banner has done its job and should retire.
     private var isDividerVisible: Bool {
         guard let row = dividerRow else { return false }
         return tableView.indexPathsForVisibleRows?.contains(IndexPath(row: row, section: 0)) ?? false
     }
+
+    /// Whether the divider sits *above* the viewport — the unreads are up there, which is the
+    /// only arrangement the banner's up-chevron describes truthfully.
+    ///
+    /// "Off screen" isn't enough on its own. The divider is latched at the read boundary for this
+    /// screen's whole life, so scrolling up past it into older history leaves it off screen
+    /// *below* the viewport — and a banner promising unread above would then scroll you down.
+    /// `.min()` rather than `.first` because the visible index paths aren't documented as sorted.
+    private var isDividerAboveViewport: Bool {
+        guard let row = dividerRow,
+              let topmost = tableView.indexPathsForVisibleRows?.map(\.row).min() else { return false }
+        return row < topmost
+    }
+
+    /// Latched once the divider has been on screen: the reader has seen where they left off, so
+    /// the banner is spent for this screen's lifetime.
+    ///
+    /// Needed because the divider itself never clears — read forward past it and it's simply
+    /// above you again, which without this would put the banner back up (and keep it up for the
+    /// rest of the session) after its unreads had all been read.
+    private var dividerSeen = false
 
     /// Jump to the first unread message, always via the #42 jump — never a raw scroll. On a
     /// channel with a large unread count the first unread is thousands of churny, self-sizing
@@ -1144,8 +1178,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         needsInitialScroll = true
         pendingJumpId = boundary
         jumpFlashesFirstUnread = true
-        // Retire it now rather than waiting for the divider to land: the `around` fetch can take
-        // a moment, and the banner has to acknowledge the tap.
+        // Down now rather than when the divider lands: the `around` fetch can take a moment and
+        // the tap has to be acknowledged. `pendingJumpId` (set just above) is what *keeps* it
+        // down until the jump releases — see `updateFloatingPills`.
         unreadBanner.setVisible(false, animated: true)
         requestAroundIfNeeded(viewModel.state)
         landInitialIfNeeded()
