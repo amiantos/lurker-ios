@@ -938,8 +938,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// How far the newest message sits below the viewport bottom (0 when parked at the tail).
+    ///
+    /// The bottom inset is part of the answer, not noise to be left out. `updateBottomInset`
+    /// reserves the composer — and, with the keyboard up, the keyboard as well — so the offset
+    /// at the tail is `inset` past `contentSize - bounds`, and omitting it made this report
+    /// `-inset` where the doc line above promises 0. Harmless at rest, where the reservation is
+    /// one composer, but with a keyboard on screen it is 400pt of slack: "near the bottom"
+    /// quietly meant "within 80 + inset", so a reader a third of a screen up in history still
+    /// counted as parked at the tail. Same maximum `clampToContent` computes.
     private var distanceFromBottom: CGFloat {
-        tableView.contentSize.height - tableView.contentOffset.y - tableView.bounds.height
+        tableView.contentSize.height + tableView.adjustedContentInset.bottom
+            - tableView.contentOffset.y - tableView.bounds.height
     }
 
     /// Within ~80pt of the bottom — treated as "following the conversation".
@@ -1197,6 +1206,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // trailing it would be a second, redundant tag. `composer.clear()` below re-enters
         // `draftChanged` with an empty field, which is a no-op once this has run.
         endTyping()
+        if isDetached {
+            // A detached slice holds live traffic out of the log, so the line just sent isn't
+            // loaded and no amount of scrolling will reach it — and `apply` excludes detached
+            // buffers from `newWhileDetached`, so the pill wouldn't count it either. Left alone
+            // this reads as a failed send. Re-attach instead, which is what the browser does
+            // (`sendScroll.ts`) and what the setting's own shared description promises: sending
+            // from a jumped-to point returns you to the live conversation either way. The
+            // setting has no say here — it is about keeping a place in a conversation, and this
+            // is a place the conversation isn't.
+            jumpToLatest()
+        } else if !keepsPositionWhileReading {
+            // Carry the reader down to their own line, the way the browser's composer always
+            // has (#628) — unless they asked to keep their place. The echo lands a moment
+            // later, over the socket; scrolling to the current tail now is what makes `apply`'s
+            // `wasNearBottom` true when it does, so the new bubble is followed rather than
+            // counted on the pill.
+            scrollToBottom()
+        }
         let outcome = viewModel.send(buffer.key, text: text)
         composer.clear()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
@@ -1625,6 +1652,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         keyboardOverlap = max(0, view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom)
         composerBottom.constant = keyboardOverlap > 0 ? -Self.keyboardGap : 0
+        // Asked before the layout pass below, which changes the table's bottom inset and so
+        // changes the answer: measured against the reservation in force right now, this is
+        // "is the reader at the tail as things currently stand", which is what decides whether
+        // the keyboard should carry them. Note this notification also fires for frame changes
+        // with the keyboard already up (emoji keyboard, predictive bar) — same question, and
+        // the same answer is wanted there.
+        let keepsPosition = keepsPositionWhileReading
         // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
         // runs `viewDidLayoutSubviews` → `updateBottomInset` against that fresh frame. So
         // the inset isn't recomputed here — doing it before layout would read the old frame.
@@ -1633,12 +1667,30 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the tail of a dismissal with the end frame off-screen — and scrolling there
         // yanks a reader who dragged the keyboard away mid-history back to the bottom.
         guard keyboardOverlap > 0 else { return clampToContent() }
+        // `chat.keep_position_on_send` (#628) is written as a rule about sending, but on a
+        // phone this is where it's felt: raising the keyboard to reply is what takes a reader
+        // out of the history they were reading, well before they've typed anything. A reader
+        // already following the live tail is still carried down — the keyboard would otherwise
+        // cover the newest messages, which is the whole reason this scroll exists.
+        guard !keepsPosition else { return }
         scrollToBottom()
         // The keyboard's arrival just parked the conversation at the bottom, so the jump
         // pill goes with it — stated here rather than left to the scroll's delegate tick,
         // which doesn't fire when the offset was already close enough to need no change.
         newWhileDetached = 0
         updateFloatingPills()
+    }
+
+    /// Whether this screen should leave the reader where they are rather than carrying them to
+    /// the newest message — `chat.keep_position_on_send` turned on, and the reader actually up
+    /// in history rather than parked at the tail (where there's nothing to preserve).
+    ///
+    /// Inverted at the call sites, which read as "carry them down unless…". The setting is
+    /// server-stored and shared with the browser, so the phone and the desktop can't disagree
+    /// about the rule; what they differ on is where it bites, which is why this is a property
+    /// here and a send-time test on the web.
+    private var keepsPositionWhileReading: Bool {
+        settings.bool("chat.keep_position_on_send", default: false) && !isNearBottom
     }
 
     @objc private func keyboardWillHide() {
