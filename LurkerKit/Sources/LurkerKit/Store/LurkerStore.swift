@@ -279,6 +279,18 @@ final class LurkerStore {
             var next = state
             next.contacts.removeAll { $0.id == id }
             return next
+        case .bufferClosed(let networkId, let target):
+            var next = state
+            // Every map keyed by BufferKey.id, so a reopen can't inherit a stale nicklist or
+            // a "still typing…" line from before the close. `peerPresence` is deliberately
+            // NOT touched: it's keyed by network+nick, not by buffer, and the same nick may
+            // still be visible in channels we're in.
+            let key = BufferKey(networkId: networkId, target: target).id
+            next.buffers.removeValue(forKey: key)
+            next.messages.removeValue(forKey: key)
+            next.members.removeValue(forKey: key)
+            next.typing.removeValue(forKey: key)
+            return next
         case .peerPresence(let networkId, let nick, let peerState):
             var next = state
             var map = next.peerPresence[networkId] ?? [:]

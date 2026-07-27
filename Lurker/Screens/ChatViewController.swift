@@ -127,6 +127,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
+    /// Whether the store has ever held a real row for this buffer. Latches true and never
+    /// clears — see `handleBufferDisappeared`, which uses it to tell "the row hasn't arrived
+    /// yet" from "the row was taken away".
+    private var sawBufferRow = false
     /// Whether we've asked for this buffer's history on the *current* connection. Cleared
     /// when the socket drops, because a reconnect resyncs buffers as shells again.
     private var openRequested = false
@@ -500,7 +504,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return networks[networkId]?.name ?? "Message"
     }
 
+    /// Leave this screen when the buffer it is showing stops existing — i.e. the user closed
+    /// it from another device and a `buffer-closed` frame dropped the row (`ChatState`
+    /// removes buffer rows in exactly two places: this, and `reset()` on sign-out — both of
+    /// which should take the reader off a buffer screen).
+    ///
+    /// Gated on `sawBufferRow` rather than on absence alone, because absence is the normal
+    /// state early on: `state.buffer(for:)` synthesizes an empty row so a screen reached by
+    /// *key* — a launch restore, a notification tap — can exist before its `backlog` frame
+    /// lands. Popping on that would make a cold launch bounce straight back to the list.
+    /// Once we've actually seen the row, though, its disappearance is unambiguous.
+    ///
+    /// Returns true when it popped, so `apply` can stop: the rest of it reads
+    /// `state.messages[key]`, which is empty by now, and would repaint the screen blank on
+    /// the way out.
+    private func handleBufferDisappeared(_ state: ChatState) -> Bool {
+        guard state.buffers[buffer.key.id] != nil else {
+            guard sawBufferRow else { return false }
+            // Already on the way out (a pop in flight, or the list is showing) — don't
+            // stack a second one.
+            guard navigationController?.topViewController === self else { return true }
+            navigationController?.popToRootViewController(animated: true)
+            return true
+        }
+        sawBufferRow = true
+        return false
+    }
+
     private func apply(_ state: ChatState) {
+        if handleBufferDisappeared(state) { return }
         networks = state.networks
         refreshHighlighter(state)
         hydrateIfNeeded(state)

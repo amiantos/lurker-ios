@@ -626,6 +626,50 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.maxEventId, 0)
     }
 
+    func testBufferClosedDropsTheBufferAndEverythingKeyedToIt() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "alice")]))
+        XCTAssertNotNil(store.state.buffers[chanKey])
+
+        store.apply(.bufferClosed(networkId: 1, target: "#lurker"))
+
+        // Closed is absent, not flagged: the server keeps the history, so a reopen restores
+        // it in full and there's nothing local worth holding on to.
+        XCTAssertNil(store.state.buffers[chanKey], "the row is gone")
+        XCTAssertNil(store.state.messages[chanKey], "and so are its messages")
+        XCTAssertNil(store.state.members[chanKey], "a reopen must not inherit a stale nicklist")
+    }
+
+    func testBufferClosedFoldsCaseLikeEveryOtherTargetLookup() {
+        // The server echoes whatever casing it holds, which needn't match what we stored.
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+
+        store.apply(.bufferClosed(networkId: 1, target: "#LURKER"))
+
+        XCTAssertNil(store.state.buffers[chanKey], "differently-cased close still lands")
+    }
+
+    func testBufferClosedLeavesOtherBuffersAlone() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        store.apply(
+            .backlog(
+                buffer: Buffer(networkId: 1, target: "#other", kind: .channel, hydrated: true),
+                messages: [msg(2, "elsewhere")],
+                hydrated: true,
+                append: false
+            )
+        )
+
+        store.apply(.bufferClosed(networkId: 1, target: "#lurker"))
+
+        XCTAssertNil(store.state.buffers[chanKey])
+        XCTAssertNotNil(store.state.buffers["1::#other"], "an unrelated buffer survives")
+        XCTAssertEqual(store.state.messages["1::#other"]?.map(\.text), ["elsewhere"])
+    }
+
     func testReachabilityIsIndependentOfTheSocket() {
         // Two different truths: the socket only ever reports connecting/connected/
         // reconnecting, so it can never say "there is no internet".
