@@ -76,6 +76,14 @@ public struct ChatState: Sendable {
     /// quiet without sending anything — so it's left to be cleaned up by the events above
     /// rather than by a sweep that would only exist to tidy a map nobody reads directly.
     public var typing: [String: [String: TypingEntry]] = [:]
+    /// Buffer keys the server has named in the snapshot burst currently in flight, so
+    /// `backlog-complete` can prune the ones it *didn't* — see `pruneToBurst`.
+    var burstSeen: Set<String> = []
+    /// Whether a snapshot burst is in flight (a `snapshot` frame arrived, its terminal
+    /// `backlog-complete` hasn't). Guards the prune: a stray `backlog-complete` with no
+    /// burst behind it must not be read as "the server listed nothing", which would wipe
+    /// the roster.
+    var burstActive = false
     /// The user's server-side settings (#65). Seeded by `/api/settings/bootstrap` and patched
     /// by live `settings` frames, so a change made on the web takes effect here without a
     /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
@@ -83,6 +91,51 @@ public struct ChatState: Sendable {
     public var error: String?
 
     public init() {}
+
+    /// Forget a buffer completely — the row and everything keyed to it.
+    ///
+    /// "Closed is absent" (lurker `CLIENT_PROTOCOL.md` §9.1): the server keeps the history,
+    /// so a reopen restores it in full and there is nothing here worth preserving. Clearing
+    /// `members`/`typing` alongside the messages is what stops a reopened buffer inheriting a
+    /// nicklist or a "still typing…" line from before the close.
+    ///
+    /// `peerPresence` is deliberately untouched — it's keyed by network+nick rather than by
+    /// buffer, and that nick may still be visible in channels we're in.
+    ///
+    /// The one shared definition of "drop it", used by all three paths that need it: this
+    /// device closing a buffer (`removeBuffer`), the server saying another device did
+    /// (`buffer-closed`), and reconciling a burst that no longer lists it (`pruneToBurst`).
+    mutating func dropBuffer(_ key: String) {
+        buffers[key] = nil
+        messages[key] = nil
+        members[key] = nil
+        typing[key] = nil
+    }
+
+    /// Drop every buffer the just-finished snapshot burst didn't mention.
+    ///
+    /// The burst enumerates exactly the user's OPEN buffers — the server skips closed rows
+    /// when building it (`wsHub.ts:646`) — so after `backlog-complete`, a buffer we hold that
+    /// got no frame is one the server no longer considers open. That is the *only* way we
+    /// learn about a close that happened while this device wasn't listening, and on a phone
+    /// that's the common case: `buffer-closed` is fanned out to connected sockets only, and
+    /// reconnect is a `?since=` gap-fill that replays messages, not buffer lifecycle. Without
+    /// this, closing a buffer on the web while the phone is backgrounded left the row on the
+    /// phone until the app was relaunched.
+    ///
+    /// Safe because it drops only what's in memory. §4.3's warning — "don't purge local
+    /// history, drafts, or a saved read position on the strength of a missing frame" — is
+    /// about *persisted* state, of which this client has none per buffer: messages are a
+    /// cache refetched on open, and read state is server-owned. Rendering the buffer as
+    /// absent is exactly what a missing frame licenses.
+    mutating func pruneToBurst() {
+        guard burstActive else { return }
+        for key in buffers.keys where !burstSeen.contains(key) {
+            dropBuffer(key)
+        }
+        burstActive = false
+        burstSeen = []
+    }
 
     /// What the app-icon badge should read: unread highlights across every buffer (#490).
     ///
@@ -195,10 +248,7 @@ final class LurkerStore {
     /// close-buffer (the server then hides it, so it won't re-appear on the next snapshot).
     func removeBuffer(_ key: BufferKey) {
         var next = subject.value
-        next.buffers[key.id] = nil
-        next.messages[key.id] = nil
-        next.members[key.id] = nil
-        next.typing[key.id] = nil
+        next.dropBuffer(key.id)
         subject.value = next
     }
 
@@ -237,13 +287,23 @@ final class LurkerStore {
         case .networks(let networks):
             return applyNetworks(state, networks)
         case .snapshot(let networks):
-            return applySnapshot(state, networks)
+            // Frame 1 of every burst (CLIENT_PROTOCOL.md §4.3), so this is where the
+            // roster reconciliation window opens. Start collecting the keys the server
+            // names; `backlog-complete` closes the window and prunes the rest.
+            var next = applySnapshot(state, networks)
+            next.burstSeen = []
+            next.burstActive = true
+            return next
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
             // when that's nothing. Latched: a later resync re-sends it, and re-asserting true
             // costs nothing, but going back to false would blank a populated list.
             var next = state
             next.backlogComplete = true
+            // ...and "the whole roster" cuts both ways: anything we still hold that the
+            // burst didn't name is no longer open. This is the only signal for a close that
+            // happened while this device wasn't connected.
+            next.pruneToBurst()
             return next
         case .backlog(let buffer, let messages, let hydrated, let append):
             return applyBacklog(state, buffer, messages, hydrated: hydrated, append: append)
@@ -280,16 +340,10 @@ final class LurkerStore {
             next.contacts.removeAll { $0.id == id }
             return next
         case .bufferClosed(let networkId, let target):
+            // The live half: a close on another device while this one is connected. The
+            // offline half — a close we were never told about — is `pruneToBurst`.
             var next = state
-            // Every map keyed by BufferKey.id, so a reopen can't inherit a stale nicklist or
-            // a "still typing…" line from before the close. `peerPresence` is deliberately
-            // NOT touched: it's keyed by network+nick, not by buffer, and the same nick may
-            // still be visible in channels we're in.
-            let key = BufferKey(networkId: networkId, target: target).id
-            next.buffers.removeValue(forKey: key)
-            next.messages.removeValue(forKey: key)
-            next.members.removeValue(forKey: key)
-            next.typing.removeValue(forKey: key)
+            next.dropBuffer(BufferKey(networkId: networkId, target: target).id)
             return next
         case .peerPresence(let networkId, let nick, let peerState):
             var next = state
@@ -475,6 +529,10 @@ final class LurkerStore {
     ) -> ChatState {
         var next = state
         let key = frameBuffer.key.id
+        // The server named this buffer, so it survives the burst's closing prune. Recorded
+        // unconditionally: outside a burst `burstSeen` is dead state that the next `snapshot`
+        // clears, so there's nothing to guard against.
+        next.burstSeen.insert(key)
         // Never un-hydrate: a later shell for an already-read buffer keeps its history.
         let alreadyHydrated = next.buffers[key]?.hydrated == true
         var buffer = frameBuffer
@@ -525,6 +583,10 @@ final class LurkerStore {
                 networkId: networkId, target: target,
                 kind: BufferKind.of(networkId: networkId, target: target)
             )
+            // A DM that materializes mid-burst was created after the server enumerated the
+            // roster, so the burst legitimately won't name it — mark it seen or the closing
+            // prune would drop a buffer that just arrived.
+            next.burstSeen.insert(key)
         }
         // A topic change is both a line and the topic itself. This has to sit *below* the
         // id de-dupe above, not with the parse: a `topic` event replayed by a backlog/live

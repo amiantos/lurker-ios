@@ -521,9 +521,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func handleBufferDisappeared(_ state: ChatState) -> Bool {
         guard state.buffers[buffer.key.id] != nil else {
             guard sawBufferRow else { return false }
+            // Sign-out empties `buffers` too, via `store.reset()`. Leave that case entirely
+            // to SceneDelegate, which swaps the whole stack for the login screen — popping
+            // here as well would run two stack transitions at once. `logout()` sets
+            // `sessionSubject.value` synchronously *before* the state sink is delivered on
+            // main, so this reads the new session, not the stale one.
+            guard viewModel.session == .loggedIn else { return true }
             // Already on the way out (a pop in flight, or the list is showing) — don't
             // stack a second one.
             guard navigationController?.topViewController === self else { return true }
+            // Sheets are presented by the navigation controller, so popping this screen
+            // doesn't take them with it — a nick list or buffer-info sheet would be left
+            // stranded over the buffer list, still bound to a buffer that no longer exists.
+            // (This is what `showMemberList`'s "nothing replaces this screen" reasoning
+            // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
+            navigationController?.dismiss(animated: false)
             navigationController?.popToRootViewController(animated: true)
             return true
         }

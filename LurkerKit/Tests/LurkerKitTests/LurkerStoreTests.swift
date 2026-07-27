@@ -670,6 +670,63 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages["1::#other"]?.map(\.text), ["elsewhere"])
     }
 
+    func testBacklogCompletePrunesABufferTheBurstNoLongerLists() {
+        // The offline half of buffer-closed, and the common one on a phone: the close
+        // happened while this device wasn't connected, so no `buffer-closed` ever arrived.
+        // The burst enumerates only OPEN buffers, so the omission is the signal.
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        XCTAssertNotNil(store.state.buffers[chanKey])
+
+        // A fresh burst that doesn't mention #lurker.
+        store.apply(.snapshot([]))
+        store.apply(
+            .backlog(
+                buffer: Buffer(networkId: 1, target: "#other", kind: .channel, hydrated: true),
+                messages: [], hydrated: true, append: false
+            )
+        )
+        store.apply(.backlogComplete)
+
+        XCTAssertNil(store.state.buffers[chanKey], "unlisted buffer is no longer open")
+        XCTAssertNil(store.state.messages[chanKey])
+        XCTAssertNotNil(store.state.buffers["1::#other"], "the listed one survives")
+    }
+
+    func testBacklogCompleteKeepsEverythingTheBurstDidList() {
+        let store = LurkerStore()
+        store.apply(.snapshot([]))
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        store.apply(.backlogComplete)
+
+        XCTAssertNotNil(store.state.buffers[chanKey])
+        XCTAssertEqual(store.state.messages[chanKey]?.map(\.text), ["hi"])
+    }
+
+    func testBacklogCompleteWithNoBurstBehindItPrunesNothing() {
+        // A stray terminal frame must not read as "the server listed nothing" and wipe the
+        // roster — only a burst that actually started (a `snapshot` frame) opens the window.
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        store.apply(.backlogComplete)
+
+        XCTAssertNotNil(store.state.buffers[chanKey], "no snapshot, no prune")
+    }
+
+    func testADmMaterializedMidBurstSurvivesTheClosingPrune() {
+        // The row was created after the server enumerated the roster, so the burst can't
+        // name it. Pruning it would drop a DM the moment it arrived.
+        let store = LurkerStore()
+        store.apply(.snapshot([]))
+        store.apply(
+            .live(networkId: 1, target: "bob", message: msg(7, "hey"))
+        )
+        store.apply(.backlogComplete)
+
+        XCTAssertNotNil(store.state.buffers["1::bob"], "a DM that landed mid-burst stays")
+        XCTAssertEqual(store.state.messages["1::bob"]?.map(\.text), ["hey"])
+    }
+
     func testReachabilityIsIndependentOfTheSocket() {
         // Two different truths: the socket only ever reports connecting/connected/
         // reconnecting, so it can never say "there is no internet".
