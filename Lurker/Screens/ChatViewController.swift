@@ -42,21 +42,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// moment they're back at the bottom, however they got there.
     private let jumpButton = JumpToLatestButton()
     private var newWhileDetached = 0
-    /// The floating "jump to your first unread" pill at the top (#45), shown when this buffer
+    /// The floating "unread messages ↑" banner under the nav bar (#45), shown when this buffer
     /// opened with unreads sitting above the reader. Tapping it lands on the unread divider —
     /// scrolling to it if it's loaded, else jumping an `around` slice centered on the read
     /// boundary — and reading forward from there after-pages down to live.
-    private let jumpToUnreadButton = JumpToUnreadButton()
+    private let unreadBanner = UnreadBanner()
     /// Whether the buffer was detached (`hasMoreNewer`) as of the *previous* `apply`. Kept so
     /// after-paging appends (and the re-attach that flips detached→attached in one apply) never
     /// inflate the jump-to-latest badge — that count is live traffic only, and a detached buffer
     /// holds live out, so any growth there is history the reader deliberately pulled (#45).
     private var wasDetached = false
-    /// Set when you send a line, cleared the moment you scroll off the bottom. It suppresses
-    /// the jump-to-unread pill after a send: your own bubble lands in the pill's bottom-trailing
-    /// slot, so the pill would sit on top of the message you just wrote. Once you leave the
-    /// bottom this clears, so the pill returns when you next come back down (#45).
-    private var unreadDismissedBySend = false
     /// The completion pill strip and the context currently driving it (nil = nothing under
     /// the caret). The composer reports what *kind* of completion is live; this screen owns
     /// the candidates, because they come from state the bar never sees — the command table,
@@ -223,8 +218,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         view.addSubview(tableView)
 
         // Floats over the conversation just under the nav bar; touches pass through to the
-        // messages beneath it (see `ConnectionBanner`).
+        // messages beneath it (see `ConnectionBanner`). It shares that slot with the unread
+        // banner and wins it, so its comings and goings re-decide who's on screen.
         connectionBanner.translatesAutoresizingMaskIntoConstraints = false
+        // Hopped to the next turn, not run inline: the banner's `update` is called from the
+        // middle of `apply`, where `rows`/`dividerRow` have been rebuilt but the table hasn't
+        // reloaded yet — deciding the unread banner against that mismatch reads visibility for
+        // one row set with the indices of another.
+        connectionBanner.onVisibilityChange = { [weak self] in
+            DispatchQueue.main.async { self?.updateFloatingPills() }
+        }
         view.addSubview(connectionBanner)
 
         composer.placeholder = composerPlaceholder
@@ -268,9 +271,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(jumpButton)
 
-        jumpToUnreadButton.onTap = { [weak self] in self?.jumpToFirstUnread() }
-        jumpToUnreadButton.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(jumpToUnreadButton)
+        unreadBanner.onTap = { [weak self] in self?.jumpToFirstUnread() }
+        unreadBanner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(unreadBanner)
 
         composer.onCompletion = { [weak self] completion in
             self?.activeCompletion = completion
@@ -323,11 +326,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
-            // The exact slot the jump-to-latest pill uses — the two are mutually exclusive (up
-            // when you're at the latest with unread above, down when you're up in history), so
-            // they share one footprint and the arrow direction is the whole message.
-            jumpToUnreadButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
-            jumpToUnreadButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
+            // Up at the top, where it's pointing — the connection banner's slot, which the two
+            // take turns in (see `updateFloatingPills`). Down at the bottom, up at the top: each
+            // control sits on the edge it takes you to, and neither covers the newest message.
+            unreadBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            unreadBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            unreadBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
+            unreadBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
 
             // The suggestion pills: centered over the field for tap reach (the jump pill
             // owns the trailing edge), riding the composer for the same
@@ -960,9 +965,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Back at the bottom — however you got there — means caught up: the badge counts
         // "new since you scrolled away", and you're not away anymore.
         if isNearBottom { newWhileDetached = 0 }
-        // Leaving the bottom clears the post-send suppression, so the jump-to-unread pill
-        // returns when you next come back down (#45).
-        else { unreadDismissedBySend = false }
         updateFloatingPills()
         guard !messages.isEmpty else { return }
         // Near the top → pull older history. The view model guards `hasMoreOlder` and an
@@ -982,25 +984,30 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToBottom()
     }
 
-    /// Update the two floating pills that share the bottom-trailing slot. They're mutually
-    /// exclusive — the jump-to-**latest** pill when the reader is up in history / detached, the
-    /// jump-to-**unread** pill when at the latest with unread above — and deciding both here in
-    /// one place makes that exclusion structural (the jump pill wins the slot) rather than an
-    /// invariant two separate methods must keep in sync. Derived, so it runs on every apply and
-    /// scroll tick.
+    /// Update the two floating controls: the jump-to-latest pill in the bottom-trailing corner
+    /// and the unread banner under the nav bar. Independent — each is offered whenever its own
+    /// condition holds, and "unread above, live traffic below" shows both, one on each edge.
+    /// Decided here in one place because both are derived, so it runs on every apply and scroll
+    /// tick.
     private func updateFloatingPills() {
         // Jump-to-latest: up in history, or parked on a detached slice below the live tail (#42)
         // — shown even at the bottom *of that slice*, where near-bottom is true.
         let showLatest = (isDetached || !isNearBottom) && !rows.isEmpty
         jumpButton.setVisible(showLatest, animated: true)
         jumpButton.setNewCount(newWhileDetached)
-        // Jump-to-unread (#45): only when the jump pill isn't claiming the slot, the reader
-        // hasn't just sent, and a first-unread row exists off-screen. A non-nil `firstUnreadRow`
-        // already implies rows exist and a divider is built, and `!showLatest` (with rows) means
-        // near-bottom and attached — so those conditions fold in here.
-        let showUnread = !showLatest && !unreadDismissedBySend
-            && firstUnreadRow != nil && !isDividerVisible
-        jumpToUnreadButton.setVisible(showUnread, animated: true)
+        // Reaching the divider spends the banner for good — checked before the show below, so a
+        // divider that's on screen the moment the buffer opens never raises it at all.
+        if isDividerVisible { dividerSeen = true }
+        // The unread banner (#45): a first-unread row exists, it's above the reader, and they
+        // haven't been to it yet. A non-nil `firstUnreadRow` already implies rows exist and a
+        // divider is built. It yields the slot whenever the connection banner wants it — the wire
+        // being down is the more urgent thing to say, and the unreads will still be there
+        // afterwards — and stays down for the length of a jump: `jumpToFirstUnread` hides it to
+        // acknowledge the tap, and the scrolls that converge on the anchor run straight back
+        // through here, which would otherwise flap it back on until the divider landed.
+        let showUnread = firstUnreadRow != nil && !dividerSeen && isDividerAboveViewport
+            && pendingJumpId == nil && !connectionBanner.isVisible
+        unreadBanner.setVisible(showUnread, animated: true)
     }
 
     /// The buffer is showing an `around` slice below the live tail (#42): live events are held
@@ -1118,11 +1125,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// Whether the unread divider is currently on screen — the reader has reached (or is at)
-    /// their first unread, so the "jump to unread" pill has done its job and should retire.
+    /// their first unread, so the unread banner has done its job and should retire.
     private var isDividerVisible: Bool {
         guard let row = dividerRow else { return false }
         return tableView.indexPathsForVisibleRows?.contains(IndexPath(row: row, section: 0)) ?? false
     }
+
+    /// Whether the divider sits *above* the viewport — the unreads are up there, which is the
+    /// only arrangement the banner's up-chevron describes truthfully.
+    ///
+    /// "Off screen" isn't enough on its own. The divider is latched at the read boundary for this
+    /// screen's whole life, so scrolling up past it into older history leaves it off screen
+    /// *below* the viewport — and a banner promising unread above would then scroll you down.
+    /// `.min()` rather than `.first` because the visible index paths aren't documented as sorted.
+    private var isDividerAboveViewport: Bool {
+        guard let row = dividerRow,
+              let topmost = tableView.indexPathsForVisibleRows?.map(\.row).min() else { return false }
+        return row < topmost
+    }
+
+    /// Latched once the divider has been on screen: the reader has seen where they left off, so
+    /// the banner is spent for this screen's lifetime.
+    ///
+    /// Needed because the divider itself never clears — read forward past it and it's simply
+    /// above you again, which without this would put the banner back up (and keep it up for the
+    /// rest of the session) after its unreads had all been read.
+    private var dividerSeen = false
 
     /// Jump to the first unread message, always via the #42 jump — never a raw scroll. On a
     /// channel with a large unread count the first unread is thousands of churny, self-sizing
@@ -1150,7 +1178,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         needsInitialScroll = true
         pendingJumpId = boundary
         jumpFlashesFirstUnread = true
-        jumpToUnreadButton.setVisible(false, animated: true)
+        // Down now rather than when the divider lands: the `around` fetch can take a moment and
+        // the tap has to be acknowledged. `pendingJumpId` (set just above) is what *keeps* it
+        // down until the jump releases — see `updateFloatingPills`.
+        unreadBanner.setVisible(false, animated: true)
         requestAroundIfNeeded(viewModel.state)
         landInitialIfNeeded()
     }
@@ -1198,10 +1229,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func send(_ text: String) {
-        // Sending puts your own bubble where the jump-to-unread pill floats; retire it until you
-        // scroll away and back (see `unreadDismissedBySend`).
-        unreadDismissedBySend = true
-        updateFloatingPills()
         // Before the send, not after: the line itself is the end of composing, and a `done`
         // trailing it would be a second, redundant tag. `composer.clear()` below re-enters
         // `draftChanged` with an empty field, which is a no-op once this has run.

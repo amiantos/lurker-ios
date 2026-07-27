@@ -22,6 +22,16 @@ final class ConnectionBanner: UIView {
     private let dot = UIView()
     private let label = UILabel()
 
+    /// Called when the banner takes or gives up the slot under the nav bar. `UnreadBanner` sits
+    /// in that same slot and yields to this one — a connection that's down is the more urgent
+    /// message, and unread-above will still be true when the wire comes back. The show is
+    /// grace-delayed and the hide waits out its animation, so neither is derivable from state the
+    /// screen already watches: it has to be told.
+    var onVisibilityChange: (() -> Void)?
+
+    /// Whether the banner is currently occupying the slot.
+    var isVisible: Bool { !isHidden }
+
     /// The state currently being shown (or scheduled to show). `.hidden` means the banner
     /// is — or is on its way to — gone.
     private var state: ConnectionBannerState = .hidden
@@ -157,6 +167,7 @@ final class ConnectionBanner: UIView {
 
     private func animateIn() {
         isHidden = false
+        onVisibilityChange?()
         UIView.animate(
             withDuration: 0.3, delay: 0,
             usingSpringWithDamping: 0.85, initialSpringVelocity: 0,
@@ -180,6 +191,9 @@ final class ConnectionBanner: UIView {
             if self.state == .hidden {
                 self.isHidden = true
                 self.spinner.stopAnimating()
+                // Announced here rather than at the top of the animation: the slot isn't free
+                // until this one has finished vacating it.
+                self.onVisibilityChange?()
             }
         }
     }
