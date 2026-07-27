@@ -36,12 +36,13 @@ final class SettingsViewController: UITableViewController {
     ///
     /// **Add a key here only when the app honors it.** Each one is wired to real behavior:
     /// typing to `ChatViewController.emitTyping`, the consolidation keys and the two event
-    /// suffixes to `MessageRows`/`MessageRenderer`, the mode prefix to the bubble caption. The
-    /// rest of the registry is deliberately absent — the web is where you configure the things
-    /// the phone doesn't implement, and a control for a setting the app ignores is worse than
-    /// no control at all.
+    /// suffixes to `MessageRows`/`MessageRenderer`, the mode prefix to the bubble caption, the
+    /// scroll rule to `ChatViewController.keepsPositionWhileReading`. The rest of the registry
+    /// is deliberately absent — the web is where you configure the things the phone doesn't
+    /// implement, and a control for a setting the app ignores is worse than no control at all.
     private static let chatSettings: [(key: String, label: String)] = [
         ("chat.send_typing_notifications", "Send typing notifications"),
+        ("chat.keep_position_on_send", "Stay put when you send"),
         ("chat.consolidate_joins", "Consolidate events"),
         ("chat.consolidate_max_names", "Max consolidated nicks"),
         ("chat.show_event_host", "Show user@host on events"),
