@@ -157,7 +157,14 @@ public final class ChatViewModel {
     }
 
     public func openBuffer(_ key: BufferKey) {
-        client.openBuffer(networkId: key.networkId, target: key.target)
+        client.openBuffer(networkId: key.networkId, target: key.target, countBy: historyCountBy)
+    }
+
+    /// The page-size unit every history read asks for (#10). Read fresh each time rather than
+    /// cached: `chat.consolidate_joins` is server-side, so it can change from the web mid-session
+    /// and the next fetch should already agree with what the next render will do.
+    private var historyCountBy: HistoryCountBy {
+        HistoryCountBy.forRendering(store.state.settings)
     }
 
     /// Fetch a page of recent highlights (#13). `before` is the previous page's
@@ -267,7 +274,7 @@ public final class ChatViewModel {
                 // /query target isn't in `state.buffers` yet, so the destination screen's own
                 // hydrate wouldn't fire — this `open-buffer` is what brings the row (and its
                 // backlog) into being.
-                client.openBuffer(networkId: networkId, target: target)
+                client.openBuffer(networkId: networkId, target: target, countBy: historyCountBy)
                 outcome = .activate(BufferKey(networkId: networkId, target: target))
             case .info(let text):
                 store.appendLocal(key, text: text)
@@ -285,7 +292,7 @@ public final class ChatViewModel {
               let oldest = store.state.messages[key.id]?.first(where: { $0.id != 0 })?.id
         else { return }
         loadingOlder.insert(key.id)
-        client.loadOlder(networkId: key.networkId, target: key.target, before: oldest)
+        client.loadOlder(networkId: key.networkId, target: key.target, before: oldest, countBy: historyCountBy)
     }
 
     /// Page newer history for a detached buffer (scroll-down, #45). Uses the newest held
@@ -299,7 +306,7 @@ public final class ChatViewModel {
               let newest = store.state.messages[key.id]?.last(where: { $0.id != 0 })?.id
         else { return }
         loadingNewer.insert(key.id)
-        client.loadNewer(networkId: key.networkId, target: key.target, after: newest)
+        client.loadNewer(networkId: key.networkId, target: key.target, after: newest, countBy: historyCountBy)
     }
 
     /// Fetch a history slice centered on `anchorId` — the message a jump lands on (#42). The
@@ -315,7 +322,7 @@ public final class ChatViewModel {
     /// latest tap makes after a jump parked the screen on an older `around` slice. The reply
     /// replaces the slice with the latest and clears the buffer's detached flag.
     public func loadLatest(_ key: BufferKey) {
-        client.loadLatest(networkId: key.networkId, target: key.target)
+        client.loadLatest(networkId: key.networkId, target: key.target, countBy: historyCountBy)
     }
 
     /// Mark a buffer read up to its latest loaded message. Server-authoritative and

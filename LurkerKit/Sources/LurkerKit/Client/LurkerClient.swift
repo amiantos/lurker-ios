@@ -301,9 +301,15 @@ final class LurkerClient {
 
     /// Ask the server to hydrate a buffer. Channels/DMs arrive as shells, so without this
     /// a tapped buffer renders blank. No-op for the system buffer (already full).
-    func openBuffer(networkId: Int?, target: String) {
+    ///
+    /// This reply is our FIRST SCREENFUL, which is why it carries `countBy` — see
+    /// `HistoryCountBy`. A server that predates the field ignores it and answers as before.
+    func openBuffer(networkId: Int?, target: String, countBy: HistoryCountBy) {
         guard let networkId else { return }
-        send(["type": "open-buffer", "networkId": networkId, "target": target])
+        send([
+            "type": "open-buffer", "networkId": networkId, "target": target,
+            "countBy": countBy.rawValue,
+        ])
     }
 
     func sendMessage(networkId: Int?, target: String, text: String) {
@@ -372,15 +378,20 @@ final class LurkerClient {
     /// Page older history for a buffer, back from `before` (exclusive message id). The
     /// reply is a `history` frame (mode `before`) the store prepends. System-buffer paging
     /// isn't wired for 1.0.
-    func loadOlder(networkId: Int?, target: String, before: Int, limit: Int = 100) {
+    func loadOlder(networkId: Int?, target: String, before: Int, countBy: HistoryCountBy, limit: Int = 100) {
         guard let networkId else { return }
-        send(["type": "history", "networkId": networkId, "target": target, "before": before, "limit": limit])
+        send([
+            "type": "history", "networkId": networkId, "target": target,
+            "before": before, "limit": limit, "countBy": countBy.rawValue,
+        ])
     }
 
     /// Request a history slice centered on `anchorId` — the message to jump to (#42). The
     /// reply is a `history` frame (mode `around`) with the anchor included in the middle, which
     /// the store applies by replacing the buffer's slice. No `open-buffer` first: the server
     /// serves this straight from the DB. `limit` is per side, so up to `2*limit + 1` events.
+    /// No `countBy`: the server doesn't honor it on `around`, and a jump window is sized to
+    /// centre on one message rather than to fill a screen.
     func loadAround(networkId: Int?, target: String, anchorId: Int, limit: Int = 100) {
         guard let networkId else { return }
         send([
@@ -392,9 +403,12 @@ final class LurkerClient {
     /// Re-attach a detached buffer to the live tail (#42): fetch the latest slice after a jump
     /// left the screen parked on an older `around` window. The reply is a `history` frame (mode
     /// `latest`) the store applies by replacing the slice and clearing `hasMoreNewer`.
-    func loadLatest(networkId: Int?, target: String, limit: Int = 100) {
+    func loadLatest(networkId: Int?, target: String, countBy: HistoryCountBy, limit: Int = 100) {
         guard let networkId else { return }
-        send(["type": "history", "mode": "latest", "networkId": networkId, "target": target, "limit": limit])
+        send([
+            "type": "history", "mode": "latest", "networkId": networkId, "target": target,
+            "limit": limit, "countBy": countBy.rawValue,
+        ])
     }
 
     /// Page NEWER history for a detached buffer (scroll-down), forward from `after` (exclusive
@@ -402,11 +416,12 @@ final class LurkerClient {
     /// server signals `hasMoreNewer: false` the slice has reached the live tail and the buffer
     /// re-attaches (#45). The mirror of `loadOlder`, and the read path that carries a jump-to-
     /// first-unread back down to the present without the pill's full `latest` re-fetch.
-    func loadNewer(networkId: Int?, target: String, after: Int, limit: Int = 100) {
+    func loadNewer(networkId: Int?, target: String, after: Int, countBy: HistoryCountBy, limit: Int = 100) {
         guard let networkId else { return }
         send([
             "type": "history", "mode": "after",
             "networkId": networkId, "target": target, "afterId": after, "limit": limit,
+            "countBy": countBy.rawValue,
         ])
     }
 
