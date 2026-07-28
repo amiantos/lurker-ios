@@ -188,6 +188,21 @@ enum FrameParser {
         }
     }
 
+    /// A registry entry's `dependsOn` clauses (#666), if it carries any.
+    ///
+    /// A clause whose `in` list holds nothing this app can represent is dropped rather than
+    /// kept empty: an empty value list can never match, so keeping it would permanently grey
+    /// out a control on the strength of a value we simply failed to parse.
+    private static func parseDependencies(_ raw: Any?) -> [SettingDependency] {
+        guard let entries = raw as? [[String: Any]] else { return [] }
+        return entries.compactMap { entry in
+            let key = entry.string("key")
+            let values = ((entry["in"] as? [Any]) ?? []).compactMap(SettingValue.from)
+            guard !key.isEmpty, !values.isEmpty else { return nil }
+            return SettingDependency(key: key, values: values)
+        }
+    }
+
     /// `GET /api/settings/bootstrap` → `{registry, values}`.
     ///
     /// The registry is an ARRAY of options on the wire (it's `REGISTRY` verbatim), keyed here
@@ -209,8 +224,10 @@ enum FrameParser {
                 type: type,
                 default: defaultValue,
                 choices: (entry["choices"] as? [String]) ?? [],
+                choiceLabels: (entry["choiceLabels"] as? [String: String]) ?? [:],
                 min: entry.intOrNull("min"),
-                max: entry.intOrNull("max")
+                max: entry.intOrNull("max"),
+                dependsOn: parseDependencies(entry["dependsOn"])
             )
         }
         return .settingsBootstrap(registry: registry, values: parseSettingValues(obj["values"]))

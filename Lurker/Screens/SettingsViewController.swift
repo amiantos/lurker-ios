@@ -43,6 +43,28 @@ final class SettingsViewController: UITableViewController {
     private static let chatSettings: [(key: String, label: String)] = [
         ("chat.send_typing_notifications", "Send typing notifications"),
         ("chat.keep_position_on_send", "Stay put when you send"),
+    ]
+
+    /// Join/part/quit/nick/host-change/mode lines: whether you see them, how they're folded,
+    /// and how much detail each carries. Its own section, mirroring the web's Events category
+    /// (#666) — the filter turned a handful of loosely-related toggles into one subject with a
+    /// single primary control, and that subject stopped being a tail on Chat.
+    ///
+    /// Ordered as they narrow: the filter, then how the survivors are folded, then what each
+    /// surviving line shows.
+    ///
+    /// The filter reads the MOBILE key — it is split by device class, and this device is never
+    /// the desktop case.
+    ///
+    /// The settings under it do NOT grey out when this phone is set to "Hide all", and that is
+    /// deliberate. Their registry `dependsOn` is ORed across both device classes, so the
+    /// desktop clause — a key this screen doesn't list — keeps them live. They are shared
+    /// settings, not per-device ones: disabling them here would stop you managing your
+    /// desktop's consolidation from your phone, to save you editing a value this screen
+    /// happens not to be using. What `dependsOn` does buy is the transitive case
+    /// (`consolidate_max_names` follows `consolidate_joins`) with no table maintained here.
+    private static let eventSettings: [(key: String, label: String)] = [
+        (EventFilter.modeKey, "Event filter"),
         ("chat.consolidate_joins", "Consolidate events"),
         ("chat.consolidate_max_names", "Max consolidated nicks"),
         ("chat.show_event_host", "Show user@host on events"),
@@ -55,9 +77,14 @@ final class SettingsViewController: UITableViewController {
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
     ]
 
-    /// Keys whose control is dead unless another setting is on — a max-nicks stepper means
-    /// nothing with consolidation switched off.
-    private static let dependencies = ["chat.consolidate_max_names": "chat.consolidate_joins"]
+    /// Suffix marking a choice this app reads but doesn't act on.
+    ///
+    /// The choice text itself comes from the registry (`SettingOption.label(forChoice:)`), so
+    /// the phone says what the web says without a second copy to keep in step. What's local
+    /// is this: `smart` renders as "no filter" here (see `EventMode.smart`), and it only ever
+    /// appears in the picker when it is already the stored value, so the row has to report
+    /// what is actually in force rather than quietly reading back as something else.
+    private static let unsupportedChoiceSuffix = " (web only)"
 
     /// A row that's ready to render: the curated label plus the registry entry describing how
     /// to edit it. Resolved once per rebuild so the table isn't doing lookups per cell.
@@ -68,6 +95,7 @@ final class SettingsViewController: UITableViewController {
 
     private enum Section {
         case chat([SettingRow])
+        case events([SettingRow])
         case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
@@ -126,6 +154,7 @@ final class SettingsViewController: UITableViewController {
             }
         }
         let rows = resolve(Self.chatSettings)
+        let eventRows = resolve(Self.eventSettings)
         let appearanceRows = resolve(Self.appearanceSettings)
         // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
         // silently rendering a Settings screen whose only contents are Sign Out and a version
@@ -134,9 +163,15 @@ final class SettingsViewController: UITableViewController {
         // only a real bootstrap brings the registry the controls are built from.
         // `rows` is the test for a usable registry, not `appearanceRows`: an older server may
         // legitimately not know an appearance key yet, and an empty section is worse than none.
+        // Each optional section is dropped when empty rather than rendered blank — a server
+        // predating the event filter knows the consolidation keys but not `chat.events`, so a
+        // partial Events section is normal and an absent one has to be too.
         sections = rows.isEmpty
             ? [.unavailable, .account, .about]
-            : [.chat(rows)] + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)]) + [.account, .about]
+            : [.chat(rows)]
+                + (eventRows.isEmpty ? [] : [.events(eventRows)])
+                + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
+                + [.account, .about]
         tableView.reloadData()
     }
 
@@ -146,7 +181,7 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
-        case .chat(let rows), .appearance(let rows): rows.count
+        case .chat(let rows), .events(let rows), .appearance(let rows): rows.count
         case .unavailable, .account, .about: 1
         }
     }
@@ -154,19 +189,9 @@ final class SettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
         case .chat, .unavailable: "Chat"
+        case .events: "Events"
         case .appearance: "Appearance"
         case .account, .about: nil
-        }
-    }
-
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        switch sections[section] {
-        // The one piece of explanation that stays: it isn't obvious that a switch here moves
-        // the same switch in your browser, and that's a property worth stating rather than
-        // leaving someone to discover. Everything else the registry would say is reference
-        // material, and the web has room for it.
-        case .chat: "Saved to your account and applied on every device."
-        case .appearance, .unavailable, .account, .about: nil
         }
     }
 
@@ -178,7 +203,7 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
-        case .chat(let rows), .appearance(let rows):
+        case .chat(let rows), .events(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
             // The subtitle slot is otherwise unused, so a failed write can say why right under
@@ -264,15 +289,65 @@ final class SettingsViewController: UITableViewController {
                 size: stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
             )
             cell.accessoryView = stack
+        case .enum:
+            // A pull-down button, not a segmented control: the choices are full phrases
+            // ("Hide from quiet users"), and three of those never fit a compact-width segment
+            // without truncating to uselessness. The button shows the current choice, which is
+            // what the row needs to say when nothing is being touched.
+            let current = viewModel.state.settings.effective(option.key)?.stringValue
+                ?? option.default.stringValue ?? ""
+            // Choice filtering and labels are the EVENT TIER's, so they're gated on its key.
+            // This branch serves any `.enum` option; left ungated, the next enum setting
+            // added here would silently lose a choice it happened to spell `smart` and get
+            // `all`/`none` relabelled "Show all"/"Hide all".
+            let isEventTier = option.key == EventFilter.modeKey
+            let button = UIButton(type: .system)
+            button.showsMenuAsPrimaryAction = true
+            // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
+            // the write still goes through `write`, and the authoritative value arrives back
+            // on the `settings` frame.
+            button.changesSelectionAsPrimaryAction = true
+            // A rung this app can't deliver is offered only when it's ALREADY the value —
+            // the key is shared with the web, so a choice made at a desk has to stay visible
+            // here, but the picker must not let you newly pick something we'd then ignore.
+            let choices = option.choices.filter { choice in
+                guard isEventTier else { return true }
+                return choice == current
+                    || EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true
+            }
+            let title = { (choice: String) -> String in
+                let base = option.label(forChoice: choice)
+                let unsupported =
+                    isEventTier && !(EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true)
+                return unsupported ? base + Self.unsupportedChoiceSuffix : base
+            }
+            button.menu = UIMenu(children: choices.map { choice in
+                UIAction(title: title(choice), state: choice == current ? .on : .off) {
+                    [weak self] _ in
+                    self?.write(option.key, .string(choice))
+                }
+            })
+            // Set the title before measuring. `changesSelectionAsPrimaryAction` derives it
+            // from the `.on` menu child, but that propagates on the button's next
+            // configuration-update pass — after this synchronous `sizeToFit()`, which would
+            // leave `accessoryView` fitted to an empty button and the control clipped on the
+            // first render of this screen. Same class of trap as the stack-view sizing above.
+            button.setTitle(title(current), for: .normal)
+            button.isEnabled = enabled
+            button.sizeToFit()
+            cell.accessoryView = button
         default:
             cell.accessoryType = .none
         }
     }
 
-    /// Whether this row's control is live — false when it depends on a setting that's off.
+    /// Whether this row's control is live.
+    ///
+    /// Answered from the registry's own `dependsOn` (#666) rather than a table maintained
+    /// here, so the phone greys out exactly what the web does and a new dependency needs no
+    /// iOS change at all.
     private func isEnabled(_ key: String) -> Bool {
-        guard let parent = Self.dependencies[key] else { return true }
-        return viewModel.state.settings.bool(parent, default: true)
+        viewModel.state.settings.isActive(key)
     }
 
     /// Pending debounced writes, keyed by setting.

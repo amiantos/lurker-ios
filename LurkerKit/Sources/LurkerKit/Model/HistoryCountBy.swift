@@ -14,20 +14,30 @@ import Foundation
 /// `.renderable` asks the server to spend the budget only on rows that render as their own
 /// line. The churn still arrives — consolidation needs the whole run to summarize it accurately
 /// — it just no longer eats the page.
+///
+/// `.chat` is the same argument one rung stricter, for a reader on the `.none` event tier
+/// (#666): there we draw nothing for a `mode` row either, so counting it would spend budget on
+/// rows that render as nothing.
 enum HistoryCountBy: String, Sendable {
     /// Every stored row counts. The protocol default, and what an older server does regardless.
     case event
     /// Only rows that render standalone count.
     case renderable
+    /// Only conversation counts — `.renderable` minus `mode`.
+    case chat
 
     /// The unit to *ask* for, given what we're going to *render* in.
     ///
     /// These must match. With `chat.consolidate_joins` off, every event gets its own line, so
     /// `.event` is already correct — and asking for `.renderable` there would pull the server's
     /// whole scan window (up to 2000 rows) into a page the reader then sees in full. The
-    /// default mirrors the registry's, so behavior doesn't shift under the user when settings
+    /// defaults mirror the registry's, so behavior doesn't shift under the user when settings
     /// bootstrap lands a moment after launch.
+    ///
+    /// At `.none` consolidation is moot — there is nothing left to fold — so the tier decides
+    /// alone. Mirrors the web's `pageUnitFor()`.
     static func forRendering(_ settings: Settings) -> HistoryCountBy {
-        settings.bool("chat.consolidate_joins", default: true) ? .renderable : .event
+        if EventFilter.mode(settings) == .none { return .chat }
+        return settings.bool("chat.consolidate_joins", default: true) ? .renderable : .event
     }
 }

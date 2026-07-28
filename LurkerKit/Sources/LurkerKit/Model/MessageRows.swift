@@ -125,11 +125,29 @@ public enum MessageRows {
     ) -> [MessageRow] {
         let boundary = dividerAfterId ?? 0
 
-        // Both server-side (#65), so the phone agrees with whatever the user set on the web.
+        // All server-side (#65), so the phone agrees with whatever the user set on the web.
         // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
         // user when bootstrap lands a moment after launch.
-        let consolidateEnabled = settings.bool("chat.consolidate_joins", default: true)
+        // `.rendered` collapses the rung this client can't do (`.smart`) onto the one it
+        // behaves as (`.all`), so that degrade is a stated decision rather than the accident
+        // of there being no branch for it below.
+        let eventMode = EventFilter.rendered(EventFilter.mode(settings))
+        // At `.none` there are no event rows left to fold, so the consolidation pass is
+        // skipped outright rather than run over a stream it can't match.
+        let consolidateEnabled = eventMode != .none
+            && settings.bool("chat.consolidate_joins", default: true)
         let maxNames = settings.int("chat.consolidate_max_names", default: 5)
+
+        // The `.none` tier (#666): drop every event row before anything else looks at the
+        // stream, so dividers anchor to the first row the reader can actually see and a
+        // segment can't be built out of rows that will never render.
+        //
+        // Unconditional on purpose — this hides your own joins and mode changes too. Someone
+        // who asked for no event noise on their phone wants none of it, not
+        // none-except-mine. Kicks, topics and invites are outside `noiseTypes` and survive.
+        let messages = eventMode == .none
+            ? messages.filter { !EventFilter.isNoise($0.type) }
+            : messages
 
         var rows: [MessageRow] = []
         func appendSegment(_ slice: [Message]) {
