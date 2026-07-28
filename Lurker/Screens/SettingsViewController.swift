@@ -195,31 +195,6 @@ final class SettingsViewController: UITableViewController {
         }
     }
 
-    /// The last section built from server settings, so the sync note below lands under all of
-    /// them instead of once per section.
-    private var lastServerSettingsSection: Int? {
-        sections.lastIndex {
-            switch $0 {
-            case .chat, .events, .appearance: true
-            case .unavailable, .account, .about: false
-            }
-        }
-    }
-
-    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        // The one piece of explanation that stays: it isn't obvious that a switch here moves
-        // the same switch in your browser, and that's a property worth stating rather than
-        // leaving someone to discover. Everything else the registry would say is reference
-        // material, and the web has room for it.
-        //
-        // On the LAST settings section rather than the first: a footer reads as belonging to
-        // the section above it, so on Chat alone it would look like a claim about typing
-        // notifications rather than about all of these. Repeating it under each section says
-        // it three times to make one point.
-        guard section == lastServerSettingsSection else { return nil }
-        return "Saved to your account and applied on every device."
-    }
-
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "row", for: indexPath)
         cell.accessoryView = nil
