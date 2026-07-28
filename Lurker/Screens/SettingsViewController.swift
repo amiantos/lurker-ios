@@ -43,18 +43,28 @@ final class SettingsViewController: UITableViewController {
     private static let chatSettings: [(key: String, label: String)] = [
         ("chat.send_typing_notifications", "Send typing notifications"),
         ("chat.keep_position_on_send", "Stay put when you send"),
-        // The event-noise tier and its modifiers, in the order they narrow (#666). The tier
-        // reads the MOBILE key: it is split by device class, and this device is never the
-        // desktop case.
-        //
-        // The modifiers below do NOT grey out when this phone is set to "Hide all", and that
-        // is deliberate. Their registry `dependsOn` is ORed across both device classes, so
-        // the desktop clause — a key this screen doesn't list — keeps them live. They are
-        // shared settings, not per-device ones: disabling them here would stop you managing
-        // your desktop's consolidation from your phone, to save you editing a value this
-        // screen happens not to be using. What `dependsOn` does buy is the transitive case
-        // (`consolidate_max_names` follows `consolidate_joins`) with no table maintained here.
-        (EventFilter.modeKey, "Event noise"),
+    ]
+
+    /// Join/part/quit/nick/host-change/mode lines: whether you see them, how they're folded,
+    /// and how much detail each carries. Its own section, mirroring the web's Events category
+    /// (#666) — the filter turned a handful of loosely-related toggles into one subject with a
+    /// single primary control, and that subject stopped being a tail on Chat.
+    ///
+    /// Ordered as they narrow: the filter, then how the survivors are folded, then what each
+    /// surviving line shows.
+    ///
+    /// The filter reads the MOBILE key — it is split by device class, and this device is never
+    /// the desktop case.
+    ///
+    /// The settings under it do NOT grey out when this phone is set to "Hide all", and that is
+    /// deliberate. Their registry `dependsOn` is ORed across both device classes, so the
+    /// desktop clause — a key this screen doesn't list — keeps them live. They are shared
+    /// settings, not per-device ones: disabling them here would stop you managing your
+    /// desktop's consolidation from your phone, to save you editing a value this screen
+    /// happens not to be using. What `dependsOn` does buy is the transitive case
+    /// (`consolidate_max_names` follows `consolidate_joins`) with no table maintained here.
+    private static let eventSettings: [(key: String, label: String)] = [
+        (EventFilter.modeKey, "Event filter"),
         ("chat.consolidate_joins", "Consolidate events"),
         ("chat.consolidate_max_names", "Max consolidated nicks"),
         ("chat.show_event_host", "Show user@host on events"),
@@ -85,6 +95,7 @@ final class SettingsViewController: UITableViewController {
 
     private enum Section {
         case chat([SettingRow])
+        case events([SettingRow])
         case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
@@ -143,6 +154,7 @@ final class SettingsViewController: UITableViewController {
             }
         }
         let rows = resolve(Self.chatSettings)
+        let eventRows = resolve(Self.eventSettings)
         let appearanceRows = resolve(Self.appearanceSettings)
         // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
         // silently rendering a Settings screen whose only contents are Sign Out and a version
@@ -151,9 +163,15 @@ final class SettingsViewController: UITableViewController {
         // only a real bootstrap brings the registry the controls are built from.
         // `rows` is the test for a usable registry, not `appearanceRows`: an older server may
         // legitimately not know an appearance key yet, and an empty section is worse than none.
+        // Each optional section is dropped when empty rather than rendered blank — a server
+        // predating the event filter knows the consolidation keys but not `chat.events`, so a
+        // partial Events section is normal and an absent one has to be too.
         sections = rows.isEmpty
             ? [.unavailable, .account, .about]
-            : [.chat(rows)] + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)]) + [.account, .about]
+            : [.chat(rows)]
+                + (eventRows.isEmpty ? [] : [.events(eventRows)])
+                + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
+                + [.account, .about]
         tableView.reloadData()
     }
 
@@ -163,7 +181,7 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
-        case .chat(let rows), .appearance(let rows): rows.count
+        case .chat(let rows), .events(let rows), .appearance(let rows): rows.count
         case .unavailable, .account, .about: 1
         }
     }
@@ -171,20 +189,35 @@ final class SettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
         case .chat, .unavailable: "Chat"
+        case .events: "Events"
         case .appearance: "Appearance"
         case .account, .about: nil
         }
     }
 
+    /// The last section built from server settings, so the sync note below lands under all of
+    /// them instead of once per section.
+    private var lastServerSettingsSection: Int? {
+        sections.lastIndex {
+            switch $0 {
+            case .chat, .events, .appearance: true
+            case .unavailable, .account, .about: false
+            }
+        }
+    }
+
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        switch sections[section] {
         // The one piece of explanation that stays: it isn't obvious that a switch here moves
         // the same switch in your browser, and that's a property worth stating rather than
         // leaving someone to discover. Everything else the registry would say is reference
         // material, and the web has room for it.
-        case .chat: "Saved to your account and applied on every device."
-        case .appearance, .unavailable, .account, .about: nil
-        }
+        //
+        // On the LAST settings section rather than the first: a footer reads as belonging to
+        // the section above it, so on Chat alone it would look like a claim about typing
+        // notifications rather than about all of these. Repeating it under each section says
+        // it three times to make one point.
+        guard section == lastServerSettingsSection else { return nil }
+        return "Saved to your account and applied on every device."
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -195,7 +228,7 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
-        case .chat(let rows), .appearance(let rows):
+        case .chat(let rows), .events(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
             // The subtitle slot is otherwise unused, so a failed write can say why right under
