@@ -860,48 +860,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the server discards `open-buffer` for both without replying (see
     /// `BufferKind.hydratesOnDemand`), so asking would mark a request as sent
     /// that can never be answered and wedge the screen waiting on it.
-    /// TEMPORARY (QA): every early return below is a reason the hydrate didn't happen, and
-    /// the hang is one of them being taken forever. Remove once A4 is clean twice running.
-    private func traceHydrate(_ why: String, _ state: ChatState) {
-        let known = state.buffers[buffer.key.id]
-        NSLog(
-            "[hydrate] vc=%p %@ tgt=%@ kind=%@ conn=%@ row=%@ hyd=%@ asked=%@ msgs=%d jump=%@ settled=%@ complete=%@ rows=%d",
-            self,
-            why,
-            buffer.key.id,
-            String(describing: buffer.kind),
-            String(describing: state.connection),
-            known == nil ? "nil" : "yes",
-            known.map { String($0.hydrated) } ?? "-",
-            openRequestedAtGeneration.map(String.init) ?? "no",
-            (state.messages[buffer.key.id] ?? []).count,
-            pendingJumpId.map(String.init) ?? "-",
-            String(state.rosterSettled),
-            String(state.backlogComplete),
-            state.buffers.count
-        )
-    }
-
     private func hydrateIfNeeded(_ state: ChatState) {
-        guard buffer.kind.hydratesOnDemand else {
-            traceHydrate("skip:notOnDemand", state)
-            return
-        }
+        guard buffer.kind.hydratesOnDemand else { return }
         // A pending jump hydrates via an `around` slice centered on the target (see
         // `requestAroundIfNeeded`), not `open-buffer`'s latest backlog — asking for both would
         // double-fetch and the latest slice would fight the jump. Once the around slice lands
         // the buffer reads hydrated, so this stays a no-op afterwards.
-        guard pendingJumpId == nil else {
-            traceHydrate("skip:pendingJump", state)
-            return
-        }
+        guard pendingJumpId == nil else { return }
         guard state.connection == .connected else {
             // A reconnect resyncs buffers as shells, so ask again on the next one. Kept as
             // a fast path only — it fires when a drop is actually reported, which it isn't
             // when a close arrives after the socket was already replaced. The burst check
             // below is the one that always fires.
             openRequestedAtGeneration = nil
-            traceHydrate("skip:notConnected", state)
             return
         }
         // The row went away, so whatever we asked for is void — re-arm.
@@ -936,20 +907,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if let asked = openRequestedAtGeneration, asked != state.burstGeneration {
             openRequestedAtGeneration = nil
         }
-        guard openRequestedAtGeneration == nil else {
-            traceHydrate("skip:alreadyAsked", state)
-            return
-        }
-        guard let known = state.buffers[buffer.key.id] else {
-            traceHydrate("skip:noRow", state)
-            return
-        }
-        guard !known.hydrated else {
-            traceHydrate("skip:hydrated", state)
-            return
-        }
+        guard openRequestedAtGeneration == nil,
+              let known = state.buffers[buffer.key.id],
+              !known.hydrated
+        else { return }
         openRequestedAtGeneration = state.burstGeneration
-        traceHydrate("SEND open-buffer", state)
         viewModel.openBuffer(buffer.key)
     }
 

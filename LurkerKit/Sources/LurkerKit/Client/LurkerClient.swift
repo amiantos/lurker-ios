@@ -26,15 +26,6 @@ final class LurkerClient {
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
-    /// TEMPORARY QA: force the socket to die right after the first `open-buffer` of a
-    /// launch, so the lost-request race is reproducible instead of occasional. Remove with
-    /// the rest of the QA instrumentation.
-    ///
-    /// OFF by default — flip to `true` only to exercise the recovery path deliberately.
-    /// While it's on, every launch reconnects once, which masks whether the race still
-    /// happens on its own.
-    static let qaDropSocketAfterOpenBuffer = false
-    private var didQaDropSocket = false
     /// Reset per socket; gates the "socket really opened" signal to the first frame that
     /// actually arrives, rather than optimistically on `resume()`.
     private var hasEmittedOpen = false
@@ -311,30 +302,8 @@ final class LurkerClient {
     /// Ask the server to hydrate a buffer. Channels/DMs arrive as shells, so without this
     /// a tapped buffer renders blank. No-op for the system buffer (already full).
     func openBuffer(networkId: Int?, target: String) {
-        guard let networkId else {
-            NSLog("[wire] open-buffer DROPPED (no networkId) target=%@", target)
-            return
-        }
-        // TEMPORARY (QA): logs the request at the wire, independent of which screen asked —
-        // so "nobody sent it" and "sent, never answered" stop looking the same.
-        NSLog("[wire] -> open-buffer networkId=%d target=%@ socket=%@", networkId, target,
-              socket == nil ? "nil" : "yes")
+        guard let networkId else { return }
         send(["type": "open-buffer", "networkId": networkId, "target": target])
-        // TEMPORARY QA HOOK — forces the lost-request race instead of waiting for it.
-        //
-        // The hang needs the socket to die AFTER an open-buffer goes out, which happens by
-        // chance maybe one launch in several; a launch where it dies BEFORE the send looks
-        // superficially identical in the log and proves nothing. So kill the socket right
-        // here, once per launch, and the recovery path is exercised every time.
-        //
-        // Expect in the log: `-> open-buffer`, this line, a second `[burst] snapshot opens
-        // window`, then a SECOND `SEND open-buffer`, then a populated `[backlog]`. If the
-        // second SEND is missing, the fix does not work.
-        if Self.qaDropSocketAfterOpenBuffer, !didQaDropSocket {
-            didQaDropSocket = true
-            NSLog("[qa] FORCING socket drop immediately after open-buffer")
-            socket?.cancel(with: .abnormalClosure, reason: nil)
-        }
     }
 
     func sendMessage(networkId: Int?, target: String, text: String) {
