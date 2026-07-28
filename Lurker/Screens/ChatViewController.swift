@@ -6,8 +6,8 @@ import LurkerKit
 import UIKit
 
 /// The app's one screen: a buffer's messages, plus the input bar. Messages arrive two ways
-/// and are treated identically: the `backlog` frame the server sends in reply to
-/// `open-buffer`, and live `irc` frames after that — including the echo of our own sends
+/// and are treated identically: the slice the server sends in reply to our hydrate,
+/// and live `irc` frames after that — including the echo of our own sends
 /// (`self: true`), which is why there's no optimistic-bubble bookkeeping here.
 ///
 /// This is a *detail* pushed onto the buffer list, which is the navigation stack's root — so
@@ -127,14 +127,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
-    /// The snapshot burst during which this screen's one `open-buffer` was sent, or nil if
+    /// The snapshot burst during which this screen’s one hydrate was sent, or nil if
     /// it hasn't asked (or its request has been voided). See `hydrateIfNeeded`.
     ///
     /// One optional rather than a bool plus a generation: two variables tracking one fact
     /// can disagree, and they did — a reset that cleared the bool but left the generation
     /// behind made the screen ask twice on the same burst and take two full backlogs for
     /// it.
-    private var openRequestedAtGeneration: Int?
+    private var hydrateRequestedAtGeneration: Int?
     /// The in-flight `/join` waiting for its channel to materialize (see `awaitJoin`).
     /// At most one: a second `/join` supersedes the first rather than racing it.
     private var pendingJoinCancellable: AnyCancellable?
@@ -160,7 +160,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var pendingJumpId: Int?
     /// The snapshot burst during which the `around` slice for `pendingJumpId` was requested,
     /// or nil if it hasn't been asked for. Same shape, and the same reasoning, as
-    /// `openRequestedAtGeneration`: a request written to a socket that is silently replaced
+    /// `hydrateRequestedAtGeneration`: a request written to a socket that is silently replaced
     /// is lost with `connection` never dipping, so a bool cleared only on disconnect would
     /// leave a jump waiting forever for a slice that cannot arrive.
     private var aroundRequestedAtGeneration: Int?
@@ -377,7 +377,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         //
         // `buffers[key]` is in here for hydration, not for rendering: a shell arriving for
         // an empty buffer changes no messages, and dropping it as a duplicate would mean
-        // never noticing we still owe this buffer an `open-buffer`.
+        // never noticing we still owe this buffer a hydrate.
         //
         // `networks` is compared whole rather than just this buffer's. The system buffer
         // has no network of its own, but its lines are labelled with the names of *other*
@@ -859,17 +859,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Ask for history once the socket is up.
     ///
     /// Channel and DM buffers arrive as shells (`events: []`) and aren't read until the
-    /// client sends `open-buffer`. This screen is also the *launch* screen, so it can exist
-    /// before there's a socket to ask over — that's the case this covers.
+    /// client asks. This screen is also the *launch* screen, so it can exist before there's a
+    /// socket to ask over — that's the case this covers.
     ///
-    /// The system buffer and `:server:` logs are excluded rather than merely redundant:
-    /// the server discards `open-buffer` for both without replying (see
-    /// `BufferKind.hydratesOnDemand`), so asking would mark a request as sent
-    /// that can never be answered and wedge the screen waiting on it.
+    /// Asks with `{type:'history', mode:'latest'}`, not `open-buffer`. Both answer with the
+    /// buffer's newest slice, but `open-buffer` is a WRITE: it reopens a closed row and now
+    /// announces that to every one of the user's devices. Hydrating through it meant merely
+    /// *opening a screen* reopened a buffer everywhere — and, since the server's
+    /// paused-account gate correctly classes writes as writes, meant a paused account could
+    /// never read its own history at all: `account paused`, then this screen on
+    /// "Loading messages…" forever.
+    ///
+    /// The system buffer and `:server:` logs are excluded (`BufferKind.hydratesOnDemand`)
+    /// because they already ship their real backlog in the burst — there is no shell to fill.
     private func hydrateIfNeeded(_ state: ChatState) {
         guard buffer.kind.hydratesOnDemand else { return }
         // A pending jump hydrates via an `around` slice centered on the target (see
-        // `requestAroundIfNeeded`), not `open-buffer`'s latest backlog — asking for both would
+        // `requestAroundIfNeeded`), not the latest backlog — asking for both would
         // double-fetch and the latest slice would fight the jump. Once the around slice lands
         // the buffer reads hydrated, so this stays a no-op afterwards.
         guard pendingJumpId == nil else { return }
@@ -878,7 +884,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // a fast path only — it fires when a drop is actually reported, which it isn't
             // when a close arrives after the socket was already replaced. The burst check
             // below is the one that always fires.
-            openRequestedAtGeneration = nil
+            hydrateRequestedAtGeneration = nil
             return
         }
         // The row went away, so whatever we asked for is void — re-arm.
@@ -892,11 +898,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // messages…" permanently *without* popping, because by then a row exists again.
         //
         // Keyed on the row being ABSENT rather than merely unhydrated: unhydrated is
-        // also the normal state between sending `open-buffer` and its reply landing, and
+        // also the normal state between sending the hydrate and its reply landing, and
         // re-arming there would fire a fresh request on every state update until it did.
         // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
         // so nil↔shell always gets delivered.
-        if state.buffers[buffer.key.id] == nil { openRequestedAtGeneration = nil }
+        if state.buffers[buffer.key.id] == nil { hydrateRequestedAtGeneration = nil }
         // A new burst voids a request made during the previous one.
         //
         // The socket can die and be replaced with `connection` never leaving `.connected`
@@ -904,21 +910,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // can't clobber a live socket). A request written to the dying socket is lost with
         // no state change to notice, so the `notConnected` reset above never fires and
         // this screen waits forever for a reply that cannot arrive. Observed exactly that
-        // way: `-> open-buffer`, socket shutdown one line later, then a second burst, and
+        // way: `-> open-buffer` (the hydrate request of the day), socket shutdown one line
+        // later, then a second burst, and
         // `conn=connected` throughout.
         //
         // The burst is the reliable signal — a reconnect always produces one, and it means
         // the server is re-sending everything, which is precisely when anything asked over
         // the old socket becomes void.
-        if let asked = openRequestedAtGeneration, asked != state.burstGeneration {
-            openRequestedAtGeneration = nil
+        if let asked = hydrateRequestedAtGeneration, asked != state.burstGeneration {
+            hydrateRequestedAtGeneration = nil
         }
-        guard openRequestedAtGeneration == nil,
+        guard hydrateRequestedAtGeneration == nil,
               let known = state.buffers[buffer.key.id],
               !known.hydrated
         else { return }
-        openRequestedAtGeneration = state.burstGeneration
-        viewModel.openBuffer(buffer.key)
+        hydrateRequestedAtGeneration = state.burstGeneration
+        viewModel.hydrate(buffer.key)
     }
 
     /// Fetch the `around` slice a jump needs (#42): a history window centered on `pendingJumpId`,

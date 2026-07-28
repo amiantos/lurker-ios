@@ -156,6 +156,20 @@ public final class ChatViewModel {
         return await client.registerDevice(token: token)
     }
 
+    /// Fill in a shell's contents — what a screen calls when it opens on a buffer we already
+    /// hold but haven't fetched. A pure read; see `LurkerClient.loadLatest`.
+    ///
+    /// Deliberately the same request as `loadLatest(_:)` rather than a verb of its own. The
+    /// server's `history` verb predates every version of the app, so hydration keeps working
+    /// against an older self-hosted instance — which `protocol.ts` treats as a normal
+    /// operating condition, since operators upgrade on their own schedule.
+    public func hydrate(_ key: BufferKey) {
+        client.loadLatest(networkId: key.networkId, target: key.target, countBy: historyCountBy)
+    }
+
+    /// Open a buffer for real: reopen, mint, or JOIN. Deliberate user intent only — this is a
+    /// write, and the user's other devices are told about it. Filling in a shell is
+    /// `hydrate(_:)`.
     public func openBuffer(_ key: BufferKey) {
         client.openBuffer(networkId: key.networkId, target: key.target, countBy: historyCountBy)
     }

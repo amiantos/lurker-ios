@@ -299,11 +299,15 @@ final class LurkerClient {
 
     // MARK: - Verbs
 
-    /// Ask the server to hydrate a buffer. Channels/DMs arrive as shells, so without this
-    /// a tapped buffer renders blank. No-op for the system buffer (already full).
+    /// Ask the server to OPEN a buffer — reopen a closed row, mint a DM row for a bare nick,
+    /// or JOIN an unjoined channel. A WRITE, and one the user's other devices are now told
+    /// about, so it belongs to deliberate intent only (`/query alice`, tapping a friend whose
+    /// DM is closed server-side).
     ///
-    /// This reply is our FIRST SCREENFUL, which is why it carries `countBy` — see
-    /// `HistoryCountBy`. A server that predates the field ignores it and answers as before.
+    /// **Not for hydration** — that's `loadLatest`. Filling in a shell with this verb is what
+    /// made merely *opening a screen* reopen a buffer on every device the user owns, and,
+    /// because the server's paused-account gate correctly classes writes as writes, made a
+    /// paused account unable to read its own history at all.
     func openBuffer(networkId: Int?, target: String, countBy: HistoryCountBy) {
         guard let networkId else { return }
         send([
@@ -404,9 +408,20 @@ final class LurkerClient {
         ])
     }
 
-    /// Re-attach a detached buffer to the live tail (#42): fetch the latest slice after a jump
-    /// left the screen parked on an older `around` window. The reply is a `history` frame (mode
-    /// `latest`) the store applies by replacing the slice and clearing `hasMoreNewer`.
+    /// Fetch a buffer's newest slice. Two callers, one request:
+    ///
+    /// 1. **Hydration** — filling in a shell when a screen opens on a buffer we hold but
+    ///    haven't fetched. This is a pure READ: it reopens nothing, mints no row, JOINs
+    ///    nothing, is invisible to the user's other devices, and is not blocked for a paused
+    ///    account. `open-buffer` is none of those things, which is why hydration doesn't use
+    ///    it. The server always answers, even for a buffer with no history at all, so a
+    ///    one-shot caller can't be stranded waiting on a reply that will never come.
+    /// 2. **Re-attaching** a detached buffer to the live tail (#42), after a jump left the
+    ///    screen parked on an older `around` window.
+    ///
+    /// The reply is a `history` frame (mode `latest`); the store replaces the slice, marks the
+    /// buffer hydrated, and clears `hasMoreNewer`. Carries `countBy` because for case 1 this
+    /// reply is our first screenful — see `HistoryCountBy`.
     func loadLatest(networkId: Int?, target: String, countBy: HistoryCountBy, limit: Int = 100) {
         guard let networkId else { return }
         send([
