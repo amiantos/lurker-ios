@@ -390,13 +390,17 @@ final class LurkerClient {
     /// reply is a `history` frame (mode `around`) with the anchor included in the middle, which
     /// the store applies by replacing the buffer's slice. No `open-buffer` first: the server
     /// serves this straight from the DB. `limit` is per side, so up to `2*limit + 1` events.
-    /// No `countBy`: the server doesn't honor it on `around`, and a jump window is sized to
-    /// centre on one message rather than to fill a screen.
-    func loadAround(networkId: Int?, target: String, anchorId: Int, limit: Int = 100) {
+    ///
+    /// Carries `countBy` (sizing each side) because on this client a jump slice is not merely a
+    /// jump: `hydrateIfNeeded` skips `open-buffer` entirely while a jump is pending
+    /// (`ChatViewController.swift:875`), so for a buffer entered from a push tap, a highlight,
+    /// or jump-to-first-unread, THIS is the first screenful and nothing else precedes it.
+    func loadAround(networkId: Int?, target: String, anchorId: Int, countBy: HistoryCountBy, limit: Int = 100) {
         guard let networkId else { return }
         send([
             "type": "history", "mode": "around",
             "networkId": networkId, "target": target, "anchorId": anchorId, "limit": limit,
+            "countBy": countBy.rawValue,
         ])
     }
 

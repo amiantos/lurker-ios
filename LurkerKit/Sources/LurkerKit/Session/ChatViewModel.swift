@@ -315,7 +315,9 @@ public final class ChatViewModel {
     /// hydrates a buffer *around* a target rather than paging the tail, so it isn't gated on
     /// what's already held.
     public func loadAround(_ key: BufferKey, anchorId: Int) {
-        client.loadAround(networkId: key.networkId, target: key.target, anchorId: anchorId)
+        client.loadAround(
+            networkId: key.networkId, target: key.target, anchorId: anchorId, countBy: historyCountBy
+        )
     }
 
     /// Re-attach a detached buffer to the live tail (#42) — the "return to live" a jump-to-
