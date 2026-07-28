@@ -456,6 +456,44 @@ final class LurkerClient {
         ])
     }
 
+    /// Save or unsave a message. The server answers with a `bookmark-updated` fan-out to
+    /// every socket on the account — including this one — so the caller doesn't (and
+    /// shouldn't) flip any local state itself.
+    ///
+    /// Saving is silently refused for a message the account doesn't own, and no echo comes
+    /// back for it. That's why the toggle isn't rendered optimistically: the honest failure
+    /// is a control that doesn't move, not one that moves and then springs back.
+    func setBookmark(messageId: Int, saved: Bool) {
+        send(["type": saved ? "set-bookmark" : "unset-bookmark", "messageId": messageId])
+    }
+
+    /// Fetch a page of saved messages (`GET /api/bookmarks`). Same cursor contract and same
+    /// row shape as `fetchHighlights` — the server builds both from the same query so one
+    /// list renderer serves both — so it reuses `HighlightsPage` rather than cloning it.
+    ///
+    /// Ordering is by *message* id, i.e. by when the line was said, not when it was saved.
+    func fetchBookmarks(before: Int? = nil, limit: Int = 50) async -> HighlightsPage? {
+        guard let token, var components = URLComponents(string: baseURL + "/api/bookmarks") else { return nil }
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        components.queryItems = query
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return nil
+            }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
+            return FrameParser.parseHighlights(text)
+        } catch {
+            return nil
+        }
+    }
+
     /// Tell the network we're composing. Fire-and-forget: the server turns it into a
     /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
     /// rather than needing a retry.

@@ -506,9 +506,9 @@ final class BufferListViewController: UICollectionViewController {
 
     /// The same views menu the chat screen carries, minus the entries that need a buffer.
     ///
-    /// Highlights is app-scoped — it spans every network — so being able to reach it only
-    /// from inside some arbitrary conversation was an artifact of the chat screen having once
-    /// been the only screen. Search, bookmarks and uploads land here as they're built, which
+    /// Highlights and Saved are app-scoped — they span every network — so being able to reach
+    /// them only from inside some arbitrary conversation was an artifact of the chat screen
+    /// having once been the only screen. Search and uploads land here as they're built, which
     /// is the set the desktop client keeps in its bottom toolbar (#49).
     ///
     /// Members is deliberately absent: it describes a channel, and there isn't one here.
@@ -517,7 +517,14 @@ final class BufferListViewController: UICollectionViewController {
             guard let self else { return }
             showHighlights(viewModel: viewModel)
         }
-        let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: [highlights]))
+        let bookmarks = UIAction(title: "Saved", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+            guard let self else { return }
+            showBookmarks(viewModel: viewModel)
+        }
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "ellipsis"),
+            menu: UIMenu(children: [highlights, bookmarks])
+        )
         item.accessibilityLabel = "More"
         return item
     }

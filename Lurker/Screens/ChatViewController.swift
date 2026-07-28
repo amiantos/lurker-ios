@@ -1798,11 +1798,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self?.showMemberList()
             })
         }
-        // App-scoped, not buffer-scoped: recent highlights span every network, so it belongs
-        // here on every buffer rather than gated like Members.
+        // App-scoped, not buffer-scoped: recent highlights and saved messages span every
+        // network, so they belong here on every buffer rather than gated like Members.
         actions.append(UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
             guard let self else { return }
             showHighlights(viewModel: viewModel)
+        })
+        actions.append(UIAction(title: "Saved", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+            guard let self else { return }
+            showBookmarks(viewModel: viewModel)
         })
         // Built once, not deferred: every entry is fixed by this buffer's kind, which
         // can't change under a screen that was constructed for it. (The deferral this used
@@ -1970,10 +1974,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let url = cell.flatMap { $0.linkURL(at: recognizer.location(in: $0)) }
         let message = rows[indexPath.row].message
 
-        guard let subject = url.map(MessageActionsViewController.Subject.link)
-            ?? message.map(MessageActionsViewController.Subject.message),
-            let sheet = MessageActionsViewController(subject: subject)
-        else { return }
+        // The scope is read here, at press time, so the sheet's Save/Remove label reflects the
+        // store as of the press rather than whenever the row was last drawn.
+        let subject = url.map(MessageActionsViewController.Subject.link)
+            ?? message.map { message in
+                .message(
+                    message,
+                    scope: MessageActionScope(
+                        networkId: buffer.key.networkId,
+                        isBookmarked: viewModel.isBookmarked(message.id)
+                    )
+                )
+            }
+        guard let subject, let sheet = MessageActionsViewController(subject: subject) else { return }
 
         // The keyboard would otherwise stay up over the sheet. Every other sheet here opens at
         // `.medium()` and stays partly visible above it, but this one is sized to two or three
@@ -2022,9 +2035,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func runMessageAction(_ key: MessageActionKey, on message: Message) {
         MessageActions.run(
             key, on: message,
+            // Re-read rather than reuse the scope the sheet was built with: an echo from
+            // another device could have landed while the sheet was open, and the toggle should
+            // act on what's true now.
+            scope: MessageActionScope(
+                networkId: buffer.key.networkId,
+                isBookmarked: viewModel.isBookmarked(message.id)
+            ),
             context: MessageActionContext(
                 reply: { [weak self] nick in self?.composer.address(nick) },
-                copy: { UIPasteboard.general.string = $0 }
+                copy: { UIPasteboard.general.string = $0 },
+                toggleBookmark: { [weak self] id in self?.viewModel.toggleBookmark(messageId: id) }
             )
         )
     }

@@ -32,7 +32,9 @@ final class MessageActionsViewController: UITableViewController {
     /// What the sheet is about. A press that lands on a link is about the link — the line around
     /// it isn't what you were pointing at — which is the same split Discord makes.
     enum Subject {
-        case message(Message)
+        /// The line, plus the facts about where it lives that the line itself doesn't carry —
+        /// see `MessageActionScope`.
+        case message(Message, scope: MessageActionScope)
         case link(URL)
     }
 
@@ -54,7 +56,7 @@ final class MessageActionsViewController: UITableViewController {
     /// Nil when the subject offers nothing — the caller shouldn't present an empty sheet.
     init?(subject: Subject) {
         let actions: [MessageAction] = switch subject {
-        case .message(let message): MessageActions.build(for: message)
+        case .message(let message, let scope): MessageActions.build(for: message, scope: scope)
         case .link(let url): MessageActions.build(for: url)
         }
         guard !actions.isEmpty else { return nil }
@@ -113,7 +115,7 @@ final class MessageActionsViewController: UITableViewController {
         detail.numberOfLines = 3
 
         switch subject {
-        case .message(let message):
+        case .message(let message, _):
             // The nick names who you're acting on; the body confirms which of their lines it was.
             //
             // Stripped of mIRC codes, deliberately unlike Copy Text, which keeps them. The header's

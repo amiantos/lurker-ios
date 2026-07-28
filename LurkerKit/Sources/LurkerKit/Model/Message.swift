@@ -52,6 +52,15 @@ public struct Message: Equatable, Sendable {
     /// cap and for a logged-out user (the server stores the `*` sentinel as null), which are
     /// the same thing as far as a renderer is concerned: nothing to show.
     public let account: String?
+    /// Whether this line was saved *as of the moment the server sent it*. Absent on the wire
+    /// means unsaved (the server omits the field rather than sending false), so nearly every
+    /// row costs nothing to carry it.
+    ///
+    /// **Don't render from this — ask `ChatState.isBookmarked(_:)`.** This is the wire seed,
+    /// frozen at parse time; the store's id set is what also reflects a toggle made since,
+    /// here or on another device. There is no bookmark snapshot in the connect burst, so this
+    /// field is the *only* way the set ever learns about an existing bookmark.
+    public let bookmarked: Bool
 
     public init(
         id: Int,
@@ -71,7 +80,8 @@ public struct Message: Equatable, Sendable {
         newIdent: String? = nil,
         newHost: String? = nil,
         userhost: String? = nil,
-        account: String? = nil
+        account: String? = nil,
+        bookmarked: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -91,6 +101,7 @@ public struct Message: Equatable, Sendable {
         self.newHost = newHost
         self.userhost = userhost
         self.account = account
+        self.bookmarked = bookmarked
     }
 
     /// The `user@host` half of `userhost` (which arrives as the full `nick!user@host`), or nil

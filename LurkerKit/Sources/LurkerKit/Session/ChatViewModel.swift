@@ -196,6 +196,50 @@ public final class ChatViewModel {
         await client.fetchHighlights(before: before)
     }
 
+    /// Fetch a page of saved messages. Same cursor contract as `fetchHighlights`, and the
+    /// same row shape — hence the shared `HighlightsPage`.
+    ///
+    /// Newest-first by *message* id: the order is when each line was said, not when it was
+    /// saved. Bookmarking something from last spring files it under last spring.
+    public func fetchBookmarks(before: Int? = nil) async -> HighlightsPage? {
+        let page = await client.fetchBookmarks(before: before)
+        // Every row in this feed is saved by definition, so fold the page into the id set:
+        // it's the one place a bookmark whose buffer was never loaded can become known. Without
+        // this, jumping from the list to the message would offer "Save Message" for something
+        // already saved. Each row is exactly what a `bookmark-updated` asserts, so it goes
+        // through the same reducer rather than a second way to reach the same field.
+        for item in page?.items ?? [] where item.message.id != 0 {
+            store.apply(.bookmarkUpdated(messageId: item.message.id, saved: true))
+        }
+        return page
+    }
+
+    /// Whether `messageId` is saved — what the message action sheet reads to decide between
+    /// "Save Message" and "Remove Bookmark". See `ChatState.bookmarkedIds`.
+    ///
+    /// False for a saved message this session has never loaded. That's by design (the set is
+    /// bounded by what's been seen) and is why callers that already *know* the answer — the
+    /// saved-messages list, where every row is saved — use `setBookmark` directly rather than
+    /// toggling against this.
+    public func isBookmarked(_ messageId: Int) -> Bool { state.isBookmarked(messageId) }
+
+    /// Save or unsave a message outright.
+    ///
+    /// Deliberately sends and waits: the server fans a `bookmark-updated` back to every device,
+    /// and a save it refuses (a message the account doesn't own) produces no echo at all — so
+    /// flipping local state here would show a bookmark that doesn't exist.
+    public func setBookmark(messageId: Int, saved: Bool) {
+        client.setBookmark(messageId: messageId, saved: saved)
+    }
+
+    /// Flip a message's saved state, reading the current one from the store.
+    ///
+    /// Only sound where the line is loaded — i.e. from its own buffer, which is the only place
+    /// this is called from. Elsewhere, say what you mean with `setBookmark`.
+    public func toggleBookmark(messageId: Int) {
+        setBookmark(messageId: messageId, saved: !isBookmarked(messageId))
+    }
+
     /// Upload a prepared file and return the stored object's URL for the composer to paste
     /// (#14). The caller has already picked the file and — for video — compressed it to fit
     /// the instance cap; this layer only speaks to the server. `onProgress` reports the

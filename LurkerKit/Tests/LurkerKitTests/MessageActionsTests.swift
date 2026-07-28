@@ -24,9 +24,9 @@ final class MessageActionsTests: XCTestCase {
 
     // MARK: - Eligibility
 
-    func testSpeechOffersReplyThenCopy() {
-        let actions = MessageActions.build(for: msg())
-        XCTAssertEqual(actions.map(\.key), [.reply, .copy])
+    func testSpeechOffersReplyCopyBookmark() {
+        let actions = build(msg())
+        XCTAssertEqual(actions.map(\.key), [.reply, .copy, .bookmark])
         XCTAssertEqual(actions.first?.title, "Reply to alice")
     }
 
@@ -34,65 +34,66 @@ final class MessageActionsTests: XCTestCase {
     /// and an action renders as a full-width line, but that's a layout difference, not a
     /// difference in what you can do with them.
     func testNoticeAndActionAreEligible() {
-        XCTAssertEqual(MessageActions.build(for: msg(type: .notice)).map(\.key), [.reply, .copy])
-        XCTAssertEqual(MessageActions.build(for: msg(type: .action)).map(\.key), [.reply, .copy])
+        XCTAssertEqual(build(msg(type: .notice)).map(\.key), [.reply, .copy, .bookmark])
+        XCTAssertEqual(build(msg(type: .action)).map(\.key), [.reply, .copy, .bookmark])
     }
 
     /// The server's own output — MOTD, system, error — is not speech, so no Reply. But it is the
     /// text people most often want off the screen, and on iOS this menu is the only way to get it
     /// (the row menu took the long press from the selection loupe), so Copy has to be there.
-    func testServerTextOffersCopyOnly() {
+    func testServerTextOffersCopyAndBookmarkButNoReply() {
         for type: EventType in [.system, .motd, .error, .ctcp, .e2e, .other] {
             XCTAssertEqual(
-                MessageActions.build(for: msg(type: type, text: "something")).map(\.key), [.copy],
-                "\(type) should offer Copy"
+                build(msg(type: type, text: "something")).map(\.key), [.copy, .bookmark],
+                "\(type) should offer Copy and Bookmark"
             )
         }
     }
 
     /// Activity narration offers nothing. Its `text` is a fragment of what's on screen — a part
     /// reason, a topic — because the line is synthesized from structured fields, so Copy would put
-    /// something other than the pressed line on the pasteboard.
+    /// something other than the pressed line on the pasteboard. Bookmark is out for a related
+    /// reason: churn isn't content, and one saved "alice joined" says nothing on its own.
     func testActivityNarrationOffersNothing() {
         for type: EventType in [.join, .part, .quit, .nick, .kick, .mode, .topic, .invite, .chghost] {
             XCTAssertTrue(
-                MessageActions.build(for: msg(type: type, text: "brb")).isEmpty,
+                build(msg(type: type, text: "brb")).isEmpty,
                 "\(type) should offer no actions"
             )
         }
     }
 
     /// Id 0 is this client's "no id" — an ephemeral, locally synthesized line. The server having
-    /// never heard of it doesn't make its text less copyable; the web's id gate belongs to
-    /// Bookmark, which this doesn't ship.
+    /// never heard of it doesn't make its text less copyable, so Reply and Copy stay. Bookmark is
+    /// the one that genuinely needs the id, and it's the one that drops.
     func testEphemeralLineStillOffersCopy() {
-        XCTAssertEqual(MessageActions.build(for: msg(id: 0)).map(\.key), [.reply, .copy])
-        XCTAssertEqual(MessageActions.build(for: msg(id: 0, type: .system, nick: nil)).map(\.key), [.copy])
+        XCTAssertEqual(build(msg(id: 0)).map(\.key), [.reply, .copy])
+        XCTAssertEqual(build(msg(id: 0, type: .system, nick: nil)).map(\.key), [.copy])
     }
 
     // MARK: - Per-action gating
 
-    func testOwnMessageOffersCopyOnly() {
-        XCTAssertEqual(MessageActions.build(for: msg(isSelf: true)).map(\.key), [.copy])
+    func testOwnMessageOffersNoReply() {
+        XCTAssertEqual(build(msg(isSelf: true)).map(\.key), [.copy, .bookmark])
     }
 
-    func testNicklessMessageOffersCopyOnly() {
-        XCTAssertEqual(MessageActions.build(for: msg(nick: nil)).map(\.key), [.copy])
-        XCTAssertEqual(MessageActions.build(for: msg(nick: "")).map(\.key), [.copy])
+    func testNicklessMessageOffersNoReply() {
+        XCTAssertEqual(build(msg(nick: nil)).map(\.key), [.copy, .bookmark])
+        XCTAssertEqual(build(msg(nick: "")).map(\.key), [.copy, .bookmark])
     }
 
     /// An upload with no caption, say: nothing to put on the pasteboard, but still someone to
-    /// reply to.
-    func testTextlessMessageOffersReplyOnly() {
-        XCTAssertEqual(MessageActions.build(for: msg(text: nil)).map(\.key), [.reply])
-        XCTAssertEqual(MessageActions.build(for: msg(text: "")).map(\.key), [.reply])
+    /// reply to and still a line worth keeping.
+    func testTextlessMessageOffersNoCopy() {
+        XCTAssertEqual(build(msg(text: nil)).map(\.key), [.reply, .bookmark])
+        XCTAssertEqual(build(msg(text: "")).map(\.key), [.reply, .bookmark])
     }
 
     // MARK: - Running
 
     func testReplyHandsBackTheNick() {
         var replied: [String] = []
-        MessageActions.run(.reply, on: msg(), context: context(reply: { replied.append($0) }))
+        run(.reply, on: msg(), context: context(reply: { replied.append($0) }))
         XCTAssertEqual(replied, ["alice"])
     }
 
@@ -101,7 +102,7 @@ final class MessageActionsTests: XCTestCase {
     func testCopyHandsBackTheRawText() {
         var copied: [String] = []
         let raw = "\u{03}04red\u{03} and https://example.com"
-        MessageActions.run(.copy, on: msg(text: raw), context: context(copy: { copied.append($0) }))
+        run(.copy, on: msg(text: raw), context: context(copy: { copied.append($0) }))
         XCTAssertEqual(copied, [raw])
     }
 
@@ -110,8 +111,8 @@ final class MessageActionsTests: XCTestCase {
     func testRunningAnUnavailableActionDoesNothing() {
         var fired = 0
         let ctx = context(reply: { _ in fired += 1 }, copy: { _ in fired += 1 })
-        MessageActions.run(.reply, on: msg(nick: nil), context: ctx)
-        MessageActions.run(.copy, on: msg(text: ""), context: ctx)
+        run(.reply, on: msg(nick: nil), context: ctx)
+        run(.copy, on: msg(text: ""), context: ctx)
         XCTAssertEqual(fired, 0)
     }
 
@@ -123,15 +124,15 @@ final class MessageActionsTests: XCTestCase {
         var fired = 0
         let ctx = context(reply: { _ in fired += 1 }, copy: { _ in fired += 1 })
 
-        MessageActions.run(.reply, on: msg(isSelf: true), context: ctx)
-        MessageActions.run(.reply, on: msg(type: .motd), context: ctx)
-        MessageActions.run(.reply, on: msg(type: .part, text: "brb"), context: ctx)
-        MessageActions.run(.copy, on: msg(type: .part, text: "brb"), context: ctx)
+        run(.reply, on: msg(isSelf: true), context: ctx)
+        run(.reply, on: msg(type: .motd), context: ctx)
+        run(.reply, on: msg(type: .part, text: "brb"), context: ctx)
+        run(.copy, on: msg(type: .part, text: "brb"), context: ctx)
         XCTAssertEqual(fired, 0)
 
         // …and still runs the ones that ARE offered, so the gate isn't just refusing everything.
-        MessageActions.run(.reply, on: msg(), context: ctx)
-        MessageActions.run(.copy, on: msg(), context: ctx)
+        run(.reply, on: msg(), context: ctx)
+        run(.copy, on: msg(), context: ctx)
         XCTAssertEqual(fired, 2)
     }
 
@@ -171,14 +172,80 @@ final class MessageActionsTests: XCTestCase {
         MessageActions.run(.copy, on: url, context: linkContext)
 
         for key: MessageActionKey in [.openLink, .copyLink, .shareLink] {
-            MessageActions.run(key, on: msg(), context: context())
+            run(key, on: msg(), context: context())
         }
+    }
+
+    // MARK: - Bookmark
+
+    /// The network gate. A system-buffer line is app-scoped, and the server refuses to bookmark
+    /// one — the ownership check joins through networks, which it has none of, so the insert
+    /// writes nothing and no echo comes back. Offering Save there would be a permanent silent
+    /// no-op, so it isn't offered.
+    func testSystemBufferLineOffersNoBookmark() {
+        let scope = MessageActionScope(networkId: nil, isBookmarked: false)
+        XCTAssertEqual(MessageActions.build(for: msg(), scope: scope).map(\.key), [.reply, .copy])
+        XCTAssertEqual(
+            MessageActions.build(for: msg(type: .system, nick: nil), scope: scope).map(\.key), [.copy]
+        )
+    }
+
+    /// The label and glyph are the only thing that changes with saved state — the action is in
+    /// the same place either way, so the row doesn't move under a thumb that's already reaching.
+    func testBookmarkLabelReflectsSavedState() {
+        let saved = build(msg(), isBookmarked: true).first { $0.key == .bookmark }
+        XCTAssertEqual(saved?.title, "Remove Bookmark")
+        XCTAssertEqual(saved?.symbol, "bookmark.fill")
+
+        let unsaved = build(msg()).first { $0.key == .bookmark }
+        XCTAssertEqual(unsaved?.title, "Save Message")
+        XCTAssertEqual(unsaved?.symbol, "bookmark")
+    }
+
+    /// The id, not a direction. Which way to toggle is the caller's call against the store, so a
+    /// sheet built before an echo landed can't push the state backwards.
+    func testBookmarkHandsBackTheMessageId() {
+        var toggled: [Int] = []
+        run(.bookmark, on: msg(id: 77), context: context(toggleBookmark: { toggled.append($0) }))
+        XCTAssertEqual(toggled, [77])
+    }
+
+    /// `run` gates on what `build` offers, so the two unbookmarkable cases can't fire it even if
+    /// a stale sheet asks.
+    func testRunningBookmarkOnAnIneligibleLineDoesNothing() {
+        var fired = 0
+        let ctx = context(toggleBookmark: { _ in fired += 1 })
+        // No network (system buffer), no id (ephemeral), and narration rather than content.
+        MessageActions.run(
+            .bookmark, on: msg(),
+            scope: MessageActionScope(networkId: nil, isBookmarked: false), context: ctx
+        )
+        run(.bookmark, on: msg(id: 0), context: ctx)
+        run(.bookmark, on: msg(type: .join, text: nil), context: ctx)
+        XCTAssertEqual(fired, 0)
+    }
+
+    // MARK: - Helpers
+
+    /// The default scope: a real network, nothing saved. The bookmark-specific cases pass their
+    /// own.
+    private func scope(isBookmarked: Bool = false) -> MessageActionScope {
+        MessageActionScope(networkId: 1, isBookmarked: isBookmarked)
+    }
+
+    private func build(_ message: Message, isBookmarked: Bool = false) -> [MessageAction] {
+        MessageActions.build(for: message, scope: scope(isBookmarked: isBookmarked))
+    }
+
+    private func run(_ key: MessageActionKey, on message: Message, context ctx: MessageActionContext) {
+        MessageActions.run(key, on: message, scope: scope(), context: ctx)
     }
 
     private func context(
         reply: @escaping (String) -> Void = { nick in XCTFail("unexpected reply: \(nick)") },
-        copy: @escaping (String) -> Void = { text in XCTFail("unexpected copy: \(text)") }
+        copy: @escaping (String) -> Void = { text in XCTFail("unexpected copy: \(text)") },
+        toggleBookmark: @escaping (Int) -> Void = { id in XCTFail("unexpected bookmark: \(id)") }
     ) -> MessageActionContext {
-        MessageActionContext(reply: reply, copy: copy)
+        MessageActionContext(reply: reply, copy: copy, toggleBookmark: toggleBookmark)
     }
 }

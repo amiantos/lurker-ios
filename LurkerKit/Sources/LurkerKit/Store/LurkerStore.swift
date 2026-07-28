@@ -56,6 +56,28 @@ public struct ChatState: Sendable {
     /// The friends list, sorted case-insensitively by display name. Server-authoritative:
     /// seeded by `contacts-snapshot` and kept in sync by `contact-updated`/`contact-deleted`.
     public var contacts: [Contact] = []
+    /// Saved-message ids — what the bookmark toggle reads. **Read through
+    /// `isBookmarked(_:)`.**
+    ///
+    /// A cache of what this session has *seen*, not a mirror of what the account owns. There
+    /// is deliberately no bookmark snapshot in the connect burst: the server used to send
+    /// every saved id on every connect, which is the one piece of connect state that grows
+    /// without bound over an account's life. Instead each message row carries its own
+    /// `bookmarked` flag, so this fills in from the pages the client was going to render
+    /// anyway, and an id that isn't here is simply one whose line isn't loaded.
+    ///
+    /// That's sound because the only question ever asked of it is "is the line the user is
+    /// looking at saved?" — and a line being looked at is a line that was loaded. The full
+    /// saved-messages list comes from `GET /api/bookmarks`, not from here.
+    ///
+    /// Pages only ever ADD. A page's silence about an id is not an unsave; only a
+    /// `bookmark-updated` frame removes one.
+    ///
+    /// Ids are `messages` table ids. System-buffer lines have a *separate* id sequence that
+    /// overlaps this one, but they can't be bookmarked at all (the server's ownership check
+    /// joins through networks, which they have none of) — so nothing ever puts one in here,
+    /// and `MessageActions` never asks about one.
+    public var bookmarkedIds: Set<Int> = []
     /// Peer presence keyed `networkId → lowercased nick → state`. Mirrors the server's
     /// MONITOR-fed presence: seeded from each network snapshot's `peerPresence` blob and
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
@@ -211,6 +233,19 @@ public struct ChatState: Sendable {
     ///  - a connected network with no row for the nick reads `unknown` ("potentially online",
     ///    the no-MONITOR case), as does a network we've never heard of;
     ///  - otherwise the stored state maps through: `online`/`back` → online, `away`, `offline`.
+    /// Whether this line is saved. See `bookmarkedIds` for why an unknown id reads as
+    /// unsaved rather than unknown.
+    public func isBookmarked(_ messageId: Int) -> Bool { bookmarkedIds.contains(messageId) }
+
+    /// Fold the `bookmarked` flags on a page of rows into `bookmarkedIds`. Additive only:
+    /// a page knows about its own slice and nothing else, so its silence about an id must
+    /// not evict what an earlier page — or a live echo — established.
+    mutating func noteBookmarks(in messages: [Message]) {
+        for message in messages where message.bookmarked && message.id != 0 {
+            bookmarkedIds.insert(message.id)
+        }
+    }
+
     public func presence(networkId: Int, nick: String) -> FriendPresence {
         guard reachable, connection == .connected else { return .offline }
         if let network = networks[networkId], network.state != .connected { return .offline }
@@ -368,6 +403,16 @@ final class LurkerStore {
         case .contactDeleted(let id):
             var next = state
             next.contacts.removeAll { $0.id == id }
+            return next
+        case .bookmarkUpdated(let messageId, let saved):
+            var next = state
+            if saved {
+                next.bookmarkedIds.insert(messageId)
+            } else {
+                // A remove for an id we never held is normal, not a lost update: without a
+                // connect snapshot, the set only knows the lines this session has loaded.
+                next.bookmarkedIds.remove(messageId)
+            }
             return next
         case .bufferClosed(let networkId, let target):
             // The live half: a close on another device while this one is connected. The
@@ -566,6 +611,7 @@ final class LurkerStore {
         append: Bool
     ) -> ChatState {
         var next = state
+        next.noteBookmarks(in: messages)
         let key = frameBuffer.key.id
         // The server named this buffer, so it survives the burst's closing prune. Recorded
         // unconditionally: outside a burst `burstSeen` is dead state that the next `snapshot`
@@ -804,6 +850,7 @@ final class LurkerStore {
         hasMoreNewer: Bool
     ) -> ChatState {
         var next = state
+        next.noteBookmarks(in: events)
         let key = BufferKey(networkId: networkId, target: target).id
         let existing = next.messages[key] ?? []
         switch mode {
