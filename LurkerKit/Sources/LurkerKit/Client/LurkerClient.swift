@@ -29,7 +29,11 @@ final class LurkerClient {
     /// TEMPORARY QA: force the socket to die right after the first `open-buffer` of a
     /// launch, so the lost-request race is reproducible instead of occasional. Remove with
     /// the rest of the QA instrumentation.
-    static let qaDropSocketAfterOpenBuffer = true
+    ///
+    /// OFF by default — flip to `true` only to exercise the recovery path deliberately.
+    /// While it's on, every launch reconnects once, which masks whether the race still
+    /// happens on its own.
+    static let qaDropSocketAfterOpenBuffer = false
     private var didQaDropSocket = false
     /// Reset per socket; gates the "socket really opened" signal to the first frame that
     /// actually arrives, rather than optimistically on `resume()`.
