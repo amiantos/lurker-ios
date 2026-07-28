@@ -224,6 +224,7 @@ enum FrameParser {
                 type: type,
                 default: defaultValue,
                 choices: (entry["choices"] as? [String]) ?? [],
+                choiceLabels: (entry["choiceLabels"] as? [String: String]) ?? [:],
                 min: entry.intOrNull("min"),
                 max: entry.intOrNull("max"),
                 dependsOn: parseDependencies(entry["dependsOn"])

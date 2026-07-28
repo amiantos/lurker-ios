@@ -325,6 +325,34 @@ final class SettingsTests: XCTestCase {
         return state.settings
     }
 
+    /// Choice wording comes from the server so the phone and the browser can't say different
+    /// things about the same value — and so the stored values stay ids, which is what keeps a
+    /// rewording from being a settings migration.
+    func testParsesChoiceLabelsAndFallsBackToTheRawValue() {
+        var state = LurkerStore.reduce(
+            ChatState(),
+            FrameParser.parseSettingsBootstrap(##"""
+            {
+              "registry": [
+                {"key":"chat.events.mobile","label":"Event filter","category":"events",
+                 "group":"event-filter","type":"enum","default":"all",
+                 "choices":["all","smart","none"],
+                 "choiceLabels":{"all":"No filter","smart":"Smart filter"},
+                 "description":"Filter."}
+              ],
+              "values": {}
+            }
+            """##)
+        )
+        let option = state.settings.registry["chat.events.mobile"]
+        XCTAssertEqual(option?.label(forChoice: "all"), "No filter")
+        XCTAssertEqual(option?.label(forChoice: "smart"), "Smart filter")
+        // Unlabelled — including everything an older server sends, which has no
+        // `choiceLabels` at all — shows the raw value rather than nothing.
+        XCTAssertEqual(option?.label(forChoice: "none"), "none")
+        state = LurkerStore.reduce(state, .settingsChanged([:]))
+    }
+
     func testParsesDependsOnFromTheRegistry() {
         let settings = withDependencies()
         XCTAssertEqual(

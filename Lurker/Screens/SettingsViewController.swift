@@ -67,20 +67,14 @@ final class SettingsViewController: UITableViewController {
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
     ]
 
-    /// Labels for the event tier's raw enum values.
+    /// Suffix marking a choice this app reads but doesn't act on.
     ///
-    /// The registry ships `all` / `smart` / `none` — accurate as identifiers, opaque as a row
-    /// in a pull-down. These say what the reader gets. Anything the server adds later falls
-    /// back to its raw value rather than being hidden, so a newer server's rung is still
-    /// reachable from an older app.
-    private static let eventModeLabels: [String: String] = [
-        "all": "Show all",
-        // Says "web" because this app renders it as "Show all" — see `EventMode.smart`. It
-        // only ever appears here when it's already the stored value (set from a browser), so
-        // the row reports what is in force instead of quietly reading back as something else.
-        "smart": "Hide from quiet users (web only)",
-        "none": "Hide all",
-    ]
+    /// The choice text itself comes from the registry (`SettingOption.label(forChoice:)`), so
+    /// the phone says what the web says without a second copy to keep in step. What's local
+    /// is this: `smart` renders as "no filter" here (see `EventMode.smart`), and it only ever
+    /// appears in the picker when it is already the stored value, so the row has to report
+    /// what is actually in force rather than quietly reading back as something else.
+    private static let unsupportedChoiceSuffix = " (web only)"
 
     /// A row that's ready to render: the curated label plus the registry entry describing how
     /// to edit it. Resolved once per rebuild so the table isn't doing lookups per cell.
@@ -313,8 +307,11 @@ final class SettingsViewController: UITableViewController {
                 return choice == current
                     || EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true
             }
-            let title = { (choice: String) in
-                isEventTier ? Self.eventModeLabels[choice] ?? choice : choice
+            let title = { (choice: String) -> String in
+                let base = option.label(forChoice: choice)
+                let unsupported =
+                    isEventTier && !(EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true)
+                return unsupported ? base + Self.unsupportedChoiceSuffix : base
             }
             button.menu = UIMenu(children: choices.map { choice in
                 UIAction(title: title(choice), state: choice == current ? .on : .off) {

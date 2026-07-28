@@ -92,6 +92,10 @@ public struct SettingOption: Equatable, Sendable {
     public let `default`: SettingValue
     /// `enum` only — the permitted choices, in the order the server lists them.
     public let choices: [String]
+    /// `enum` only — display text per choice, for enums whose stored values are ids rather
+    /// than English. A choice with no entry falls back to its raw value, so a partial (or
+    /// absent) map is safe — which is also what an older server sends.
+    public let choiceLabels: [String: String]
     /// `int` only — the server-enforced bounds, so a stepper can't offer a value that will be
     /// rejected on write.
     public let min: Int?
@@ -106,6 +110,7 @@ public struct SettingOption: Equatable, Sendable {
     public init(
         key: String, label: String, description: String, type: SettingType,
         default defaultValue: SettingValue, choices: [String] = [],
+        choiceLabels: [String: String] = [:],
         min: Int? = nil, max: Int? = nil, dependsOn: [SettingDependency] = []
     ) {
         self.key = key
@@ -114,9 +119,15 @@ public struct SettingOption: Equatable, Sendable {
         self.type = type
         self.default = defaultValue
         self.choices = choices
+        self.choiceLabels = choiceLabels
         self.min = min
         self.max = max
         self.dependsOn = dependsOn
+    }
+
+    /// The text to show for one of this option's `choices`, falling back to the raw value.
+    public func label(forChoice choice: String) -> String {
+        choiceLabels[choice] ?? choice
     }
 }
 
