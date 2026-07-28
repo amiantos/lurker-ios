@@ -156,7 +156,7 @@ public enum MessageActions {
         // Activity narration is excluded for the same reason it gets no Copy, and this is a
         // deliberate divergence from the web (which offers Save on anything with an id). A
         // join or a nick change isn't content — it's the churn the event-filter tier exists to
-        // hide — and in the saved-messages feed it would surface as a lone "alice joined" with
+        // hide — and in the Bookmarks feed it would surface as a lone "alice joined" with
         // no conversation around it to explain why it was kept.
         if !message.type.isActivity, message.id != 0, scope.networkId != nil {
             actions.append(

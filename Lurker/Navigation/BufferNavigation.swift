@@ -13,8 +13,8 @@ extension UIViewController {
         showHistoryFeed(HighlightsViewController(viewModel: viewModel), viewModel: viewModel)
     }
 
-    /// The saved-messages list. App-scoped for the same reason highlights is, and reached the
-    /// same way from the same places.
+    /// The bookmarks list. App-scoped for the same reason highlights is, and reached the same
+    /// way from the same places.
     func showBookmarks(viewModel: ChatViewModel) {
         showHistoryFeed(BookmarksViewController(viewModel: viewModel), viewModel: viewModel)
     }

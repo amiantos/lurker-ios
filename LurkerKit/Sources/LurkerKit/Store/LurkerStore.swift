@@ -68,7 +68,7 @@ public struct ChatState: Sendable {
     ///
     /// That's sound because the only question ever asked of it is "is the line the user is
     /// looking at saved?" — and a line being looked at is a line that was loaded. The full
-    /// saved-messages list comes from `GET /api/bookmarks`, not from here.
+    /// Bookmarks list comes from `GET /api/bookmarks`, not from here.
     ///
     /// Pages only ever ADD. A page's silence about an id is not an unsave; only a
     /// `bookmark-updated` frame removes one.

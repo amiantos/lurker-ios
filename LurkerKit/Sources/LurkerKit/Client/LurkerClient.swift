@@ -467,7 +467,7 @@ final class LurkerClient {
         send(["type": saved ? "set-bookmark" : "unset-bookmark", "messageId": messageId])
     }
 
-    /// Fetch a page of saved messages (`GET /api/bookmarks`). Same cursor contract and same
+    /// Fetch a page of bookmarks (`GET /api/bookmarks`). Same cursor contract and same
     /// row shape as `fetchHighlights` — the server builds both from the same query so one
     /// list renderer serves both — so it reuses `HighlightsPage` rather than cloning it.
     ///

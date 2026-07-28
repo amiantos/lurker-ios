@@ -196,7 +196,7 @@ public final class ChatViewModel {
         await client.fetchHighlights(before: before)
     }
 
-    /// Fetch a page of saved messages. Same cursor contract as `fetchHighlights`, and the
+    /// Fetch a page of bookmarks. Same cursor contract as `fetchHighlights`, and the
     /// same row shape — hence the shared `HighlightsPage`.
     ///
     /// Newest-first by *message* id: the order is when each line was said, not when it was
@@ -219,7 +219,7 @@ public final class ChatViewModel {
     ///
     /// False for a saved message this session has never loaded. That's by design (the set is
     /// bounded by what's been seen) and is why callers that already *know* the answer — the
-    /// saved-messages list, where every row is saved — use `setBookmark` directly rather than
+    /// Bookmarks list, where every row is saved — use `setBookmark` directly rather than
     /// toggling against this.
     public func isBookmarked(_ messageId: Int) -> Bool { state.isBookmarked(messageId) }
 

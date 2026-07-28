@@ -1798,13 +1798,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self?.showMemberList()
             })
         }
-        // App-scoped, not buffer-scoped: recent highlights and saved messages span every
-        // network, so they belong here on every buffer rather than gated like Members.
+        // App-scoped, not buffer-scoped: recent highlights and bookmarks span every network,
+        // so they belong here on every buffer rather than gated like Members.
         actions.append(UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
             guard let self else { return }
             showHighlights(viewModel: viewModel)
         })
-        actions.append(UIAction(title: "Saved", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+        actions.append(UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
             guard let self else { return }
             showBookmarks(viewModel: viewModel)
         })

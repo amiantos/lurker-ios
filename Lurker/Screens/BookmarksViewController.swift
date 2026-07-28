@@ -4,8 +4,12 @@
 import LurkerKit
 import UIKit
 
-/// Saved messages: the lines you kept, newest first, across every buffer at once. Tapping one
-/// jumps back to it in its conversation; swiping unsaves it.
+/// Bookmarks: the lines you kept, newest first, across every buffer at once. Tapping one jumps
+/// back to it in its conversation; swiping removes it.
+///
+/// Called "Bookmarks" here and in the menus that reach it, matching the web client — while the
+/// *action* on a message stays "Save Message". That split is the web's too, and it's the right
+/// way round: the noun names a place you go, the verb names what you're doing to one line.
 ///
 /// Everything about how it looks and pages is `HistoryFeedViewController`, which this shares with
 /// Highlights — the server builds both feeds from the same query, so the row shape, the cursor
@@ -16,20 +20,22 @@ import UIKit
 /// top. That's the web's behaviour too, and it's the right one for a feed you navigate by
 /// conversation — but it does mean a fresh bookmark can land below the fold.
 final class BookmarksViewController: HistoryFeedViewController {
-    override var feedTitle: String { "Saved" }
+    override var feedTitle: String { "Bookmarks" }
 
     override func fetchPage(before: Int?) async -> HighlightsPage? {
         await viewModel.fetchBookmarks(before: before)
     }
 
     override var loadingModel: StateView.Model {
-        StateView.Model(title: "Loading saved messages…", isLoading: true)
+        StateView.Model(title: "Loading bookmarks…", isLoading: true)
     }
 
     override var emptyModel: StateView.Model {
         StateView.Model(
             symbol: "bookmark",
-            title: "No saved messages",
+            title: "No bookmarks",
+            // Names the action exactly as the sheet does, since that's what the reader has to
+            // go and find. The noun and the verb differ on purpose — see the type doc.
             subtitle: "Press and hold a message, then Save Message, to keep it here."
         )
     }
@@ -37,25 +43,28 @@ final class BookmarksViewController: HistoryFeedViewController {
     override var errorModel: StateView.Model {
         StateView.Model(
             symbol: "exclamationmark.triangle",
-            title: "Couldn't load saved messages",
+            title: "Couldn't load bookmarks",
             subtitle: "Pull to try again."
         )
     }
 
-    /// Swipe to unsave. The row goes immediately rather than waiting for the server's echo —
+    /// Swipe to remove. The row goes immediately rather than waiting for the server's echo —
     /// which is the opposite of what the message action sheet does, deliberately.
     ///
     /// The two directions aren't symmetric. *Saving* can be refused (a message the account
     /// doesn't own) and the server answers that refusal with silence, so a sheet that flipped
-    /// its own label would be inventing a bookmark. *Unsaving* is unconditional — `removeBookmark`
-    /// deletes by (user, message) and always fans out — so there is no failure for the row to
-    /// spring back from, and leaving it sitting there until a round trip completes would just
-    /// read as a broken swipe.
+    /// its own label would be inventing a bookmark. *Removing* is unconditional —
+    /// `removeBookmark` deletes by (user, message) and always fans out — so there is no failure
+    /// for the row to spring back from, and leaving it sitting there until a round trip
+    /// completes would just read as a broken swipe.
+    ///
+    /// Titled "Remove" to match the sheet's "Remove Bookmark" rather than the "Save" verb: this
+    /// is a row in the Bookmarks list, and the thing being removed is the bookmark.
     override func trailingSwipeActions(
         for item: HighlightItem,
         at indexPath: IndexPath
     ) -> UISwipeActionsConfiguration? {
-        let remove = UIContextualAction(style: .destructive, title: "Unsave") { [weak self] _, _, done in
+        let remove = UIContextualAction(style: .destructive, title: "Remove") { [weak self] _, _, done in
             guard let self else { return done(false) }
             // `setBookmark(saved: false)`, not `toggleBookmark`: every row here is saved by
             // definition, but the id set only knows lines this session has loaded, so toggling
