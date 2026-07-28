@@ -158,9 +158,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// if it isn't already held the screen fetches an `around` slice centered on it first.
     /// Consumed once the landing scrolls to it, so it's a one-shot like `needsInitialScroll`.
     private var pendingJumpId: Int?
-    /// Whether the `around` slice for `pendingJumpId` has been requested on this connection —
-    /// same one-shot-per-burst shape as `openRequestedAtGeneration`.
-    private var aroundRequested = false
+    /// The snapshot burst during which the `around` slice for `pendingJumpId` was requested,
+    /// or nil if it hasn't been asked for. Same shape, and the same reasoning, as
+    /// `openRequestedAtGeneration`: a request written to a socket that is silently replaced
+    /// is lost with `connection` never dipping, so a bool cleared only on disconnect would
+    /// leave a jump waiting forever for a slice that cannot arrive.
+    private var aroundRequestedAtGeneration: Int?
     /// Set once the requested `around` slice has landed, so the initial scroll can give up on
     /// a missing anchor (`anchorMissing`) and fall back to the bottom instead of waiting forever.
     private var aroundSliceArrived = false
@@ -538,9 +541,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// before its `backlog` frame lands, and popping on that would bounce every cold launch
     /// back to the list. It takes one of the two proofs in the guard below.
     ///
-    /// Returns true when it popped, so `apply` can stop: the rest of it reads
-    /// `state.messages[key]`, which is empty by now, and would repaint the screen blank on
-    /// the way out.
+    /// Returns true when `apply` should stop — which is broader than "it popped". It is also
+    /// true when this screen is on its way out by some other route: a sign-out that
+    /// SceneDelegate is already handling, or a pop already in flight. In every one of those
+    /// cases the rest of `apply` would read `state.messages[key]`, find it empty, and repaint
+    /// the screen blank on the way out, so the caller wants to stop regardless of who is
+    /// doing the leaving.
     private func handleBufferDisappeared(_ state: ChatState) -> Bool {
         guard state.buffers[buffer.key.id] != nil else {
             // Two ways to know the buffer isn't coming:
@@ -652,7 +658,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // has *some* messages (a pre-existing connect backlog would trip that and make the jump
         // give up before its real slice arrives). A live append keeps the baseline, so it
         // doesn't count either.
-        if aroundRequested, !aroundSliceArrived {
+        if aroundRequestedAtGeneration != nil, !aroundSliceArrived {
             let currentIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
             let replaced = !aroundBaselineIds.isEmpty && !aroundBaselineIds.isSubset(of: currentIds)
             let anchorPresent = pendingJumpId.map { currentIds.contains($0) } ?? false
@@ -738,7 +744,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// loaded row unread) rather than the real seam.
     private func jumpTargetRow(anchor: Int) -> Int? {
         if jumpFlashesFirstUnread {
-            if aroundRequested, !aroundSliceArrived { return nil }
+            if aroundRequestedAtGeneration != nil, !aroundSliceArrived { return nil }
             return firstUnreadRow
         }
         return rowIndex(containing: anchor)
@@ -809,7 +815,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// stranded set from a prior jump.
     private func resetJumpState() {
         pendingJumpId = nil
-        aroundRequested = false
+        aroundRequestedAtGeneration = nil
         aroundSliceArrived = false
         aroundBaselineIds = []
         jumpConverging = false
@@ -923,13 +929,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func requestAroundIfNeeded(_ state: ChatState) {
         guard let anchor = pendingJumpId, buffer.kind.hydratesOnDemand else { return }
         guard state.connection == .connected else {
-            aroundRequested = false
+            aroundRequestedAtGeneration = nil
             return
         }
-        guard !aroundRequested else { return }
+        // A new burst voids a request made during the previous one — see
+        // `hydrateIfNeeded` for why `connection` alone can't be trusted to notice.
+        if let asked = aroundRequestedAtGeneration, asked != state.burstGeneration {
+            aroundRequestedAtGeneration = nil
+        }
+        guard aroundRequestedAtGeneration == nil else { return }
         // Already held? No fetch — land against what's loaded.
         if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
-        aroundRequested = true
+        aroundRequestedAtGeneration = state.burstGeneration
         aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
         aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
         viewModel.loadAround(buffer.key, anchorId: anchor)
