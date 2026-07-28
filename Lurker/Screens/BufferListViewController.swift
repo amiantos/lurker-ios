@@ -821,8 +821,17 @@ final class BufferListViewController: UICollectionViewController {
         // server-side has no row in `state.buffers`, and the chat screen's hydrate only fires
         // for a buffer that already has one. Send open-buffer explicitly here (as /query does)
         // so the server ships that DM's backlog and it opens, instead of hanging on the loading
-        // spinner. Redundant-but-harmless when the DM is already open (it just re-hydrates).
-        if row.contactId != nil { viewModel.openBuffer(row.buffer.key) }
+        // spinner.
+        //
+        // Gated on the row being ABSENT, which is the only case that comment describes. It
+        // used to fire on every friend tap, on the reasoning that a redundant one just
+        // re-hydrates — no longer true, and it was the premise the read/write split overturned.
+        // `open-buffer` is a WRITE: it now announces to every other device the user owns, it's
+        // refused outright for a paused account, and the chat screen's own hydrate would fetch
+        // the same backlog a second time.
+        if row.contactId != nil, state.buffers[row.buffer.key.id] == nil {
+            viewModel.openBuffer(row.buffer.key)
+        }
         onSelect?(row.buffer)
     }
 
