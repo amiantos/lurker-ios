@@ -300,10 +300,14 @@ final class LurkerStore {
             // Frame 1 of every burst (CLIENT_PROTOCOL.md §4.3), so this is where the
             // roster reconciliation window opens. Start collecting the keys the server
             // names; `backlog-complete` closes the window and prunes the rest.
-            var next = applySnapshot(state, networks)
+            // Open the window BEFORE applying, not after: `applySnapshot` materializes
+            // rows and records them as seen, and clearing afterwards threw those
+            // entries away — leaving any buffer the snapshot named but that got no
+            // backlog frame of its own to be pruned by the terminal frame.
+            var next = state
             next.burstSeen = []
             next.burstActive = true
-            return next
+            return applySnapshot(next, networks)
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
             // when that's nothing. Latched: a later resync re-sends it, and re-asserting true

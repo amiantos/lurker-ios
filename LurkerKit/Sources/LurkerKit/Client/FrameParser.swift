@@ -229,6 +229,19 @@ enum FrameParser {
         // would mislabel it hydrated and it would render empty forever.
         let hasMoreOlder = obj.bool("hasMoreOlder", true)
         let hydrated = !events.isEmpty || !hasMoreOlder
+        // TEMPORARY (QA #A4): a backlog frame that parses unhydrated leaves the screen on
+        // the spinner, and `openRequested` is already latched so nothing retries. Logging
+        // whether the server actually SENT hasMoreOlder separates "genuinely a shell" from
+        // "the field was missing and we defaulted it". Remove once diagnosed.
+        NSLog(
+            "[backlog] target=%@ events=%d hasMoreOlderSent=%@ hasMoreOlder=%@ hydrated=%@ mode=%@",
+            target,
+            events.count,
+            String(obj.has("hasMoreOlder")),
+            String(hasMoreOlder),
+            String(hydrated),
+            (obj["mode"] as? String) ?? "-"
+        )
         // For a *network* buffer, only a resume slice carries a `reset` field. reset:false
         // means "these are just the events past ?since" → append; reset:true (oversized
         // gap) and a plain full/latest backlog (no field) → replace.

@@ -385,6 +385,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 let now = Date()
                 return old.messages[key] == new.messages[key]
                     && old.buffers[key] == new.buffers[key]
+                    // Not about *this* buffer's contents, and that's exactly why it has to
+                    // be here. When the buffer is absent, every field above is nil on both
+                    // sides, so the update that flips the roster to settled — the burst's
+                    // terminal frame — is identical by this predicate and gets dropped.
+                    // `handleBufferDisappeared` then never learns that absence has become
+                    // provable, and a screen opened BY KEY onto a closed buffer sits on
+                    // "Loading messages…" forever. The absent case is the one that needs
+                    // this update most, and it was the one guaranteed not to receive it.
+                    && old.rosterSettled == new.rosterSettled
                     && old.error == new.error
                     && old.connection == new.connection
                     && old.reachable == new.reachable
@@ -838,19 +847,70 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the server discards `open-buffer` for both without replying (see
     /// `BufferKind.hydratesOnDemand`), so asking would set `openRequested` on a request
     /// that can never be answered and wedge the screen waiting on it.
+    /// TEMPORARY (QA #A4): trace why a launch-restored buffer can sit on "Loading
+    /// messages…". Every early return here is a reason the fetch didn't happen, and the
+    /// bug is that one of them is being taken forever. Remove once diagnosed.
+    private func traceHydrate(_ why: String, _ state: ChatState) {
+        let known = state.buffers[buffer.key.id]
+        NSLog(
+            "[hydrate] %@ target=%@ conn=%@ row=%@ hydrated=%@ openRequested=%@ msgs=%d rosterSettled=%@ backlogComplete=%@",
+            why,
+            buffer.key.id,
+            String(describing: state.connection),
+            known == nil ? "nil" : "yes",
+            known.map { String($0.hydrated) } ?? "-",
+            String(openRequested),
+            (state.messages[buffer.key.id] ?? []).count,
+            String(state.rosterSettled),
+            String(state.backlogComplete)
+        )
+    }
+
     private func hydrateIfNeeded(_ state: ChatState) {
         guard buffer.kind.hydratesOnDemand else { return }
         // A pending jump hydrates via an `around` slice centered on the target (see
         // `requestAroundIfNeeded`), not `open-buffer`'s latest backlog — asking for both would
         // double-fetch and the latest slice would fight the jump. Once the around slice lands
         // the buffer reads hydrated, so this stays a no-op afterwards.
-        guard pendingJumpId == nil else { return }
-        guard state.connection == .connected else {
-            openRequested = false // a reconnect resyncs buffers, so ask again on the next one
+        guard pendingJumpId == nil else {
+            traceHydrate("skip:pendingJump", state)
             return
         }
-        guard !openRequested, let known = state.buffers[buffer.key.id], !known.hydrated else { return }
+        guard state.connection == .connected else {
+            openRequested = false // a reconnect resyncs buffers, so ask again on the next one
+            traceHydrate("skip:notConnected", state)
+            return
+        }
+        // The row went away, so whatever we asked for is void — re-arm.
+        //
+        // `openRequested` used to clear ONLY on disconnect, which assumed the row could
+        // never vanish underneath a live socket. Roster reconciliation broke that: a
+        // burst that doesn't name this buffer drops the row and its messages, and
+        // anything that re-materializes it — a live event, a later frame — brings it
+        // back as an unhydrated shell. With the flag still latched, this would decline
+        // to ask ever again over that connection, and the screen sat on "Loading
+        // messages…" permanently *without* popping, because by then a row exists again.
+        //
+        // Keyed on the row being ABSENT rather than merely unhydrated: unhydrated is
+        // also the normal state between sending `open-buffer` and its reply landing, and
+        // re-arming there would fire a fresh request on every state update until it did.
+        // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
+        // so nil↔shell always gets delivered.
+        if state.buffers[buffer.key.id] == nil { openRequested = false }
+        guard !openRequested else {
+            traceHydrate("skip:alreadyAsked", state)
+            return
+        }
+        guard let known = state.buffers[buffer.key.id] else {
+            traceHydrate("skip:noRow", state)
+            return
+        }
+        guard !known.hydrated else {
+            traceHydrate("skip:alreadyHydrated", state)
+            return
+        }
         openRequested = true
+        traceHydrate("SEND open-buffer", state)
         viewModel.openBuffer(buffer.key)
     }
 
