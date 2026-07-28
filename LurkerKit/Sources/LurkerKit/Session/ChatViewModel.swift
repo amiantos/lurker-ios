@@ -195,10 +195,21 @@ public final class ChatViewModel {
     }
 
     /// What the UI should do after a line of input — almost always nothing, but `/msg` and
-    /// `/query` ask the composer's owner to switch to the DM they opened.
+    /// `/query` ask the composer's owner to switch to the DM they opened, and `/join` asks
+    /// it to switch once the channel actually exists.
     public enum SendOutcome: Equatable, Sendable {
         case none
         case activate(BufferKey)
+        /// `/join` was sent. Switch to this buffer **when it materializes**, not now.
+        ///
+        /// Deliberately not `activate`: a join is a request the server can refuse (no such
+        /// channel, +i, banned, or a 470 forward to a different name), and the buffer only
+        /// exists once `channel-joined` comes back (§9.1). Switching immediately would put
+        /// the user on a screen for a channel they may never be in, and — because nothing
+        /// would ever arrive for it — one that sits on a loading spinner forever. So the
+        /// UI waits for the row and navigates then; a refused join simply never fires,
+        /// leaving the user where they typed with the error printed in front of them.
+        case awaitJoin(BufferKey)
     }
 
     /// Handle a line of composer input from `key`'s buffer: a plain message goes to the
@@ -237,7 +248,10 @@ public final class ChatViewModel {
             case .raw(let line):
                 client.sendRaw(networkId: networkId, line: line)
             case .join(let channel, let joinKey):
-                if let networkId { client.joinChannel(networkId: networkId, channel: channel, key: joinKey) }
+                if let networkId {
+                    client.joinChannel(networkId: networkId, channel: channel, key: joinKey)
+                    outcome = .awaitJoin(BufferKey(networkId: networkId, target: channel))
+                }
             case .part(let channel, let reason):
                 client.part(networkId: networkId, channel: channel, reason: reason)
             case .close(let target):

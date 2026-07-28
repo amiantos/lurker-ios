@@ -127,6 +127,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
+    /// The in-flight `/join` waiting for its channel to materialize (see `awaitJoin`).
+    /// At most one: a second `/join` supersedes the first rather than racing it.
+    private var pendingJoinCancellable: AnyCancellable?
     /// Whether the store has ever held a real row for this buffer. Latches true and never
     /// clears — see `handleBufferDisappeared`, which uses it to tell "the row hasn't arrived
     /// yet" from "the row was taken away".
@@ -847,38 +850,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the server discards `open-buffer` for both without replying (see
     /// `BufferKind.hydratesOnDemand`), so asking would set `openRequested` on a request
     /// that can never be answered and wedge the screen waiting on it.
-    /// TEMPORARY (QA #A4): trace why a launch-restored buffer can sit on "Loading
-    /// messages…". Every early return here is a reason the fetch didn't happen, and the
-    /// bug is that one of them is being taken forever. Remove once diagnosed.
-    private func traceHydrate(_ why: String, _ state: ChatState) {
-        let known = state.buffers[buffer.key.id]
-        NSLog(
-            "[hydrate] %@ target=%@ conn=%@ row=%@ hydrated=%@ openRequested=%@ msgs=%d rosterSettled=%@ backlogComplete=%@",
-            why,
-            buffer.key.id,
-            String(describing: state.connection),
-            known == nil ? "nil" : "yes",
-            known.map { String($0.hydrated) } ?? "-",
-            String(openRequested),
-            (state.messages[buffer.key.id] ?? []).count,
-            String(state.rosterSettled),
-            String(state.backlogComplete)
-        )
-    }
-
     private func hydrateIfNeeded(_ state: ChatState) {
         guard buffer.kind.hydratesOnDemand else { return }
         // A pending jump hydrates via an `around` slice centered on the target (see
         // `requestAroundIfNeeded`), not `open-buffer`'s latest backlog — asking for both would
         // double-fetch and the latest slice would fight the jump. Once the around slice lands
         // the buffer reads hydrated, so this stays a no-op afterwards.
-        guard pendingJumpId == nil else {
-            traceHydrate("skip:pendingJump", state)
-            return
-        }
+        guard pendingJumpId == nil else { return }
         guard state.connection == .connected else {
             openRequested = false // a reconnect resyncs buffers, so ask again on the next one
-            traceHydrate("skip:notConnected", state)
             return
         }
         // The row went away, so whatever we asked for is void — re-arm.
@@ -897,20 +877,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
         // so nil↔shell always gets delivered.
         if state.buffers[buffer.key.id] == nil { openRequested = false }
-        guard !openRequested else {
-            traceHydrate("skip:alreadyAsked", state)
-            return
-        }
-        guard let known = state.buffers[buffer.key.id] else {
-            traceHydrate("skip:noRow", state)
-            return
-        }
-        guard !known.hydrated else {
-            traceHydrate("skip:alreadyHydrated", state)
-            return
-        }
+        guard !openRequested, let known = state.buffers[buffer.key.id], !known.hydrated else { return }
         openRequested = true
-        traceHydrate("SEND open-buffer", state)
         viewModel.openBuffer(buffer.key)
     }
 
@@ -1371,6 +1339,37 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.clear()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
         if case .activate(let key) = outcome { navigate(to: key) }
+        // `/join` asked us to switch once the channel is real — see `awaitJoin`.
+        if case .awaitJoin(let key) = outcome { awaitJoin(key) }
+    }
+
+    /// Switch to a channel we just asked to join, the moment its buffer materializes.
+    ///
+    /// The row appears when `channel-joined` comes back and `applyLive` mints it — which is
+    /// the only thing that proves we're actually in the channel. Waiting for it rather than
+    /// navigating straight away is what keeps a refused join (no such channel, +i, banned,
+    /// a 470 forward to another name) from stranding the user on a screen that never fills:
+    /// nothing fires, they stay where they typed, and the error prints in front of them.
+    ///
+    /// `statePublisher` replays current state on subscribe, so joining a channel already
+    /// open switches to it immediately — which is what typing `/join` for it means.
+    ///
+    /// The timeout only tidies up. It exists so a join that never lands doesn't leave a
+    /// subscription that could fire much later — switching the user somewhere unasked
+    /// because they happened to join that channel from another client ten minutes on.
+    private func awaitJoin(_ key: BufferKey) {
+        pendingJoinCancellable?.cancel()
+        pendingJoinCancellable = viewModel.statePublisher
+            .compactMap { $0.buffers[key.id] }
+            .first()
+            .timeout(.seconds(15), scheduler: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [weak self] _ in self?.pendingJoinCancellable = nil },
+                receiveValue: { [weak self] joined in
+                    self?.pendingJoinCancellable = nil
+                    self?.navigate(to: joined.key)
+                }
+            )
     }
 
     /// Switch to another buffer — what `/msg` and `/query` ask for once the DM is open. The
