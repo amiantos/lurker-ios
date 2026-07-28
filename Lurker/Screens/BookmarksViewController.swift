@@ -60,18 +60,19 @@ final class BookmarksViewController: HistoryFeedViewController {
     ///
     /// Titled "Remove" to match the sheet's "Remove Bookmark" rather than the "Save" verb: this
     /// is a row in the Bookmarks list, and the thing being removed is the bookmark.
-    override func trailingSwipeActions(
-        for item: HighlightItem,
-        at indexPath: IndexPath
-    ) -> UISwipeActionsConfiguration? {
+    override func trailingSwipeActions(for item: HighlightItem) -> UISwipeActionsConfiguration? {
         let remove = UIContextualAction(style: .destructive, title: "Remove") { [weak self] _, _, done in
             guard let self else { return done(false) }
             // `setBookmark(saved: false)`, not `toggleBookmark`: every row here is saved by
             // definition, but the id set only knows lines this session has loaded, so toggling
             // against it would *save* a bookmark whose buffer was never opened.
             viewModel.setBookmark(messageId: item.message.id, saved: false)
-            removeItem(at: indexPath)
+            // Close the swipe BEFORE the list changes under it. A full swipe animates the row
+            // out itself (`performsFirstActionWithFullSwipe` is on by default), and reloading
+            // first recycles that cell to the next bookmark — so the slide-out plays on the
+            // wrong row. Settling the action first leaves the reload to redraw a settled table.
             done(true)
+            removeItem(id: item.message.id)
         }
         remove.image = UIImage(systemName: "bookmark.slash")
         return UISwipeActionsConfiguration(actions: [remove])

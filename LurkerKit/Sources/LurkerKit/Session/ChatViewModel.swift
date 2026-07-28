@@ -206,11 +206,12 @@ public final class ChatViewModel {
         // Every row in this feed is saved by definition, so fold the page into the id set:
         // it's the one place a bookmark whose buffer was never loaded can become known. Without
         // this, jumping from the list to the message would offer "Save Message" for something
-        // already saved. Each row is exactly what a `bookmark-updated` asserts, so it goes
-        // through the same reducer rather than a second way to reach the same field.
-        for item in page?.items ?? [] where item.message.id != 0 {
-            store.apply(.bookmarkUpdated(messageId: item.message.id, saved: true))
-        }
+        // already saved.
+        //
+        // One mutation, not one per row: `store.apply` publishes a whole `ChatState`, so a
+        // page of `bookmark-updated` frames would wake every screen 50 times over to say one
+        // thing.
+        store.noteBookmarked(ids: (page?.items ?? []).map(\.message.id))
         return page
     }
 

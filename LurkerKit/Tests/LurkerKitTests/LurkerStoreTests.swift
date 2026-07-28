@@ -808,6 +808,42 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertTrue(store.state.isBookmarked(2), "the older page said nothing about id 2")
     }
 
+    /// A row that comes back UNFLAGGED is authoritative for itself — the server omits the
+    /// field when false. This is the only way an unsave made elsewhere while this client was
+    /// offline ever lands: the echo was missed, and the reconnect backlog carries the truth.
+    func testAnUnflaggedRowClearsItsOwnBookmark() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [saved(msg(2, "kept"))]))
+        XCTAssertTrue(store.state.isBookmarked(2))
+        // The same line comes back on reconnect, no longer saved.
+        store.apply(channelBuffer(hydrated: true, messages: [msg(2, "kept")]))
+        XCTAssertFalse(store.state.isBookmarked(2))
+    }
+
+    /// System-buffer rows have their own id sequence, overlapping the message ids this set is
+    /// keyed by, and never carry the flag — so reconciling against them would clear a real
+    /// bookmark that happens to share an id.
+    func testSystemBufferPagesCannotClearBookmarks() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [saved(msg(2, "kept"))]))
+        store.apply(.backlog(
+            buffer: Buffer(networkId: nil, target: ":system:", kind: .system, hydrated: true),
+            messages: [msg(2, "an unrelated system line that happens to be id 2")],
+            hydrated: true,
+            append: false
+        ))
+        XCTAssertTrue(store.state.isBookmarked(2))
+    }
+
+    /// The saved-messages feed carries no per-row flag — every row in it is saved — so it
+    /// folds in additively, and in one mutation rather than one per row.
+    func testNoteBookmarkedIdsSeedsTheSet() {
+        let store = LurkerStore()
+        store.noteBookmarked(ids: [4, 5])
+        XCTAssertTrue(store.state.isBookmarked(4))
+        XCTAssertTrue(store.state.isBookmarked(5))
+    }
+
     /// The echo is the source of truth for a toggle — it's fanned to every socket including
     /// the one that asked, so nothing renders optimistically.
     func testBookmarkUpdatedAddsAndRemoves() {

@@ -58,7 +58,12 @@ class HistoryFeedViewController: UITableViewController {
     /// `HighlightGrouping` in LurkerKit; this only carries what the table draws.
     private struct Section {
         let networkName: String?
-        let target: String
+        /// The target as a reader should see it — `Buffer.displayName`, not the raw wire
+        /// target. Server logs address themselves as `:server:<host>`, which is a routing
+        /// sentinel and not something to print; every other surface in the app names a
+        /// buffer through that helper, so this does too rather than growing a second
+        /// answer that can drift from the title pill's.
+        let displayTarget: String
         let dayLabel: String
         let items: [HighlightItem]
     }
@@ -92,10 +97,9 @@ class HistoryFeedViewController: UITableViewController {
     }
 
     /// Trailing swipe actions for a row, if this feed offers any. Nil (the default) leaves rows
-    /// unswipeable. Subclasses that mutate the list from here should call `removeItem(at:)` so
+    /// unswipeable. Subclasses that mutate the list from here should call `removeItem(id:)` so
     /// the flat list, the sections and the placeholder all stay in step.
-    func trailingSwipeActions(for item: HighlightItem, at indexPath: IndexPath)
-        -> UISwipeActionsConfiguration? { nil }
+    func trailingSwipeActions(for item: HighlightItem) -> UISwipeActionsConfiguration? { nil }
 
     // MARK: - Lifecycle
 
@@ -199,16 +203,21 @@ class HistoryFeedViewController: UITableViewController {
 
     /// Drop one row from the feed, rebuilding the grouped view around it.
     ///
+    /// Addressed by **message id, not index path**. A swipe action fires against the index path
+    /// the swipe opened at, and the list can be replaced underneath it in between: pull to
+    /// refresh, then act on the still-open swipe, and `handleFirstPage` has already swapped
+    /// `items` wholesale. Resolving the position again at that point deletes whatever now
+    /// occupies that slot — some other bookmark — while the unsave correctly went to the one
+    /// the user swiped. An id can't drift like that, and a row that's already gone is a no-op.
+    ///
     /// A full reload rather than a row deletion: removing the last row of a channel+day run has
     /// to take the section header with it, which is a section delete whose index depends on the
     /// regrouping — the same reason `appendPage` reloads. The placeholder is re-evaluated too,
     /// so emptying the list lands on the empty state rather than a blank table.
     @MainActor
-    func removeItem(at indexPath: IndexPath) {
-        guard indexPath.section < sectionOffsets.count else { return }
-        let globalIndex = sectionOffsets[indexPath.section] + indexPath.row
-        guard globalIndex < items.count else { return }
-        items.remove(at: globalIndex)
+    func removeItem(id messageId: Int) {
+        guard let index = items.firstIndex(where: { $0.message.id == messageId }) else { return }
+        items.remove(at: index)
         rebuildSections()
         tableView.reloadData()
         renderPlaceholderForCurrentState()
@@ -223,9 +232,12 @@ class HistoryFeedViewController: UITableViewController {
     private func rebuildSections() {
         let groups = HighlightGrouping.group(items, now: Date())
         sections = groups.map { group in
-            Section(
-                networkName: networkName(for: group.items[0]),
-                target: group.target,
+            let item = group.items[0]
+            let resolvedNetworkName = networkName(for: item)
+            return Section(
+                networkName: resolvedNetworkName,
+                displayTarget: viewModel.state.buffer(for: item.bufferKey)
+                    .displayName(networkName: resolvedNetworkName),
                 dayLabel: Self.dayLabel(group.day),
                 items: group.items
             )
@@ -340,7 +352,13 @@ class HistoryFeedViewController: UITableViewController {
             withIdentifier: HistoryFeedSectionHeader.reuseID
         ) as! HistoryFeedSectionHeader
         let sec = sections[section]
-        let location = [sec.networkName, sec.target].compactMap { $0 }.joined(separator: "/")
+        // A server log's display name IS its network's, so joining the two would read
+        // "Libera/Libera". Deduped rather than branching on buffer kind here — the kind is
+        // already what produced the name.
+        let parts = [sec.networkName, sec.displayTarget].compactMap { $0 }
+        let location = parts.count == 2 && parts[0] == parts[1]
+            ? parts[0]
+            : parts.joined(separator: "/")
         header.configure(location: location, day: sec.dayLabel)
         return header
     }
@@ -365,7 +383,7 @@ class HistoryFeedViewController: UITableViewController {
         guard indexPath.section < sections.count,
               indexPath.row < sections[indexPath.section].items.count
         else { return nil }
-        return trailingSwipeActions(for: sections[indexPath.section].items[indexPath.row], at: indexPath)
+        return trailingSwipeActions(for: sections[indexPath.section].items[indexPath.row])
     }
 
     /// The network's name for a row — the server-resolved one, falling back to the client's own
