@@ -302,7 +302,14 @@ final class LurkerClient {
     /// Ask the server to hydrate a buffer. Channels/DMs arrive as shells, so without this
     /// a tapped buffer renders blank. No-op for the system buffer (already full).
     func openBuffer(networkId: Int?, target: String) {
-        guard let networkId else { return }
+        guard let networkId else {
+            NSLog("[wire] open-buffer DROPPED (no networkId) target=%@", target)
+            return
+        }
+        // TEMPORARY (QA): logs the request at the wire, independent of which screen asked —
+        // so "nobody sent it" and "sent, never answered" stop looking the same.
+        NSLog("[wire] -> open-buffer networkId=%d target=%@ socket=%@", networkId, target,
+              socket == nil ? "nil" : "yes")
         send(["type": "open-buffer", "networkId": networkId, "target": target])
     }
 

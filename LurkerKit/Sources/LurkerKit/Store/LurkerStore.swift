@@ -139,10 +139,21 @@ public struct ChatState: Sendable {
     /// cache refetched on open, and read state is server-owned. Rendering the buffer as
     /// absent is exactly what a missing frame licenses.
     mutating func pruneToBurst() {
-        guard burstActive else { return }
-        for key in buffers.keys where !burstSeen.contains(key) {
-            dropBuffer(key)
+        guard burstActive else {
+            NSLog("[burst] complete but NOT active — nothing pruned (rows=%d)", buffers.count)
+            return
         }
+        let doomed = buffers.keys.filter { !burstSeen.contains($0) }
+        // TEMPORARY (QA): the prune is the one thing here that can make a buffer vanish
+        // mid-session, so it says exactly what it dropped and what the burst had named.
+        NSLog(
+            "[burst] complete rows=%d seen=%d dropping=%@ | seen=%@",
+            buffers.count,
+            burstSeen.count,
+            doomed.isEmpty ? "none" : doomed.joined(separator: ","),
+            burstSeen.sorted().joined(separator: ",")
+        )
+        for key in doomed { dropBuffer(key) }
         burstActive = false
         burstSeen = []
     }
@@ -307,7 +318,15 @@ final class LurkerStore {
             var next = state
             next.burstSeen = []
             next.burstActive = true
-            return applySnapshot(next, networks)
+            let after = applySnapshot(next, networks)
+            NSLog(
+                "[burst] snapshot opens window — networks=%d rowsBefore=%d rowsAfter=%d seeded=%@",
+                networks.count,
+                state.buffers.count,
+                after.buffers.count,
+                after.burstSeen.sorted().joined(separator: ",")
+            )
+            return after
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
             // when that's nothing. Latched: a later resync re-sends it, and re-asserting true
@@ -609,6 +628,9 @@ final class LurkerStore {
             // roster, so the burst legitimately won't name it — mark it seen or the closing
             // prune would drop a buffer that just arrived.
             next.burstSeen.insert(key)
+            // TEMPORARY (QA): rows appearing outside a backlog frame — the log showed 3 of
+            // them before the snapshot even opened the window, which nothing accounts for.
+            NSLog("[live] materialized row %@ from type=%@ id=%d", key, String(describing: message.type), message.id)
         }
         // A topic change is both a line and the topic itself. This has to sit *below* the
         // id de-dupe above, not with the parse: a `topic` event replayed by a backlog/live
