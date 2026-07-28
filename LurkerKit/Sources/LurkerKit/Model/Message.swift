@@ -59,7 +59,9 @@ public struct Message: Equatable, Sendable {
     /// **Don't render from this — ask `ChatState.isBookmarked(_:)`.** This is the wire seed,
     /// frozen at parse time; the store's id set is what also reflects a toggle made since,
     /// here or on another device. There is no bookmark snapshot in the connect burst, so this
-    /// field is the *only* way the set ever learns about an existing bookmark.
+    /// field is how the set learns about saves it didn't witness — for any line the client
+    /// actually loads. The Bookmarks feed itself is the other source: its rows carry no flag
+    /// (they're all saved) and seed the set through `noteBookmarked(ids:)`.
     public let bookmarked: Bool
 
     public init(

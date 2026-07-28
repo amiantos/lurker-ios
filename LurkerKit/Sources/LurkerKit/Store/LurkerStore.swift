@@ -70,8 +70,12 @@ public struct ChatState: Sendable {
     /// looking at saved?" — and a line being looked at is a line that was loaded. The full
     /// Bookmarks list comes from `GET /api/bookmarks`, not from here.
     ///
-    /// Pages only ever ADD. A page's silence about an id is not an unsave; only a
-    /// `bookmark-updated` frame removes one.
+    /// A page is authoritative for the rows it CONTAINS, in both directions — an unflagged
+    /// row means unsaved — but says nothing about the rows it doesn't. Silence about an id is
+    /// not an unsave. See `noteBookmarks(in:networkId:)`.
+    ///
+    /// The other way in is `noteBookmarked(ids:)`, for the `GET /api/bookmarks` feed, whose
+    /// rows carry no flag because every one of them is saved by definition.
     ///
     /// Ids are `messages` table ids. System-buffer lines have a *separate* id sequence that
     /// overlaps this one, but they can't be bookmarked at all (the server's ownership check
