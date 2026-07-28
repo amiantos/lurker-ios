@@ -56,6 +56,32 @@ public struct ChatState: Sendable {
     /// The friends list, sorted case-insensitively by display name. Server-authoritative:
     /// seeded by `contacts-snapshot` and kept in sync by `contact-updated`/`contact-deleted`.
     public var contacts: [Contact] = []
+    /// Saved-message ids — what the bookmark toggle reads. **Read through
+    /// `isBookmarked(_:)`.**
+    ///
+    /// A cache of what this session has *seen*, not a mirror of what the account owns. There
+    /// is deliberately no bookmark snapshot in the connect burst: the server used to send
+    /// every saved id on every connect, which is the one piece of connect state that grows
+    /// without bound over an account's life. Instead each message row carries its own
+    /// `bookmarked` flag, so this fills in from the pages the client was going to render
+    /// anyway, and an id that isn't here is simply one whose line isn't loaded.
+    ///
+    /// That's sound because the only question ever asked of it is "is the line the user is
+    /// looking at saved?" — and a line being looked at is a line that was loaded. The full
+    /// Bookmarks list comes from `GET /api/bookmarks`, not from here.
+    ///
+    /// A page is authoritative for the rows it CONTAINS, in both directions — an unflagged
+    /// row means unsaved — but says nothing about the rows it doesn't. Silence about an id is
+    /// not an unsave. See `noteBookmarks(in:networkId:)`.
+    ///
+    /// The other way in is `noteBookmarked(ids:)`, for the `GET /api/bookmarks` feed, whose
+    /// rows carry no flag because every one of them is saved by definition.
+    ///
+    /// Ids are `messages` table ids. System-buffer lines have a *separate* id sequence that
+    /// overlaps this one, but they can't be bookmarked at all (the server's ownership check
+    /// joins through networks, which they have none of) — so nothing ever puts one in here,
+    /// and `MessageActions` never asks about one.
+    public var bookmarkedIds: Set<Int> = []
     /// Peer presence keyed `networkId → lowercased nick → state`. Mirrors the server's
     /// MONITOR-fed presence: seeded from each network snapshot's `peerPresence` blob and
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
@@ -222,6 +248,43 @@ public struct ChatState: Sendable {
         }
     }
 
+    /// Whether this line is saved. See `bookmarkedIds` for why an unknown id reads as
+    /// unsaved rather than unknown.
+    public func isBookmarked(_ messageId: Int) -> Bool { bookmarkedIds.contains(messageId) }
+
+    /// Reconcile `bookmarkedIds` against a page of rows.
+    ///
+    /// Each row is authoritative FOR ITSELF, in both directions: the server computes
+    /// `bookmarked` per row and omits it when false, so a row that arrives unflagged is
+    /// saying it isn't saved. Without the clear, an unsave made on another device while this
+    /// client was offline would never land — the `bookmark-updated` echo was missed, and the
+    /// reconnect backlog that does carry the truth would be read for additions only, leaving
+    /// the line lit until someone tapped it.
+    ///
+    /// What it must NOT do is evict ids the page says nothing about: a page knows its own
+    /// slice and no more, so silence about an id is not an unsave.
+    ///
+    /// `networkId` gates the whole thing. System-buffer rows come from a different table with
+    /// its own id sequence that overlaps this one, and they never carry the flag — reconciling
+    /// against them would clear real bookmarks that happen to share an id.
+    mutating func noteBookmarks(in messages: [Message], networkId: Int?) {
+        guard networkId != nil else { return }
+        for message in messages where message.id != 0 {
+            if message.bookmarked {
+                bookmarkedIds.insert(message.id)
+            } else {
+                bookmarkedIds.remove(message.id)
+            }
+        }
+    }
+
+    /// Mark ids saved wholesale, for a source that carries no per-row flag because every row
+    /// in it is saved by definition — the `GET /api/bookmarks` feed. Purely additive: unlike a
+    /// message page, this one has nothing to say about the rows it doesn't contain.
+    mutating func noteBookmarked(ids: [Int]) {
+        for id in ids where id != 0 { bookmarkedIds.insert(id) }
+    }
+
     /// The peers currently composing in `key`, display-cased, longest-running first.
     ///
     /// `now` is a parameter rather than an internal `Date()` so this is deterministic under
@@ -297,6 +360,19 @@ final class LurkerStore {
         subject.value.reachable = reachable
     }
 
+    /// Record a fetched page of saved messages as bookmarked, in ONE mutation.
+    ///
+    /// Not a `ServerFrame` because it isn't one — it comes from a REST read, like
+    /// `setReachable` comes from the device. Per-id `bookmark-updated` frames would say the
+    /// same thing, but each `apply` publishes a whole `ChatState`, so a 50-row page would
+    /// wake every subscriber 50 times to communicate a single set union.
+    func noteBookmarked(ids: [Int]) {
+        guard !ids.isEmpty else { return }
+        var next = subject.value
+        next.noteBookmarked(ids: ids)
+        subject.value = next
+    }
+
     func apply(_ frame: ServerFrame) {
         subject.value = Self.reduce(subject.value, frame)
     }
@@ -368,6 +444,16 @@ final class LurkerStore {
         case .contactDeleted(let id):
             var next = state
             next.contacts.removeAll { $0.id == id }
+            return next
+        case .bookmarkUpdated(let messageId, let saved):
+            var next = state
+            if saved {
+                next.bookmarkedIds.insert(messageId)
+            } else {
+                // A remove for an id we never held is normal, not a lost update: without a
+                // connect snapshot, the set only knows the lines this session has loaded.
+                next.bookmarkedIds.remove(messageId)
+            }
             return next
         case .bufferClosed(let networkId, let target):
             // The live half: a close on another device while this one is connected. The
@@ -566,6 +652,7 @@ final class LurkerStore {
         append: Bool
     ) -> ChatState {
         var next = state
+        next.noteBookmarks(in: messages, networkId: frameBuffer.networkId)
         let key = frameBuffer.key.id
         // The server named this buffer, so it survives the burst's closing prune. Recorded
         // unconditionally: outside a burst `burstSeen` is dead state that the next `snapshot`
@@ -804,6 +891,7 @@ final class LurkerStore {
         hasMoreNewer: Bool
     ) -> ChatState {
         var next = state
+        next.noteBookmarks(in: events, networkId: networkId)
         let key = BufferKey(networkId: networkId, target: target).id
         let existing = next.messages[key] ?? []
         switch mode {

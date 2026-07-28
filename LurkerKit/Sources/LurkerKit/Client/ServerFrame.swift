@@ -85,6 +85,17 @@ enum ServerFrame: Equatable, Sendable {
     /// WS `contact-deleted`: a friend removed. Drop it by id.
     case contactDeleted(Int)
 
+    /// WS `bookmark-updated`: a message was saved or unsaved, on any of the account's
+    /// devices — including this one. The server echoes to every socket rather than
+    /// answering the sender alone, so this is the single source of truth for the toggle
+    /// and nothing needs to guess optimistically.
+    ///
+    /// Note there is no bookmark *snapshot* to pair with it: a save the client never
+    /// witnessed arrives on the `bookmarked` flag of the message row itself. So a
+    /// `saved: false` for an id the store never knew about is normal, not a lost update —
+    /// it just means that line isn't loaded here.
+    case bookmarkUpdated(messageId: Int, saved: Bool)
+
     /// WS `buffer-closed`: the user closed this buffer — from *any* of their devices.
     /// Drop it from the model entirely: closed is absent (lurker `CLIENT_PROTOCOL.md` §9.1).
     ///

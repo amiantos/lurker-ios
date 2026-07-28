@@ -779,4 +779,95 @@ final class LurkerStoreTests: XCTestCase {
             "and the light believes the device over the stale socket"
         )
     }
+
+    // MARK: - Bookmarks
+
+    /// The set is seeded from the message rows themselves, because there is no bookmark
+    /// snapshot in the connect burst — the server used to send every saved id on every
+    /// connect, which is the one piece of connect state that grows without bound.
+    func testBookmarkedFlagOnBacklogRowsSeedsTheSet() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [
+            msg(1, "plain"),
+            saved(msg(2, "kept")),
+        ]))
+        XCTAssertTrue(store.state.isBookmarked(2))
+        XCTAssertFalse(store.state.isBookmarked(1))
+    }
+
+    /// A later page knows only its own slice, so its silence about an id must not evict what
+    /// an earlier one established — otherwise scrolling up would quietly unlight every
+    /// bookmark above the fold.
+    func testALaterPageDoesNotEvictBookmarksItDoesNotMention() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [saved(msg(2, "kept"))]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(1, "older")],
+            mode: .before, hasMoreOlder: false, hasMoreNewer: false
+        ))
+        XCTAssertTrue(store.state.isBookmarked(2), "the older page said nothing about id 2")
+    }
+
+    /// A row that comes back UNFLAGGED is authoritative for itself — the server omits the
+    /// field when false. This is the only way an unsave made elsewhere while this client was
+    /// offline ever lands: the echo was missed, and the reconnect backlog carries the truth.
+    func testAnUnflaggedRowClearsItsOwnBookmark() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [saved(msg(2, "kept"))]))
+        XCTAssertTrue(store.state.isBookmarked(2))
+        // The same line comes back on reconnect, no longer saved.
+        store.apply(channelBuffer(hydrated: true, messages: [msg(2, "kept")]))
+        XCTAssertFalse(store.state.isBookmarked(2))
+    }
+
+    /// System-buffer rows have their own id sequence, overlapping the message ids this set is
+    /// keyed by, and never carry the flag — so reconciling against them would clear a real
+    /// bookmark that happens to share an id.
+    func testSystemBufferPagesCannotClearBookmarks() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [saved(msg(2, "kept"))]))
+        store.apply(.backlog(
+            buffer: Buffer(networkId: nil, target: ":system:", kind: .system, hydrated: true),
+            messages: [msg(2, "an unrelated system line that happens to be id 2")],
+            hydrated: true,
+            append: false
+        ))
+        XCTAssertTrue(store.state.isBookmarked(2))
+    }
+
+    /// The saved-messages feed carries no per-row flag — every row in it is saved — so it
+    /// folds in additively, and in one mutation rather than one per row.
+    func testNoteBookmarkedIdsSeedsTheSet() {
+        let store = LurkerStore()
+        store.noteBookmarked(ids: [4, 5])
+        XCTAssertTrue(store.state.isBookmarked(4))
+        XCTAssertTrue(store.state.isBookmarked(5))
+    }
+
+    /// The echo is the source of truth for a toggle — it's fanned to every socket including
+    /// the one that asked, so nothing renders optimistically.
+    func testBookmarkUpdatedAddsAndRemoves() {
+        let store = LurkerStore()
+        store.apply(.bookmarkUpdated(messageId: 7, saved: true))
+        XCTAssertTrue(store.state.isBookmarked(7))
+        store.apply(.bookmarkUpdated(messageId: 7, saved: false))
+        XCTAssertFalse(store.state.isBookmarked(7))
+    }
+
+    /// Removing an id the set never held is normal, not a lost update: without a connect
+    /// snapshot the set only knows the lines this session has loaded, so an unsave made on
+    /// another device for an unloaded buffer arrives as exactly this.
+    func testRemovingAnUnknownBookmarkIsHarmless() {
+        let store = LurkerStore()
+        store.apply(.bookmarkUpdated(messageId: 999, saved: false))
+        XCTAssertFalse(store.state.isBookmarked(999))
+        XCTAssertTrue(store.state.bookmarkedIds.isEmpty)
+    }
+
+    private func saved(_ message: Message) -> Message {
+        Message(
+            id: message.id, type: message.type, nick: message.nick, text: message.text,
+            isSelf: message.isSelf, bookmarked: true
+        )
+    }
 }

@@ -47,6 +47,14 @@ enum FrameParser {
             return .contactUpdated(parseContact(contact))
         case "contact-deleted":
             return .contactDeleted(obj.int("contactId"))
+        case "bookmark-updated":
+            // The fan-out for a save/unsave made anywhere on the account, including this
+            // device — the server echoes to every socket, so it's the one source of truth
+            // and nothing renders a toggle optimistically. A zero id can't address a row.
+            let messageId = obj.int("messageId")
+            return messageId == 0
+                ? .ignored
+                : .bookmarkUpdated(messageId: messageId, saved: obj.bool("saved"))
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
@@ -393,7 +401,11 @@ enum FrameParser {
             // Not an extra — a real column on the messages table, so it survives backlog for
             // every event type that had one (`server/db/messages.ts:157`).
             userhost: event.stringOrNull("userhost"),
-            account: event.stringOrNull("account")
+            account: event.stringOrNull("account"),
+            // Absent means unsaved — the server omits the field rather than sending false,
+            // since nearly every row in every backlog is unsaved. See Message.bookmarked
+            // for why the store's id set, not this, is what the UI reads.
+            bookmarked: event.bool("bookmarked")
         )
     }
 }

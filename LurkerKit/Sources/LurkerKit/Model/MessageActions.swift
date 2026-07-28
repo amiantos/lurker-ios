@@ -8,11 +8,30 @@ import Foundation
 public enum MessageActionKey: String, Sendable {
     case reply
     case copy
+    case bookmark
     // A long press that lands on a link is about the link, not the line it's in — see
     // `MessageActions.build(for url:)`.
     case openLink
     case copyLink
     case shareLink
+}
+
+/// The two facts a message's menu needs that aren't on the message itself.
+///
+/// `Message` is what a buffer's log holds, so it carries no idea which buffer that is, and
+/// bookmark state is account-wide rather than per-line. Both are the caller's to supply, and
+/// bundling them keeps `build` and `run` from growing a parameter each.
+public struct MessageActionScope: Equatable, Sendable {
+    /// The network of the buffer the line is in. **Nil means the app-scoped system buffer**,
+    /// which is what makes a line unbookmarkable — see the gate in `build`.
+    public let networkId: Int?
+    /// Whether this line is currently saved, from `ChatState.isBookmarked(_:)`.
+    public let isBookmarked: Bool
+
+    public init(networkId: Int?, isBookmarked: Bool) {
+        self.networkId = networkId
+        self.isBookmarked = isBookmarked
+    }
 }
 
 /// One entry in a message's action menu.
@@ -40,10 +59,19 @@ public struct MessageActionContext {
     public let reply: (String) -> Void
     /// Put this text on the pasteboard. The message's *raw* text, not the rendered form.
     public let copy: (String) -> Void
+    /// Set this message id's saved state. The DIRECTION is passed, not a toggle: it comes
+    /// from the same `MessageActionScope` that produced the menu's label, so what fires is
+    /// always what the row the user tapped said it would do.
+    public let setBookmark: (Int, Bool) -> Void
 
-    public init(reply: @escaping (String) -> Void, copy: @escaping (String) -> Void) {
+    public init(
+        reply: @escaping (String) -> Void,
+        copy: @escaping (String) -> Void,
+        setBookmark: @escaping (Int, Bool) -> Void
+    ) {
         self.reply = reply
         self.copy = copy
+        self.setBookmark = setBookmark
     }
 }
 
@@ -70,9 +98,8 @@ public struct LinkActionContext {
 /// pure builder returning descriptors, and a `run` that dispatches through a caller-supplied
 /// context. Both clients therefore agree on *which* actions a given line offers.
 ///
-/// Bookmark and Ignore are the web's other two and are deliberately absent: bookmarks need the
-/// `set-bookmark`/`bookmark-ids-snapshot` protocol surface nothing here consumes yet, and Ignore
-/// needs rule authoring, which belongs with the screen that applies rules.
+/// Ignore is the web's fourth and is deliberately absent: it needs rule authoring, which belongs
+/// with the screen that applies rules.
 ///
 /// One row still ends up with no menu and no selection: a consolidated summary, which stands for
 /// a run of events rather than one message (`MessageRow.message` is nil for it). Its text is
@@ -83,17 +110,17 @@ public enum MessageActions {
     /// The actions for `message`, in menu order — empty when the line offers none.
     ///
     /// Gated per action rather than by one eligibility test, which is a deliberate divergence
-    /// from the web's `eligibleForActions` (speech + a non-null id, for all four of its actions).
+    /// from the web's `eligibleForActions` (speech + a non-null id, for all of its actions).
     /// Two reasons the web's gate doesn't transfer:
     ///
-    ///  - **The id gate is Bookmark's**, and we don't ship Bookmark. Neither Reply nor Copy needs
-    ///    the server to have heard of the line: one addresses a nick, the other reads a string.
+    ///  - **The id gate is Bookmark's alone.** Neither Reply nor Copy needs the server to have
+    ///    heard of the line: one addresses a nick, the other reads a string.
     ///  - **On iOS the menu is the only way to copy at all.** The row menu takes the long press
     ///    away from the text-selection loupe (see `MessageTextView`), so a line with no menu is a
     ///    line whose text can't be copied — the web always has drag-select as a floor. Gating
     ///    Copy on speech would silently strand every MOTD, system and error line in the server
     ///    buffer, which is exactly the text people reach for.
-    public static func build(for message: Message) -> [MessageAction] {
+    public static func build(for message: Message, scope: MessageActionScope) -> [MessageAction] {
         var actions: [MessageAction] = []
 
         // Reply addresses someone, so it stays speech-only: narration names its actor inside the
@@ -112,6 +139,39 @@ public enum MessageActions {
         // to offer nothing than to copy something other than the line you pressed.
         if !message.type.isActivity, let text = message.text, !text.isEmpty {
             actions.append(MessageAction(key: .copy, title: "Copy Text", symbol: "doc.on.doc"))
+        }
+
+        // Bookmarking needs speech, a persisted line, and an owning network.
+        //
+        // **Speech is where this client stops diverging from the web.** The web gates its
+        // entire action surface on `eligibleForActions` — message/action/notice — so MOTD,
+        // system and error lines offer nothing there at all. Copy above deliberately breaks
+        // that gate, and has a reason to: on iOS this menu is the only way to copy anything,
+        // and the server buffer's text is exactly what people reach for. Bookmark has no such
+        // excuse. The feed is for things people said; a saved MOTD or connection error is a
+        // slice of log with no conversation in it. So it follows the web's rule instead.
+        //
+        // (Speech also excludes activity narration, which would otherwise surface in the feed
+        // as a lone "alice joined" with nothing around it to say why it was kept.)
+        //
+        // The id gate is the ordinary one: `id == 0` is an ephemeral event the server has no
+        // row for, so there's nothing to point a bookmark at.
+        //
+        // The network gate is less obvious and not cosmetic. Saving is ownership-checked
+        // server-side by joining the message to its network, so a system-buffer line — which
+        // is app-scoped and has none — can never be saved: the insert writes nothing and no
+        // `bookmark-updated` comes back. Offering it there would be a row that does nothing,
+        // every time, with no way to tell. It also keeps us from ever asking about a system
+        // line's id, which matters because those come from a separate sequence that overlaps
+        // the message ids the bookmark set is keyed by.
+        if message.type.isSpeech, message.id != 0, scope.networkId != nil {
+            actions.append(
+                MessageAction(
+                    key: .bookmark,
+                    title: scope.isBookmarked ? "Remove Bookmark" : "Save Message",
+                    symbol: scope.isBookmarked ? "bookmark.fill" : "bookmark"
+                )
+            )
         }
 
         return actions
@@ -138,7 +198,7 @@ public enum MessageActions {
         case .openLink: context.open(url)
         case .copyLink: context.copy(url)
         case .shareLink: context.share(url)
-        case .reply, .copy: break
+        case .reply, .copy, .bookmark: break
         }
     }
 
@@ -151,8 +211,13 @@ public enum MessageActions {
     /// fragment in an activity line's `text` ("brb" from `alice left (brb)`). Neither was reachable
     /// through the sheet, which offers only what `build` returned, but "unavailable actions are
     /// no-ops" is the guarantee this function documents, and it wasn't true.
-    public static func run(_ key: MessageActionKey, on message: Message, context: MessageActionContext) {
-        guard build(for: message).contains(where: { $0.key == key }) else { return }
+    public static func run(
+        _ key: MessageActionKey,
+        on message: Message,
+        scope: MessageActionScope,
+        context: MessageActionContext
+    ) {
+        guard build(for: message, scope: scope).contains(where: { $0.key == key }) else { return }
         switch key {
         case .reply:
             guard let nick = message.nick, !nick.isEmpty else { return }
@@ -162,6 +227,12 @@ public enum MessageActions {
             // was typed — mIRC color codes and all — not this client's rendering of it.
             guard let text = message.text, !text.isEmpty else { return }
             context.copy(text)
+        case .bookmark:
+            // The direction comes from `scope`, which is also what titled the row — so a
+            // sheet built before a `bookmark-updated` echo landed still does the thing it
+            // offered. Re-reading the store here instead would invert the button under the
+            // user: the row says "Save Message" and an unsave goes out.
+            context.setBookmark(message.id, !scope.isBookmarked)
         case .openLink, .copyLink, .shareLink:
             // A link's keys, dispatched by the `URL` overload. Ignored rather than trapped: one
             // screen renders both menus, and a mismatch is a caller bug, not a reason to crash.

@@ -349,4 +349,42 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(buffer.kind, .system)
         XCTAssertNil(buffer.networkId)
     }
+
+    // MARK: - Bookmarks
+
+    /// `bookmarked` rides on the message rows in a BACKLOG — that's the path that matters,
+    /// since it's the only way the client learns about a save it didn't witness now that the
+    /// connect burst carries no bookmark snapshot. (A live message has just arrived, so it is
+    /// never already saved.)
+    ///
+    /// Asserted together with an unsaved row in the same page: absent means unsaved, because
+    /// the server omits the field rather than sending false — nearly every row in every
+    /// backlog is unsaved, and a false on each is pure wire weight.
+    func testBookmarkedFlagParsesOffBacklogRows() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","hasMoreOlder":false,"events":[{"id":1,"type":"message","nick":"a","text":"plain"},{"id":2,"type":"message","nick":"a","text":"kept","bookmarked":true}]}"##
+        )
+        guard case let .backlog(_, messages, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertFalse(messages[0].bookmarked, "absent reads as unsaved")
+        XCTAssertTrue(messages[1].bookmarked)
+    }
+
+    func testBookmarkUpdatedParsesBothDirections() {
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"bookmark-updated","messageId":42,"saved":true}"##),
+            .bookmarkUpdated(messageId: 42, saved: true)
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"bookmark-updated","messageId":42,"saved":false}"##),
+            .bookmarkUpdated(messageId: 42, saved: false)
+        )
+    }
+
+    /// A zero/missing id can't address a row, so it's dropped rather than folded into the set
+    /// where it would sit forever as a phantom bookmark.
+    func testBookmarkUpdatedWithoutAnIdIsIgnored() {
+        XCTAssertEqual(FrameParser.parseWs(##"{"kind":"bookmark-updated","saved":true}"##), .ignored)
+    }
 }

@@ -456,6 +456,52 @@ final class LurkerClient {
         ])
     }
 
+    /// Save or unsave a message. The server answers with a `bookmark-updated` fan-out to
+    /// every socket on the account — including this one — so the caller doesn't (and
+    /// shouldn't) flip any local state itself.
+    ///
+    /// Saving is silently refused for a message the account doesn't own, and no echo comes
+    /// back for it. That's why the toggle isn't rendered optimistically: the honest failure
+    /// is a control that doesn't move, not one that moves and then springs back.
+    /// Returns false when the verb couldn't be sent at all (no socket — offline, or the app
+    /// has just resumed and the socket isn't back). Nothing queues it, so a caller that has
+    /// already taken a row off the screen has to know. `surfacesFailure` covers the rarer
+    /// case of a socket that accepts the write and then errors.
+    @discardableResult
+    func setBookmark(messageId: Int, saved: Bool) -> Bool {
+        send(
+            ["type": saved ? "set-bookmark" : "unset-bookmark", "messageId": messageId],
+            surfacesFailure: true
+        )
+    }
+
+    /// Fetch a page of bookmarks (`GET /api/bookmarks`). Same cursor contract and same
+    /// row shape as `fetchHighlights` — the server builds both from the same query so one
+    /// list renderer serves both — so it reuses `HighlightsPage` rather than cloning it.
+    ///
+    /// Ordering is by *message* id, i.e. by when the line was said, not when it was saved.
+    func fetchBookmarks(before: Int? = nil, limit: Int = 50) async -> HighlightsPage? {
+        guard let token, var components = URLComponents(string: baseURL + "/api/bookmarks") else { return nil }
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
+        components.queryItems = query
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return nil
+            }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
+            return FrameParser.parseHighlights(text)
+        } catch {
+            return nil
+        }
+    }
+
     /// Tell the network we're composing. Fire-and-forget: the server turns it into a
     /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
     /// rather than needing a retry.
@@ -638,17 +684,26 @@ final class LurkerClient {
     /// modal that pops on foreground: iOS kills the socket while suspended without firing its
     /// failure callback, so the first write on return (a presence re-assert) writes into a
     /// dead socket and fails, over a connection the reconnect is about to replace.
+    /// Returns whether the verb was actually handed to a socket. **False means it went
+    /// nowhere** — there is no queue behind this, so a caller that shows the user a result
+    /// has to check. Most callers legitimately don't: a `typing` tag or a `mark-read` that
+    /// misses a dead socket is re-derived by the next connect, which is why this is
+    /// discardable. Anything that mutates what's on screen is not in that category.
+    ///
+    /// True is "written to a live socket", not "the server acted on it" — a send that fails
+    /// asynchronously still reports true here, and surfaces through `surfacesFailure`.
+    @discardableResult
     private func send(
         _ verb: [String: Any],
         surfacesFailure: Bool = false,
         onFlush: (@Sendable () -> Void)? = nil
-    ) {
+    ) -> Bool {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
               let text = String(data: data, encoding: .utf8)
         else {
             onFlush?()
-            return
+            return false
         }
         socket.send(.string(text)) { [weak self] error in
             defer { onFlush?() }
@@ -658,6 +713,7 @@ final class LurkerClient {
             let reason = error.localizedDescription
             Task { @MainActor in self?.onFrame(.serverError("Send failed: \(reason)")) }
         }
+        return true
     }
 
     /// Drop the socket and forget the token without revoking server-side. For teardown
