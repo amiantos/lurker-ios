@@ -43,6 +43,11 @@ final class SettingsViewController: UITableViewController {
     private static let chatSettings: [(key: String, label: String)] = [
         ("chat.send_typing_notifications", "Send typing notifications"),
         ("chat.keep_position_on_send", "Stay put when you send"),
+        // The event-noise tier and its modifiers, in the order they narrow (#666). The tier
+        // reads the MOBILE key: it is split by device class, and this device is never the
+        // desktop case. Everything under it greys out when the tier leaves nothing to modify,
+        // which the registry now describes rather than this screen guessing.
+        (EventFilter.modeKey, "Event noise"),
         ("chat.consolidate_joins", "Consolidate events"),
         ("chat.consolidate_max_names", "Max consolidated nicks"),
         ("chat.show_event_host", "Show user@host on events"),
@@ -55,9 +60,20 @@ final class SettingsViewController: UITableViewController {
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
     ]
 
-    /// Keys whose control is dead unless another setting is on — a max-nicks stepper means
-    /// nothing with consolidation switched off.
-    private static let dependencies = ["chat.consolidate_max_names": "chat.consolidate_joins"]
+    /// Labels for the event tier's raw enum values.
+    ///
+    /// The registry ships `all` / `smart` / `none` — accurate as identifiers, opaque as a row
+    /// in a pull-down. These say what the reader gets. Anything the server adds later falls
+    /// back to its raw value rather than being hidden, so a newer server's rung is still
+    /// reachable from an older app.
+    private static let eventModeLabels: [String: String] = [
+        "all": "Show all",
+        // Says "web" because this app renders it as "Show all" — see `EventMode.smart`. It
+        // only ever appears here when it's already the stored value (set from a browser), so
+        // the row reports what is in force instead of quietly reading back as something else.
+        "smart": "Hide from quiet users (web only)",
+        "none": "Hide all",
+    ]
 
     /// A row that's ready to render: the curated label plus the registry entry describing how
     /// to edit it. Resolved once per rebuild so the table isn't doing lookups per cell.
@@ -264,15 +280,49 @@ final class SettingsViewController: UITableViewController {
                 size: stack.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
             )
             cell.accessoryView = stack
+        case .enum:
+            // A pull-down button, not a segmented control: the choices are full phrases
+            // ("Hide from quiet users"), and three of those never fit a compact-width segment
+            // without truncating to uselessness. The button shows the current choice, which is
+            // what the row needs to say when nothing is being touched.
+            let current = viewModel.state.settings.effective(option.key)?.stringValue
+                ?? option.default.stringValue ?? ""
+            let button = UIButton(type: .system)
+            button.showsMenuAsPrimaryAction = true
+            // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
+            // the write still goes through `write`, and the authoritative value arrives back
+            // on the `settings` frame.
+            button.changesSelectionAsPrimaryAction = true
+            // A rung this app can't deliver is offered only when it's ALREADY the value —
+            // the key is shared with the web, so a choice made at a desk has to stay visible
+            // here, but the picker must not let you newly pick something we'd then ignore.
+            let choices = option.choices.filter { choice in
+                choice == current
+                    || EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true
+            }
+            button.menu = UIMenu(children: choices.map { choice in
+                UIAction(
+                    title: Self.eventModeLabels[choice] ?? choice,
+                    state: choice == current ? .on : .off
+                ) { [weak self] _ in
+                    self?.write(option.key, .string(choice))
+                }
+            })
+            button.isEnabled = enabled
+            button.sizeToFit()
+            cell.accessoryView = button
         default:
             cell.accessoryType = .none
         }
     }
 
-    /// Whether this row's control is live — false when it depends on a setting that's off.
+    /// Whether this row's control is live.
+    ///
+    /// Answered from the registry's own `dependsOn` (#666) rather than a table maintained
+    /// here, so the phone greys out exactly what the web does and a new dependency needs no
+    /// iOS change at all.
     private func isEnabled(_ key: String) -> Bool {
-        guard let parent = Self.dependencies[key] else { return true }
-        return viewModel.state.settings.bool(parent, default: true)
+        viewModel.state.settings.isActive(key)
     }
 
     /// Pending debounced writes, keyed by setting.

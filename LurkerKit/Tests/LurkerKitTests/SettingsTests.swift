@@ -292,4 +292,80 @@ final class SettingsTests: XCTestCase {
         ]]
         XCTAssertTrue(JSONSerialization.isValidJSONObject(body))
     }
+
+    // MARK: - dependsOn (#666)
+
+    /// The registry describes its own dependencies now, so the phone greys out exactly what
+    /// the web does. This screen used to carry a hand-written map of one entry; the event
+    /// tier added eight more, which is more than a hardcoded copy survives.
+    private let dependencyJSON = ##"""
+    {
+      "registry": [
+        {"key":"chat.events","label":"Event noise","category":"chat","group":"events",
+         "type":"enum","default":"all","choices":["all","smart","none"],"description":"Tier."},
+        {"key":"chat.events.mobile","label":"Event noise (mobile)","category":"chat","group":"events",
+         "type":"enum","default":"all","choices":["all","smart","none"],"description":"Tier."},
+        {"key":"chat.consolidate_joins","label":"Consolidate","category":"chat","group":"noise",
+         "type":"bool","default":true,"description":"Merge runs.",
+         "dependsOn":[{"key":"chat.events","in":["all","smart"]},
+                      {"key":"chat.events.mobile","in":["all","smart"]}]},
+        {"key":"chat.consolidate_max_names","label":"Max names","category":"chat","group":"noise",
+         "type":"int","default":5,"min":1,"max":20,"description":"Names.",
+         "dependsOn":[{"key":"chat.consolidate_joins","in":[true]}]}
+      ],
+      "values": {}
+    }
+    """##
+
+    private func withDependencies(_ values: [String: SettingValue] = [:]) -> Settings {
+        var state = LurkerStore.reduce(
+            ChatState(), FrameParser.parseSettingsBootstrap(dependencyJSON)
+        )
+        state = LurkerStore.reduce(state, .settingsChanged(values))
+        return state.settings
+    }
+
+    func testParsesDependsOnFromTheRegistry() {
+        let settings = withDependencies()
+        XCTAssertEqual(
+            settings.registry["chat.consolidate_max_names"]?.dependsOn,
+            [SettingDependency(key: "chat.consolidate_joins", values: [.bool(true)])]
+        )
+        XCTAssertEqual(settings.registry["chat.events"]?.dependsOn, [])
+    }
+
+    func testSettingsWithoutDependenciesAreAlwaysActive() {
+        XCTAssertTrue(withDependencies().isActive("chat.events"))
+        // A key this server has never heard of can't be gated on anything.
+        XCTAssertTrue(withDependencies().isActive("chat.nonexistent"))
+    }
+
+    /// Clauses are ORed: a phone set to `none` must not grey out consolidation knobs the
+    /// user's desktop is actively using.
+    func testClausesAreOred() {
+        let phoneOnly = withDependencies([
+            "chat.events": .string("all"), "chat.events.mobile": .string("none"),
+        ])
+        XCTAssertTrue(phoneOnly.isActive("chat.consolidate_joins"))
+
+        let bothOff = withDependencies([
+            "chat.events": .string("none"), "chat.events.mobile": .string("none"),
+        ])
+        XCTAssertFalse(bothOff.isActive("chat.consolidate_joins"))
+    }
+
+    /// Transitive: max-names names only `consolidate_joins`, so the tier condition has to
+    /// arrive through it. Without this the stepper stays live under a tier that renders no
+    /// events for it to cap.
+    func testResolutionIsTransitive() {
+        let bothOff = withDependencies([
+            "chat.events": .string("none"), "chat.events.mobile": .string("none"),
+        ])
+        XCTAssertFalse(bothOff.isActive("chat.consolidate_max_names"))
+
+        let consolidationOff = withDependencies(["chat.consolidate_joins": .bool(false)])
+        XCTAssertFalse(consolidationOff.isActive("chat.consolidate_max_names"))
+
+        XCTAssertTrue(withDependencies().isActive("chat.consolidate_max_names"))
+    }
 }

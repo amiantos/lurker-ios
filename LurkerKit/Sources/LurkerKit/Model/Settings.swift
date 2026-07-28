@@ -63,6 +63,21 @@ public enum SettingType: String, Sendable {
     case stringList = "string-list"
 }
 
+/// One "this setting is live when…" clause from the registry's `dependsOn`.
+///
+/// The clauses on an option are ORed: it is live if any one of them holds. That matters for
+/// the event tier, which is two keys (desktop and mobile) — a phone set to `none` must not
+/// grey out consolidation knobs a desktop is actively using.
+public struct SettingDependency: Equatable, Sendable {
+    public let key: String
+    public let values: [SettingValue]
+
+    public init(key: String, values: [SettingValue]) {
+        self.key = key
+        self.values = values
+    }
+}
+
 /// One entry from the server's settings registry.
 ///
 /// Carried rather than duplicated in Swift: the registry is self-describing
@@ -81,11 +96,17 @@ public struct SettingOption: Equatable, Sendable {
     /// rejected on write.
     public let min: Int?
     public let max: Int?
+    /// Conditions under which this setting does anything, ORed. Empty means unconditional.
+    ///
+    /// Registry data rather than a table maintained here (#666). This screen used to carry a
+    /// hand-written `consolidate_max_names → consolidate_joins` map; the event tier added
+    /// eight more dependencies, which is more than a hardcoded copy survives.
+    public let dependsOn: [SettingDependency]
 
     public init(
         key: String, label: String, description: String, type: SettingType,
         default defaultValue: SettingValue, choices: [String] = [],
-        min: Int? = nil, max: Int? = nil
+        min: Int? = nil, max: Int? = nil, dependsOn: [SettingDependency] = []
     ) {
         self.key = key
         self.label = label
@@ -95,6 +116,7 @@ public struct SettingOption: Equatable, Sendable {
         self.choices = choices
         self.min = min
         self.max = max
+        self.dependsOn = dependsOn
     }
 }
 
@@ -148,6 +170,33 @@ public struct Settings: Equatable, Sendable {
 
     public func string(_ key: String, default fallback: String) -> String {
         effective(key)?.stringValue ?? fallback
+    }
+
+    /// How deep a `dependsOn` chain is followed before giving up. Real chains are two links
+    /// (`consolidate_max_names → consolidate_joins → chat.events`); the cap only exists so a
+    /// server-side registry edit that accidentally makes a cycle greys a row out instead of
+    /// hanging the settings screen.
+    private static let maxDependencyDepth = 8
+
+    /// Whether a setting currently *does* anything, per its `dependsOn` clauses.
+    ///
+    /// Clauses are ORed; resolution is transitive, so an option whose dependency is itself
+    /// inactive is inactive too and the registry states each link once. A clause naming a key
+    /// this server doesn't know resolves on its value check alone — an older or newer server
+    /// is a normal condition here, not an error.
+    ///
+    /// Presentation only, exactly as on the web: the stored value is untouched, because
+    /// flipping the dependency back has to restore what the user had rather than a default.
+    /// Mirrors `vue_client/src/utils/settingsRegistry.ts:optionEnabled`.
+    public func isActive(_ key: String, depth: Int = 0) -> Bool {
+        guard let option = registry[key], !option.dependsOn.isEmpty else { return true }
+        guard depth < Self.maxDependencyDepth else { return false }
+        return option.dependsOn.contains { dependency in
+            guard let current = effective(dependency.key),
+                  dependency.values.contains(current)
+            else { return false }
+            return isActive(dependency.key, depth: depth + 1)
+        }
     }
 
     /// Replace everything — the bootstrap response.
