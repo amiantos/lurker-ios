@@ -127,7 +127,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
-    /// The snapshot burst during which this screen’s one hydrate was sent, or nil if
+    /// The snapshot burst during which this screen's one hydrate was sent, or nil if
     /// it hasn't asked (or its request has been voided). See `hydrateIfNeeded`.
     ///
     /// One optional rather than a bool plus a generation: two variables tracking one fact
