@@ -211,19 +211,33 @@ final class MessageActionsTests: XCTestCase {
         XCTAssertEqual(unsaved?.symbol, "bookmark")
     }
 
-    /// The id, not a direction. Which way to toggle is the caller's call against the store, so a
-    /// sheet built before an echo landed can't push the state backwards.
-    func testBookmarkHandsBackTheMessageId() {
-        var toggled: [Int] = []
-        run(.bookmark, on: msg(id: 77), context: context(toggleBookmark: { toggled.append($0) }))
-        XCTAssertEqual(toggled, [77])
+    /// The direction comes from the scope that titled the row, NOT from a re-read — so a sheet
+    /// built before an echo landed still does what it said it would, rather than inverting
+    /// under the user.
+    func testBookmarkSendsTheDirectionItsLabelPromised() {
+        var calls: [(Int, Bool)] = []
+        let ctx = context(setBookmark: { calls.append(($0, $1)) })
+
+        // Row read "Save Message" → a save goes out.
+        MessageActions.run(
+            .bookmark, on: msg(id: 77),
+            scope: MessageActionScope(networkId: 1, isBookmarked: false), context: ctx
+        )
+        // Row read "Remove Bookmark" → an unsave does.
+        MessageActions.run(
+            .bookmark, on: msg(id: 77),
+            scope: MessageActionScope(networkId: 1, isBookmarked: true), context: ctx
+        )
+
+        XCTAssertEqual(calls.map(\.0), [77, 77])
+        XCTAssertEqual(calls.map(\.1), [true, false])
     }
 
     /// `run` gates on what `build` offers, so the two unbookmarkable cases can't fire it even if
     /// a stale sheet asks.
     func testRunningBookmarkOnAnIneligibleLineDoesNothing() {
         var fired = 0
-        let ctx = context(toggleBookmark: { _ in fired += 1 })
+        let ctx = context(setBookmark: { _, _ in fired += 1 })
         // No network (system buffer), no id (ephemeral), narration, and server output —
         // the four ways a line fails the gate.
         MessageActions.run(
@@ -255,8 +269,10 @@ final class MessageActionsTests: XCTestCase {
     private func context(
         reply: @escaping (String) -> Void = { nick in XCTFail("unexpected reply: \(nick)") },
         copy: @escaping (String) -> Void = { text in XCTFail("unexpected copy: \(text)") },
-        toggleBookmark: @escaping (Int) -> Void = { id in XCTFail("unexpected bookmark: \(id)") }
+        setBookmark: @escaping (Int, Bool) -> Void = { id, saved in
+            XCTFail("unexpected bookmark: \(id) saved=\(saved)")
+        }
     ) -> MessageActionContext {
-        MessageActionContext(reply: reply, copy: copy, toggleBookmark: toggleBookmark)
+        MessageActionContext(reply: reply, copy: copy, setBookmark: setBookmark)
     }
 }

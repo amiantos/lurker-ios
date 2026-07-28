@@ -229,16 +229,12 @@ public final class ChatViewModel {
     /// Deliberately sends and waits: the server fans a `bookmark-updated` back to every device,
     /// and a save it refuses (a message the account doesn't own) produces no echo at all — so
     /// flipping local state here would show a bookmark that doesn't exist.
-    public func setBookmark(messageId: Int, saved: Bool) {
+    /// Returns false when the verb couldn't be put on the wire at all. Nothing retries it, so
+    /// a caller that has already removed the row from a list must not treat that as done —
+    /// see the Bookmarks list's swipe.
+    @discardableResult
+    public func setBookmark(messageId: Int, saved: Bool) -> Bool {
         client.setBookmark(messageId: messageId, saved: saved)
-    }
-
-    /// Flip a message's saved state, reading the current one from the store.
-    ///
-    /// Only sound where the line is loaded — i.e. from its own buffer, which is the only place
-    /// this is called from. Elsewhere, say what you mean with `setBookmark`.
-    public func toggleBookmark(messageId: Int) {
-        setBookmark(messageId: messageId, saved: !isBookmarked(messageId))
     }
 
     /// Upload a prepared file and return the stored object's URL for the composer to paste

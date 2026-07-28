@@ -1970,17 +1970,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let message = rows[indexPath.row].message
 
         // The scope is read here, at press time, so the sheet's Save/Remove label reflects the
-        // store as of the press rather than whenever the row was last drawn.
+        // store as of the press rather than whenever the row was last drawn. It's then carried
+        // to `runMessageAction` rather than re-read there — see that method.
+        let scope = MessageActionScope(
+            networkId: buffer.key.networkId,
+            isBookmarked: message.map { viewModel.isBookmarked($0.id) } ?? false
+        )
         let subject = url.map(MessageActionsViewController.Subject.link)
-            ?? message.map { message in
-                .message(
-                    message,
-                    scope: MessageActionScope(
-                        networkId: buffer.key.networkId,
-                        isBookmarked: viewModel.isBookmarked(message.id)
-                    )
-                )
-            }
+            ?? message.map { .message($0, scope: scope) }
         guard let subject, let sheet = MessageActionsViewController(subject: subject) else { return }
 
         // The keyboard would otherwise stay up over the sheet. Every other sheet here opens at
@@ -1997,7 +1994,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if let url {
                 runLinkAction(key, on: url)
             } else if let message {
-                runMessageAction(key, on: message)
+                runMessageAction(key, on: message, scope: scope)
             }
         }
         present(sheet, animated: true)
@@ -2027,20 +2024,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The platform half of the two actions: the composer, and the pasteboard. Called after the
     /// sheet has finished dismissing, which is what lets Reply raise the keyboard.
-    private func runMessageAction(_ key: MessageActionKey, on message: Message) {
+    /// `scope` is the one the SHEET WAS BUILT WITH, deliberately — not a fresh reading.
+    ///
+    /// It's what titled the row, and honoring it is what makes the button mean what it says.
+    /// Re-reading here looks more current and is worse: a `bookmark-updated` echo from another
+    /// device landing between the long press and the tap would invert the action, so a row
+    /// reading "Save Message" sends an unsave. The user acted on what was on screen.
+    private func runMessageAction(_ key: MessageActionKey, on message: Message, scope: MessageActionScope) {
         MessageActions.run(
-            key, on: message,
-            // Re-read rather than reuse the scope the sheet was built with: an echo from
-            // another device could have landed while the sheet was open, and the toggle should
-            // act on what's true now.
-            scope: MessageActionScope(
-                networkId: buffer.key.networkId,
-                isBookmarked: viewModel.isBookmarked(message.id)
-            ),
+            key, on: message, scope: scope,
             context: MessageActionContext(
                 reply: { [weak self] nick in self?.composer.address(nick) },
                 copy: { UIPasteboard.general.string = $0 },
-                toggleBookmark: { [weak self] id in self?.viewModel.toggleBookmark(messageId: id) }
+                setBookmark: { [weak self] id, saved in
+                    self?.viewModel.setBookmark(messageId: id, saved: saved)
+                }
             )
         )
     }

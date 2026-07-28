@@ -184,11 +184,21 @@ class HistoryFeedViewController: UITableViewController {
         guard let page else {
             // A failed page-in leaves what we have and just stops paging; the user can pull
             // to refresh. Don't latch `reachedEnd` — the next scroll re-arms `loadMore`.
+            //
+            // Unless there's nothing left on screen: `removeItem` can page from an emptied
+            // list, and there `willDisplay` will never fire again to retry. Say the fetch
+            // failed rather than leaving the spinner up forever.
+            if items.isEmpty {
+                loadFailed = true
+                renderPlaceholderForCurrentState()
+            }
             return
         }
         guard !page.items.isEmpty else {
             nextBefore = page.nextBefore
             reachedEnd = !page.hasMore
+            // Same boundary: an empty page onto an empty list is the genuine end of the feed.
+            if items.isEmpty { renderPlaceholderForCurrentState() }
             return
         }
         items.append(contentsOf: page.items)
@@ -199,6 +209,9 @@ class HistoryFeedViewController: UITableViewController {
         // ones, so a targeted insert would have to reconcile section moves; a reload is
         // simpler and, since the added rows are below the fold, invisible.
         tableView.reloadData()
+        // Normally a no-op (the placeholder is already hidden), but it's what takes the
+        // spinner down when this page was fetched into an emptied list.
+        renderPlaceholderForCurrentState()
     }
 
     /// Drop one row from the feed, rebuilding the grouped view around it.
@@ -220,7 +233,21 @@ class HistoryFeedViewController: UITableViewController {
         items.remove(at: index)
         rebuildSections()
         tableView.reloadData()
-        renderPlaceholderForCurrentState()
+        // Emptying the list by removing things is not the same as failing to load it, and
+        // `loadFailed` latches: a refresh that failed while rows were still on screen would
+        // otherwise leave "Couldn't load / Pull to try again" as the epitaph for a list the
+        // user just successfully cleared.
+        if items.isEmpty { loadFailed = false }
+        // Paging is driven by `willDisplay`, which can't fire on a table with no rows — so
+        // clearing every loaded row while older pages exist would strand the feed on "nothing
+        // here" with more to fetch. Pull the next page in directly, showing the spinner
+        // rather than a bare table while it lands.
+        if items.isEmpty, !reachedEnd, nextBefore != nil {
+            renderPlaceholder(.loading)
+            loadMore()
+        } else {
+            renderPlaceholderForCurrentState()
+        }
     }
 
     // MARK: - Sections (channel + day runs)

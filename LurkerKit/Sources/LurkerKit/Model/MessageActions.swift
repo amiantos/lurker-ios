@@ -59,18 +59,19 @@ public struct MessageActionContext {
     public let reply: (String) -> Void
     /// Put this text on the pasteboard. The message's *raw* text, not the rendered form.
     public let copy: (String) -> Void
-    /// Toggle this message id's saved state. Called with the id only — the caller decides the
-    /// direction from its own view of the store, so the sheet can't act on a stale reading.
-    public let toggleBookmark: (Int) -> Void
+    /// Set this message id's saved state. The DIRECTION is passed, not a toggle: it comes
+    /// from the same `MessageActionScope` that produced the menu's label, so what fires is
+    /// always what the row the user tapped said it would do.
+    public let setBookmark: (Int, Bool) -> Void
 
     public init(
         reply: @escaping (String) -> Void,
         copy: @escaping (String) -> Void,
-        toggleBookmark: @escaping (Int) -> Void
+        setBookmark: @escaping (Int, Bool) -> Void
     ) {
         self.reply = reply
         self.copy = copy
-        self.toggleBookmark = toggleBookmark
+        self.setBookmark = setBookmark
     }
 }
 
@@ -227,9 +228,11 @@ public enum MessageActions {
             guard let text = message.text, !text.isEmpty else { return }
             context.copy(text)
         case .bookmark:
-            // The id only. Which way to toggle is the caller's to decide against the store, so
-            // a sheet built before an echo landed can't push the state backwards.
-            context.toggleBookmark(message.id)
+            // The direction comes from `scope`, which is also what titled the row — so a
+            // sheet built before a `bookmark-updated` echo landed still does the thing it
+            // offered. Re-reading the store here instead would invert the button under the
+            // user: the row says "Save Message" and an unsave goes out.
+            context.setBookmark(message.id, !scope.isBookmarked)
         case .openLink, .copyLink, .shareLink:
             // A link's keys, dispatched by the `URL` overload. Ignored rather than trapped: one
             // screen renders both menus, and a mismatch is a caller bug, not a reason to crash.

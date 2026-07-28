@@ -48,25 +48,37 @@ final class BookmarksViewController: HistoryFeedViewController {
         )
     }
 
-    /// Swipe to remove. The row goes immediately rather than waiting for the server's echo —
-    /// which is the opposite of what the message action sheet does, deliberately.
+    /// Swipe to remove. The row goes as soon as the verb is on the wire, rather than waiting
+    /// for the server's echo — which is the opposite of what the message action sheet does,
+    /// deliberately.
     ///
-    /// The two directions aren't symmetric. *Saving* can be refused (a message the account
-    /// doesn't own) and the server answers that refusal with silence, so a sheet that flipped
-    /// its own label would be inventing a bookmark. *Removing* is unconditional —
-    /// `removeBookmark` deletes by (user, message) and always fans out — so there is no failure
-    /// for the row to spring back from, and leaving it sitting there until a round trip
-    /// completes would just read as a broken swipe.
+    /// The two directions aren't symmetric in what the *server* can refuse. Saving can be
+    /// (a message the account doesn't own) and the refusal is answered with silence, so a
+    /// sheet that flipped its own label would be inventing a bookmark. Removing is
+    /// unconditional — `removeBookmark` deletes by (user, message) and always fans out — so
+    /// there's no server-side failure for the row to spring back from, and leaving it in place
+    /// through a round trip would just read as a broken swipe.
+    ///
+    /// **Delivery is the separate question, and it's why this checks.** Nothing queues a verb
+    /// behind a dead socket: offline, or a few hundred ms after resume, `setBookmark` writes
+    /// nowhere and says so. Removing the row anyway would be the one genuinely dishonest
+    /// outcome here — the bookmark reappears next time the list is opened, with no account of
+    /// where it went.
     ///
     /// Titled "Remove" to match the sheet's "Remove Bookmark" rather than the "Save" verb: this
     /// is a row in the Bookmarks list, and the thing being removed is the bookmark.
     override func trailingSwipeActions(for item: HighlightItem) -> UISwipeActionsConfiguration? {
         let remove = UIContextualAction(style: .destructive, title: "Remove") { [weak self] _, _, done in
             guard let self else { return done(false) }
-            // `setBookmark(saved: false)`, not `toggleBookmark`: every row here is saved by
-            // definition, but the id set only knows lines this session has loaded, so toggling
-            // against it would *save* a bookmark whose buffer was never opened.
-            viewModel.setBookmark(messageId: item.message.id, saved: false)
+            // An explicit direction, never a toggle read from the store: every row here is
+            // saved by definition, but the id set only knows lines this session has loaded,
+            // so flipping against it would *save* a bookmark whose buffer was never opened.
+            // The message sheet passes its direction for the same reason.
+            guard viewModel.setBookmark(messageId: item.message.id, saved: false) else {
+                done(false)
+                reportRemoveFailed()
+                return
+            }
             // Close the swipe BEFORE the list changes under it. A full swipe animates the row
             // out itself (`performsFirstActionWithFullSwipe` is on by default), and reloading
             // first recycles that cell to the next bookmark — so the slide-out plays on the
@@ -76,5 +88,18 @@ final class BookmarksViewController: HistoryFeedViewController {
         }
         remove.image = UIImage(systemName: "bookmark.slash")
         return UISwipeActionsConfiguration(actions: [remove])
+    }
+
+    /// The swipe couldn't be delivered, so the row stays. Said out loud rather than left as a
+    /// gesture that visibly did nothing: an un-animating swipe reads as a missed touch, and
+    /// the user would just try again against the same dead socket.
+    private func reportRemoveFailed() {
+        let alert = UIAlertController(
+            title: "Not Connected",
+            message: "This bookmark couldn't be removed right now. Try again once you're back online.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
     }
 }
