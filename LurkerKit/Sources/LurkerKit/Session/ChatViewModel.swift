@@ -164,7 +164,13 @@ public final class ChatViewModel {
     /// against an older self-hosted instance — which `protocol.ts` treats as a normal
     /// operating condition, since operators upgrade on their own schedule.
     public func hydrate(_ key: BufferKey) {
-        client.loadLatest(networkId: key.networkId, target: key.target, countBy: historyCountBy)
+        // 200, not `loadLatest`'s default 100: this replaces what `open-buffer` used to
+        // answer, and `buildBufferBacklog` ships 200. Taking the default would have quietly
+        // halved every buffer's first screenful — the exact quantity `countBy` exists to
+        // protect — and started the scroll-up pager a page sooner.
+        client.loadLatest(
+            networkId: key.networkId, target: key.target, countBy: historyCountBy, limit: 200
+        )
     }
 
     /// Open a buffer for real: reopen, mint, or JOIN. Deliberate user intent only — this is a

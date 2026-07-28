@@ -925,7 +925,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
               !known.hydrated
         else { return }
         hydrateRequestedAtGeneration = state.burstGeneration
-        viewModel.hydrate(buffer.key)
+        // `known.key`, not `buffer.key`: this screen's key can carry a casing the server
+        // doesn't store. `state.buffers` is keyed on `BufferKey.id`, which lowercases, so the
+        // guard above matches a canonically-cased row even when our own target differs — the
+        // join flow synthesizes a screen from the TYPED name before any row exists, and the
+        // row then arrives with the network's casing (`#idlerpg` typed, `#idleRPG` stored).
+        // The server folds this too, but only a client that never had a stale key is actually
+        // safe against an older one.
+        viewModel.hydrate(known.key)
     }
 
     /// Fetch the `around` slice a jump needs (#42): a history window centered on `pendingJumpId`,

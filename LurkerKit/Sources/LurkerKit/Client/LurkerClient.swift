@@ -396,9 +396,9 @@ final class LurkerClient {
     /// serves this straight from the DB. `limit` is per side, so up to `2*limit + 1` events.
     ///
     /// Carries `countBy` (sizing each side) because on this client a jump slice is not merely a
-    /// jump: `hydrateIfNeeded` skips `open-buffer` entirely while a jump is pending
-    /// (`ChatViewController.swift:875`), so for a buffer entered from a push tap, a highlight,
-    /// or jump-to-first-unread, THIS is the first screenful and nothing else precedes it.
+    /// jump: `hydrateIfNeeded` returns early while a jump is pending, so for a buffer entered
+    /// from a push tap, a highlight, or jump-to-first-unread, THIS is the first screenful and
+    /// no other hydrate precedes it.
     func loadAround(networkId: Int?, target: String, anchorId: Int, countBy: HistoryCountBy, limit: Int = 100) {
         guard let networkId else { return }
         send([

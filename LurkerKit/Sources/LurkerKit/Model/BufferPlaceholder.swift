@@ -13,7 +13,7 @@ public enum BufferPlaceholder: Equatable, Sendable {
     /// Messages are showing — no placeholder.
     case none
     /// History is still on its way: the socket isn't up yet, or an on-demand buffer's
-    /// `open-buffer` reply hasn't landed.
+    /// hydrate reply hasn't landed.
     case loading
     /// The server has told us this buffer's history, and it's empty. A real state — a
     /// channel you just joined, a DM with no messages yet — not a failure.
@@ -23,7 +23,7 @@ public enum BufferPlaceholder: Equatable, Sendable {
     ///
     /// - `hasMessages`: any renderable line is already on screen.
     /// - `hydrated`: the server has read this buffer's history (see `Buffer.hydrated`).
-    /// - `hydratesOnDemand`: channels/DMs read history in reply to `open-buffer`;
+    /// - `hydratesOnDemand`: channels/DMs read history in reply to their own hydrate;
     ///   system/server buffers get theirs in the connect backlog (see
     ///   `BufferKind.hydratesOnDemand`).
     /// - `bufferExists`: the buffer's row is present in the store — i.e. some frame has

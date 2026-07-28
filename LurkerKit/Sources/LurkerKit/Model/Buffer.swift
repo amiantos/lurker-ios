@@ -18,7 +18,7 @@ public struct Buffer: Equatable, Sendable {
     public var joined: Bool
     /// False until the server has actually read this buffer's history. On a fresh
     /// connect channel/DM buffers arrive as SHELLS (`events: []`); their history is
-    /// not read until the client sends `open-buffer`.
+    /// not read until the client asks for it (`ChatViewModel.hydrate`).
     public var hydrated: Bool
     /// Whether more history exists above what's loaded — gates the scroll-up pagination
     /// (#6). Defaults true (an unopened buffer has all its history still to fetch).
@@ -153,13 +153,16 @@ public enum BufferKind: Sendable {
         }
     }
 
-    /// Whether the server will answer an `open-buffer` for this kind.
+    /// Whether this kind has a shell that needs filling in.
     ///
-    /// It won't for the system buffer or a `:server:` log — `handleOpenBuffer` discards
-    /// both up front (`if (!networkId || requested.startsWith(':server:')) return`) and
-    /// sends no reply, because their history ships complete in the connect backlog rather
-    /// than on demand. Asking anyway isn't harmless: the caller has no failure to observe,
-    /// so it waits forever on a reply the server already threw away.
+    /// It doesn't for the system buffer or a `:server:` log: their history ships complete in
+    /// the connect backlog, so there is nothing on demand to fetch.
+    ///
+    /// This used to carry a sharper warning — hydration went through `open-buffer`, which
+    /// discards both kinds up front and sends NO reply, so asking stranded the caller on a
+    /// reply the server had already thrown away. Hydration is `{type:'history',
+    /// mode:'latest'}` now, which answers for any target it can read, so the hazard is gone
+    /// and this is once again just "don't ask for what you already have".
     public var hydratesOnDemand: Bool {
         switch self {
         case .channel, .dm: true
