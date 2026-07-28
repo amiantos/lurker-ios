@@ -1779,39 +1779,34 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - Actions
 
     /// The views menu, opposite the back button: the surfaces you *look at*, as against the
-    /// buffer you're in. Highlights today; search, bookmarks and uploads land here as they're
-    /// built, which is the set the desktop client keeps in its bottom toolbar (#49).
+    /// buffer you're in. Highlights and Bookmarks today; search and uploads land here as
+    /// they're built, which is the set the desktop client keeps in its bottom toolbar (#49).
     ///
     /// Nothing account-scoped lives here. Sign-out sits in the buffer list's own menu,
-    /// where the things that outlast the buffer you happen to be reading belong — and
-    /// where it isn't one slip of the thumb from "Members".
+    /// where the things that outlast the buffer you happen to be reading belong.
+    ///
+    /// **Members is deliberately not here.** It describes *this channel*, which is what the
+    /// buffer-info sheet behind the title pill is for — and that sheet already lists it. A
+    /// second door to the same room, one that had to be conditioned on `buffer.kind` because
+    /// a DM has nobody to list, only made this menu's contents depend on which buffer you
+    /// happened to open. Everything left is app-scoped and present on every buffer, so the
+    /// menu is now the same menu everywhere. The right-edge swipe remains as the shortcut.
     ///
     /// A bare "…" means "there's a menu here" on iOS, so nothing in it fires on tap.
     private func overflowItem() -> UIBarButtonItem {
-        var actions: [UIMenuElement] = []
-        // Channels only. A DM has nobody to list and never will, and the system buffer
-        // isn't even on a network — the list would open empty by construction. The
-        // right-edge swipe stays unconditional: a gesture you have to go looking for can
-        // afford to land on an empty list, a row sitting in a menu can't.
-        if buffer.kind == .channel {
-            actions.append(UIAction(title: "Members", image: UIImage(systemName: "person.2")) { [weak self] _ in
-                self?.showMemberList()
-            })
-        }
-        // App-scoped, not buffer-scoped: recent highlights and bookmarks span every network,
-        // so they belong here on every buffer rather than gated like Members.
-        actions.append(UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
-            guard let self else { return }
-            showHighlights(viewModel: viewModel)
-        })
-        actions.append(UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
-            guard let self else { return }
-            showBookmarks(viewModel: viewModel)
-        })
-        // Built once, not deferred: every entry is fixed by this buffer's kind, which
-        // can't change under a screen that was constructed for it. (The deferral this used
-        // to need was for Join, whose networks come and go; that's the buffer sheet's "+"
-        // now, and a form rather than a menu, so nothing there needs deferring either.)
+        let actions: [UIMenuElement] = [
+            UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+                guard let self else { return }
+                showHighlights(viewModel: viewModel)
+            },
+            UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+                guard let self else { return }
+                showBookmarks(viewModel: viewModel)
+            },
+        ]
+        // Built once, not deferred: nothing in here varies at all now, let alone per press.
+        // (The deferral this used to need was for Join, whose networks come and go; that's
+        // the buffer sheet's "+" now, and a form rather than a menu.)
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: actions))
         item.accessibilityLabel = "More"
         return item
