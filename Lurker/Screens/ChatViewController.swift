@@ -127,9 +127,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
-    /// Which snapshot burst `openRequested` was set during, so a later burst can void it.
-    /// See the re-arm in `hydrateIfNeeded`.
-    private var askedAtGeneration: Int?
+    /// The snapshot burst during which this screen's one `open-buffer` was sent, or nil if
+    /// it hasn't asked (or its request has been voided). See `hydrateIfNeeded`.
+    ///
+    /// One optional rather than a bool plus a generation: two variables tracking one fact
+    /// can disagree, and they did — a reset that cleared the bool but left the generation
+    /// behind made the screen ask twice on the same burst and take two full backlogs for
+    /// it.
+    private var openRequestedAtGeneration: Int?
     /// The in-flight `/join` waiting for its channel to materialize (see `awaitJoin`).
     /// At most one: a second `/join` supersedes the first rather than racing it.
     private var pendingJoinCancellable: AnyCancellable?
@@ -137,9 +142,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// clears — see `handleBufferDisappeared`, which uses it to tell "the row hasn't arrived
     /// yet" from "the row was taken away".
     private var sawBufferRow = false
-    /// Whether we've asked for this buffer's history on the *current* connection. Cleared
-    /// when the socket drops, because a reconnect resyncs buffers as shells again.
-    private var openRequested = false
     /// Cleared once the buffer has been parked at its newest message.
     ///
     /// Opening a buffer has to land at the bottom, and neither obvious place to do it works
@@ -157,7 +159,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Consumed once the landing scrolls to it, so it's a one-shot like `needsInitialScroll`.
     private var pendingJumpId: Int?
     /// Whether the `around` slice for `pendingJumpId` has been requested on this connection —
-    /// same one-shot-per-connection shape as `openRequested`.
+    /// same one-shot-per-burst shape as `openRequestedAtGeneration`.
     private var aroundRequested = false
     /// Set once the requested `around` slice has landed, so the initial scroll can give up on
     /// a missing anchor (`anchorMissing`) and fall back to the bottom instead of waiting forever.
@@ -856,7 +858,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// The system buffer and `:server:` logs are excluded rather than merely redundant:
     /// the server discards `open-buffer` for both without replying (see
-    /// `BufferKind.hydratesOnDemand`), so asking would set `openRequested` on a request
+    /// `BufferKind.hydratesOnDemand`), so asking would mark a request as sent
     /// that can never be answered and wedge the screen waiting on it.
     /// TEMPORARY (QA): every early return below is a reason the hydrate didn't happen, and
     /// the hang is one of them being taken forever. Remove once A4 is clean twice running.
@@ -871,7 +873,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             String(describing: state.connection),
             known == nil ? "nil" : "yes",
             known.map { String($0.hydrated) } ?? "-",
-            String(openRequested),
+            openRequestedAtGeneration.map(String.init) ?? "no",
             (state.messages[buffer.key.id] ?? []).count,
             pendingJumpId.map(String.init) ?? "-",
             String(state.rosterSettled),
@@ -894,13 +896,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         guard state.connection == .connected else {
-            openRequested = false // a reconnect resyncs buffers, so ask again on the next one
+            // A reconnect resyncs buffers as shells, so ask again on the next one. Kept as
+            // a fast path only — it fires when a drop is actually reported, which it isn't
+            // when a close arrives after the socket was already replaced. The burst check
+            // below is the one that always fires.
+            openRequestedAtGeneration = nil
             traceHydrate("skip:notConnected", state)
             return
         }
         // The row went away, so whatever we asked for is void — re-arm.
         //
-        // `openRequested` used to clear ONLY on disconnect, which assumed the row could
+        // The request used to clear ONLY on disconnect, which assumed the row could
         // never vanish underneath a live socket. Roster reconciliation broke that: a
         // burst that doesn't name this buffer drops the row and its messages, and
         // anything that re-materializes it — a live event, a later frame — brings it
@@ -913,7 +919,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // re-arming there would fire a fresh request on every state update until it did.
         // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
         // so nil↔shell always gets delivered.
-        if state.buffers[buffer.key.id] == nil { openRequested = false }
+        if state.buffers[buffer.key.id] == nil { openRequestedAtGeneration = nil }
         // A new burst voids a request made during the previous one.
         //
         // The socket can die and be replaced with `connection` never leaving `.connected`
@@ -927,11 +933,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The burst is the reliable signal — a reconnect always produces one, and it means
         // the server is re-sending everything, which is precisely when anything asked over
         // the old socket becomes void.
-        if let asked = askedAtGeneration, asked != state.burstGeneration {
-            openRequested = false
-            askedAtGeneration = nil
+        if let asked = openRequestedAtGeneration, asked != state.burstGeneration {
+            openRequestedAtGeneration = nil
         }
-        guard !openRequested else {
+        guard openRequestedAtGeneration == nil else {
             traceHydrate("skip:alreadyAsked", state)
             return
         }
@@ -943,8 +948,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             traceHydrate("skip:hydrated", state)
             return
         }
-        openRequested = true
-        askedAtGeneration = state.burstGeneration
+        openRequestedAtGeneration = state.burstGeneration
         traceHydrate("SEND open-buffer", state)
         viewModel.openBuffer(buffer.key)
     }

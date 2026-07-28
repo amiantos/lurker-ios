@@ -26,6 +26,11 @@ final class LurkerClient {
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
+    /// TEMPORARY QA: force the socket to die right after the first `open-buffer` of a
+    /// launch, so the lost-request race is reproducible instead of occasional. Remove with
+    /// the rest of the QA instrumentation.
+    static let qaDropSocketAfterOpenBuffer = true
+    private var didQaDropSocket = false
     /// Reset per socket; gates the "socket really opened" signal to the first frame that
     /// actually arrives, rather than optimistically on `resume()`.
     private var hasEmittedOpen = false
@@ -311,6 +316,21 @@ final class LurkerClient {
         NSLog("[wire] -> open-buffer networkId=%d target=%@ socket=%@", networkId, target,
               socket == nil ? "nil" : "yes")
         send(["type": "open-buffer", "networkId": networkId, "target": target])
+        // TEMPORARY QA HOOK — forces the lost-request race instead of waiting for it.
+        //
+        // The hang needs the socket to die AFTER an open-buffer goes out, which happens by
+        // chance maybe one launch in several; a launch where it dies BEFORE the send looks
+        // superficially identical in the log and proves nothing. So kill the socket right
+        // here, once per launch, and the recovery path is exercised every time.
+        //
+        // Expect in the log: `-> open-buffer`, this line, a second `[burst] snapshot opens
+        // window`, then a SECOND `SEND open-buffer`, then a populated `[backlog]`. If the
+        // second SEND is missing, the fix does not work.
+        if Self.qaDropSocketAfterOpenBuffer, !didQaDropSocket {
+            didQaDropSocket = true
+            NSLog("[qa] FORCING socket drop immediately after open-buffer")
+            socket?.cancel(with: .abnormalClosure, reason: nil)
+        }
     }
 
     func sendMessage(networkId: Int?, target: String, text: String) {
