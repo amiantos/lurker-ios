@@ -41,13 +41,22 @@ final class MessageActionsTests: XCTestCase {
     /// The server's own output — MOTD, system, error — is not speech, so no Reply. But it is the
     /// text people most often want off the screen, and on iOS this menu is the only way to get it
     /// (the row menu took the long press from the selection loupe), so Copy has to be there.
-    func testServerTextOffersCopyAndBookmarkButNoReply() {
+    ///
+    /// Copy is the ONLY thing that divergence buys. Bookmark keeps the web's speech gate: the
+    /// feed is for things people said, not for a saved MOTD or connection error.
+    func testServerTextOffersCopyOnly() {
         for type: EventType in [.system, .motd, .error, .ctcp, .e2e, .other] {
             XCTAssertEqual(
-                build(msg(type: type, text: "something")).map(\.key), [.copy, .bookmark],
-                "\(type) should offer Copy and Bookmark"
+                build(msg(type: type, text: "something")).map(\.key), [.copy],
+                "\(type) should offer Copy and nothing else"
             )
         }
+    }
+
+    /// A NOTICE is speech, so it stays bookmarkable even though it's most often seen in a
+    /// server buffer — matching the web, whose gate is the message type and not the buffer.
+    func testNoticeStaysBookmarkable() {
+        XCTAssertEqual(build(msg(type: .notice)).map(\.key), [.reply, .copy, .bookmark])
     }
 
     /// Activity narration offers nothing. Its `text` is a fragment of what's on screen — a part
@@ -215,13 +224,15 @@ final class MessageActionsTests: XCTestCase {
     func testRunningBookmarkOnAnIneligibleLineDoesNothing() {
         var fired = 0
         let ctx = context(toggleBookmark: { _ in fired += 1 })
-        // No network (system buffer), no id (ephemeral), and narration rather than content.
+        // No network (system buffer), no id (ephemeral), narration, and server output —
+        // the four ways a line fails the gate.
         MessageActions.run(
             .bookmark, on: msg(),
             scope: MessageActionScope(networkId: nil, isBookmarked: false), context: ctx
         )
         run(.bookmark, on: msg(id: 0), context: ctx)
         run(.bookmark, on: msg(type: .join, text: nil), context: ctx)
+        run(.bookmark, on: msg(type: .motd), context: ctx)
         XCTAssertEqual(fired, 0)
     }
 

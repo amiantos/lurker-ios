@@ -140,7 +140,18 @@ public enum MessageActions {
             actions.append(MessageAction(key: .copy, title: "Copy Text", symbol: "doc.on.doc"))
         }
 
-        // Bookmarking needs content, a persisted line, and an owning network.
+        // Bookmarking needs speech, a persisted line, and an owning network.
+        //
+        // **Speech is where this client stops diverging from the web.** The web gates its
+        // entire action surface on `eligibleForActions` — message/action/notice — so MOTD,
+        // system and error lines offer nothing there at all. Copy above deliberately breaks
+        // that gate, and has a reason to: on iOS this menu is the only way to copy anything,
+        // and the server buffer's text is exactly what people reach for. Bookmark has no such
+        // excuse. The feed is for things people said; a saved MOTD or connection error is a
+        // slice of log with no conversation in it. So it follows the web's rule instead.
+        //
+        // (Speech also excludes activity narration, which would otherwise surface in the feed
+        // as a lone "alice joined" with nothing around it to say why it was kept.)
         //
         // The id gate is the ordinary one: `id == 0` is an ephemeral event the server has no
         // row for, so there's nothing to point a bookmark at.
@@ -152,13 +163,7 @@ public enum MessageActions {
         // every time, with no way to tell. It also keeps us from ever asking about a system
         // line's id, which matters because those come from a separate sequence that overlaps
         // the message ids the bookmark set is keyed by.
-        //
-        // Activity narration is excluded for the same reason it gets no Copy, and this is a
-        // deliberate divergence from the web (which offers Save on anything with an id). A
-        // join or a nick change isn't content — it's the churn the event-filter tier exists to
-        // hide — and in the Bookmarks feed it would surface as a lone "alice joined" with
-        // no conversation around it to explain why it was kept.
-        if !message.type.isActivity, message.id != 0, scope.networkId != nil {
+        if message.type.isSpeech, message.id != 0, scope.networkId != nil {
             actions.append(
                 MessageAction(
                     key: .bookmark,

@@ -19,6 +19,26 @@ extension UIViewController {
         showHistoryFeed(BookmarksViewController(viewModel: viewModel), viewModel: viewModel)
     }
 
+    /// Say that the row points into a buffer that isn't open, instead of navigating into a
+    /// screen that would immediately throw the user back out.
+    ///
+    /// Presented from the feed rather than after dismissing it: the sheet is where the user
+    /// is, the answer belongs there, and staying put lets them pick a different row. There is
+    /// no offer to reopen the buffer — reopening is a real decision (rejoining a channel, or
+    /// starting a DM), not a side effect of tapping something to read.
+    fileprivate func reportClosedBuffer(_ item: HighlightItem, viewModel: ChatViewModel) {
+        let name = viewModel.state.buffer(for: item.bufferKey)
+            .displayName(networkName: item.networkName
+                ?? item.networkId.flatMap { viewModel.state.networks[$0]?.name })
+        let alert = UIAlertController(
+            title: "Buffer Closed",
+            message: "\(name) isn't open, so this message can't be shown in context.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+    }
+
     /// Present a cross-buffer feed and wire its jump.
     ///
     /// A full-height sheet: these are reading surfaces, not glances. Presented from the
@@ -29,13 +49,27 @@ extension UIViewController {
     private func showHistoryFeed(_ feed: HistoryFeedViewController, viewModel: ChatViewModel) {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let nav = navigationController
-        feed.onSelect = { [weak nav] item in
+        feed.onSelect = { [weak nav, weak feed] item in
+            let state = viewModel.state
+            // A row can outlive the buffer it points into: bookmarks and highlights are kept
+            // by message id, and closing a buffer doesn't touch them. Jumping anyway is a dead
+            // end — `ChatViewController.handleBufferDisappeared` finds no row for the key and
+            // pops back to the list, so the sheet closes, a chat screen flashes, and you land
+            // somewhere you didn't ask for with nothing said about why.
+            //
+            // Tested with the same condition that screen uses, so the two can't disagree about
+            // what "gone" means: a settled roster is the server having listed everything it
+            // has (#635). While it's still arriving, absence proves nothing — navigate, and let
+            // the chat screen wait for the answer as it does for a notification tap.
+            if state.rosterSettled, state.buffers[item.bufferKey.id] == nil {
+                feed?.reportClosedBuffer(item, viewModel: viewModel)
+                return
+            }
             // Jump to the line (#42) — even when it's the buffer already on screen, since the
-            // point is to move to that message. The buffer may not be in state (a channel since
-            // closed, or one whose row never materialized), which is what `buffer(for:)`
-            // synthesizes for; the new screen fetches an `around` slice centered on it.
+            // point is to move to that message. The new screen fetches an `around` slice
+            // centered on it.
             nav?.showBuffer(
-                viewModel.state.buffer(for: item.bufferKey), viewModel: viewModel,
+                state.buffer(for: item.bufferKey), viewModel: viewModel,
                 jumpTo: item.message.id, animated: false
             )
             nav?.dismiss(animated: true)
