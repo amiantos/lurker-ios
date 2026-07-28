@@ -45,8 +45,15 @@ final class SettingsViewController: UITableViewController {
         ("chat.keep_position_on_send", "Stay put when you send"),
         // The event-noise tier and its modifiers, in the order they narrow (#666). The tier
         // reads the MOBILE key: it is split by device class, and this device is never the
-        // desktop case. Everything under it greys out when the tier leaves nothing to modify,
-        // which the registry now describes rather than this screen guessing.
+        // desktop case.
+        //
+        // The modifiers below do NOT grey out when this phone is set to "Hide all", and that
+        // is deliberate. Their registry `dependsOn` is ORed across both device classes, so
+        // the desktop clause — a key this screen doesn't list — keeps them live. They are
+        // shared settings, not per-device ones: disabling them here would stop you managing
+        // your desktop's consolidation from your phone, to save you editing a value this
+        // screen happens not to be using. What `dependsOn` does buy is the transitive case
+        // (`consolidate_max_names` follows `consolidate_joins`) with no table maintained here.
         (EventFilter.modeKey, "Event noise"),
         ("chat.consolidate_joins", "Consolidate events"),
         ("chat.consolidate_max_names", "Max consolidated nicks"),
@@ -287,6 +294,11 @@ final class SettingsViewController: UITableViewController {
             // what the row needs to say when nothing is being touched.
             let current = viewModel.state.settings.effective(option.key)?.stringValue
                 ?? option.default.stringValue ?? ""
+            // Choice filtering and labels are the EVENT TIER's, so they're gated on its key.
+            // This branch serves any `.enum` option; left ungated, the next enum setting
+            // added here would silently lose a choice it happened to spell `smart` and get
+            // `all`/`none` relabelled "Show all"/"Hide all".
+            let isEventTier = option.key == EventFilter.modeKey
             let button = UIButton(type: .system)
             button.showsMenuAsPrimaryAction = true
             // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
@@ -297,17 +309,25 @@ final class SettingsViewController: UITableViewController {
             // the key is shared with the web, so a choice made at a desk has to stay visible
             // here, but the picker must not let you newly pick something we'd then ignore.
             let choices = option.choices.filter { choice in
-                choice == current
+                guard isEventTier else { return true }
+                return choice == current
                     || EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true
             }
+            let title = { (choice: String) in
+                isEventTier ? Self.eventModeLabels[choice] ?? choice : choice
+            }
             button.menu = UIMenu(children: choices.map { choice in
-                UIAction(
-                    title: Self.eventModeLabels[choice] ?? choice,
-                    state: choice == current ? .on : .off
-                ) { [weak self] _ in
+                UIAction(title: title(choice), state: choice == current ? .on : .off) {
+                    [weak self] _ in
                     self?.write(option.key, .string(choice))
                 }
             })
+            // Set the title before measuring. `changesSelectionAsPrimaryAction` derives it
+            // from the `.on` menu child, but that propagates on the button's next
+            // configuration-update pass — after this synchronous `sizeToFit()`, which would
+            // leave `accessoryView` fitted to an empty button and the control clipped on the
+            // first render of this screen. Same class of trap as the stack-view sizing above.
+            button.setTitle(title(current), for: .normal)
             button.isEnabled = enabled
             button.sizeToFit()
             cell.accessoryView = button

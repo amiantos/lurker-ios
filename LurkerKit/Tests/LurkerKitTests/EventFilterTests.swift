@@ -167,6 +167,19 @@ final class EventFilterTests: XCTestCase {
         XCTAssertEqual(lines, [])
     }
 
+    /// A buffer with messages can build to NO rows — the precondition behind a blank-screen
+    /// bug in `ChatViewController`, which decided its empty-state placeholder from the raw
+    /// message count. A quiet channel holding nothing but joins and mode changes has messages
+    /// and renders nothing, so anything keyed off "are there messages" has to be keyed off the
+    /// built rows instead. Pinned here because the two only started disagreeing with `.none`.
+    func testAnAllNoiseBufferBuildsToNothing() {
+        let rows = build(
+            [message(1, .join, "bob"), message(2, .mode, "op"), message(3, .part, "bob")],
+            mode: "none"
+        )
+        XCTAssertTrue(rows.isEmpty, "expected no rows, got \(rows)")
+    }
+
     func testNoneKeepsKicksAndTopics() {
         let rows = build(
             [message(1, .kick, "bob"), message(2, .topic), message(3, .join, "eve")],

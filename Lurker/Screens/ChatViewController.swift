@@ -621,7 +621,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let nowDetached = state.buffers[buffer.key.id]?.hasMoreNewer == true
         if !wasNearBottom, !wasDetached, !nowDetached,
            newFirstId == oldFirstId, updated.count > messages.count {
-            newWhileDetached += updated.count - messages.count
+            // Count what the reader will actually SEE arrive. At the `none` tier (#666) a
+            // netsplit rejoin appends dozens of rows that build to nothing, and counting
+            // them raw advertises "40 new" on a pill that jumps to a bottom looking exactly
+            // like the top. The badge is still approximate under consolidation — a run of
+            // 40 folds to one summary line — but that overcounts things that exist, which
+            // is a different kind of wrong from counting things that don't.
+            let mode = EventFilter.rendered(EventFilter.mode(state.settings))
+            let appended = updated.suffix(updated.count - messages.count)
+            newWhileDetached += mode == .none
+                ? appended.count { !EventFilter.isNoise($0.type) }
+                : appended.count
         }
 
         messages = updated
@@ -642,7 +652,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Connection trouble spelled out (#19) — the loud counterpart to the title dot —
         // and, behind an empty list, whether we're still loading or genuinely have nothing.
         connectionBanner.update(ConnectionBannerState.of(reachable: state.reachable, connection: state.connection))
-        updatePlaceholder(hasMessages: !updated.isEmpty, known: state.buffers[buffer.key.id])
+        // Keyed off the BUILT rows, not the raw messages — `hasMessages` means "any
+        // renderable line is already on screen", and since the `none` event tier (#666)
+        // those two can disagree. A quiet channel whose only stored rows are joins and mode
+        // changes has messages but builds to nothing; reading `updated` there reports
+        // content, suppresses the placeholder, and leaves the reader on a completely blank
+        // screen with no empty-state and no spinner — and nothing to scroll, so no paging
+        // fires to correct it. Runs after `rebuildRows()` above, so `rows` is current.
+        updatePlaceholder(hasMessages: !rows.isEmpty, known: state.buffers[buffer.key.id])
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
 
