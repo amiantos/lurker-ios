@@ -127,6 +127,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
+    /// Which snapshot burst `openRequested` was set during, so a later burst can void it.
+    /// See the re-arm in `hydrateIfNeeded`.
+    private var askedAtGeneration: Int?
     /// The in-flight `/join` waiting for its channel to materialize (see `awaitJoin`).
     /// At most one: a second `/join` supersedes the first rather than racing it.
     private var pendingJoinCancellable: AnyCancellable?
@@ -397,6 +400,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // "Loading messages…" forever. The absent case is the one that needs
                     // this update most, and it was the one guaranteed not to receive it.
                     && old.rosterSettled == new.rosterSettled
+                    // Same reasoning as `rosterSettled`: `hydrateIfNeeded` re-arms on this,
+                    // so filtering it out would hide the very update that lets a screen
+                    // recover from a request lost with a replaced socket. Anything this
+                    // screen makes a decision from has to be compared here.
+                    && old.burstGeneration == new.burstGeneration
                     && old.error == new.error
                     && old.connection == new.connection
                     && old.reachable == new.reachable
@@ -906,6 +914,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
         // so nil↔shell always gets delivered.
         if state.buffers[buffer.key.id] == nil { openRequested = false }
+        // A new burst voids a request made during the previous one.
+        //
+        // The socket can die and be replaced with `connection` never leaving `.connected`
+        // (`handleClose` drops a close that lands after the replacement, so a stale close
+        // can't clobber a live socket). A request written to the dying socket is lost with
+        // no state change to notice, so the `notConnected` reset above never fires and
+        // this screen waits forever for a reply that cannot arrive. Observed exactly that
+        // way: `-> open-buffer`, socket shutdown one line later, then a second burst, and
+        // `conn=connected` throughout.
+        //
+        // The burst is the reliable signal — a reconnect always produces one, and it means
+        // the server is re-sending everything, which is precisely when anything asked over
+        // the old socket becomes void.
+        if let asked = askedAtGeneration, asked != state.burstGeneration {
+            openRequested = false
+            askedAtGeneration = nil
+        }
         guard !openRequested else {
             traceHydrate("skip:alreadyAsked", state)
             return
@@ -919,6 +944,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         openRequested = true
+        askedAtGeneration = state.burstGeneration
         traceHydrate("SEND open-buffer", state)
         viewModel.openBuffer(buffer.key)
     }

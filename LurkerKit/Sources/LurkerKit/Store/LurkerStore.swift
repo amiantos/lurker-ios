@@ -86,6 +86,21 @@ public struct ChatState: Sendable {
     /// whose frames simply hadn't landed yet. Both conditions together are what §4.3's
     /// "absence is proof" actually licenses.
     public var rosterSettled: Bool { backlogComplete && !burstActive }
+    /// Bumped once per snapshot burst. The identity of "everything the server has told us
+    /// so far" — a change means it started over.
+    ///
+    /// This is what one-shot-per-connection requests must key off, NOT `connection`.
+    /// `connection` looks like the obvious signal and isn't: `handleClose` drops a close
+    /// callback that arrives after the socket has already been replaced (correct — a stale
+    /// close must not clobber its live replacement), so a socket can die and be replaced
+    /// with `connection` never leaving `.connected`. A request written to the dead socket
+    /// is then lost with no observable state change, and anything that latched "I already
+    /// asked" waits forever for a reply that cannot come.
+    ///
+    /// A burst, by contrast, is unmissable: every reconnect produces one, and it is the
+    /// server saying "here is everything again", which is exactly the moment a pending
+    /// request from the previous socket becomes void.
+    public internal(set) var burstGeneration = 0
     /// Buffer keys the server has named in the snapshot burst currently in flight, so
     /// `backlog-complete` can prune the ones it *didn't* — see `pruneToBurst`.
     var burstSeen: Set<String> = []
@@ -318,6 +333,7 @@ final class LurkerStore {
             var next = state
             next.burstSeen = []
             next.burstActive = true
+            next.burstGeneration &+= 1
             let after = applySnapshot(next, networks)
             NSLog(
                 "[burst] snapshot opens window — networks=%d rowsBefore=%d rowsAfter=%d seeded=%@",

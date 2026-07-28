@@ -746,6 +746,25 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertFalse(store.state.rosterSettled, "...but the roster is being rebuilt")
     }
 
+    func testBurstGenerationAdvancesOncePerSnapshot() {
+        // What a one-shot request keys off instead of `connection`. A socket can die and be
+        // replaced without `connection` ever leaving `.connected` (a close arriving after
+        // the replacement is dropped so it can't clobber the live socket), which loses any
+        // request written to the dying socket with no observable state change. A burst is
+        // unmissable — every reconnect produces one.
+        let store = LurkerStore()
+        XCTAssertEqual(store.state.burstGeneration, 0)
+
+        store.apply(.snapshot([]))
+        XCTAssertEqual(store.state.burstGeneration, 1)
+        store.apply(.backlogComplete)
+        XCTAssertEqual(store.state.burstGeneration, 1, "only a snapshot advances it")
+
+        // A reconnect's burst — the moment anything asked over the old socket is void.
+        store.apply(.snapshot([]))
+        XCTAssertEqual(store.state.burstGeneration, 2)
+    }
+
     func testReachabilityIsIndependentOfTheSocket() {
         // Two different truths: the socket only ever reports connecting/connected/
         // reconnecting, so it can never say "there is no internet".
