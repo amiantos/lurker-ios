@@ -127,9 +127,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
     /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
     private var dividerAfterId: Int?
-    /// Whether we've asked for this buffer's history on the *current* connection. Cleared
-    /// when the socket drops, because a reconnect resyncs buffers as shells again.
-    private var openRequested = false
+    /// The snapshot burst during which this screen's one `open-buffer` was sent, or nil if
+    /// it hasn't asked (or its request has been voided). See `hydrateIfNeeded`.
+    ///
+    /// One optional rather than a bool plus a generation: two variables tracking one fact
+    /// can disagree, and they did — a reset that cleared the bool but left the generation
+    /// behind made the screen ask twice on the same burst and take two full backlogs for
+    /// it.
+    private var openRequestedAtGeneration: Int?
+    /// The in-flight `/join` waiting for its channel to materialize (see `awaitJoin`).
+    /// At most one: a second `/join` supersedes the first rather than racing it.
+    private var pendingJoinCancellable: AnyCancellable?
+    /// Whether the store has ever held a real row for this buffer. Latches true and never
+    /// clears — see `handleBufferDisappeared`, which uses it to tell "the row hasn't arrived
+    /// yet" from "the row was taken away".
+    private var sawBufferRow = false
     /// Cleared once the buffer has been parked at its newest message.
     ///
     /// Opening a buffer has to land at the bottom, and neither obvious place to do it works
@@ -146,9 +158,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// if it isn't already held the screen fetches an `around` slice centered on it first.
     /// Consumed once the landing scrolls to it, so it's a one-shot like `needsInitialScroll`.
     private var pendingJumpId: Int?
-    /// Whether the `around` slice for `pendingJumpId` has been requested on this connection —
-    /// same one-shot-per-connection shape as `openRequested`.
-    private var aroundRequested = false
+    /// The snapshot burst during which the `around` slice for `pendingJumpId` was requested,
+    /// or nil if it hasn't been asked for. Same shape, and the same reasoning, as
+    /// `openRequestedAtGeneration`: a request written to a socket that is silently replaced
+    /// is lost with `connection` never dipping, so a bool cleared only on disconnect would
+    /// leave a jump waiting forever for a slice that cannot arrive.
+    private var aroundRequestedAtGeneration: Int?
     /// Set once the requested `around` slice has landed, so the initial scroll can give up on
     /// a missing anchor (`anchorMissing`) and fall back to the bottom instead of waiting forever.
     private var aroundSliceArrived = false
@@ -381,6 +396,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 let now = Date()
                 return old.messages[key] == new.messages[key]
                     && old.buffers[key] == new.buffers[key]
+                    // Not about *this* buffer's contents, and that's exactly why it has to
+                    // be here. When the buffer is absent, every field above is nil on both
+                    // sides, so the update that flips the roster to settled — the burst's
+                    // terminal frame — is identical by this predicate and gets dropped.
+                    // `handleBufferDisappeared` then never learns that absence has become
+                    // provable, and a screen opened BY KEY onto a closed buffer sits on
+                    // "Loading messages…" forever. The absent case is the one that needs
+                    // this update most, and it was the one guaranteed not to receive it.
+                    && old.rosterSettled == new.rosterSettled
+                    // Same reasoning as `rosterSettled`: `hydrateIfNeeded` re-arms on this,
+                    // so filtering it out would hide the very update that lets a screen
+                    // recover from a request lost with a replaced socket. Anything this
+                    // screen makes a decision from has to be compared here.
+                    && old.burstGeneration == new.burstGeneration
                     && old.error == new.error
                     && old.connection == new.connection
                     && old.reachable == new.reachable
@@ -500,7 +529,62 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return networks[networkId]?.name ?? "Message"
     }
 
+    /// Leave this screen when the buffer it is showing isn't open any more.
+    ///
+    /// `ChatState` drops buffer rows in four places, and all of them should take the reader
+    /// off a buffer screen: `buffer-closed` (another device closed it), `removeBuffer` (this
+    /// device did), `pruneToBurst` (a reconnect revealed a close we slept through), and
+    /// `reset()` on sign-out — which is handled by SceneDelegate instead, see below.
+    ///
+    /// Absence alone is not the trigger, because absence is also the normal state early on:
+    /// `state.buffer(for:)` synthesizes an empty row so a screen reached by *key* can exist
+    /// before its `backlog` frame lands, and popping on that would bounce every cold launch
+    /// back to the list. It takes one of the two proofs in the guard below.
+    ///
+    /// Returns true when `apply` should stop — which is broader than "it popped". It is also
+    /// true when this screen is on its way out by some other route: a sign-out that
+    /// SceneDelegate is already handling, or a pop already in flight. In every one of those
+    /// cases the rest of `apply` would read `state.messages[key]`, find it empty, and repaint
+    /// the screen blank on the way out, so the caller wants to stop regardless of who is
+    /// doing the leaving.
+    private func handleBufferDisappeared(_ state: ChatState) -> Bool {
+        guard state.buffers[buffer.key.id] != nil else {
+            // Two ways to know the buffer isn't coming:
+            //
+            //  - We held a row and it was taken away (a close, live or reconciled).
+            //  - We never held one, but the roster is settled — so the server has now
+            //    listed everything it has and this key wasn't in it (§4.3, lurker #635).
+            //
+            // The second is the whole point of `backlog-complete`, and without it this
+            // screen still spins forever on exactly the case commit 2 is about: arriving
+            // BY KEY (launch restore, notification tap) at a buffer that was closed while
+            // the phone was away. `sawBufferRow` never becomes true there, because the row
+            // never existed on this run.
+            guard sawBufferRow || state.rosterSettled else { return false }
+            // Sign-out empties `buffers` too, via `store.reset()`. Leave that case entirely
+            // to SceneDelegate, which swaps the whole stack for the login screen — popping
+            // here as well would run two stack transitions at once. `logout()` sets
+            // `sessionSubject.value` synchronously *before* the state sink is delivered on
+            // main, so this reads the new session, not the stale one.
+            guard viewModel.session == .loggedIn else { return true }
+            // Already on the way out (a pop in flight, or the list is showing) — don't
+            // stack a second one.
+            guard navigationController?.topViewController === self else { return true }
+            // Sheets are presented by the navigation controller, so popping this screen
+            // doesn't take them with it — a nick list or buffer-info sheet would be left
+            // stranded over the buffer list, still bound to a buffer that no longer exists.
+            // (This is what `showMemberList`'s "nothing replaces this screen" reasoning
+            // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
+            navigationController?.dismiss(animated: false)
+            navigationController?.popToRootViewController(animated: true)
+            return true
+        }
+        sawBufferRow = true
+        return false
+    }
+
     private func apply(_ state: ChatState) {
+        if handleBufferDisappeared(state) { return }
         networks = state.networks
         refreshHighlighter(state)
         hydrateIfNeeded(state)
@@ -574,7 +658,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // has *some* messages (a pre-existing connect backlog would trip that and make the jump
         // give up before its real slice arrives). A live append keeps the baseline, so it
         // doesn't count either.
-        if aroundRequested, !aroundSliceArrived {
+        if aroundRequestedAtGeneration != nil, !aroundSliceArrived {
             let currentIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
             let replaced = !aroundBaselineIds.isEmpty && !aroundBaselineIds.isSubset(of: currentIds)
             let anchorPresent = pendingJumpId.map { currentIds.contains($0) } ?? false
@@ -660,7 +744,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// loaded row unread) rather than the real seam.
     private func jumpTargetRow(anchor: Int) -> Int? {
         if jumpFlashesFirstUnread {
-            if aroundRequested, !aroundSliceArrived { return nil }
+            if aroundRequestedAtGeneration != nil, !aroundSliceArrived { return nil }
             return firstUnreadRow
         }
         return rowIndex(containing: anchor)
@@ -731,7 +815,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// stranded set from a prior jump.
     private func resetJumpState() {
         pendingJumpId = nil
-        aroundRequested = false
+        aroundRequestedAtGeneration = nil
         aroundSliceArrived = false
         aroundBaselineIds = []
         jumpConverging = false
@@ -780,7 +864,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// The system buffer and `:server:` logs are excluded rather than merely redundant:
     /// the server discards `open-buffer` for both without replying (see
-    /// `BufferKind.hydratesOnDemand`), so asking would set `openRequested` on a request
+    /// `BufferKind.hydratesOnDemand`), so asking would mark a request as sent
     /// that can never be answered and wedge the screen waiting on it.
     private func hydrateIfNeeded(_ state: ChatState) {
         guard buffer.kind.hydratesOnDemand else { return }
@@ -790,11 +874,50 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the buffer reads hydrated, so this stays a no-op afterwards.
         guard pendingJumpId == nil else { return }
         guard state.connection == .connected else {
-            openRequested = false // a reconnect resyncs buffers, so ask again on the next one
+            // A reconnect resyncs buffers as shells, so ask again on the next one. Kept as
+            // a fast path only — it fires when a drop is actually reported, which it isn't
+            // when a close arrives after the socket was already replaced. The burst check
+            // below is the one that always fires.
+            openRequestedAtGeneration = nil
             return
         }
-        guard !openRequested, let known = state.buffers[buffer.key.id], !known.hydrated else { return }
-        openRequested = true
+        // The row went away, so whatever we asked for is void — re-arm.
+        //
+        // The request used to clear ONLY on disconnect, which assumed the row could
+        // never vanish underneath a live socket. Roster reconciliation broke that: a
+        // burst that doesn't name this buffer drops the row and its messages, and
+        // anything that re-materializes it — a live event, a later frame — brings it
+        // back as an unhydrated shell. With the flag still latched, this would decline
+        // to ask ever again over that connection, and the screen sat on "Loading
+        // messages…" permanently *without* popping, because by then a row exists again.
+        //
+        // Keyed on the row being ABSENT rather than merely unhydrated: unhydrated is
+        // also the normal state between sending `open-buffer` and its reply landing, and
+        // re-arming there would fire a fresh request on every state update until it did.
+        // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
+        // so nil↔shell always gets delivered.
+        if state.buffers[buffer.key.id] == nil { openRequestedAtGeneration = nil }
+        // A new burst voids a request made during the previous one.
+        //
+        // The socket can die and be replaced with `connection` never leaving `.connected`
+        // (`handleClose` drops a close that lands after the replacement, so a stale close
+        // can't clobber a live socket). A request written to the dying socket is lost with
+        // no state change to notice, so the `notConnected` reset above never fires and
+        // this screen waits forever for a reply that cannot arrive. Observed exactly that
+        // way: `-> open-buffer`, socket shutdown one line later, then a second burst, and
+        // `conn=connected` throughout.
+        //
+        // The burst is the reliable signal — a reconnect always produces one, and it means
+        // the server is re-sending everything, which is precisely when anything asked over
+        // the old socket becomes void.
+        if let asked = openRequestedAtGeneration, asked != state.burstGeneration {
+            openRequestedAtGeneration = nil
+        }
+        guard openRequestedAtGeneration == nil,
+              let known = state.buffers[buffer.key.id],
+              !known.hydrated
+        else { return }
+        openRequestedAtGeneration = state.burstGeneration
         viewModel.openBuffer(buffer.key)
     }
 
@@ -806,13 +929,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func requestAroundIfNeeded(_ state: ChatState) {
         guard let anchor = pendingJumpId, buffer.kind.hydratesOnDemand else { return }
         guard state.connection == .connected else {
-            aroundRequested = false
+            aroundRequestedAtGeneration = nil
             return
         }
-        guard !aroundRequested else { return }
+        // A new burst voids a request made during the previous one — see
+        // `hydrateIfNeeded` for why `connection` alone can't be trusted to notice.
+        if let asked = aroundRequestedAtGeneration, asked != state.burstGeneration {
+            aroundRequestedAtGeneration = nil
+        }
+        guard aroundRequestedAtGeneration == nil else { return }
         // Already held? No fetch — land against what's loaded.
         if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
-        aroundRequested = true
+        aroundRequestedAtGeneration = state.burstGeneration
         aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
         aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
         viewModel.loadAround(buffer.key, anchorId: anchor)
@@ -1255,6 +1383,37 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.clear()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
         if case .activate(let key) = outcome { navigate(to: key) }
+        // `/join` asked us to switch once the channel is real — see `awaitJoin`.
+        if case .awaitJoin(let key) = outcome { awaitJoin(key) }
+    }
+
+    /// Switch to a channel we just asked to join, the moment its buffer materializes.
+    ///
+    /// The row appears when `channel-joined` comes back and `applyLive` mints it — which is
+    /// the only thing that proves we're actually in the channel. Waiting for it rather than
+    /// navigating straight away is what keeps a refused join (no such channel, +i, banned,
+    /// a 470 forward to another name) from stranding the user on a screen that never fills:
+    /// nothing fires, they stay where they typed, and the error prints in front of them.
+    ///
+    /// `statePublisher` replays current state on subscribe, so joining a channel already
+    /// open switches to it immediately — which is what typing `/join` for it means.
+    ///
+    /// The timeout only tidies up. It exists so a join that never lands doesn't leave a
+    /// subscription that could fire much later — switching the user somewhere unasked
+    /// because they happened to join that channel from another client ten minutes on.
+    private func awaitJoin(_ key: BufferKey) {
+        pendingJoinCancellable?.cancel()
+        pendingJoinCancellable = viewModel.statePublisher
+            .compactMap { $0.buffers[key.id] }
+            .first()
+            .timeout(.seconds(15), scheduler: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [weak self] _ in self?.pendingJoinCancellable = nil },
+                receiveValue: { [weak self] joined in
+                    self?.pendingJoinCancellable = nil
+                    self?.navigate(to: joined.key)
+                }
+            )
     }
 
     /// Switch to another buffer — what `/msg` and `/query` ask for once the DM is open. The

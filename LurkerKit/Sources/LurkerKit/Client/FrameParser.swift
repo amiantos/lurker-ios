@@ -47,6 +47,14 @@ enum FrameParser {
             return .contactUpdated(parseContact(contact))
         case "contact-deleted":
             return .contactDeleted(obj.int("contactId"))
+        case "buffer-closed":
+            // `networkId` is genuinely nullable here (the system buffer), so read it as
+            // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
+            // network 0 the way BufferKey needs. An empty target can't identify a buffer.
+            let target = obj.string("target")
+            return target.isEmpty
+                ? .ignored
+                : .bufferClosed(networkId: obj.intOrNull("networkId"), target: target)
         default:
             return .ignored
         }

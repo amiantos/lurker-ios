@@ -9,6 +9,23 @@ import XCTest
 /// in the REST roster, etc. Ported from the Android client's FrameParserTest.
 final class FrameParserTests: XCTestCase {
 
+    func testBufferClosedParses() {
+        let frame = FrameParser.parseWs(##"{"kind":"buffer-closed","networkId":1,"target":"#lurker"}"##)
+        XCTAssertEqual(frame, .bufferClosed(networkId: 1, target: "#lurker"))
+    }
+
+    func testBufferClosedKeepsANullNetworkIdNullRatherThanFoldingItToZero() {
+        // The system buffer's networkId is genuinely null, and BufferKey distinguishes null
+        // from network 0 — reading this with a 0 default would key the wrong buffer.
+        let frame = FrameParser.parseWs(##"{"kind":"buffer-closed","networkId":null,"target":":system:"}"##)
+        XCTAssertEqual(frame, .bufferClosed(networkId: nil, target: ":system:"))
+    }
+
+    func testBufferClosedWithoutATargetIsIgnored() {
+        // Nothing to key on — dropping beats removing an arbitrary buffer.
+        XCTAssertEqual(FrameParser.parseWs(##"{"kind":"buffer-closed","networkId":1}"##), .ignored)
+    }
+
     func testChannelBacklogShellParsesAsUnhydratedWithNoMessages() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"joined":true,"unread":3,"lastReadId":42}"##

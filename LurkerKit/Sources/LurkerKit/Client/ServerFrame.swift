@@ -85,6 +85,22 @@ enum ServerFrame: Equatable, Sendable {
     /// WS `contact-deleted`: a friend removed. Drop it by id.
     case contactDeleted(Int)
 
+    /// WS `buffer-closed`: the user closed this buffer — from *any* of their devices.
+    /// Drop it from the model entirely: closed is absent (lurker `CLIENT_PROTOCOL.md` §9.1).
+    ///
+    /// This is the only buffer-lifecycle frame that needs a handler, and it's the only one
+    /// that travels alone. `buffer-opened` and `buffer-reopened` both arrive alongside
+    /// something that already materializes the buffer — an `open-buffer` reply ships a
+    /// `backlog` with it, and a reopen is caused by an event that arrives as a normal `irc`
+    /// frame. Closing has no such companion, which is exactly why its absence was invisible:
+    /// opening a buffer on the web propagated here fine, closing one silently didn't, and the
+    /// stale row sat in the list until the app was relaunched.
+    ///
+    /// Dropping rather than flagging is deliberate and matches the web client: the server
+    /// keeps the buffer's history, so a reopen restores it in full and there is nothing local
+    /// worth preserving. `Buffer.state` has no `closed` case for the same reason.
+    case bufferClosed(networkId: Int?, target: String)
+
     /// A `peer-presence` ephemeral (rides `irc`, `type:"peer-presence"`, network-scoped via a
     /// `:server:<id>` target): a watched nick changed state. `state` is nil when the server
     /// reports no known state, which the store reads as `unknown`.

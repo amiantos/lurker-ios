@@ -237,21 +237,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// lie. That the list is now *underneath* is what makes this an acceptable trade rather
     /// than a trap: back is one tap, and it goes somewhere real.
     ///
-    /// It is deliberately not detected, because it can't be:
+    /// Probing to find out is still wrong, and always will be: the server reads an
+    /// `open-buffer` for a `#channel` with no row as a request to **JOIN** it
+    /// (`wsHub.handleOpenBuffer`), so a probe would silently re-join a channel you left on
+    /// purpose. The snapshot can't answer it either — `ircManager.snapshotForUser` ships
+    /// `channels: []` outright for any network without a live connection.
     ///
-    ///  - Probing with `open-buffer` makes it worse. The server reads one for a `#channel`
-    ///    with no row as a request to **JOIN** it (`wsHub.handleOpenBuffer`), so a probe
-    ///    would silently re-join a channel you left on purpose.
-    ///  - Nor can a missing row be *proven* client-side. Rows arrive as per-buffer backlog
-    ///    shells, not in the snapshot — `ircManager.snapshotForUser` ships `channels: []`
-    ///    outright for any network without a live connection — and the connect sequence has
-    ///    no frame that says the shells are all sent. So "no row yet" and "no such buffer"
-    ///    are the same observation, and a client that guesses between them yanks people out
-    ///    of channels they are still in.
-    ///
-    /// The honest fix is a server-side end-of-backlog marker, and it belongs with the
-    /// broader "a buffer with no row spins forever" problem — which also swallows
-    /// notification taps and failed joins — rather than in this one screen's launch path.
+    /// What *has* changed since this was written: the server-side end-of-backlog marker
+    /// this comment asked for shipped as lurker #635, so the spinner is no longer permanent.
+    /// `backlog-complete` makes absence provable, `ChatState.rosterSettled` exposes it, and
+    /// `ChatViewController.handleBufferDisappeared` acts on it — a buffer that gets no frame
+    /// by the end of the burst sends the reader back to the list instead of spinning. Going
+    /// early is still the right call, and now it degrades honestly.
     ///
     /// Nil means "nothing to restore": land on the list itself. Note this is *not* the old
     /// behaviour of falling back to the system buffer — that was the landing screen only
