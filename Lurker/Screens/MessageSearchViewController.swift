@@ -60,16 +60,37 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     private let presentation: Presentation
 
-    /// The query the currently-shown results answer. Committed by the debounce, not by the
-    /// keystroke — `fetchPage` reads it, and paging must not chase a field that has moved on
-    /// since the page it's extending.
+    /// What the list is currently showing. Decided at commit time and then *held*, rather than
+    /// recomputed wherever it's needed: a page arriving from the wire has to be interpreted as
+    /// an answer to whatever was asked for, not to whatever the field says by the time it lands.
+    private enum Showing {
+        /// Nothing typed — the bookmarks landing view.
+        case saved
+        /// Something typed, but not yet enough to be worth asking the server. See
+        /// `Showing.of(_:)`.
+        case tooShort
+        /// A real query, dispatched.
+        case results
+
+        /// What a parsed query should put on screen. The two rules it reads — "is there
+        /// anything to search on" and "is it enough to be worth asking" — belong to the query
+        /// itself and live on `SearchQuery`, so this is only the mapping to a view state.
+        static func of(_ query: SearchQuery) -> Showing {
+            if query.isEmpty { return .saved }
+            if query.needsMoreText { return .tooShort }
+            return .results
+        }
+    }
+
+    private var showing: Showing = .saved
+
+    /// The raw text the currently-shown list answers, for the "no matches for …" copy.
     private var query = ""
 
-    /// Which mode the list is currently in. Derived from the query at commit time and then
-    /// *held*, rather than recomputed wherever it's needed: a page arriving from the wire has
-    /// to be interpreted as whatever was asked for, not as whatever the field says by the time
-    /// it lands. Starts true — a screen that hasn't been typed in yet is showing bookmarks.
-    private var isBrowsingSaved = true
+    /// …and its parsed form, which is what actually decides whether a keystroke is worth a
+    /// round trip. Two raw strings that parse the same ask the server the same question, so
+    /// only this moving is a reason to search again.
+    private var parsed = SearchQuery(text: "", from: [], target: "", network: "")
 
     /// The keystroke waiting to become a query. Cancelled and replaced by the next one, so a
     /// burst of typing costs one search rather than one per character.
@@ -90,7 +111,8 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         // its search directly. Committing it later would work — a reload supersedes — but it
         // would spend a bookmarks round trip on a screen that was never going to show them.
         query = seed
-        isBrowsingSaved = SearchQuery.parse(seed).isEmpty
+        parsed = SearchQuery.parse(seed)
+        showing = Showing.of(parsed)
     }
 
     @available(*, unavailable)
@@ -105,45 +127,61 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the user typed. See `HistoryFeedViewController.reloadSupersedes`.
     override var reloadSupersedes: Bool { true }
 
-    /// One page — of bookmarks while the field is empty, of matches once it isn't.
+    /// One page — of bookmarks while the field is empty, of matches once it holds a real query.
     ///
     /// The two travel by different roads: bookmarks are a REST read with a real `nextBefore`
     /// cursor, search is a WS request/reply whose cursor is synthesized. Both arrive as a
     /// `HighlightsPage`, which is the whole reason this screen can switch between them without
     /// the list knowing.
+    ///
+    /// `.tooShort` is answered here, locally, and never reaches the wire — that's the point of
+    /// the state. Answering it with an empty page (rather than nil) matters: nil means "we
+    /// couldn't ask", which would put an error in front of someone who is simply mid-word.
     override func fetchPage(before: Int?) async -> HighlightsPage? {
-        isBrowsingSaved
-            ? await viewModel.fetchBookmarks(before: before)
-            : await viewModel.searchMessages(query, before: before)
+        switch showing {
+        case .saved: await viewModel.fetchBookmarks(before: before)
+        case .tooShort: HighlightsPage(items: [], nextBefore: nil)
+        case .results: await viewModel.searchMessages(query, before: before)
+        }
     }
 
     override var loadingModel: StateView.Model {
         StateView.Model(
-            title: isBrowsingSaved ? "Loading saved messages…" : "Searching…",
+            title: showing == .saved ? "Loading saved messages…" : "Searching…",
             isLoading: true
         )
     }
 
     /// Three different empties, and telling them apart is most of this placeholder's job.
     ///
-    /// The first is the one that matters: a new account has no bookmarks, so the landing
+    /// `.saved` is the one that matters most: a new account has no bookmarks, so the landing
     /// surface is empty for exactly the people who most need telling what this screen does. So
     /// it says both things — that you can search, and that saving a message puts it here —
     /// rather than leaving the second to be discovered.
     override var emptyModel: StateView.Model {
-        guard !isBrowsingSaved else {
-            return StateView.Model(
+        switch showing {
+        case .saved:
+            StateView.Model(
                 symbol: "magnifyingglass",
                 title: "Search your history",
                 subtitle: "Type to search every network — narrow it with from:nick, "
                     + "in:#channel, or on:network. Messages you save show up here too."
             )
+        case .tooShort:
+            // Says the rule rather than just withholding results, so a field that has visibly
+            // stopped responding is explained instead of looking broken.
+            StateView.Model(
+                symbol: "ellipsis",
+                title: "Keep typing",
+                subtitle: "Searches start at two characters."
+            )
+        case .results:
+            StateView.Model(
+                symbol: "magnifyingglass",
+                title: "No matches",
+                subtitle: "Nothing in your history matches \(query)."
+            )
         }
-        return StateView.Model(
-            symbol: "magnifyingglass",
-            title: "No matches",
-            subtitle: "Nothing in your history matches \(query)."
-        )
     }
 
     /// The search half deliberately does not say "pull to try again" the way Highlights and
@@ -151,7 +189,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// against, and the field is right there — the more natural thing to reach for anyway.
     /// Browsing bookmarks is an ordinary REST read, so it gets the ordinary advice.
     override var errorModel: StateView.Model {
-        isBrowsingSaved
+        showing == .saved
             ? StateView.Model(
                 symbol: "exclamationmark.triangle",
                 title: "Couldn't load saved messages",
@@ -245,9 +283,23 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     // MARK: - UISearchResultsUpdating
 
-    /// Debounced, at the web client's own 200ms: a search is an FTS scan on the server and a
-    /// round trip, and dispatching one per character would spend most of them on prefixes
-    /// nobody wanted the answer to.
+    /// Debounced, and deliberately longer than the web client's 200ms.
+    ///
+    /// **A search is the most expensive thing this client can ask for.** `better-sqlite3` is
+    /// synchronous, so the FTS query runs *on the server's event loop* — the same loop
+    /// servicing every IRC connection on that cell. That is not a theoretical cost: the
+    /// snapshot builder had to be chunked for exactly this reason, after long synchronous reads
+    /// starved socket I/O badly enough to trip IRC ping timeouts (#460, #469). Riding a
+    /// WebSocket makes the *transport* cheap and changes nothing about the query behind it.
+    ///
+    /// So the debounce has to be longer than the gap between keystrokes, or it isn't coalescing
+    /// anything. 200ms isn't: thumb-typing lands in roughly the 150–300ms range, so a fair
+    /// share of characters cleared the old window and each one bought a full query. 350ms sits
+    /// above that band while staying below the point where the field feels laggy.
+    ///
+    /// Nothing can cancel a search already on the wire — the protocol has no cancel frame, so a
+    /// superseded query still runs to completion server-side and we merely discard the reply.
+    /// Not dispatching it in the first place is the only lever there is.
     ///
     /// Fires for activation and dismissal too, not only for edits, so unchanged text is
     /// dropped — otherwise merely focusing the field would re-run the search that's already
@@ -294,10 +346,17 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// to nothing returns to the bookmarks, which is what makes the field feel like a filter
     /// you can back out of rather than a mode you entered.
     private func commit(_ text: String) {
+        let next = SearchQuery.parse(text)
+        let nextShowing = Showing.of(next)
         query = text
-        isBrowsingSaved = SearchQuery.parse(text).isEmpty
+        // Nothing the server would answer differently — the keystroke moved only whitespace, or
+        // the field is still below the floor. Typing a space between two words is the common
+        // case, and it used to cost a full round trip for a query identical to the last one.
+        guard next != parsed || nextShowing != showing else { return }
+        parsed = next
+        showing = nextShowing
         reload()
     }
 
-    private static let debounceMilliseconds = 200
+    private static let debounceMilliseconds = 350
 }

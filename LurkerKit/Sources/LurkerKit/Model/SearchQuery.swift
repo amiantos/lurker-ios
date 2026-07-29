@@ -36,6 +36,30 @@ public struct SearchQuery: Equatable, Sendable {
         text.isEmpty && from.isEmpty && target.isEmpty && network.isEmpty
     }
 
+    /// Typed, but not yet enough to be worth asking the server — the state a search-as-you-type
+    /// field passes through on the way to a real query.
+    ///
+    /// **A search is the most expensive thing a client can ask this server for.** The FTS query
+    /// runs synchronously on the event loop that also services every IRC connection on the
+    /// instance, so the cheapest thing to type must not be the most expensive thing to answer —
+    /// and a lone `a` or `i` is exactly that, being among the most common tokens in the index.
+    ///
+    /// **The floor is on the free text, not on what's typed.** `in:#dev` is a complete question
+    /// the moment it's finished: it runs no full-text pass at all, only an indexed filter, so
+    /// demanding extra characters would gate a query that costs almost nothing.
+    ///
+    /// **And only for text that's entirely ASCII.** One CJK character is routinely a whole
+    /// word; a floor that couldn't tell it from a lone Latin letter would lock those users out
+    /// of searching for it.
+    public var needsMoreText: Bool {
+        !text.isEmpty && text.count < Self.minimumFreeText && text.allSatisfy(\.isASCII)
+    }
+
+    /// Two, not three: it rules out the single-character case that is both the most expensive
+    /// to answer and the least likely to be meant, without blocking the two-letter words people
+    /// genuinely search for ("hi", "ok", "wg").
+    private static let minimumFreeText = 2
+
     public init(text: String, from: [String], target: String, network: String) {
         self.text = text
         self.from = from

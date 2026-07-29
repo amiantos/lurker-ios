@@ -70,6 +70,49 @@ final class SearchQueryTests: XCTestCase {
         XCTAssertFalse(SearchQuery.parse("on:libera").isEmpty)
     }
 
+    // MARK: - Dispatch floor
+
+    /// A lone ASCII letter is both the most expensive thing to answer (`a` and `i` are among
+    /// the commonest tokens in the index) and the least likely to be what anyone meant.
+    func testSingleAsciiCharacterNeedsMoreText() {
+        XCTAssertTrue(SearchQuery.parse("a").needsMoreText)
+        XCTAssertTrue(SearchQuery.parse("I").needsMoreText)
+        XCTAssertTrue(SearchQuery.parse("7").needsMoreText)
+    }
+
+    func testTwoCharactersIsEnough() {
+        XCTAssertFalse(SearchQuery.parse("hi").needsMoreText)
+        XCTAssertFalse(SearchQuery.parse("ok").needsMoreText)
+        XCTAssertFalse(SearchQuery.parse("hello").needsMoreText)
+    }
+
+    /// The floor is on the FREE TEXT. A finished filter is a complete question that runs no
+    /// full-text pass at all, so gating it would be charging for something that's nearly free.
+    func testFilterOnlyQueryNeverNeedsMoreText() {
+        XCTAssertFalse(SearchQuery.parse("in:#dev").needsMoreText)
+        XCTAssertFalse(SearchQuery.parse("from:alice").needsMoreText)
+        XCTAssertFalse(SearchQuery.parse("from:alice in:#dev on:libera").needsMoreText)
+    }
+
+    /// …but free text alongside a filter is still free text, and still has to clear the floor.
+    func testShortTextWithAFilterStillNeedsMoreText() {
+        XCTAssertTrue(SearchQuery.parse("in:#dev a").needsMoreText)
+    }
+
+    /// One CJK character is routinely a whole word, so the floor must not apply to it — a rule
+    /// that counted characters blindly would lock those users out of searching for it.
+    func testSingleNonAsciiCharacterIsEnough() {
+        XCTAssertFalse(SearchQuery.parse("日").needsMoreText)
+        XCTAssertFalse(SearchQuery.parse("б").needsMoreText)
+    }
+
+    /// An empty query isn't "too short" — it's `isEmpty`, which the caller answers with its
+    /// landing view rather than a "keep typing" hint. Distinct states, distinct screens.
+    func testEmptyQueryDoesNotNeedMoreText() {
+        XCTAssertFalse(SearchQuery.parse("").needsMoreText)
+        XCTAssertFalse(SearchQuery.parse("   ").needsMoreText)
+    }
+
     // MARK: - Scope
 
     func testScopeSeedsInAndOnWithATrailingSpace() {
