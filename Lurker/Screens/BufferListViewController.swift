@@ -522,10 +522,10 @@ final class BufferListViewController: UICollectionViewController {
     private lazy var searchController: UISearchController = {
         let controller = UISearchController(searchResultsController: searchResults)
         controller.searchResultsUpdater = searchResults
-        // Also the delegate, so the results screen can reconcile itself with the field before
-        // being presented — it's built once and reused, so it can still be holding the last
-        // search when this one opens. See `willPresentSearchController`.
-        controller.delegate = searchResults
+        // The delegate is *this* screen, not the results: presenting search changes what this
+        // screen looks like (the pill goes), and the search controller belongs to it. What the
+        // results need from those callbacks, they're asked for directly — see the extension.
+        controller.delegate = self
         // Show the results the moment search is activated, not once there's text in the field.
         //
         // UIKit's default is `automaticallyShowsSearchResultsController`, which presents the
@@ -1060,5 +1060,37 @@ extension BufferListViewController: PillPresenting {
     /// tap does — this screen *is* the app, so there's no one buffer to describe.
     func pillTapped() {
         openSystemBuffer()
+    }
+}
+
+// MARK: - Search presentation
+
+/// Search presents *over* this screen without changing the navigation stack, so everything the
+/// bar is wearing stays put underneath it — including the pill, which belongs to the stack
+/// rather than to any one screen.
+///
+/// The delegate lives here rather than on the results screen because these callbacks are about
+/// what *this* screen does while it's covered. What the results need from them, they're asked
+/// for directly: a plain method call reads better than forwarding a protocol, and it keeps the
+/// results screen from having to know that a pill exists.
+extension BufferListViewController: UISearchControllerDelegate {
+
+    func willPresentSearchController(_ searchController: UISearchController) {
+        // Before the results appear, so they never show an answer to a question the field
+        // isn't asking — the results screen is reused across searches and can still be holding
+        // the last one.
+        searchResults.syncToField(searchController.searchBar.text ?? "")
+        // "Lurker" floating over a search field belongs to neither: the pill names this screen,
+        // and this screen is no longer the one you're looking at.
+        navigationPill?.isSuppressed = true
+    }
+
+    func willDismissSearchController(_ searchController: UISearchController) {
+        // On `willDismiss`, so the pill fades back in alongside the results leaving rather than
+        // popping in after them. Note this also runs when a tapped result has *already*
+        // navigated — the stack is on the chat screen by then, and the pill correctly returns
+        // wearing that buffer's name, because suppression only ever hid what the stack asked
+        // for rather than overwriting it.
+        navigationPill?.isSuppressed = false
     }
 }

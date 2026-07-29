@@ -48,6 +48,30 @@ final class NavigationPill: NSObject, UINavigationControllerDelegate {
 
     private weak var navigationController: UINavigationController?
 
+    /// Hide the pill regardless of what's on the stack, for as long as something is covering
+    /// the screen it belongs to.
+    ///
+    /// Search is the case this exists for. It presents *over* the buffer list without changing
+    /// the stack, so the bar — and this pill, which is a subview of it — stays put underneath,
+    /// leaving "Lurker" floating above a search field that has nothing to do with it.
+    ///
+    /// A flag rather than a one-off `setVisible(false)` call, because visibility is re-derived
+    /// on every push, pop and settle: tapping a result navigates to a buffer *before* search
+    /// dismisses, so `willShow` would put the pill straight back while the results are still on
+    /// screen. This outranks all of that, and `wantsVisible` remembers what the stack asked for
+    /// so lifting it restores the right answer rather than assuming "visible".
+    var isSuppressed = false {
+        didSet {
+            guard isSuppressed != oldValue else { return }
+            UIView.animate(withDuration: Self.suppressionFade) { self.applyVisibility() }
+        }
+    }
+
+    /// What the *stack* last asked for, before suppression is taken into account.
+    private var wantsVisible = false
+
+    private static let suppressionFade: TimeInterval = 0.2
+
     private lazy var pill = BufferTitleButton(onTap: { [weak self] in
         // Routed live rather than captured: the pill outlives every screen, so the tap
         // belongs to whichever one is on top when it happens.
@@ -116,15 +140,23 @@ final class NavigationPill: NSObject, UINavigationControllerDelegate {
     }
 
     private func setVisible(_ visible: Bool, animated: Bool) {
-        // Interaction tracks visibility so an invisible pill can't still be tapped — it sits
-        // over the bar's whole centre, which is otherwise dead space someone may well press.
-        pill.isUserInteractionEnabled = visible
-        let apply = { self.pill.alpha = visible ? 1 : 0 }
+        wantsVisible = visible
         guard animated, let coordinator = navigationController?.transitionCoordinator, coordinator.isAnimated else {
-            apply()
+            applyVisibility()
             return
         }
-        UIView.animate(withDuration: coordinator.transitionDuration, animations: apply)
+        UIView.animate(withDuration: coordinator.transitionDuration) { self.applyVisibility() }
+    }
+
+    /// The one place the pill's alpha is decided: what the stack wants, minus anything
+    /// currently covering it.
+    private func applyVisibility() {
+        let visible = wantsVisible && !isSuppressed
+        // Interaction tracks visibility so an invisible pill can't still be tapped — it sits
+        // over the bar's whole centre, which is otherwise dead space someone may well press.
+        // Doubly so while suppressed, where the thing over it is taking touches of its own.
+        pill.isUserInteractionEnabled = visible
+        pill.alpha = visible ? 1 : 0
     }
 
     // MARK: - UINavigationControllerDelegate

@@ -48,8 +48,7 @@ import UIKit
 ///
 /// Either way this object is the `UISearchResultsUpdating`, so the debounce, the query and the
 /// paging have exactly one implementation.
-final class MessageSearchViewController: HistoryFeedViewController, UISearchResultsUpdating,
-                                         UISearchControllerDelegate {
+final class MessageSearchViewController: HistoryFeedViewController, UISearchResultsUpdating {
 
     enum Presentation {
         /// Someone else owns the search field; this screen is only the results.
@@ -321,10 +320,10 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         }
     }
 
-    // MARK: - UISearchControllerDelegate
+    // MARK: - Host
 
-    /// Reconcile with the field *before* the results appear, so search is never presented
-    /// showing an answer to a question the field isn't asking.
+    /// Reconcile with the field, for a host to call *before* presenting these results — so
+    /// search is never presented showing an answer to a question the field isn't asking.
     ///
     /// This screen outlives a single search: it's the buffer list's results controller, built
     /// once and reused, still holding the last query's rows when search is opened again. Whether
@@ -336,8 +335,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// come back for the next one" (the web client persists its query across opens for exactly
     /// that flow). If UIKit cleared it, this snaps back to the bookmarks *now* rather than
     /// after the debounce, which would have flashed the stale results on the way.
-    func willPresentSearchController(_ searchController: UISearchController) {
-        let text = searchController.searchBar.text ?? ""
+    func syncToField(_ text: String) {
         guard text != query else { return }
         debounce?.cancel()
         commit(text)
