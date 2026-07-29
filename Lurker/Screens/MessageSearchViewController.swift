@@ -7,21 +7,38 @@ import UIKit
 /// Full-text search over everything the account has ever said or been told, across every
 /// buffer at once. Tapping a match jumps to it in its conversation.
 ///
-/// The results ARE a `HistoryFeedViewController` — the same rows, the same channel+day
-/// headers, the same cursor paging, the same jump — because a search result and a highlight
-/// and a bookmark are the same thing three ways: a line from somewhere else, shown out of
-/// context, that you want to go to. That base was written expecting this ("Search and uploads
-/// are the next two that fit here"); what's left here is the query.
+/// **With nothing typed, it shows your bookmarks.** iMessage's search opens the same way — not
+/// on a blank prompt but on a quick-jump surface (recent chats, pinned links) that happens to
+/// be *reachable* rather than *searched for*. Saved messages are this app's version of that:
+/// the lines you already decided were worth coming back to, which is exactly the set worth
+/// putting one tap from the search field. It also means the screen is never the empty box that
+/// prompted this — opening search always lands on something you can act on.
 ///
-/// **Two ways this screen is used, and one of them is the point.**
+/// Swapping between the two costs nothing, because this screen is a
+/// `HistoryFeedViewController` and both are the same kind of thing to it: lines from
+/// elsewhere, newest first, tap to go there. Same rows, same channel+day headers, same cursor
+/// paging, same jump — the base was written expecting exactly this ("Search and uploads are the
+/// next two that fit here"). Only where a page comes from differs, and both arrive as a
+/// `HighlightsPage`. What's left in this file is the query.
 ///
-///  - `.resultsController` — it's the `searchResultsController` of somebody else's
-///    `UISearchController`, and the search field lives on that screen. This is how the buffer
-///    list uses it: the field sits in the bottom bar, and these results slide up over the list
-///    as soon as you type. The iOS 26 arrangement, and the reachable one — the field is under
-///    your thumb rather than at the top of a screen you have to stretch for.
-///  - `.standalone` — it owns its own search field, for when search is *presented* rather than
-///    lived in: "Search in Buffer" from a conversation, which opens pre-scoped to it.
+/// Typing is deliberately NOT a filter over the bookmarks. Bookmarks are the landing surface,
+/// not the corpus — narrowing to them would make the most useful search in the app (everything
+/// you have ever seen) the one search you couldn't run from here.
+///
+/// Rows are read-only, unlike the Bookmarks screen's swipe-to-remove. This is somewhere you
+/// pass *through* on the way to a conversation; unsaving is a deliberate act, and it belongs on
+/// the screen devoted to them.
+///
+/// **Where the search field lives** is the one structural choice, and the reason this class has
+/// a `Presentation`:
+///
+///  - `.resultsController` — the field belongs to another screen and this is only its
+///    `searchResultsController`. How the buffer list uses it: the field sits in that screen's
+///    bottom bar and these results slide up over the list as soon as you type. The iOS 26
+///    arrangement, and the reachable one — the field is under your thumb rather than at the top
+///    of a screen you'd have to stretch for.
+///  - `.standalone` — it owns a field of its own, in its own bottom bar, for when search is
+///    *presented* rather than lived in: "Search This Conversation", which opens pre-scoped.
 ///
 /// Either way this object is the `UISearchResultsUpdating`, so the debounce, the query and the
 /// paging have exactly one implementation.
@@ -41,6 +58,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// since the page it's extending.
     private var query = ""
 
+    /// Which mode the list is currently in. Derived from the query at commit time and then
+    /// *held*, rather than recomputed wherever it's needed: a page arriving from the wire has
+    /// to be interpreted as whatever was asked for, not as whatever the field says by the time
+    /// it lands. Starts true — a screen that hasn't been typed in yet is showing bookmarks.
+    private var isBrowsingSaved = true
+
     /// The keystroke waiting to become a query. Cancelled and replaced by the next one, so a
     /// burst of typing costs one search rather than one per character.
     private var debounce: Task<Void, Never>?
@@ -56,6 +79,11 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         self.presentation = presentation
         self.seed = seed
         super.init(viewModel: viewModel)
+        // Adopt the seed as the query *before* the base's first load, so a scoped open fetches
+        // its search directly. Committing it later would work — a reload supersedes — but it
+        // would spend a bookmarks round trip on a screen that was never going to show them.
+        query = seed
+        isBrowsingSaved = SearchQuery.parse(seed).isEmpty
     }
 
     @available(*, unavailable)
@@ -70,46 +98,94 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the user typed. See `HistoryFeedViewController.reloadSupersedes`.
     override var reloadSupersedes: Bool { true }
 
-    /// One page of matches. An empty query is answered locally with an empty page rather than
-    /// asked (`searchMessages` short-circuits it), which is what puts the "type to search"
-    /// prompt up instead of a spinner.
+    /// One page — of bookmarks while the field is empty, of matches once it isn't.
+    ///
+    /// The two travel by different roads: bookmarks are a REST read with a real `nextBefore`
+    /// cursor, search is a WS request/reply whose cursor is synthesized. Both arrive as a
+    /// `HighlightsPage`, which is the whole reason this screen can switch between them without
+    /// the list knowing.
     override func fetchPage(before: Int?) async -> HighlightsPage? {
-        await viewModel.searchMessages(query, before: before)
+        isBrowsingSaved
+            ? await viewModel.fetchBookmarks(before: before)
+            : await viewModel.searchMessages(query, before: before)
     }
 
     override var loadingModel: StateView.Model {
-        StateView.Model(title: "Searching…", isLoading: true)
+        StateView.Model(
+            title: isBrowsingSaved ? "Loading saved messages…" : "Searching…",
+            isLoading: true
+        )
     }
 
-    /// Two different empties, and telling them apart is the whole job of this placeholder: a
-    /// field nobody has typed in yet is a prompt, and a field with a query in it that matched
-    /// nothing is an answer. Collapsing them would greet every open with "No matches" for a
-    /// search that was never run.
+    /// Three different empties, and telling them apart is most of this placeholder's job.
+    ///
+    /// The first is the one that matters: a new account has no bookmarks, so the landing
+    /// surface is empty for exactly the people who most need telling what this screen does. So
+    /// it says both things — that you can search, and that saving a message puts it here —
+    /// rather than leaving the second to be discovered.
     override var emptyModel: StateView.Model {
-        query.isEmpty
-            ? StateView.Model(
+        guard !isBrowsingSaved else {
+            return StateView.Model(
                 symbol: "magnifyingglass",
                 title: "Search your history",
-                subtitle: "Everything you've seen, across every network. "
-                    + "Narrow it with from:nick, in:#channel, or on:network."
+                subtitle: "Type to search every network — narrow it with from:nick, "
+                    + "in:#channel, or on:network. Messages you save show up here too."
+            )
+        }
+        return StateView.Model(
+            symbol: "magnifyingglass",
+            title: "No matches",
+            subtitle: "Nothing in your history matches \(query)."
+        )
+    }
+
+    /// The search half deliberately does not say "pull to try again" the way Highlights and
+    /// Bookmarks do: search rides the socket, so offline means there is nothing to retry
+    /// against, and the field is right there — the more natural thing to reach for anyway.
+    /// Browsing bookmarks is an ordinary REST read, so it gets the ordinary advice.
+    override var errorModel: StateView.Model {
+        isBrowsingSaved
+            ? StateView.Model(
+                symbol: "exclamationmark.triangle",
+                title: "Couldn't load saved messages",
+                subtitle: "Pull to try again."
             )
             : StateView.Model(
-                symbol: "magnifyingglass",
-                title: "No matches",
-                subtitle: "Nothing in your history matches \(query)."
+                symbol: "exclamationmark.triangle",
+                title: "Couldn't search",
+                subtitle: "Your connection to the server dropped. Try again once it's back."
             )
     }
 
-    /// Deliberately does not say "pull to try again" the way Highlights and Bookmarks do.
-    /// A search can fail for a reason a pull won't fix — the socket is the transport here, so
-    /// offline means there is nothing to retry against — and the field is right there, which
-    /// is the more natural thing to reach for anyway.
-    override var errorModel: StateView.Model {
-        StateView.Model(
-            symbol: "exclamationmark.triangle",
-            title: "Couldn't search",
-            subtitle: "Your connection to the server dropped. Try again once it's back."
+    /// Label the list when it's showing bookmarks, so rows that were never searched for aren't
+    /// mistaken for results — and only once there are rows, since a caption over a placeholder
+    /// would be titling nothing.
+    override func itemsDidChange() {
+        let wanted = isBrowsingSaved && !items.isEmpty ? listCaption : nil
+        // Reassigning a header re-lays out the whole table, and this runs on every appended
+        // page — so only touch it when the answer actually changed.
+        if tableView.tableHeaderView !== wanted { tableView.tableHeaderView = wanted }
+    }
+
+    /// A `tableHeaderView` is *measured*, never constrained: the table reads its frame height
+    /// and lays the rows out below it, so the view has to size itself and re-size whenever the
+    /// width or the text metrics change. Doing it here rather than once at construction covers
+    /// all three cases that move it — the first layout (where the table's width may still be
+    /// zero), rotation, and a Dynamic Type change.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let header = tableView.tableHeaderView else { return }
+        let fitted = header.systemLayoutSizeFitting(
+            CGSize(width: tableView.bounds.width, height: 0),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
         )
+        guard header.frame.size != fitted else { return }
+        header.frame.size = fitted
+        // Re-assignment is what commits a header's new height; setting the frame alone leaves
+        // the table laying out against the old one. Guarded above, so this settles rather than
+        // looping.
+        tableView.tableHeaderView = header
     }
 
     // MARK: - Lifecycle
@@ -164,12 +240,10 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         controller.searchBar.autocapitalizationType = .none
         controller.searchBar.autocorrectionType = .no
         controller.searchBar.spellCheckingType = .no
-        if !seed.isEmpty {
-            controller.searchBar.text = seed
-            // Commit it directly rather than waiting for the updater: a seeded search should
-            // already be showing its results when the screen appears.
-            commit(seed)
-        }
+        // The query is already `seed` (see `init`), so this only puts it in the field — the
+        // updater sees text it already has and does nothing, which is what we want: the search
+        // is running, and re-committing here would just restart it.
+        if !seed.isEmpty { controller.searchBar.text = seed }
         navigationItem.searchController = controller
         navigationItem.preferredSearchBarPlacement = .integrated
         toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
@@ -215,10 +289,46 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     /// Adopt `text` as the query and run it. `reload()` supersedes anything in flight, so the
     /// last committed query is always the one whose answer lands.
+    ///
+    /// This is also where the screen changes mode, and it reads the *parsed* query rather than
+    /// the raw string so that "empty" means the same thing here as it does to the server: a
+    /// field holding only spaces is empty, and one holding only `in:#dev` is not. Deleting back
+    /// to nothing returns to the bookmarks, which is what makes the field feel like a filter
+    /// you can back out of rather than a mode you entered.
     private func commit(_ text: String) {
         query = text
+        isBrowsingSaved = SearchQuery.parse(text).isEmpty
+        // Taken down here rather than in `itemsDidChange`, so it goes at the moment the mode
+        // changes instead of when the first page of the new mode lands — otherwise it hangs
+        // over the spinner, captioning results it doesn't describe.
+        if !isBrowsingSaved { tableView.tableHeaderView = nil }
         reload()
     }
+
+    /// The list's caption while it's showing bookmarks, indented to the same margin the rows
+    /// and section headers use. Its height is settled by `viewDidLayoutSubviews`.
+    private lazy var listCaption: UIView = {
+        let label = UILabel()
+        // Named for the noun the rest of the app uses — the menus, the screen, the message
+        // action's "Remove Bookmark" — rather than a second name for the same place. The verb
+        // stays "Save Message"; that split is deliberate and predates this screen.
+        label.text = "Bookmarks"
+        label.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
+        label.textColor = .secondaryLabel
+        label.adjustsFontForContentSizeCategory = true
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = UIView()
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: container.layoutMarginsGuide.leadingAnchor),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: container.layoutMarginsGuide.trailingAnchor),
+            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
+        ])
+        container.autoresizingMask = .flexibleWidth
+        return container
+    }()
 
     private static let debounceMilliseconds = 200
 }

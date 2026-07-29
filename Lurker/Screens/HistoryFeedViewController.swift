@@ -119,6 +119,14 @@ class HistoryFeedViewController: UITableViewController {
     /// leave the list showing results for a prefix of what's in the field.
     var reloadSupersedes: Bool { false }
 
+    /// The list has settled: a page landed, or a row was removed. Called after `items` and the
+    /// table agree, so a subclass reading `items` here sees what's on screen.
+    ///
+    /// Exists for feeds whose *chrome* depends on their contents rather than only on their
+    /// state — Search labels its list when it's showing bookmarks, and only once there are
+    /// bookmarks to label.
+    func itemsDidChange() {}
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -203,6 +211,7 @@ class HistoryFeedViewController: UITableViewController {
         rebuildSections()
         tableView.reloadData()
         renderPlaceholderForCurrentState()
+        itemsDidChange()
     }
 
     @MainActor
@@ -242,6 +251,7 @@ class HistoryFeedViewController: UITableViewController {
         // Normally a no-op (the placeholder is already hidden), but it's what takes the
         // spinner down when this page was fetched into an emptied list.
         renderPlaceholderForCurrentState()
+        itemsDidChange()
     }
 
     /// Drop one row from the feed, rebuilding the grouped view around it.
@@ -278,6 +288,7 @@ class HistoryFeedViewController: UITableViewController {
         } else {
             renderPlaceholderForCurrentState()
         }
+        itemsDidChange()
     }
 
     // MARK: - Sections (channel + day runs)
