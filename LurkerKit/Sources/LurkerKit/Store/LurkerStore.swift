@@ -541,6 +541,13 @@ final class LurkerStore {
         case .unauthorized, .ignored:
             // Session-level / no-op; the view model intercepts `.unauthorized` first.
             return state
+        case .searchResult:
+            // Never reaches here — `LurkerClient` consumes it to resume the awaiting
+            // `search(_:)` call, and it is the only frame that does not travel on. Handled
+            // explicitly rather than folded into the no-op case above so that "search results
+            // are a reply, not state" stays a stated rule instead of a silent one: matches
+            // span every buffer at once, and there is no buffer for them to belong to.
+            return state
         }
     }
 

@@ -19,6 +19,20 @@ extension UIViewController {
         showHistoryFeed(BookmarksViewController(viewModel: viewModel), viewModel: viewModel)
     }
 
+    /// Message search, presented — the entry point for screens that don't have the buffer
+    /// list's permanent bottom search field under them.
+    ///
+    /// `seed` prefills the query field, which is how "search this conversation" works: there
+    /// is no separate scoped mode, just an `in:`/`on:` prefix in the same field, which the
+    /// user can then edit or delete. Same trick the web client uses, and the reason the filter
+    /// grammar is a *grammar* rather than a row of chips.
+    func showSearch(viewModel: ChatViewModel, seed: String = "") {
+        showHistoryFeed(
+            MessageSearchViewController(viewModel: viewModel, presentation: .standalone, seed: seed),
+            viewModel: viewModel
+        )
+    }
+
     /// Say that the row points into a buffer that isn't open, instead of navigating into a
     /// screen that would immediately throw the user back out.
     ///
@@ -49,35 +63,55 @@ extension UIViewController {
     private func showHistoryFeed(_ feed: HistoryFeedViewController, viewModel: ChatViewModel) {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let nav = navigationController
-        feed.onSelect = { [weak nav, weak feed] item in
-            let state = viewModel.state
-            // A row can outlive the buffer it points into: bookmarks and highlights are kept
-            // by message id, and closing a buffer doesn't touch them. Jumping anyway is a dead
-            // end — `ChatViewController.handleBufferDisappeared` finds no row for the key and
-            // pops back to the list, so the sheet closes, a chat screen flashes, and you land
-            // somewhere you didn't ask for with nothing said about why.
-            //
-            // Tested with the same condition that screen uses, so the two can't disagree about
-            // what "gone" means: a settled roster is the server having listed everything it
-            // has (#635). While it's still arriving, absence proves nothing — navigate, and let
-            // the chat screen wait for the answer as it does for a notification tap.
-            if state.rosterSettled, state.buffers[item.bufferKey.id] == nil {
-                feed?.reportClosedBuffer(item, viewModel: viewModel)
-                return
-            }
-            // Jump to the line (#42) — even when it's the buffer already on screen, since the
-            // point is to move to that message. The new screen fetches an `around` slice
-            // centered on it.
-            nav?.showBuffer(
-                state.buffer(for: item.bufferKey), viewModel: viewModel,
-                jumpTo: item.message.id, animated: false
-            )
-            nav?.dismiss(animated: true)
-        }
+        wireJump(feed, viewModel: viewModel, nav: nav) { [weak nav] in nav?.dismiss(animated: true) }
         let sheet = UINavigationController(rootViewController: feed)
         sheet.navigationBar.prefersLargeTitles = true
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         nav?.present(sheet, animated: true)
+    }
+}
+
+/// Point a cross-buffer feed's row tap at the conversation it came from.
+///
+/// Shared by every feed that lists lines from elsewhere — Highlights, Bookmarks, and search —
+/// because "go to this message" has to mean exactly one thing however you got to the row.
+/// `close` is what differs and all that differs: a presented sheet dismisses, while the buffer
+/// list's search results are dismissed by deactivating the search field that put them there.
+private func wireJump(
+    _ feed: HistoryFeedViewController,
+    viewModel: ChatViewModel,
+    nav: UINavigationController?,
+    close: @escaping () -> Void
+) {
+    feed.onSelect = { [weak nav, weak feed] item in
+        let state = viewModel.state
+        // A row can outlive the buffer it points into: bookmarks and highlights are kept
+        // by message id, and closing a buffer doesn't touch them. Jumping anyway is a dead
+        // end — `ChatViewController.handleBufferDisappeared` finds no row for the key and
+        // pops back to the list, so the sheet closes, a chat screen flashes, and you land
+        // somewhere you didn't ask for with nothing said about why.
+        //
+        // Tested with the same condition that screen uses, so the two can't disagree about
+        // what "gone" means: a settled roster is the server having listed everything it
+        // has (#635). While it's still arriving, absence proves nothing — navigate, and let
+        // the chat screen wait for the answer as it does for a notification tap.
+        //
+        // Search reaches this more often than the other two, and it isn't an edge case there:
+        // the server's FTS index covers every message the account has ever received, including
+        // channels long since parted, so searching for something said in a closed buffer is a
+        // perfectly ordinary thing to do rather than a stale row.
+        if state.rosterSettled, state.buffers[item.bufferKey.id] == nil {
+            feed?.reportClosedBuffer(item, viewModel: viewModel)
+            return
+        }
+        // Jump to the line (#42) — even when it's the buffer already on screen, since the
+        // point is to move to that message. The new screen fetches an `around` slice
+        // centered on it.
+        nav?.showBuffer(
+            state.buffer(for: item.bufferKey), viewModel: viewModel,
+            jumpTo: item.message.id, animated: false
+        )
+        close()
     }
 }
 
@@ -132,6 +166,14 @@ extension UINavigationController {
         // and knows nothing about navigation, and this is the only thing that ever answers.
         list.onSelect = { [weak self] buffer in
             self?.showBuffer(buffer, viewModel: viewModel, animated: true)
+        }
+        // The list's search results are a cross-buffer feed like any other, so their row taps
+        // mean what Highlights' and Bookmarks' do. Wired here, alongside `onSelect`, because
+        // this is the one place that knows both the feed and the navigation stack — and
+        // because a search result and a buffer row are the same gesture arriving at the same
+        // conversation by different routes.
+        wireJump(list.searchResults, viewModel: viewModel, nav: self) { [weak list] in
+            list?.dismissSearch()
         }
         return list
     }

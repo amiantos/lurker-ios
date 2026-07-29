@@ -43,6 +43,15 @@ class HistoryFeedViewController: UITableViewController {
     private var nextBefore: Int?
     private var reachedEnd = false
     private var isLoading = false
+    /// Bumped by every `reload()`. A page carries the generation it was requested under, and
+    /// one that lands under a newer generation is dropped — the list it was fetched for no
+    /// longer exists.
+    ///
+    /// Needed the moment a feed's reload can mean something *different* from the one in
+    /// flight (Search, where each keystroke is a new query), but it isn't only for that: a
+    /// pull-to-refresh landing while a `loadMore` was in flight would otherwise append the old
+    /// list's next page onto the new list.
+    private var loadGeneration = 0
     /// The first fetch failed with nothing to show — distinct from an empty result, so the
     /// placeholder can offer a retry rather than claim the feed is empty.
     private var loadFailed = false
@@ -101,6 +110,15 @@ class HistoryFeedViewController: UITableViewController {
     /// the flat list, the sections and the placeholder all stay in step.
     func trailingSwipeActions(for item: HighlightItem) -> UISwipeActionsConfiguration? { nil }
 
+    /// Whether a `reload()` should replace a page already in flight rather than be dropped.
+    ///
+    /// False for the feeds whose reload is idempotent: pulling Highlights twice re-fetches the
+    /// same newest page, so the second pull buys nothing and dropping it keeps the refresh
+    /// control honest. True for Search, where two reloads are two *different questions* and
+    /// the one the user typed last is the only one whose answer they want — dropping it would
+    /// leave the list showing results for a prefix of what's in the field.
+    var reloadSupersedes: Bool { false }
+
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -133,11 +151,15 @@ class HistoryFeedViewController: UITableViewController {
 
     // MARK: - Loading
 
-    /// (Re)fetch from the newest page. Used on first appearance and by pull-to-refresh.
-    private func reload() {
+    /// (Re)fetch from the newest page. Used on first appearance, by pull-to-refresh, and —
+    /// where `reloadSupersedes` is set — every time the feed's question changes.
+    func reload() {
         // A pull-to-refresh that lands while a page is already loading is dropped — but its
-        // refresh control is already spinning, so end it here or it spins forever.
-        guard !isLoading else { refreshControl?.endRefreshing(); return }
+        // refresh control is already spinning, so end it here or it spins forever. Feeds whose
+        // reloads differ from one another supersede instead; see `reloadSupersedes`.
+        guard !isLoading || reloadSupersedes else { refreshControl?.endRefreshing(); return }
+        loadGeneration += 1
+        let generation = loadGeneration
         isLoading = true
         loadFailed = false
         // Only show the full-screen spinner on a cold load; a refresh keeps the list up with
@@ -146,23 +168,28 @@ class HistoryFeedViewController: UITableViewController {
         Task { [weak self] in
             guard let self else { return }
             let page = await fetchPage(before: nil)
-            handleFirstPage(page)
+            handleFirstPage(page, generation: generation)
         }
     }
 
     /// Fetch the next older page, if there is one and we're not already fetching.
     private func loadMore() {
         guard !isLoading, !reachedEnd, let cursor = nextBefore else { return }
+        let generation = loadGeneration
         isLoading = true
         Task { [weak self] in
             guard let self else { return }
             let page = await fetchPage(before: cursor)
-            appendPage(page)
+            appendPage(page, generation: generation)
         }
     }
 
     @MainActor
-    private func handleFirstPage(_ page: HighlightsPage?) {
+    private func handleFirstPage(_ page: HighlightsPage?, generation: Int) {
+        // Superseded: a newer reload owns the list now, and it will report its own result.
+        // Returning before touching `isLoading` matters — clearing it here would let a scroll
+        // start paging the *old* query's cursor into the new query's list.
+        guard generation == loadGeneration else { return }
         isLoading = false
         refreshControl?.endRefreshing()
         guard let page else {
@@ -179,7 +206,10 @@ class HistoryFeedViewController: UITableViewController {
     }
 
     @MainActor
-    private func appendPage(_ page: HighlightsPage?) {
+    private func appendPage(_ page: HighlightsPage?, generation: Int) {
+        // The list this page extends has been replaced; appending it would splice the previous
+        // feed's rows onto the current one.
+        guard generation == loadGeneration else { return }
         isLoading = false
         guard let page else {
             // A failed page-in leaves what we have and just stops paging; the user can pull

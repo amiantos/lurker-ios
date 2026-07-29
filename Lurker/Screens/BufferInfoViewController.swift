@@ -29,6 +29,10 @@ final class BufferInfoViewController: UITableViewController {
     /// was tapped.
     var onShowMembers: (() -> Void)?
 
+    /// Search, scoped to this buffer. Handed back for the same reason members is: presenting
+    /// belongs to the chat screen, which owns the one-sheet-at-a-time rule.
+    var onSearchBuffer: ((String) -> Void)?
+
     private var sections: [Section] = []
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
@@ -71,6 +75,9 @@ final class BufferInfoViewController: UITableViewController {
         case topic(String?)
         case members(Int)
         case whois
+        /// Search pre-scoped to this buffer; the payload is the `in:`/`on:` prefix to seed the
+        /// query field with.
+        case search(scope: String)
         case notifyPlaceholder(title: String)
     }
 
@@ -88,16 +95,22 @@ final class BufferInfoViewController: UITableViewController {
         let live = state.buffers[key] ?? buffer
         let memberCount = state.members[key]?.count ?? 0
 
+        // The `on:` half needs the network's *name*, which only the roster has. Nil for a
+        // buffer with no meaningful scope, and the row simply isn't offered then.
+        let scopeRows: [Row] = SearchQuery.scope(
+            for: live,
+            networkName: live.networkId.flatMap { state.networks[$0]?.name }
+        ).map { [.search(scope: $0)] } ?? []
         switch buffer.kind {
         case .channel:
             sections = [
                 Section(header: "Topic", footer: nil, rows: [.topic(live.topic)]),
-                Section(header: nil, footer: nil, rows: [.members(memberCount)]),
+                Section(header: nil, footer: nil, rows: [.members(memberCount)] + scopeRows),
                 notifications,
             ]
         case .dm:
             sections = [
-                Section(header: nil, footer: nil, rows: [.whois]),
+                Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
                 notifications,
             ]
         case .server, .system:
@@ -184,6 +197,16 @@ final class BufferInfoViewController: UITableViewController {
             content.textProperties.color = .tertiaryLabel
             cell.contentConfiguration = content
 
+        case .search:
+            var content = UIListContentConfiguration.cell()
+            // Named for the buffer rather than "Search in Buffer": the sheet's title already
+            // says which one, and this is the panel *about* it.
+            content.text = "Search This Conversation"
+            content.image = UIImage(systemName: "magnifyingglass")
+            cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            cell.selectionStyle = .default
+
         case .notifyPlaceholder(let title):
             var content = UIListContentConfiguration.cell()
             content.text = title
@@ -199,10 +222,16 @@ final class BufferInfoViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard case .members = sections[indexPath.section].rows[indexPath.row] else { return }
-        // Dismiss first, then hand back: the chat screen presents the member list from
-        // itself and refuses while it already has something presented, so opening from
-        // under this sheet would silently no-op.
-        dismiss(animated: true) { [onShowMembers] in onShowMembers?() }
+        // Dismiss first, then hand back: the chat screen presents these from itself and
+        // refuses while it already has something presented, so opening from under this sheet
+        // would silently no-op.
+        switch sections[indexPath.section].rows[indexPath.row] {
+        case .members:
+            dismiss(animated: true) { [onShowMembers] in onShowMembers?() }
+        case .search(let scope):
+            dismiss(animated: true) { [onSearchBuffer] in onSearchBuffer?(scope) }
+        case .topic, .whois, .notifyPlaceholder:
+            break
+        }
     }
 }

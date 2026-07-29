@@ -1756,6 +1756,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Runs after this sheet has finished dismissing, so `showMemberList`'s guard sees a
         // clear screen.
         info.onShowMembers = { [weak self] in self?.showMemberList() }
+        info.onSearchBuffer = { [weak self] scope in
+            guard let self else { return }
+            showSearch(viewModel: viewModel, seed: scope)
+        }
         let sheet = UINavigationController(rootViewController: info)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
@@ -1795,6 +1799,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// A bare "…" means "there's a menu here" on iOS, so nothing in it fires on tap.
     private func overflowItem() -> UIBarButtonItem {
         let actions: [UIMenuElement] = [
+            // Unscoped, like everything else in this menu. Searching *this* buffer is a fact
+            // about this buffer, so it lives in the buffer-info sheet behind the title pill,
+            // where the per-buffer things are — see `BufferInfoViewController`.
+            UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+                guard let self else { return }
+                showSearch(viewModel: viewModel)
+            },
             UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
                 guard let self else { return }
                 showHighlights(viewModel: viewModel)
