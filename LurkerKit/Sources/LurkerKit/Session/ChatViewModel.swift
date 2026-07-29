@@ -196,6 +196,26 @@ public final class ChatViewModel {
         await client.fetchHighlights(before: before)
     }
 
+    // MARK: - Link previews
+
+    /// The app-wide preview cache.
+    ///
+    /// One store, not one per screen: the same link shows up in a channel, in the highlights
+    /// feed and in search results, and it should be resolved once for all three. Lazy because
+    /// with both settings off nothing ever asks it anything, and it shouldn't cost even an
+    /// allocation for the people who — reasonably — don't want this feature.
+    public lazy var linkPreviews = LinkPreviewStore { [weak self] urls in
+        await self?.client.resolveLinkPreviews(urls) ?? []
+    }
+
+    /// Bytes from the server's media proxy, for a server-minted path off a `LinkPreview`.
+    ///
+    /// Goes through the client because the proxy is authenticated and native auth is a Bearer
+    /// header — there's no cookie for a bare `UIImage(contentsOf:)` to ride on.
+    public func proxiedMedia(path: String) async -> Data? {
+        await client.fetchProxiedMedia(path: path)
+    }
+
     /// Fetch a page of bookmarks. Same cursor contract as `fetchHighlights`, and the
     /// same row shape — hence the shared `HighlightsPage`.
     ///

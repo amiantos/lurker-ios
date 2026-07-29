@@ -44,6 +44,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
     private let messageText = MessageTextView()
+    /// Inline media / preview cards under the body (off by default; see
+    /// `chat.inline_media.enabled` and `chat.link_previews.enabled`). Hidden and empty for
+    /// the overwhelming majority of rows, which is why it's a plain stack view rather than
+    /// anything lazier — an empty hidden `UIStackView` costs a pointer.
+    private let attachments = MessageAttachmentsView()
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
     /// An optical correction on the bottom of a block's fill.
@@ -91,8 +96,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
         column.axis = .vertical
         column.isLayoutMarginsRelativeArrangement = true
+        attachments.isHidden = true
+        attachments.onOpen = { url in UIApplication.shared.open(url) }
+
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
+        column.addArrangedSubview(attachments)
         column.translatesAutoresizingMaskIntoConstraints = false
         fill.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(fill)
@@ -174,6 +183,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             : 0
 
         messageText.attributedText = attributed
+        // Cleared on every configure, so a recycled cell never shows the previous message's
+        // attachments for the frame before the renderer gets to say otherwise.
+        attachments.isHidden = true
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
@@ -183,6 +195,17 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
+    }
+
+    /// Show link previews under the body. Called after `configure`, which has already cleared
+    /// whatever the recycled cell was showing before.
+    ///
+    /// Nothing here is conditional on the settings — the renderer resolves those once per
+    /// reload rather than once per cell, and hands down an already-filtered list.
+    func showAttachments(
+        _ previews: [LinkPreview], model: ChatViewModel, onImageLoaded: @escaping () -> Void
+    ) {
+        attachments.configure(previews: previews, model: model, onImageLoaded: onImageLoaded)
     }
 
     func linkURL(at point: CGPoint) -> URL? {

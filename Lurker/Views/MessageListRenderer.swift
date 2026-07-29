@@ -35,6 +35,29 @@ struct MessageListContext {
     /// The row at an index, or nil out of range — the renderer looks at a row's neighbours to
     /// decide whether it opens an author block.
     let row: (Int) -> MessageRow?
+    /// Link previews, or nil on the screens that don't show them.
+    ///
+    /// Optional rather than always-present because the highlights feed and the throwaway
+    /// layout probes build a context without a view model, and previews are decoration those
+    /// two have no business fetching.
+    let previews: PreviewContext?
+}
+
+/// What a row needs to draw link previews. Bundled so `MessageListContext` grows by one
+/// optional field rather than four.
+struct PreviewContext {
+    let store: LinkPreviewStore
+    let model: ChatViewModel
+    /// Resolved once per reload rather than once per cell — the settings can't change
+    /// mid-reload, and `Settings.bool` on every visible row is pure repetition.
+    let inlineMedia: Bool
+    let linkPreviews: Bool
+    /// Re-lays-out the row an image just finished loading into. A preview appearing changes a
+    /// row's height, so this is a reload rather than a redraw.
+    let onImageLoaded: () -> Void
+
+    /// Whether either feature is on. Both off and nothing below this ever runs.
+    var isEnabled: Bool { inlineMedia || linkPreviews }
 }
 
 /// Turns a `MessageRow` into a cell.
@@ -90,6 +113,7 @@ struct MessageListRenderer {
                 highlighted: message.matched,
                 traits: context.traits
             )
+            attach(preview: message, to: cell, context: context)
         case .line(let message):
             cell.configure(
                 MessageRenderer.renderCompactBody(
@@ -101,6 +125,7 @@ struct MessageListRenderer {
                 highlighted: message.matched,
                 traits: context.traits
             )
+            attach(preview: message, to: cell, context: context)
         case .consolidated(let summary):
             cell.configure(
                 MessageRenderer.renderCompactConsolidation(summary, traits: context.traits),
@@ -121,6 +146,38 @@ struct MessageListRenderer {
             preconditionFailure("markers are handled above")
         }
         return cell
+    }
+
+    /// Draw a message's link previews, if it has any and the reader wants them.
+    ///
+    /// The order matters and is the whole reason this is lazy: `PreviewSelection.urls` returns
+    /// empty the moment both settings are off, so a reader with the features disabled — the
+    /// default — pays one boolean check per row and nothing else. No regex, no store lookup,
+    /// no request.
+    ///
+    /// `store.request` is idempotent and cheap, which is what lets it be called from
+    /// `cellForRowAt` for every visible row on every reload. What's already cached draws now;
+    /// what isn't gets batched and triggers a reload when it lands.
+    private func attach(preview message: Message, to cell: CompactCell, context: MessageListContext) {
+        guard let previews = context.previews, previews.isEnabled else { return }
+        let urls = PreviewSelection.urls(
+            in: message.text,
+            inlineMedia: previews.inlineMedia,
+            linkPreviews: previews.linkPreviews
+        )
+        guard !urls.isEmpty else { return }
+        previews.store.request(urls)
+
+        // Re-checked against the SERVER's answer, not the extension guess that prompted the
+        // request: an extensionless URL that turns out to be a PNG is inline media, and a
+        // `.jpg` that redirects to an HTML login page is not.
+        let resolved = urls
+            .compactMap { previews.store.preview(for: $0) }
+            .filter {
+                $0.isAllowed(inlineMedia: previews.inlineMedia, linkPreviews: previews.linkPreviews)
+            }
+        guard !resolved.isEmpty else { return }
+        cell.showAttachments(resolved, model: previews.model, onImageLoaded: previews.onImageLoaded)
     }
 
     /// The header for a message, or nil when it continues the block above it.

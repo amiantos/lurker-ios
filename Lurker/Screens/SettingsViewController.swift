@@ -73,8 +73,15 @@ final class SettingsViewController: UITableViewController {
 
     /// Settings that change how the conversation *looks* rather than what the app does with a
     /// message. Its own section, so the behavior list above stays a list of behaviors.
+    ///
+    /// The two preview toggles live here and not under Chat because they change what a message
+    /// *looks like*, not what the app does with it — and they're two rather than one because
+    /// wanting your friends' screenshots to show is a different appetite from wanting every
+    /// article to sprout a card. Both default off.
     private static let appearanceSettings: [(key: String, label: String)] = [
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
+        ("chat.inline_media.enabled", "Inline media"),
+        ("chat.link_previews.enabled", "Link previews"),
     ]
 
     /// Preferences that belong to this install rather than to the account.

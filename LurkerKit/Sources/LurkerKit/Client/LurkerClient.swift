@@ -856,6 +856,61 @@ final class LurkerClient {
         }
     }
 
+    // MARK: - Link previews
+
+    /// Resolve a batch of URLs to preview descriptors (`POST /api/link-preview/resolve`).
+    ///
+    /// Returns whatever the server could answer; a URL it couldn't resolve simply comes back
+    /// with `status: .unavailable`, and a failed request comes back as an empty array. Both
+    /// mean "draw nothing", which is the only outcome a message row cares about — a preview
+    /// is decoration, and an error state in the timeline would be worse than a missing card.
+    func resolveLinkPreviews(_ urls: [String]) async -> [LinkPreview] {
+        guard !urls.isEmpty, let token, let url = URL(string: baseURL + "/api/link-preview/resolve")
+        else { return [] }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["urls": urls])
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return []
+            }
+            guard (200..<300).contains(code) else { return [] }
+            struct Envelope: Decodable { let previews: [LinkPreview] }
+            return (try? JSONDecoder().decode(Envelope.self, from: data))?.previews ?? []
+        } catch {
+            return []
+        }
+    }
+
+    /// Fetch bytes from the server's media proxy.
+    ///
+    /// `path` is a server-minted, HMAC-signed path out of a `LinkPreview` — never something
+    /// built here. It needs a `URLRequest` rather than a plain `UIImage(contentsOf:)` because
+    /// the proxy is authenticated and native auth is a Bearer header, not a cookie.
+    ///
+    /// The shared `URLCache` does the caching: the server marks these `immutable` with a long
+    /// max-age (the token is a pure function of the URL, so a token always denotes the same
+    /// bytes), which means scrolling back over an image-heavy channel doesn't re-fetch.
+    func fetchProxiedMedia(path: String) async -> Data? {
+        guard let token, let url = URL(string: baseURL + path) else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
+                return nil
+            }
+            return data
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - Uploads
 
     /// Upload a prepared file to `POST /api/uploads` and return the stored object's URL.

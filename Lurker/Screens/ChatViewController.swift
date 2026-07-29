@@ -218,6 +218,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.dataSource = self
         tableView.delegate = self
         listRenderer.register(in: tableView)
+        // Preview metadata landing changes row heights the same way an image landing does —
+        // a row that had no attachment now has one. Same reload either way.
+        viewModel.linkPreviews.onUpdate = { [weak self] in self?.reloadVisibleForPreviews() }
         // The list's own backdrop, not the screen's: the composer, pill and banners above it stay
         // on the system background.
         tableView.backgroundColor = listRenderer.listBackground
@@ -2076,8 +2079,41 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             row: { [weak self] index in
                 guard let self, rows.indices.contains(index) else { return nil }
                 return rows[index]
-            }
+            },
+            previews: previewContext
         )
+    }
+
+    /// Link previews for this screen, or nil when both features are off.
+    ///
+    /// Nil rather than a context reporting `isEnabled == false`, so the default case — both
+    /// settings off — can't reach any of the preview machinery at all, not even to be told no.
+    private var previewContext: PreviewContext? {
+        let inlineMedia = settings.bool("chat.inline_media.enabled", default: false)
+        let linkPreviews = settings.bool("chat.link_previews.enabled", default: false)
+        guard inlineMedia || linkPreviews else { return nil }
+        return PreviewContext(
+            store: viewModel.linkPreviews,
+            model: viewModel,
+            inlineMedia: inlineMedia,
+            linkPreviews: linkPreviews,
+            onImageLoaded: { [weak self] in self?.reloadVisibleForPreviews() }
+        )
+    }
+
+    /// Re-lay-out the visible rows because a preview arrived.
+    ///
+    /// A reload rather than a redraw: a preview appearing changes a row's *height*, and a
+    /// self-sizing cell only remeasures on reload. Confined to what's on screen — an
+    /// off-screen row will be measured correctly whenever it's dequeued.
+    ///
+    /// `withoutAnimation` because the alternative is every visible row crossfading whenever any
+    /// one image finishes, which reads as the list glitching rather than as content arriving.
+    private func reloadVisibleForPreviews() {
+        guard let visible = tableView.indexPathsForVisibleRows, !visible.isEmpty else { return }
+        UIView.performWithoutAnimation {
+            tableView.reloadRows(at: visible, with: .none)
+        }
     }
 
     /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range
