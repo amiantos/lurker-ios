@@ -151,9 +151,10 @@ struct MessageListRenderer {
     /// default — pays one boolean check per row and nothing else. No regex, no store lookup,
     /// no request.
     ///
-    /// `store.request` is idempotent and cheap, which is what lets it be called from
-    /// `cellForRowAt` for every visible row on every reload. What's already cached draws now;
-    /// what isn't gets batched and triggers a reload when it lands.
+    /// ⚠ Reads ONLY — this never asks for a preview. Requesting is done at message ingest
+    /// (`ChatViewModel.primePreviews`), so by the time a row is drawn its preview is usually
+    /// already known and the row's height is right on first measure. Asking from here is what
+    /// made scrolling into history grow rows under the reader.
     private func attach(preview message: Message, to cell: CompactCell, context: MessageListContext) {
         guard let previews = context.previews, previews.isEnabled else { return }
         let urls = PreviewSelection.urls(
@@ -162,7 +163,6 @@ struct MessageListRenderer {
             linkPreviews: previews.linkPreviews
         )
         guard !urls.isEmpty else { return }
-        previews.store.request(urls)
 
         // Re-checked against the SERVER's answer, not the extension guess that prompted the
         // request: an extensionless URL that turns out to be a PNG is inline media, and a

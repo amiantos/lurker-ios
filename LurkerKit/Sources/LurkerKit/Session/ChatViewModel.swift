@@ -208,6 +208,7 @@ public final class ChatViewModel {
         await self?.client.resolveLinkPreviews(urls) ?? []
     }
 
+
     /// Bytes from the server's media proxy, for a server-minted path off a `LinkPreview`.
     ///
     /// Goes through the client because the proxy is authenticated and native auth is a Bearer
@@ -606,7 +607,44 @@ public final class ChatViewModel {
 
     // MARK: - Frame routing
 
+    /// Kick off preview resolution for the messages a frame carries.
+    ///
+    /// ⚠⚠ The ONLY place previews are requested. Rendering a row must never trigger a fetch.
+    ///
+    /// The first version asked from `cellForRowAt`, which meant every scroll into history
+    /// started fetches that grew rows under the reader and forced the table to reload to
+    /// remeasure. QA felt it as "scrolling up, image links snap into existence later and mess
+    /// up the scroll position". Slack and Discord don't have this problem because an unfurl is
+    /// part of the message record — it arrives WITH the message, so scrollback is laid out
+    /// correctly on first paint. Priming at ingest buys the same property.
+    ///
+    /// Fire-and-forget: a history page must not wait on the internet before it can be read.
+    private func primePreviews(_ frame: ServerFrame) {
+        let wantMedia = store.state.settings.bool("chat.inline_media.enabled", default: false)
+        let wantPages = store.state.settings.bool("chat.link_previews.enabled", default: false)
+        guard wantMedia || wantPages else { return }
+
+        let texts: [String?]
+        switch frame {
+        case .backlog(_, let messages, _, _): texts = messages.map(\.text)
+        case .history(_, _, let events, _, _, _): texts = events.map(\.text)
+        case .live(_, _, let message): texts = [message.text]
+        default: return
+        }
+
+        var urls: [String] = []
+        for text in texts {
+            urls.append(
+                contentsOf: PreviewSelection.urls(
+                    in: text, inlineMedia: wantMedia, linkPreviews: wantPages
+                )
+            )
+        }
+        linkPreviews.request(urls)
+    }
+
     private func handle(_ frame: ServerFrame) {
+        primePreviews(frame)
         switch frame {
         case .settingsBootstrap, .settingsChanged, .settingsValues:
             store.apply(frame)

@@ -2113,6 +2113,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `withoutAnimation` because the alternative is every visible row crossfading whenever any
     /// one image finishes, which reads as the list glitching rather than as content arriving.
     private func reloadVisibleForPreviews() {
+        // Never mid-gesture. Reloading rows out from under an active drag or a decelerating
+        // fling is what produced "it resets the entire scroll back to the bottom": the reload
+        // remeasures self-sizing cells, the content size moves, and the in-flight scroll
+        // animation resolves against the new geometry. Rows skipped here are measured
+        // correctly whenever they're next dequeued, so waiting costs nothing.
+        guard !tableView.isDragging, !tableView.isDecelerating else { return }
         guard let visible = tableView.indexPathsForVisibleRows, !visible.isEmpty else { return }
         UIView.performWithoutAnimation {
             tableView.reloadRows(at: visible, with: .none)
