@@ -491,6 +491,26 @@ final class BufferListViewController: UICollectionViewController {
     /// A direct tap now that Settings exists (#20) — the cog said "Settings" and opened a
     /// one-item menu, which is a menu standing in for the screen it was named after. Sign-out
     /// moved inside, where it sits behind a confirmation rather than one slipped thumb away.
+    private func accountItem() -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "gearshape"),
+            primaryAction: UIAction { [weak self] _ in self?.showSettings() }
+        )
+        item.accessibilityLabel = "Settings"
+        return item
+    }
+
+    /// Presented as a sheet, like every other secondary surface off this screen (buffer info,
+    /// members, highlights) — Settings is somewhere you visit and leave, not somewhere the
+    /// navigation stack should hold on to.
+    private func showSettings() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let sheet = UINavigationController(rootViewController: SettingsViewController(viewModel: viewModel))
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        sheet.sheetPresentationController?.detents = [.large()]
+        present(sheet, animated: true)
+    }
+
     // MARK: - Search
 
     /// The results, and the object that turns keystrokes into queries. Held so navigation can
@@ -551,26 +571,6 @@ final class BufferListViewController: UICollectionViewController {
     /// its activation, which also empties the field for the next time search is opened.
     func dismissSearch() {
         searchController.isActive = false
-    }
-
-    private func accountItem() -> UIBarButtonItem {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "gearshape"),
-            primaryAction: UIAction { [weak self] _ in self?.showSettings() }
-        )
-        item.accessibilityLabel = "Settings"
-        return item
-    }
-
-    /// Presented as a sheet, like every other secondary surface off this screen (buffer info,
-    /// members, highlights) — Settings is somewhere you visit and leave, not somewhere the
-    /// navigation stack should hold on to.
-    private func showSettings() {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
-        let sheet = UINavigationController(rootViewController: SettingsViewController(viewModel: viewModel))
-        sheet.sheetPresentationController?.prefersGrabberVisible = true
-        sheet.sheetPresentationController?.detents = [.large()]
-        present(sheet, animated: true)
     }
 
     /// The same views menu the chat screen carries, minus the entries that need a buffer.

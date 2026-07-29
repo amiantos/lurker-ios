@@ -306,8 +306,14 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// on screen and scroll it back to the top.
     func updateSearchResults(for searchController: UISearchController) {
         let text = searchController.searchBar.text ?? ""
-        guard text != query else { return }
+        // Cancel BEFORE the up-to-date check, not after. `query` only advances when the debounce
+        // fires, so editing back to the committed text inside the window — type `hip`, backspace
+        // to `hi` — reaches this having already scheduled `hip`. Returning without cancelling
+        // leaves that task armed, and 350ms later the screen searches for text the field no
+        // longer contains. Cancelling first makes "the field already matches what's shown" mean
+        // exactly that, including that nothing else is on its way.
         debounce?.cancel()
+        guard text != query else { return }
         debounce = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(Self.debounceMilliseconds))
             guard !Task.isCancelled else { return }

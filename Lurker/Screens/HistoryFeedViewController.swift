@@ -166,7 +166,7 @@ class HistoryFeedViewController: UITableViewController {
         // the refresh control's own spinner rather than blanking what's already there.
         if items.isEmpty { renderPlaceholder(.loading) }
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, generation == loadGeneration else { return }
             let page = await fetchPage(before: nil)
             handleFirstPage(page, generation: generation)
         }
@@ -177,8 +177,21 @@ class HistoryFeedViewController: UITableViewController {
         guard !isLoading, !reachedEnd, let cursor = nextBefore else { return }
         let generation = loadGeneration
         isLoading = true
+        // Re-checked once the task actually starts, not only when its answer arrives.
+        //
+        // The cursor and the generation are captured synchronously, but the body runs a turn
+        // later — and a feed whose question can change (Search) can have moved on by then. The
+        // check at `appendPage` would catch the result and discard it, which is correct but
+        // late: the request has already been made, so a *superseded* page still costs a full
+        // search on the server. For the one read where that cost is the whole concern, not
+        // asking is the point.
+        //
+        // Bailing doesn't strand `isLoading`: the generation can only have moved because a
+        // `reload()` superseded this, and that reload set the flag itself and clears it when its
+        // own page lands. (A feed that doesn't supersede never gets here — its `reload()` is
+        // dropped while a page is in flight, so the generation can't move under it.)
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, generation == loadGeneration else { return }
             let page = await fetchPage(before: cursor)
             appendPage(page, generation: generation)
         }

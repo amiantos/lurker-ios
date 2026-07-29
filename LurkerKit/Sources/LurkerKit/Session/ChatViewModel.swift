@@ -231,10 +231,17 @@ public final class ChatViewModel {
     public func searchMessages(_ raw: String, before: Int? = nil) async -> HighlightsPage? {
         let query = SearchQuery.parse(raw)
         guard !query.isEmpty else { return HighlightsPage(items: [], nextBefore: nil) }
+        // Lowest id wins, rather than whichever the dictionary happens to yield first. Two
+        // networks can legitimately share a name — two connections to the same server, or two
+        // user-named entries that collide — and `networks` is a dictionary, whose iteration
+        // order is unspecified and free to differ between two calls. That's not merely untidy:
+        // page one and page two of the SAME search are two calls, so an unstable pick would
+        // append rows from a different network than the page they're extending.
         let networkId = query.network.isEmpty
             ? nil
             : store.state.networks.values
-                .first { $0.name.caseInsensitiveCompare(query.network) == .orderedSame }?.id
+                .filter { $0.name.caseInsensitiveCompare(query.network) == .orderedSame }
+                .min(by: { $0.id < $1.id })?.id
         let page = await client.search(query, networkId: networkId, before: before)
         // Search rows carry the same `bookmarked` flag as any other message row, and this is
         // the only place a saved line the user has never opened can become known — same
