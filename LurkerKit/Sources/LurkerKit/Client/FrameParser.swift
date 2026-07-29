@@ -56,7 +56,17 @@ enum FrameParser {
                 ? .ignored
                 : .bookmarkUpdated(messageId: messageId, saved: obj.bool("saved"))
         case "search-result":
-            return .searchResult(token: obj.int("token"), page: parseSearchPage(obj))
+            // A reply with no token is unaddressable — it can't be matched to the call waiting
+            // for it, and `int()` would quietly read it as 0, a value no request ever carries
+            // (tokens start at 1). Dropped as unparseable rather than becoming a `.searchResult`
+            // nothing can consume.
+            //
+            // Note this is NOT the "unknown token" case, which is normal and must stay a no-op:
+            // a search that already timed out, or was failed by a socket drop, can still have
+            // its reply turn up afterwards. That one is correlated fine — to a call that has
+            // gone.
+            guard let token = obj.intOrNull("token") else { return .ignored }
+            return .searchResult(token: token, page: parseSearchPage(obj))
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from

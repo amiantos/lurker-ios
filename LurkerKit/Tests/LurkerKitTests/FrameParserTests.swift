@@ -455,4 +455,18 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(##"{"kind":"search-result","token":3,"hasMore":false,"results":[]}"##)
         XCTAssertEqual(frame, .searchResult(token: 3, page: HighlightsPage(items: [], nextBefore: nil)))
     }
+
+    /// A reply with no token can't be matched to the call waiting for it. Read with `int()` it
+    /// would become token 0 — a value no request ever carries, so the frame would be consumed
+    /// as a `.searchResult` and correlate to nothing.
+    func testSearchResultWithoutATokenIsIgnored() {
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"search-result","hasMore":false,"results":[]}"##),
+            .ignored
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"search-result","token":null,"hasMore":false,"results":[]}"##),
+            .ignored
+        )
+    }
 }
