@@ -2096,16 +2096,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             store: viewModel.linkPreviews,
             model: viewModel,
             inlineMedia: inlineMedia,
-            linkPreviews: linkPreviews,
-            onImageLoaded: { [weak self] in self?.reloadVisibleForPreviews() }
+            linkPreviews: linkPreviews
         )
     }
 
-    /// Re-lay-out the visible rows because a preview arrived.
+    /// Re-lay-out the visible rows because preview METADATA arrived.
     ///
-    /// A reload rather than a redraw: a preview appearing changes a row's *height*, and a
-    /// self-sizing cell only remeasures on reload. Confined to what's on screen — an
-    /// off-screen row will be measured correctly whenever it's dequeued.
+    /// A reload rather than a redraw: a row that had no attachment now has one, which changes
+    /// its height, and a self-sizing cell only remeasures on reload. Confined to what's on
+    /// screen — an off-screen row is measured correctly whenever it's dequeued.
+    ///
+    /// Note this fires for metadata only, never for image bytes. Because every attachment's
+    /// height is fixed by its metadata, an image arriving can't change a height, so it's
+    /// assigned straight into its view — see `MessageAttachmentsView.apply`.
     ///
     /// `withoutAnimation` because the alternative is every visible row crossfading whenever any
     /// one image finishes, which reads as the list glitching rather than as content arriving.

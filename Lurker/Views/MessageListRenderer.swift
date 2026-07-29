@@ -52,10 +52,6 @@ struct PreviewContext {
     /// mid-reload, and `Settings.bool` on every visible row is pure repetition.
     let inlineMedia: Bool
     let linkPreviews: Bool
-    /// Re-lays-out the row an image just finished loading into. A preview appearing changes a
-    /// row's height, so this is a reload rather than a redraw.
-    let onImageLoaded: () -> Void
-
     /// Whether either feature is on. Both off and nothing below this ever runs.
     var isEnabled: Bool { inlineMedia || linkPreviews }
 }
@@ -177,7 +173,7 @@ struct MessageListRenderer {
                 $0.isAllowed(inlineMedia: previews.inlineMedia, linkPreviews: previews.linkPreviews)
             }
         guard !resolved.isEmpty else { return }
-        cell.showAttachments(resolved, model: previews.model, onImageLoaded: previews.onImageLoaded)
+        cell.showAttachments(resolved, model: previews.model)
     }
 
     /// The header for a message, or nil when it continues the block above it.

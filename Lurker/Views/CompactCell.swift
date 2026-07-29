@@ -202,10 +202,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     ///
     /// Nothing here is conditional on the settings — the renderer resolves those once per
     /// reload rather than once per cell, and hands down an already-filtered list.
-    func showAttachments(
-        _ previews: [LinkPreview], model: ChatViewModel, onImageLoaded: @escaping () -> Void
-    ) {
-        attachments.configure(previews: previews, model: model, onImageLoaded: onImageLoaded)
+    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel) {
+        attachments.configure(previews: previews, model: model)
     }
 
     func linkURL(at point: CGPoint) -> URL? {

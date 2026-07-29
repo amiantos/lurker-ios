@@ -20,10 +20,17 @@ final class PreviewImageLoader {
     static let shared = PreviewImageLoader()
 
     private let cache = NSCache<NSString, UIImage>()
-    /// Paths currently being fetched, so a cell redrawn mid-flight doesn't start a second
-    /// request for the same bytes. During a scroll a row can be configured several times a
-    /// second.
-    private var inFlight = Set<String>()
+
+    /// Everyone waiting on a path, not just whoever asked first.
+    ///
+    /// ⚠ This was a `Set<String>` of in-flight paths, and the bug that produced was the QA
+    /// report "sometimes images don't load when they scroll on, and swiping back and forth
+    /// gives different results". A cell arriving while a load was already in flight hit the
+    /// early return and registered *nothing* — so it drew empty, and the only callback that
+    /// existed belonged to a cell that had since been recycled. Whether an image appeared
+    /// came down to which cell happened to ask first, which is exactly the kind of
+    /// order-dependent flakiness that reads as random.
+    private var waiters: [String: [(UIImage) -> Void]] = [:]
 
     private init() {
         // Counted in decoded bytes via `cost` below; a few dozen full-width previews.
@@ -37,29 +44,41 @@ final class PreviewImageLoader {
         cache.object(forKey: path as NSString)
     }
 
-    /// Fetch and decode if we don't have it. `completion` runs only on a successful *new*
-    /// load, so a caller can use it purely as "something changed, redraw".
-    func load(path: String, using model: ChatViewModel, completion: @escaping () -> Void) {
-        guard cache.object(forKey: path as NSString) == nil, !inFlight.contains(path) else {
+    /// Deliver the image at `path`, fetching and decoding it if we don't have it yet.
+    ///
+    /// `then` is registered on *every* call, so a cell that arrives mid-flight is served
+    /// too — and it's called at most once per call. Callers pass a closure holding a weak
+    /// view, so a recycled cell's callback becomes a no-op rather than painting the wrong row.
+    func load(path: String, using model: ChatViewModel, then deliver: @escaping (UIImage) -> Void) {
+        if let cached = cache.object(forKey: path as NSString) {
+            deliver(cached)
             return
         }
-        inFlight.insert(path)
+        if waiters[path] != nil {
+            waiters[path]?.append(deliver)
+            return
+        }
+        waiters[path] = [deliver]
+
         Task { @MainActor in
-            defer { inFlight.remove(path) }
-            guard let data = await model.proxiedMedia(path: path) else { return }
             // Decoding off the main actor: a full-width JPEG is a few milliseconds, and a few
             // milliseconds during a scroll is a dropped frame.
-            guard let image = await Self.decode(data) else { return }
+            var image: UIImage?
+            if let data = await model.proxiedMedia(path: path) {
+                image = await Self.decode(data)
+            }
+            let pending = waiters.removeValue(forKey: path) ?? []
+            guard let image else { return }
             cache.setObject(image, forKey: path as NSString, cost: Self.cost(of: image))
-            completion()
+            for callback in pending { callback(image) }
         }
     }
 
     private static func decode(_ data: Data) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
             guard let image = UIImage(data: data) else { return nil as UIImage? }
-            // Force the decode now rather than on first draw, which would happen on the main
-            // thread at exactly the wrong moment.
+            // Force the decode now rather than on first draw, which would otherwise happen on
+            // the main thread at exactly the wrong moment.
             return image.preparingForDisplay() ?? image
         }.value
     }
@@ -72,6 +91,6 @@ final class PreviewImageLoader {
 
     func reset() {
         cache.removeAllObjects()
-        inFlight.removeAll()
+        waiters.removeAll()
     }
 }

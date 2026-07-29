@@ -45,9 +45,7 @@ final class MessageAttachmentsView: UIStackView {
 
     /// Draw the previews for one message. Passing an empty array collapses the view entirely,
     /// which is the common case and has to stay cheap — most messages have no links.
-    func configure(
-        previews: [LinkPreview], model: ChatViewModel, onImageLoaded: @escaping () -> Void
-    ) {
+    func configure(previews: [LinkPreview], model: ChatViewModel) {
         for view in arrangedSubviews {
             removeArrangedSubview(view)
             view.removeFromSuperview()
@@ -58,9 +56,9 @@ final class MessageAttachmentsView: UIStackView {
         for preview in previews {
             switch preview.kind {
             case .image, .video, .audio:
-                addArrangedSubview(mediaView(preview, model: model, onImageLoaded: onImageLoaded))
+                addArrangedSubview(mediaView(preview, model: model))
             case .page, .videoEmbed:
-                addArrangedSubview(cardView(preview, model: model, onImageLoaded: onImageLoaded))
+                addArrangedSubview(cardView(preview, model: model))
             }
         }
     }
@@ -69,9 +67,7 @@ final class MessageAttachmentsView: UIStackView {
 
     /// No card, no chrome — just the thing. A frame around an image is furniture around
     /// content.
-    private func mediaView(
-        _ preview: LinkPreview, model: ChatViewModel, onImageLoaded: @escaping () -> Void
-    ) -> UIView {
+    private func mediaView(_ preview: LinkPreview, model: ChatViewModel) -> UIView {
         let container = UIView()
         container.backgroundColor = .secondarySystemFill
         container.layer.cornerRadius = Self.corner
@@ -94,7 +90,7 @@ final class MessageAttachmentsView: UIStackView {
         ])
 
         if preview.kind == .image, let path = preview.src {
-            apply(path: path, to: imageView, model: model, onImageLoaded: onImageLoaded)
+            apply(path: path, to: imageView, model: model)
             imageView.accessibilityLabel = "Image"
         } else {
             let glyph = UIImageView(
@@ -120,9 +116,7 @@ final class MessageAttachmentsView: UIStackView {
 
     // MARK: - Cards
 
-    private func cardView(
-        _ preview: LinkPreview, model: ChatViewModel, onImageLoaded: @escaping () -> Void
-    ) -> UIView {
+    private func cardView(_ preview: LinkPreview, model: ChatViewModel) -> UIView {
         let row = UIStackView()
         row.axis = preview.kind == .videoEmbed ? .vertical : .horizontal
         row.spacing = 8
@@ -150,7 +144,7 @@ final class MessageAttachmentsView: UIStackView {
             // A video reduced to a 64pt square is pointless, so the thumbnail is promoted to
             // full-width 16:9 with a play badge.
             row.addArrangedSubview(text)
-            row.addArrangedSubview(videoThumb(path, model: model, onImageLoaded: onImageLoaded))
+            row.addArrangedSubview(videoThumb(path, model: model))
         } else {
             row.addArrangedSubview(text)
             if let path = preview.thumb {
@@ -163,7 +157,7 @@ final class MessageAttachmentsView: UIStackView {
                     thumb.widthAnchor.constraint(equalToConstant: Self.thumbSide),
                     thumb.heightAnchor.constraint(equalToConstant: Self.thumbSide),
                 ])
-                apply(path: path, to: thumb, model: model, onImageLoaded: onImageLoaded)
+                apply(path: path, to: thumb, model: model)
                 row.addArrangedSubview(thumb)
             }
         }
@@ -209,9 +203,7 @@ final class MessageAttachmentsView: UIStackView {
     /// otherwise. Deliberately NOT a `WKWebView` embed like the web client's iframe: a web view
     /// living inside a scrolling table cell is a memory problem and a worse experience, and
     /// the OS handoff is what an iOS user expects anyway.
-    private func videoThumb(
-        _ path: String, model: ChatViewModel, onImageLoaded: @escaping () -> Void
-    ) -> UIView {
+    private func videoThumb(_ path: String, model: ChatViewModel) -> UIView {
         let container = UIView()
         container.backgroundColor = .secondarySystemFill
         container.layer.cornerRadius = Self.corner
@@ -242,21 +234,28 @@ final class MessageAttachmentsView: UIStackView {
             badge.widthAnchor.constraint(equalToConstant: 48),
             badge.heightAnchor.constraint(equalToConstant: 48),
         ])
-        apply(path: path, to: thumb, model: model, onImageLoaded: onImageLoaded)
+        apply(path: path, to: thumb, model: model)
         return container
     }
 
     // MARK: - Plumbing
 
-    private func apply(
-        path: String, to imageView: UIImageView, model: ChatViewModel,
-        onImageLoaded: @escaping () -> Void
-    ) {
-        if let cached = PreviewImageLoader.shared.image(for: path) {
-            imageView.image = cached
-            return
+    /// Put the image into the view as soon as it exists.
+    ///
+    /// Assigned DIRECTLY rather than by asking the table to reload the row, and that's the
+    /// payoff for every attachment here having a height fixed by its metadata: an image
+    /// arriving cannot change a row's height, so there is nothing to remeasure. The reload
+    /// path this replaced was both unnecessary and unreliable — a load finishing while the row
+    /// was off-screen, or mid-scroll, delivered to nothing.
+    ///
+    /// `[weak imageView]` is the reuse guard. `configure` rebuilds its subviews, so a recycled
+    /// cell's old image views are already detached and deallocated by the time a stale
+    /// callback fires — it finds nil and does nothing, instead of painting one row's image
+    /// into another.
+    private func apply(path: String, to imageView: UIImageView, model: ChatViewModel) {
+        PreviewImageLoader.shared.load(path: path, using: model) { [weak imageView] image in
+            imageView?.image = image
         }
-        PreviewImageLoader.shared.load(path: path, using: model, completion: onImageLoaded)
     }
 
     private func label(
