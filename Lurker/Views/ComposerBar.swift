@@ -152,18 +152,20 @@ final class ComposerBar: UIView {
         textView.adjustsFontForContentSizeCategory = true
         textView.textContainerInset = Self.textInset
         textView.textContainer.lineFragmentPadding = 0
-        // Correction on, capitalization off — the pairing the web client can't offer
-        // (Safari re-applies sentence caps whenever correction is on, which is why its
-        // settings couple the two; UIKit keeps them independent). IRC is lowercase-native
-        // — nicks, /commands, #channels — so forced caps mangle more than they fix, while
-        // correction still earns its keep in prose. `.default`, not `.yes`: the user's
-        // system-wide autocorrect preference stays the boss.
-        textView.autocapitalizationType = .none
+        // `.default`, not `.yes`: the user's system-wide autocorrect preference stays the
+        // boss. Capitalization is its own switch (`applyKeyboardPreferences`) — UIKit keeps
+        // the two independent, which is the pairing the web client can't offer, since Safari
+        // re-applies sentence caps whenever correction is on.
         textView.autocorrectionType = .default
         textView.isScrollEnabled = false // until it hits the cap; see textViewDidChange
         textView.delegate = self
         textView.onPasteImage = { [weak self] data, mime, name in self?.onPasteImage?(data, mime, name) }
         textView.translatesAutoresizingMaskIntoConstraints = false
+        applyKeyboardPreferences()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applyKeyboardPreferences),
+            name: .composerKeyboardPreferencesDidChange, object: nil
+        )
 
         // A UITextView has no placeholder of its own, so it's a label pinned inside — at the
         // text container's own origin, in the text view's own font, so it's indistinguishable
@@ -259,6 +261,23 @@ final class ComposerBar: UIView {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    /// Read the device-local keyboard preferences onto the field — today, whether to
+    /// capitalize sentences (`UserDefaults.composerAutocapitalizes`).
+    ///
+    /// Runs at init and again on every change, because Settings is a sheet over this screen
+    /// rather than a push: the composer stays alive underneath it and would otherwise keep the
+    /// value it read the last time it was built, which for the buffer you were in when you
+    /// flipped the switch is "never".
+    @objc private func applyKeyboardPreferences() {
+        let wanted: UITextAutocapitalizationType =
+            UserPreferences.standard.composerAutocapitalizes ? .sentences : .none
+        guard textView.autocapitalizationType != wanted else { return }
+        textView.autocapitalizationType = wanted
+        // A keyboard is configured when it comes up, so a field that's focused right now is
+        // already showing one built from the old value. This re-asks for it.
+        if textView.isFirstResponder { textView.reloadInputViews() }
+    }
 
     /// Clears the field after a send the owner accepted, and collapses it back to one line.
     func clear() {

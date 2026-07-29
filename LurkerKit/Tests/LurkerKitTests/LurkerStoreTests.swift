@@ -176,6 +176,161 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.maxEventId, 999, "but the resume cursor still advances past it")
     }
 
+    /// The reconnect bug: a resume frame must not stitch the present onto a jump slice.
+    func testResumeBacklogLeavesADetachedBufferAloneRatherThanSplicingIt() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
+        // Jump to a much older message (a bookmark, #42) — the buffer detaches.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        // Traffic arrives while detached: held out of the log, but it advances the resume
+        // cursor, so the server will never re-send it in a gap.
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(600, "missed")))
+        // Now the socket drops and comes back (backgrounding the app is enough). The resume
+        // frame carries only what landed while we were away — everything from 601 up.
+        store.apply(.backlog(
+            buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
+            messages: [msg(700, "while away")],
+            hydrated: true, append: true
+        ))
+        XCTAssertEqual(
+            store.state.messages[chanKey]!.map(\.text), ["anchor"],
+            "the gap must not append onto the jump slice — 600 was never delivered, so it'd be a hole"
+        )
+        XCTAssertTrue(
+            store.state.buffers[chanKey]!.hasMoreNewer,
+            "and the buffer stays detached: the jump-to-latest pill is the only way back to live"
+        )
+        // Which still works, and is where the missing rows come from.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(600, "missed"), msg(700, "while away")],
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["missed", "while away"])
+        XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer)
+    }
+
+    /// The bug Brad hit: no reconnect, just a jump and a walk back to the present.
+    ///
+    /// Re-entering a detached buffer lands at the bottom of its slice, which fires `loadNewer`,
+    /// which appends and lands at the bottom again — the reader walks forward to live one
+    /// `after` page per round trip. Traffic that arrives during the LAST of those round trips
+    /// is the hole: the buffer is still detached so the log won't take it, and the reply that
+    /// re-attaches was built by the server before it was said.
+    func testTrafficDuringTheReattachRoundTripSurvivesRatherThanVanishing() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        // Walking forward. This page still reports more ahead, so we stay detached.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(11, "b"), msg(12, "c")],
+            mode: .after, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        // The final page is now in flight. The server has already read up to 13 — so 14 and 15,
+        // said while it's on the wire, cannot be in it.
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(14, "said mid-flight")))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(15, "and again")))
+        XCTAssertEqual(
+            store.state.messages[chanKey]!.map(\.text), ["anchor", "b", "c"],
+            "still held out of the log while detached"
+        )
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(13, "d")],
+            mode: .after, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer, "reaching the tail re-attaches")
+        XCTAssertEqual(
+            store.state.messages[chanKey]!.map(\.text),
+            ["anchor", "b", "c", "d", "said mid-flight", "and again"],
+            "and the held events land behind the slice they couldn't have been in"
+        )
+        // Live resumes normally, with nothing left over to double up.
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(16, "live")))
+        XCTAssertEqual(store.state.messages[chanKey]!.count, 6 + 1)
+    }
+
+    /// The same seam on the jump-to-latest pill, which fetches a slice rather than walking to
+    /// it — and where the held events overlap what the fetch returns.
+    func testReattachingViaLatestKeepsHeldTrafficAndDoesNotDoubleIt() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "old")],
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+        ))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(500, "during")))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(501, "after the query")))
+        // The latest slice the server built includes 500 (it existed when the query ran) but
+        // not 501 (it didn't).
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(499, "x"), msg(500, "during")],
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertEqual(
+            store.state.messages[chanKey]!.map(\.text), ["x", "during", "after the query"],
+            "the overlap de-dupes by id; only the genuinely-missing tail is added"
+        )
+        XCTAssertNil(store.state.heldLive[chanKey], "and the hold is spent")
+    }
+
+    /// An ephemeral held during a detach has no id to place it by and no fetch that could ever
+    /// return it — a `/ctcp` or `/e2e` status line is never persisted. It rides out the
+    /// re-attach on the same terms it lives everywhere else: kept, and appended last.
+    func testHeldEphemeralsSurviveReattachDespiteHavingNoId() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "old")],
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+        ))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(0, "CTCP reply")))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(500, "latest")],
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["latest", "CTCP reply"])
+    }
+
+    /// A second jump abandons the first window, so what was held for it goes too — those
+    /// events are older than anything the next re-attach will fetch.
+    func testANewJumpStartsTheHoldOver() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(600, "held")))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(80, "second anchor")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+        ))
+        XCTAssertEqual(store.state.heldLive[chanKey], [])
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(700, "tail")],
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+        ))
+        XCTAssertEqual(
+            store.state.messages[chanKey]!.map(\.text), ["tail"],
+            "600 is the fetch's business now, not the hold's"
+        )
+    }
+
+    /// The same frame must not blank buffer state it doesn't carry: the connect burst sends
+    /// the snapshot (which has the topic) BEFORE the per-buffer backlogs (which don't).
+    func testBacklogKeepsTheTopicItDoesntCarry() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
+        store.apply(.channelTopic(networkId: 1, target: "#lurker", topic: "the topic"))
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi"), msg(2, "there")]))
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "the topic")
+    }
+
     func testLoadingLatestReattachesAndResumesLiveAppends() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
