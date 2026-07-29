@@ -77,6 +77,37 @@ final class SettingsViewController: UITableViewController {
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
     ]
 
+    /// Preferences that belong to this install rather than to the account.
+    ///
+    /// The rule above — a server setting the phone honors should be changeable from the phone
+    /// — has a converse: a preference the *server* has no say in doesn't belong in the
+    /// registry, and pretending otherwise would ship a key the web could show and not honor.
+    /// Autocapitalization is that: it configures the iOS keyboard, and Safari can't offer the
+    /// choice at all (it re-applies sentence caps whenever autocorrect is on, so the browser
+    /// couples the two). Its own section with its own footer, so nothing here reads as an
+    /// account setting that mysteriously failed to follow you to the desktop.
+    private enum DeviceSetting: CaseIterable {
+        case autocapitalize
+
+        var label: String {
+            switch self {
+            case .autocapitalize: "Autocapitalize messages"
+            }
+        }
+
+        var isOn: Bool {
+            switch self {
+            case .autocapitalize: UserPreferences.standard.composerAutocapitalizes
+            }
+        }
+
+        func write(_ isOn: Bool) {
+            switch self {
+            case .autocapitalize: UserPreferences.standard.set(composerAutocapitalizes: isOn)
+            }
+        }
+    }
+
     /// Suffix marking a choice this app reads but doesn't act on.
     ///
     /// The choice text itself comes from the registry (`SettingOption.label(forChoice:)`), so
@@ -99,6 +130,7 @@ final class SettingsViewController: UITableViewController {
         case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
+        case device
         case account
         case about
     }
@@ -166,12 +198,15 @@ final class SettingsViewController: UITableViewController {
         // Each optional section is dropped when empty rather than rendered blank — a server
         // predating the event filter knows the consolidation keys but not `chat.events`, so a
         // partial Events section is normal and an absent one has to be too.
+        // The device section is unconditional — it needs no registry, and it's the one part of
+        // this screen that still works on a server too old (or too unreachable) to describe
+        // itself.
         sections = rows.isEmpty
-            ? [.unavailable, .account, .about]
+            ? [.unavailable, .device, .account, .about]
             : [.chat(rows)]
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
-                + [.account, .about]
+                + [.device, .account, .about]
         tableView.reloadData()
     }
 
@@ -182,6 +217,7 @@ final class SettingsViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
         case .chat(let rows), .events(let rows), .appearance(let rows): rows.count
+        case .device: DeviceSetting.allCases.count
         case .unavailable, .account, .about: 1
         }
     }
@@ -191,8 +227,20 @@ final class SettingsViewController: UITableViewController {
         case .chat, .unavailable: "Chat"
         case .events: "Events"
         case .appearance: "Appearance"
+        case .device: "This Device"
         case .account, .about: nil
         }
+    }
+
+    /// One footer, on the one section that needs to explain itself: the rest of this screen
+    /// follows you between clients, and this doesn't.
+    ///
+    /// Phrased about this section alone rather than as "the settings above are shared" —
+    /// which reads fine under a full screen and is a lie in the no-registry branch, where the
+    /// only thing above it is the notice saying the settings couldn't be loaded.
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        guard case .device = sections[section] else { return nil }
+        return "Applies to this device only — not shared with your other Lurker clients."
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -214,6 +262,19 @@ final class SettingsViewController: UITableViewController {
                 content.secondaryTextProperties.numberOfLines = 0
             }
             configure(cell, for: row.option)
+        case .device:
+            let setting = DeviceSetting.allCases[indexPath.row]
+            content.text = setting.label
+            let toggle = UISwitch()
+            toggle.isOn = setting.isOn
+            // No write error to report and no echo to wait for: this lands in UserDefaults
+            // synchronously, so the switch is already telling the truth and the table needn't
+            // rebuild around it.
+            toggle.addAction(UIAction { [weak toggle] _ in
+                guard let toggle else { return }
+                setting.write(toggle.isOn)
+            }, for: .valueChanged)
+            cell.accessoryView = toggle
         case .unavailable:
             content.text = viewModel.state.settings.loaded
                 ? "No chat settings available on this server"

@@ -127,6 +127,22 @@ public struct ChatState: Sendable {
     /// server saying "here is everything again", which is exactly the moment a pending
     /// request from the previous socket becomes void.
     public internal(set) var burstGeneration = 0
+    /// Live events that arrived while a buffer was detached (#42), keyed like `messages` —
+    /// kept aside instead of being appended, and merged back in when it re-attaches.
+    ///
+    /// A detached buffer can't take a live event into its log: the slice sits far below the
+    /// tail, so appending would splice a hole. But *dropping* it loses the message outright,
+    /// because the re-attach fetch was built by the server BEFORE the event existed — a hole
+    /// the client can never notice and nothing ever refetches. That's the real cost, and it
+    /// isn't a rare race: walking a detached slice forward (#45) fires an `after` page per
+    /// screenful, and everything said during the last of those round trips falls in it.
+    ///
+    /// Capped per buffer at `heldLiveCap`, oldest dropped first. Trimming from the OLD edge is
+    /// what makes the cap safe: the re-attach keeps only the held events newer than the slice
+    /// it fetched, and that slice is itself the newest few hundred rows — so anything the trim
+    /// discards is either already in the fetch or older than it, never the gap above it.
+    var heldLive: [String: [Message]] = [:]
+
     /// Buffer keys the server has named in the snapshot burst currently in flight, so
     /// `backlog-complete` can prune the ones it *didn't* — see `pruneToBurst`.
     var burstSeen: Set<String> = []
@@ -161,6 +177,7 @@ public struct ChatState: Sendable {
         messages[key] = nil
         members[key] = nil
         typing[key] = nil
+        heldLive[key] = nil
     }
 
     /// Drop every buffer the just-finished snapshot burst didn't mention.
@@ -658,20 +675,47 @@ final class LurkerStore {
         // unconditionally: outside a burst `burstSeen` is dead state that the next `snapshot`
         // clears, so there's nothing to guard against.
         next.burstSeen.insert(key)
-        // Never un-hydrate: a later shell for an already-read buffer keeps its history.
-        let alreadyHydrated = next.buffers[key]?.hydrated == true
+        let prior = next.buffers[key]
+        // The buffer is parked on an `around` slice below the live tail (#42). A backlog frame
+        // has nothing to say about what's on screen, and every way of applying one is wrong:
+        //
+        //  - Appending a resume gap splices a PERMANENT hole. The gap starts at `?since=`,
+        //    which `applyLive` advanced past every event it held back during the detach — so
+        //    the rows between the slice and the gap were never delivered and never will be.
+        //  - Replacing throws away the window the user jumped to, silently, while they're
+        //    reading it.
+        //  - Either way the frame's own `hasMoreNewer` (parseBacklog never sets it, so it's
+        //    the `false` default) would clear the detach flag — retiring the jump-to-latest
+        //    pill, resuming live appends onto the old slice, and leaving a buffer that reads
+        //    as live while missing everything in between. That was the bug: jump to an old
+        //    message, background the app, come back, and the reconnect's resume frame quietly
+        //    stitched the present onto two months ago.
+        //
+        // So the log waits. Re-attaching is always a fresh `history mode:latest` fetch, which
+        // is where the live tail comes from — the same call the web's `replaceBacklog` makes
+        // (`vue_client/src/stores/buffers.ts:520`). Buffer-level state below still applies:
+        // read counts and `joined` are slice-independent.
+        let detached = prior?.hasMoreNewer == true
         var buffer = frameBuffer
-        buffer.hydrated = hydrated || alreadyHydrated
+        // Never un-hydrate: a later shell for an already-read buffer keeps its history.
+        buffer.hydrated = hydrated || prior?.hydrated == true
+        // The frame carries no topic — the server doesn't put one there — so assigning it
+        // wholesale would blank whatever the connect `snapshot` had just set, and it ships
+        // BEFORE the per-buffer backlogs it would be blanked by.
+        buffer.topic = frameBuffer.topic ?? prior?.topic
         // A resync shell (hasMoreOlder defaults true) must not reset the paging or detach
-        // state of a buffer we've already paged into or jumped within (#42) — only a real
-        // (hydrated) backlog, which is the latest tail, re-attaches.
-        if !hydrated, let prior = next.buffers[key], prior.hydrated {
+        // state of a buffer we've already paged into or jumped within (#42) — and neither may
+        // a real backlog while we're detached, for the reasons above. Only a hydrated backlog
+        // for an ATTACHED buffer is the latest tail, and only it gets to say.
+        if let prior, detached || (!hydrated && prior.hydrated) {
             buffer.hasMoreOlder = prior.hasMoreOlder
             buffer.hasMoreNewer = prior.hasMoreNewer
         }
         next.buffers[key] = buffer
 
-        if !hydrated {
+        if detached {
+            // The slice stands. See above.
+        } else if !hydrated {
             // Shell: register the buffer but keep any messages we already hold.
             if next.messages[key] == nil { next.messages[key] = [] }
         } else if append {
@@ -745,10 +789,17 @@ final class LurkerStore {
         }
         // A detached buffer (showing an `around` slice below the live tail, #42) holds live
         // events out of the log — appending them would splice a hole past the slice. Member
-        // and topic state above stays current; only the message log waits, and re-attaching
-        // (jump-to-latest → loadLatest) fetches the true latest. `maxEventId` still advances so
-        // the resume cursor doesn't re-request an event the client has already seen.
+        // and topic state above stays current; only the message log waits.
+        //
+        // HELD, not dropped (`heldLive`). The re-attach fetches the latest slice, but the
+        // server built that slice before this event existed, so dropping it leaves a hole at
+        // the seam that nothing ever fetches again — the client can't even tell it's there.
+        // Keeping it means the re-attach can put back exactly what it can't have asked for.
+        //
+        // `maxEventId` still advances so the resume cursor doesn't re-request an event the
+        // client has already been given.
         if next.buffers[key]?.hasMoreNewer == true {
+            next.heldLive[key] = trimmedToCap((next.heldLive[key] ?? []) + [message])
             next.maxEventId = maxEventId(next.maxEventId, networkId, [message])
             return next
         }
@@ -894,6 +945,7 @@ final class LurkerStore {
         next.noteBookmarks(in: events, networkId: networkId)
         let key = BufferKey(networkId: networkId, target: target).id
         let existing = next.messages[key] ?? []
+        let wasDetached = next.buffers[key]?.hasMoreNewer == true
         switch mode {
         case .before:
             let held = Set(existing.compactMap { $0.id != 0 ? $0.id : nil })
@@ -925,8 +977,46 @@ final class LurkerStore {
             }
             next.buffers[key] = buffer
         }
+        // Detach transitions decide what happens to the events held aside while detached.
+        switch (wasDetached, next.buffers[key]?.hasMoreNewer == true) {
+        case (_, true) where mode == .around:
+            // A fresh jump. Whatever was held belongs to the window we just left, and this
+            // slice is somewhere else entirely — start the hold over.
+            next.heldLive[key] = []
+        case (true, false):
+            // Re-attached. The slice we just fetched is the server's answer as of the moment
+            // it ran the query; everything said *after* that is what we've been holding, and
+            // it is contiguous with the slice's tail because the socket delivered every one of
+            // them. Anything at or below the tail is already in the slice — `appendMerged`
+            // de-dupes those by id.
+            let held = next.heldLive.removeValue(forKey: key) ?? []
+            let tail = (next.messages[key] ?? []).map(\.id).max() ?? 0
+            // `id == 0` is an ephemeral the server never persisted — a `ctcp` or `e2e` status
+            // line — so no fetch can ever contain it and no id can place it. It survives on
+            // the same terms it does everywhere else in the store (`appendMerged`): always
+            // kept, always appended. Comparing it against the tail would discard every one of
+            // them (0 is never greater), which is precisely the loss this hold exists to stop,
+            // and the only kind of it that's unrecoverable.
+            next.messages[key] = appendMerged(
+                next.messages[key] ?? [], held.filter { $0.id == 0 || $0.id > tail }
+            )
+        default:
+            break
+        }
         next.maxEventId = maxEventId(next.maxEventId, networkId, events)
         return next
+    }
+
+    /// How many live events a single detached buffer holds before the oldest start falling off.
+    ///
+    /// Generous next to what re-attaching actually fetches (a `latest` slice is a couple of
+    /// hundred rows), which is the number that has to be covered — see `ChatState.heldLive`.
+    /// Bounded at all because a buffer can sit detached indefinitely: leave a jump slice open
+    /// on a busy channel overnight and an unbounded hold is the session's whole traffic.
+    private static let heldLiveCap = 500
+
+    private static func trimmedToCap(_ held: [Message]) -> [Message] {
+        held.count > heldLiveCap ? Array(held.suffix(heldLiveCap)) : held
     }
 
     /// Append `incoming` onto `existing`, dropping any persisted id already present.

@@ -4,6 +4,18 @@
 import Foundation
 import LurkerKit
 
+extension Notification.Name {
+    /// A composer keyboard preference changed on this device.
+    ///
+    /// Settings is a sheet over the conversation, so the composer underneath it is never torn
+    /// down and never re-appears — `viewWillAppear` doesn't fire for a `.pageSheet` dismissal,
+    /// and there's no server frame to ride in on the way every other setting does. This is the
+    /// signal that gets the new value onto a field that's already on screen.
+    static let composerKeyboardPreferencesDidChange = Notification.Name(
+        "composerKeyboardPreferencesDidChange"
+    )
+}
+
 /// Non-secret UI config, in UserDefaults. The session *token* is a secret and lives in
 /// the Keychain (`SessionStore`), never here. Typed accessors + registered defaults so
 /// call sites read `UserPreferences.standard.lastServerURL`, not stringly-typed keys.
@@ -15,6 +27,7 @@ enum UserPreferences {
         static let favoriteBufferKeys = "favoriteBufferKeys"
         static let lastBufferTarget = "lastBufferTarget"
         static let lastBufferNetworkId = "lastBufferNetworkId"
+        static let composerAutocapitalization = "composerAutocapitalization"
     }
 
     /// Registration happens once, when this is first touched, rather than on every access.
@@ -27,6 +40,10 @@ enum UserPreferences {
         defaults.register(defaults: [
             Key.lastServerURL: Backend.selfHosted.defaultURL,
             Key.lastBackend: Backend.selfHosted.rawValue,
+            // On by default — see `composerAutocapitalizes`. Registered rather than defaulted
+            // at the call site because `bool(forKey:)` reads a missing key as false, which is
+            // the opposite of what this one means when it hasn't been set.
+            Key.composerAutocapitalization: true,
         ])
         return defaults
     }()
@@ -49,6 +66,30 @@ extension UserDefaults {
 
     func set(lastBackend: Backend) {
         set(lastBackend.rawValue, forKey: UserPreferences.Key.lastBackend)
+    }
+
+    // MARK: - Composer
+
+    /// Whether the composer capitalizes sentences as you type. On by default.
+    ///
+    /// It was off outright for the app's first releases, on the reasoning that IRC is
+    /// lowercase-native — nicks, `/commands`, `#channels`. That's true of the *first token of
+    /// a line* and not of the prose after it, and it made this the one field on the phone that
+    /// behaved unlike every other one, with no way to say otherwise. So: capitals by default,
+    /// and off is something you ask for.
+    ///
+    /// Device-local, unlike the settings it sits under on that screen. It configures this
+    /// phone's keyboard, and there is nothing on the other end of a sync to configure — the
+    /// web client can't offer the choice at all, because Safari re-applies sentence caps
+    /// whenever autocorrect is on (which is why its settings couple the two, and why UIKit
+    /// keeping them independent is worth a switch of its own).
+    var composerAutocapitalizes: Bool {
+        bool(forKey: UserPreferences.Key.composerAutocapitalization)
+    }
+
+    func set(composerAutocapitalizes: Bool) {
+        set(composerAutocapitalizes, forKey: UserPreferences.Key.composerAutocapitalization)
+        NotificationCenter.default.post(name: .composerKeyboardPreferencesDidChange, object: nil)
     }
 
     // MARK: - Quick switcher
