@@ -39,6 +39,13 @@ final class LurkerClient {
     /// `enterForeground` reports the truth within milliseconds of the app actually
     /// appearing, so the assumption buys nothing.
     private var presenceVisible = false
+    /// Monotonic request id for the `search` verb, echoed by the server so a reply can be
+    /// matched to the call that's awaiting it. Deliberately not reset per socket: a token that
+    /// outlives its connection must not be reused, or a late reply from the old one could
+    /// answer a new question.
+    private var searchToken = 0
+    /// Searches awaiting a reply, by token. See `search(_:networkId:before:limit:)`.
+    private var pendingSearches: [Int: CheckedContinuation<HighlightsPage?, Never>] = [:]
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
@@ -243,6 +250,9 @@ final class LurkerClient {
         // old one are ignored via the `task === socket` guard below.
         socket?.cancel(with: .goingAway, reason: nil)
         hasEmittedOpen = false
+        // Same reason as `close()`: the replaced socket's callbacks are ignored from here, so
+        // anything awaiting a reply on it has to be released now or it waits out its timeout.
+        failPendingSearches()
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: request)
@@ -286,12 +296,25 @@ final class LurkerClient {
             send(["type": "presence", "visible": presenceVisible])
             onFrame(.socketOpen)
         }
-        if let text { onFrame(FrameParser.parseWs(text)) }
+        if let text {
+            // A search reply is a reply, not state: it answers one awaiting call and never
+            // travels on to the store. Intercepted here rather than routed through
+            // `ChatViewModel` because request/reply correlation is this layer's job — the
+            // store has no idea a question was asked.
+            let frame = FrameParser.parseWs(text)
+            if case .searchResult(let token, let page) = frame {
+                finishSearch(token, with: page)
+            } else {
+                onFrame(frame)
+            }
+        }
         listen(on: task)
     }
 
     private func handleClose(code: Int?, reason: String, from task: URLSessionWebSocketTask) {
         guard task === socket else { return }
+        // Whatever was waiting on this socket isn't being answered over it.
+        failPendingSearches()
         // A refused upgrade with 401 means the bearer never resolved — the session is
         // gone, not merely a dropped connection.
         onFrame(code == 401 ? .unauthorized : .socketClosed(reason: reason, code: code))
@@ -500,6 +523,80 @@ final class LurkerClient {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - Search
+
+    /// Full-text search across every buffer the account owns — the WS `search` verb, awaited
+    /// as a request/reply.
+    ///
+    /// **The only read in this client that isn't REST.** The server's FTS index has no HTTP
+    /// route; search has always been a WS verb (the web client's store sends the same frame),
+    /// and inventing a REST endpoint for one client would be a server change to avoid writing
+    /// twenty lines here. So this is the one place the socket answers a question rather than
+    /// announcing state, and the correlation is the client's job: each request carries a
+    /// monotonic `token` the server echoes, and the matching reply resumes this call. The
+    /// frame never reaches `onFrame` — see `ServerFrame.searchResult`.
+    ///
+    /// `networkId` is the caller's resolution of the query's `on:` *name*, which only the
+    /// roster can turn into an id; the query itself carries the rest.
+    ///
+    /// Nil means no answer, never "no matches" (that's an empty page): the socket was dead
+    /// when we asked, dropped while we waited, or the reply never came. All three leave the
+    /// caller free to show an error rather than an empty list — a search that silently reads
+    /// as "nothing matched" is the one wrong answer here.
+    func search(
+        _ query: SearchQuery,
+        networkId: Int?,
+        before: Int? = nil,
+        limit: Int = 50
+    ) async -> HighlightsPage? {
+        searchToken += 1
+        let token = searchToken
+        var verb: [String: Any] = ["type": "search", "token": token, "limit": limit]
+        // Only what the user actually filtered on. The server treats an absent key as
+        // unfiltered and an empty string as a filter that matches nothing, so sending `""`
+        // for an unused filter would return no rows for every search.
+        if !query.text.isEmpty { verb["query"] = query.text }
+        if !query.from.isEmpty { verb["nicks"] = query.from }
+        if !query.target.isEmpty { verb["target"] = query.target }
+        if let networkId { verb["networkId"] = networkId }
+        if let before { verb["before"] = before }
+        return await withCheckedContinuation { (continuation: CheckedContinuation<HighlightsPage?, Never>) in
+            // Registered BEFORE the send: the reply hops to this actor to be handled, so a
+            // continuation filed afterwards would be racing a frame that can't run until we
+            // suspend — but the ordering is what makes that true, not luck, and it costs
+            // nothing to state it.
+            pendingSearches[token] = continuation
+            guard send(verb) else {
+                finishSearch(token, with: nil)
+                return
+            }
+            // A reply that never comes would otherwise strand this call forever, and with it
+            // whatever spinner the caller put up. Nothing retries a search — the user is
+            // sitting in front of it and can type again — so the timeout resolves rather
+            // than re-sends.
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(Self.searchTimeout))
+                self?.finishSearch(token, with: nil)
+            }
+        }
+    }
+
+    /// Resolve one pending search, if it's still pending. Idempotent by removal, so the
+    /// timeout firing after a reply landed (or a socket drop racing both) is a no-op rather
+    /// than a double-resume crash.
+    private func finishSearch(_ token: Int, with page: HighlightsPage?) {
+        pendingSearches.removeValue(forKey: token)?.resume(returning: page)
+    }
+
+    /// Fail every in-flight search. Called when the socket goes away: their replies were
+    /// coming over that socket and are not coming now, and a reconnect's `?since=` resume
+    /// carries messages, not verb replies.
+    private func failPendingSearches() {
+        let pending = pendingSearches
+        pendingSearches.removeAll()
+        for (_, continuation) in pending { continuation.resume(returning: nil) }
     }
 
     /// Tell the network we're composing. Fire-and-forget: the server turns it into a
@@ -723,6 +820,9 @@ final class LurkerClient {
         socket = nil
         token = nil
         hasEmittedOpen = false
+        // A cancelled socket fires no `handleClose` (the `task === socket` guard drops it), so
+        // this is the only thing that unblocks a search awaiting the socket we just dropped.
+        failPendingSearches()
     }
 
     /// The deliberate sign-out. Tears the local session down *immediately* (drops the
@@ -834,6 +934,11 @@ final class LurkerClient {
     }
 
     // MARK: - Helpers
+
+    /// How long a `search` waits for its reply before giving up. Generous: an FTS scan over a
+    /// deep history on a small self-hosted box is not instant, and the failure this guards
+    /// against is a reply that is never coming at all, not a slow one.
+    private static let searchTimeout: Double = 20
 
     private static func sinceQuery(_ since: Int) -> String {
         since > 0 ? "?since=\(since)" : ""

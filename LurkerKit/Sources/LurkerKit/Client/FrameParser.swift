@@ -55,6 +55,18 @@ enum FrameParser {
             return messageId == 0
                 ? .ignored
                 : .bookmarkUpdated(messageId: messageId, saved: obj.bool("saved"))
+        case "search-result":
+            // A reply with no token is unaddressable — it can't be matched to the call waiting
+            // for it, and `int()` would quietly read it as 0, a value no request ever carries
+            // (tokens start at 1). Dropped as unparseable rather than becoming a `.searchResult`
+            // nothing can consume.
+            //
+            // Note this is NOT the "unknown token" case, which is normal and must stay a no-op:
+            // a search that already timed out, or was failed by a socket drop, can still have
+            // its reply turn up afterwards. That one is correlated fine — to a call that has
+            // gone.
+            guard let token = obj.intOrNull("token") else { return .ignored }
+            return .searchResult(token: token, page: parseSearchPage(obj))
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
@@ -83,15 +95,42 @@ enum FrameParser {
     /// distinguish "no more" from "more, cursor 0".
     static func parseHighlights(_ body: String) -> HighlightsPage {
         guard let obj = object(from: body) else { return HighlightsPage(items: [], nextBefore: nil) }
-        let items = obj.objects("items").map { item in
-            HighlightItem(
-                message: parseEvent(item),
-                networkId: item.intOrNull("networkId"),
-                target: item.string("target"),
-                networkName: item.stringOrNull("networkName")
-            )
-        }
-        return HighlightsPage(items: items, nextBefore: obj.intOrNull("nextBefore"))
+        return HighlightsPage(
+            items: obj.objects("items").map(parseFeedItem),
+            nextBefore: obj.intOrNull("nextBefore")
+        )
+    }
+
+    /// A WS `search-result` frame's page. Same row shape as `/api/highlights` — the server
+    /// builds both from `MessageEventWithNetwork`, so one reader serves both — but a
+    /// *different cursor contract*, which is the whole reason this isn't `parseHighlights`.
+    ///
+    /// Search answers `hasMore` and no cursor, because the cursor is derivable: matches come
+    /// back newest-first by message id, so the next page is everything below the last row.
+    /// Synthesizing `nextBefore` here (exactly as the web store does) is what lets a search
+    /// page through `HighlightsPage` and therefore through the shared feed screen.
+    ///
+    /// `hasMore` with an empty `results` collapses to "no cursor": there is no id to page
+    /// from, and claiming more would leave the list asking for a page it can't address.
+    private static func parseSearchPage(_ obj: [String: Any]) -> HighlightsPage {
+        let items = obj.objects("results").map(parseFeedItem)
+        let hasMore = obj.bool("hasMore")
+        return HighlightsPage(
+            items: items,
+            nextBefore: hasMore ? items.last?.message.id : nil
+        )
+    }
+
+    /// One cross-buffer feed row: a `MessageEvent` spread flat (so `parseEvent` reads it, same
+    /// as a backlog line) plus the buffer address (`networkId`/`target`) and a server-resolved
+    /// `networkName`. Shared by highlights, bookmarks and search.
+    private static func parseFeedItem(_ item: [String: Any]) -> HighlightItem {
+        HighlightItem(
+            message: parseEvent(item),
+            networkId: item.intOrNull("networkId"),
+            target: item.string("target"),
+            networkName: item.stringOrNull("networkName")
+        )
     }
 
     // MARK: - Private

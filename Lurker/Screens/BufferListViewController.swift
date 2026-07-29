@@ -176,6 +176,7 @@ final class BufferListViewController: UICollectionViewController {
         // the views menu sits in the same corner it occupies on the chat screen, so the one
         // button that means the same thing on both screens is in the same place on both.
         navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
+        installSearch()
 
         // The list depends on networks, buffers, and connection state — a message arriving
         // in some channel shouldn't rebuild it (badge counts arrive as read-state updates,
@@ -215,6 +216,17 @@ final class BufferListViewController: UICollectionViewController {
         super.viewWillAppear(animated)
         isOnScreen = true
         rebuild()
+        // The toolbar carrying the search field belongs to the *navigation controller*, and the
+        // screen pushed over this one ends in a composer — so it can't simply stay up. Asked
+        // for on the way in and given back on the way out, which also means it animates with
+        // the transition rather than appearing after it.
+        navigationController?.setToolbarHidden(false, animated: animated)
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        refreshBanner()
+        navigationController?.setToolbarHidden(true, animated: animated)
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -234,11 +246,6 @@ final class BufferListViewController: UICollectionViewController {
     /// cancelled swipe never flashes this screen's banner over the chat screen's.
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        refreshBanner()
-    }
-
-    override func viewWillDisappear(_ animated: Bool) {
-        super.viewWillDisappear(animated)
         refreshBanner()
     }
 
@@ -502,6 +509,68 @@ final class BufferListViewController: UICollectionViewController {
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.large()]
         present(sheet, animated: true)
+    }
+
+    // MARK: - Search
+
+    /// The results, and the object that turns keystrokes into queries. Held so navigation can
+    /// wire its jump once, at construction, exactly as it wires this screen's row taps.
+    private(set) lazy var searchResults = MessageSearchViewController(
+        viewModel: viewModel, presentation: .resultsController
+    )
+
+    private lazy var searchController: UISearchController = {
+        let controller = UISearchController(searchResultsController: searchResults)
+        controller.searchResultsUpdater = searchResults
+        // The delegate is *this* screen, not the results: presenting search changes what this
+        // screen looks like (the pill goes), and the search controller belongs to it. What the
+        // results need from those callbacks, they're asked for directly — see the extension.
+        controller.delegate = self
+        // Show the results the moment search is activated, not once there's text in the field.
+        //
+        // UIKit's default is `automaticallyShowsSearchResultsController`, which presents the
+        // results controller "based on the contents of its text property" — so an empty field
+        // presents nothing at all, and tapping search just raised the keyboard and slid this
+        // list up behind it. That default is right for a results controller that would be blank
+        // until you type; ours opens on your bookmarks, so there is something to show from the
+        // first tap. Setting this flips `automaticallyShowsSearchResultsController` to false.
+        controller.showsSearchResultsController = true
+        controller.searchBar.placeholder = "Search messages"
+        // The filter grammar is typed, not tapped: autocapitalization turns `from:` into
+        // `From:` and autocorrect rewrites nicks and channel names into English words.
+        controller.searchBar.autocapitalizationType = .none
+        controller.searchBar.autocorrectionType = .no
+        controller.searchBar.spellCheckingType = .no
+        return controller
+    }()
+
+    /// Put the search field in the bottom bar, which on iOS 26 is where search goes on a
+    /// phone — within reach of the thumb that's already holding the device, rather than at the
+    /// top of the one screen you're most likely to be one-handed on.
+    ///
+    /// `.integrated` is what asks for that: on iPhone, UIKit folds an integrated search bar
+    /// into the view controller's toolbar when it has one, and `searchBarPlacementBarButtonItem`
+    /// is the slot saying where among the toolbar's items it lands. It's the only item, so it
+    /// takes the bar.
+    ///
+    /// This is the exception to this screen's "no bottom toolbar" rule, and it's the case that
+    /// rule was drawn around: the objection was to *a second floating bar to hold two buttons
+    /// that already fit in the navigation bar*. A search field isn't a button — it can't live
+    /// in the nav bar at a useful width, it's the one control here you use with your thumb, and
+    /// the system puts it here. What the rule was really protecting (the toolbar can't survive
+    /// the push into a chat screen, whose bottom is a composer) still holds and is still
+    /// handled — see `viewWillAppear`.
+    private func installSearch() {
+        navigationItem.searchController = searchController
+        navigationItem.preferredSearchBarPlacement = .integrated
+        toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+    }
+
+    /// Take the search UI down — what a result tap calls once it's decided where to go. Not a
+    /// dismiss: the results are presented *by* the search controller, so the thing to undo is
+    /// its activation, which also empties the field for the next time search is opened.
+    func dismissSearch() {
+        searchController.isActive = false
     }
 
     /// The same views menu the chat screen carries, minus the entries that need a buffer.
@@ -991,5 +1060,37 @@ extension BufferListViewController: PillPresenting {
     /// tap does — this screen *is* the app, so there's no one buffer to describe.
     func pillTapped() {
         openSystemBuffer()
+    }
+}
+
+// MARK: - Search presentation
+
+/// Search presents *over* this screen without changing the navigation stack, so everything the
+/// bar is wearing stays put underneath it — including the pill, which belongs to the stack
+/// rather than to any one screen.
+///
+/// The delegate lives here rather than on the results screen because these callbacks are about
+/// what *this* screen does while it's covered. What the results need from them, they're asked
+/// for directly: a plain method call reads better than forwarding a protocol, and it keeps the
+/// results screen from having to know that a pill exists.
+extension BufferListViewController: UISearchControllerDelegate {
+
+    func willPresentSearchController(_ searchController: UISearchController) {
+        // Before the results appear, so they never show an answer to a question the field
+        // isn't asking — the results screen is reused across searches and can still be holding
+        // the last one.
+        searchResults.syncToField(searchController.searchBar.text ?? "")
+        // "Lurker" floating over a search field belongs to neither: the pill names this screen,
+        // and this screen is no longer the one you're looking at.
+        navigationPill?.isSuppressed = true
+    }
+
+    func willDismissSearchController(_ searchController: UISearchController) {
+        // On `willDismiss`, so the pill fades back in alongside the results leaving rather than
+        // popping in after them. Note this also runs when a tapped result has *already*
+        // navigated — the stack is on the chat screen by then, and the pill correctly returns
+        // wearing that buffer's name, because suppression only ever hid what the stack asked
+        // for rather than overwriting it.
+        navigationPill?.isSuppressed = false
     }
 }

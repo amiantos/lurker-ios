@@ -215,6 +215,41 @@ public final class ChatViewModel {
         return page
     }
 
+    /// Run one page of a message search. `raw` is the user's whole input, filter grammar and
+    /// all (`from:nick in:#channel on:network words`); `before` is the previous page's
+    /// `nextBefore` cursor, nil for the first page.
+    ///
+    /// Returns nil for "couldn't ask or wasn't answered" and an empty page for "no matches" —
+    /// the caller renders those differently, and collapsing them would let an offline search
+    /// claim the user has never said the word they're looking for. A query with nothing to
+    /// search on is neither: there is no question to ask, so it's an empty page.
+    ///
+    /// The `on:` token is resolved here rather than in the client because this is where the
+    /// roster lives. A name that matches no network drops the filter instead of failing the
+    /// search: `on:` is being typed a character at a time, and every prefix of a real network
+    /// name would otherwise be a search that returns nothing.
+    public func searchMessages(_ raw: String, before: Int? = nil) async -> HighlightsPage? {
+        let query = SearchQuery.parse(raw)
+        guard !query.isEmpty else { return HighlightsPage(items: [], nextBefore: nil) }
+        // Lowest id wins, rather than whichever the dictionary happens to yield first. Two
+        // networks can legitimately share a name — two connections to the same server, or two
+        // user-named entries that collide — and `networks` is a dictionary, whose iteration
+        // order is unspecified and free to differ between two calls. That's not merely untidy:
+        // page one and page two of the SAME search are two calls, so an unstable pick would
+        // append rows from a different network than the page they're extending.
+        let networkId = query.network.isEmpty
+            ? nil
+            : store.state.networks.values
+                .filter { $0.name.caseInsensitiveCompare(query.network) == .orderedSame }
+                .min(by: { $0.id < $1.id })?.id
+        let page = await client.search(query, networkId: networkId, before: before)
+        // Search rows carry the same `bookmarked` flag as any other message row, and this is
+        // the only place a saved line the user has never opened can become known — same
+        // reasoning as `fetchBookmarks`, and the same single mutation rather than one per row.
+        store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
+        return page
+    }
+
     /// Whether `messageId` is saved — what the message action sheet reads to decide between
     /// "Save Message" and "Remove Bookmark". See `ChatState.bookmarkedIds`.
     ///

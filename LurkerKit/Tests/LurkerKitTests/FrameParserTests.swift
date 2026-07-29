@@ -387,4 +387,86 @@ final class FrameParserTests: XCTestCase {
     func testBookmarkUpdatedWithoutAnIdIsIgnored() {
         XCTAssertEqual(FrameParser.parseWs(##"{"kind":"bookmark-updated","saved":true}"##), .ignored)
     }
+
+    // MARK: - search-result
+
+    /// Rows arrive under `results` (not `items`, the REST feeds' key) but in the same shape,
+    /// carrying their own buffer address because a match can come from anywhere.
+    func testSearchResultParsesRowsWithTheirBufferAddress() {
+        let frame = FrameParser.parseWs(##"""
+        {"kind":"search-result","token":7,"hasMore":false,"results":[
+          {"id":91,"type":"message","nick":"alice","text":"needle","time":"2026-07-01T10:00:00.000Z",
+           "networkId":1,"target":"#dev","networkName":"libera"}
+        ]}
+        """##)
+        guard case let .searchResult(token, page) = frame else {
+            return XCTFail("expected searchResult, got \(frame)")
+        }
+        XCTAssertEqual(token, 7)
+        XCTAssertEqual(page.items.count, 1)
+        XCTAssertEqual(page.items[0].message.text, "needle")
+        XCTAssertEqual(page.items[0].target, "#dev")
+        XCTAssertEqual(page.items[0].networkName, "libera")
+        XCTAssertEqual(page.items[0].networkId, 1)
+    }
+
+    /// Search answers `hasMore` and no cursor — the cursor is the last (oldest) row's id,
+    /// since matches come back newest-first by message id. Synthesizing it here is what lets a
+    /// search page through the same feed screen as highlights and bookmarks.
+    func testSearchResultDerivesTheNextCursorFromTheLastRow() {
+        let frame = FrameParser.parseWs(##"""
+        {"kind":"search-result","token":1,"hasMore":true,"results":[
+          {"id":91,"type":"message","target":"#dev","networkId":1},
+          {"id":40,"type":"message","target":"#dev","networkId":1}
+        ]}
+        """##)
+        guard case let .searchResult(_, page) = frame else {
+            return XCTFail("expected searchResult, got \(frame)")
+        }
+        XCTAssertEqual(page.nextBefore, 40)
+        XCTAssertTrue(page.hasMore)
+    }
+
+    func testSearchResultWithoutMoreHasNoCursor() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"search-result","token":1,"hasMore":false,"results":[{"id":91,"target":"#dev","networkId":1}]}"##
+        )
+        guard case let .searchResult(_, page) = frame else {
+            return XCTFail("expected searchResult, got \(frame)")
+        }
+        XCTAssertNil(page.nextBefore)
+        XCTAssertFalse(page.hasMore)
+    }
+
+    /// `hasMore` with nothing to page from is not more: there is no id to send as `before`, so
+    /// claiming another page would leave the list asking for one it can't address.
+    func testSearchResultWithMoreButNoRowsHasNoCursor() {
+        let frame = FrameParser.parseWs(##"{"kind":"search-result","token":1,"hasMore":true,"results":[]}"##)
+        guard case let .searchResult(_, page) = frame else {
+            return XCTFail("expected searchResult, got \(frame)")
+        }
+        XCTAssertNil(page.nextBefore)
+        XCTAssertTrue(page.items.isEmpty)
+    }
+
+    /// An empty result set is a real answer ("nothing matched"), not a parse failure — the
+    /// screen shows a different thing for each, so the two must not collapse.
+    func testSearchResultWithNoMatchesIsAnEmptyPageNotIgnored() {
+        let frame = FrameParser.parseWs(##"{"kind":"search-result","token":3,"hasMore":false,"results":[]}"##)
+        XCTAssertEqual(frame, .searchResult(token: 3, page: HighlightsPage(items: [], nextBefore: nil)))
+    }
+
+    /// A reply with no token can't be matched to the call waiting for it. Read with `int()` it
+    /// would become token 0 — a value no request ever carries, so the frame would be consumed
+    /// as a `.searchResult` and correlate to nothing.
+    func testSearchResultWithoutATokenIsIgnored() {
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"search-result","hasMore":false,"results":[]}"##),
+            .ignored
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"search-result","token":null,"hasMore":false,"results":[]}"##),
+            .ignored
+        )
+    }
 }

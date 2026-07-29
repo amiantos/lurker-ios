@@ -96,6 +96,17 @@ enum ServerFrame: Equatable, Sendable {
     /// it just means that line isn't loaded here.
     case bookmarkUpdated(messageId: Int, saved: Bool)
 
+    /// WS `search-result`: the answer to one `search` verb, correlated by the `token` the
+    /// request carried.
+    ///
+    /// **The one frame that never reaches the store.** Everything else here is state the
+    /// server is telling every device about; this is a reply to a question this device asked,
+    /// and it spans every buffer at once — folding it into `messages` would splice matches
+    /// from a dozen conversations into whichever buffer happened to be open. `LurkerClient`
+    /// intercepts it and resumes the waiting `search(_:)` call, so it is parsed here and
+    /// consumed there rather than travelling on to `ChatViewModel`.
+    case searchResult(token: Int, page: HighlightsPage)
+
     /// WS `buffer-closed`: the user closed this buffer — from *any* of their devices.
     /// Drop it from the model entirely: closed is absent (lurker `CLIENT_PROTOCOL.md` §9.1).
     ///
