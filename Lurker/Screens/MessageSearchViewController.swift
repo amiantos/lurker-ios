@@ -42,7 +42,8 @@ import UIKit
 ///
 /// Either way this object is the `UISearchResultsUpdating`, so the debounce, the query and the
 /// paging have exactly one implementation.
-final class MessageSearchViewController: HistoryFeedViewController, UISearchResultsUpdating {
+final class MessageSearchViewController: HistoryFeedViewController, UISearchResultsUpdating,
+                                         UISearchControllerDelegate {
 
     enum Presentation {
         /// Someone else owns the search field; this screen is only the results.
@@ -285,6 +286,28 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
             guard !Task.isCancelled else { return }
             self?.commit(text)
         }
+    }
+
+    // MARK: - UISearchControllerDelegate
+
+    /// Reconcile with the field *before* the results appear, so search is never presented
+    /// showing an answer to a question the field isn't asking.
+    ///
+    /// This screen outlives a single search: it's the buffer list's results controller, built
+    /// once and reused, still holding the last query's rows when search is opened again. Whether
+    /// the field still holds that query on reopen is UIKit's call, not ours — so rather than
+    /// assume either way, adopt whatever it says.
+    ///
+    /// Both outcomes are then right for free. If the text survived, it matches `query` and
+    /// nothing happens: the results stay, which is what you want for "search → read one →
+    /// come back for the next one" (the web client persists its query across opens for exactly
+    /// that flow). If UIKit cleared it, this snaps back to the bookmarks *now* rather than
+    /// after the debounce, which would have flashed the stale results on the way.
+    func willPresentSearchController(_ searchController: UISearchController) {
+        let text = searchController.searchBar.text ?? ""
+        guard text != query else { return }
+        debounce?.cancel()
+        commit(text)
     }
 
     /// Adopt `text` as the query and run it. `reload()` supersedes anything in flight, so the

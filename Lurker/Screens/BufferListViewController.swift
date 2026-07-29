@@ -502,6 +502,19 @@ final class BufferListViewController: UICollectionViewController {
     private lazy var searchController: UISearchController = {
         let controller = UISearchController(searchResultsController: searchResults)
         controller.searchResultsUpdater = searchResults
+        // Also the delegate, so the results screen can reconcile itself with the field before
+        // being presented — it's built once and reused, so it can still be holding the last
+        // search when this one opens. See `willPresentSearchController`.
+        controller.delegate = searchResults
+        // Show the results the moment search is activated, not once there's text in the field.
+        //
+        // UIKit's default is `automaticallyShowsSearchResultsController`, which presents the
+        // results controller "based on the contents of its text property" — so an empty field
+        // presents nothing at all, and tapping search just raised the keyboard and slid this
+        // list up behind it. That default is right for a results controller that would be blank
+        // until you type; ours opens on your bookmarks, so there is something to show from the
+        // first tap. Setting this flips `automaticallyShowsSearchResultsController` to false.
+        controller.showsSearchResultsController = true
         controller.searchBar.placeholder = "Search messages"
         // The filter grammar is typed, not tapped: autocapitalization turns `from:` into
         // `From:` and autocorrect rewrites nicks and channel names into English words.
