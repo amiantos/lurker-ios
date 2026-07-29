@@ -14,6 +14,12 @@ import UIKit
 /// putting one tap from the search field. It also means the screen is never the empty box that
 /// prompted this — opening search always lands on something you can act on.
 ///
+/// Bookmarks are what that landing view holds *today*, not a definition of it — the surface is
+/// "what's worth jumping to before you've asked for anything", and other things may earn a
+/// place in it. It carries no heading for that reason: a list titled "Bookmarks" would be a
+/// claim about the whole view rather than about one thing in it, and would have to be unwound
+/// the first time something else appeared alongside them.
+///
 /// Swapping between the two costs nothing, because this screen is a
 /// `HistoryFeedViewController` and both are the same kind of thing to it: lines from
 /// elsewhere, newest first, tap to go there. Same rows, same channel+day headers, same cursor
@@ -158,37 +164,6 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
             )
     }
 
-    /// Label the list when it's showing bookmarks, so rows that were never searched for aren't
-    /// mistaken for results — and only once there are rows, since a caption over a placeholder
-    /// would be titling nothing.
-    override func itemsDidChange() {
-        let wanted = isBrowsingSaved && !items.isEmpty ? listCaption : nil
-        // Reassigning a header re-lays out the whole table, and this runs on every appended
-        // page — so only touch it when the answer actually changed.
-        if tableView.tableHeaderView !== wanted { tableView.tableHeaderView = wanted }
-    }
-
-    /// A `tableHeaderView` is *measured*, never constrained: the table reads its frame height
-    /// and lays the rows out below it, so the view has to size itself and re-size whenever the
-    /// width or the text metrics change. Doing it here rather than once at construction covers
-    /// all three cases that move it — the first layout (where the table's width may still be
-    /// zero), rotation, and a Dynamic Type change.
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        guard let header = tableView.tableHeaderView else { return }
-        let fitted = header.systemLayoutSizeFitting(
-            CGSize(width: tableView.bounds.width, height: 0),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        )
-        guard header.frame.size != fitted else { return }
-        header.frame.size = fitted
-        // Re-assignment is what commits a header's new height; setting the frame alone leaves
-        // the table laying out against the old one. Guarded above, so this settles rather than
-        // looping.
-        tableView.tableHeaderView = header
-    }
-
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
@@ -321,37 +296,8 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     private func commit(_ text: String) {
         query = text
         isBrowsingSaved = SearchQuery.parse(text).isEmpty
-        // Taken down here rather than in `itemsDidChange`, so it goes at the moment the mode
-        // changes instead of when the first page of the new mode lands — otherwise it hangs
-        // over the spinner, captioning results it doesn't describe.
-        if !isBrowsingSaved { tableView.tableHeaderView = nil }
         reload()
     }
-
-    /// The list's caption while it's showing bookmarks, indented to the same margin the rows
-    /// and section headers use. Its height is settled by `viewDidLayoutSubviews`.
-    private lazy var listCaption: UIView = {
-        let label = UILabel()
-        // Named for the noun the rest of the app uses — the menus, the screen, the message
-        // action's "Remove Bookmark" — rather than a second name for the same place. The verb
-        // stays "Save Message"; that split is deliberate and predates this screen.
-        label.text = "Bookmarks"
-        label.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
-        label.textColor = .secondaryLabel
-        label.adjustsFontForContentSizeCategory = true
-        label.translatesAutoresizingMaskIntoConstraints = false
-
-        let container = UIView()
-        container.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: container.layoutMarginsGuide.leadingAnchor),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: container.layoutMarginsGuide.trailingAnchor),
-            label.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            label.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -4),
-        ])
-        container.autoresizingMask = .flexibleWidth
-        return container
-    }()
 
     private static let debounceMilliseconds = 200
 }
