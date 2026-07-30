@@ -21,9 +21,16 @@ public enum MediaStripLayout {
     public static let landscapeHeight: CGFloat = 180
     public static let portraitHeight: CGFloat = 270
 
-    /// How wide one tile may get. A panorama is cropped rather than allowed to fill the strip —
-    /// the point of a strip is that you can see there's more than one thing in it.
+    /// Absolute ceiling on one tile's width.
     public static let maxItemWidth: CGFloat = 300
+
+    /// The most of the strip's width one tile may claim.
+    ///
+    /// ⚠ Measured on a phone: a flat 300pt cap on a 402pt-wide screen gives the first tile 75%
+    /// of the row, so a strip of five images looks like one image with a sliver beside it — the
+    /// entire signal that there's more than one thing here is lost. A fraction guarantees the
+    /// next tile always peeks in and the strip reads as a strip, at any screen width.
+    public static let maxItemWidthFraction: CGFloat = 0.62
 
     /// Fallback aspect for an image the server couldn't measure.
     ///
@@ -41,13 +48,23 @@ public enum MediaStripLayout {
     }
 
     /// Tile width for one preview at a given row height, capped.
-    public static func itemWidth(for preview: LinkPreview, rowHeight: CGFloat) -> CGFloat {
+    ///
+    /// `availableWidth` is the strip's own width; pass 0 when it isn't known yet and only the
+    /// absolute ceiling applies. A panorama is cropped rather than allowed to fill the strip —
+    /// the point of a strip is that you can see there's more than one thing in it.
+    public static func itemWidth(
+        for preview: LinkPreview, rowHeight: CGFloat, availableWidth: CGFloat = 0
+    ) -> CGFloat {
         let aspect: CGFloat
         if let w = preview.thumbWidth, let h = preview.thumbHeight, w > 0, h > 0 {
             aspect = CGFloat(w) / CGFloat(h)
         } else {
             aspect = fallbackAspect
         }
-        return min(rowHeight * aspect, maxItemWidth)
+        var cap = maxItemWidth
+        if availableWidth > 0 {
+            cap = min(cap, availableWidth * maxItemWidthFraction)
+        }
+        return min(rowHeight * aspect, cap)
     }
 }

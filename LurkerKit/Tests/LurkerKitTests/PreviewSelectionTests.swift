@@ -242,6 +242,21 @@ struct MediaStripHeightTests {
                 == MediaStripLayout.maxItemWidth)
     }
 
+    @Test("no single tile may claim the whole strip")
+    func fractionalCap() {
+        // ⚠ Measured in the simulator: a flat 300pt cap on a 402pt-wide phone gave the first
+        // tile 75% of the row, so a strip of five images read as one image with a sliver beside
+        // it — losing the entire signal that there's more than one thing there. The next tile
+        // has to peek in at any screen width.
+        let wide = media([(1600, 900)])[0]
+        for available in [320.0, 402.0, 440.0, 1024.0] as [CGFloat] {
+            let width = MediaStripLayout.itemWidth(
+                for: wide, rowHeight: 180, availableWidth: available)
+            #expect(width <= available * MediaStripLayout.maxItemWidthFraction)
+            #expect(width <= MediaStripLayout.maxItemWidth)
+        }
+    }
+
     @Test("an unmeasured image gets a landscape-ish tile, not a square one")
     func fallbackAspect() {
         let unknown = LinkPreview(url: "https://e.test/x.png", status: .ok, kind: .image)
