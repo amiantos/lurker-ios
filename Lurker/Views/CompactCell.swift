@@ -212,7 +212,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // reliably set during `cellForRowAt` — the same trap MessageRenderer.compactFont was
         // caught in. The indent scales with Dynamic Type, so it can't be a constant.
         let indent = MessageRenderer.compactIndent(compatibleWith: traits)
-        attachments.layoutMargins = UIEdgeInsets(top: 6, left: indent, bottom: 0, right: 0)
+        // Breathing room below as well as above, matching the web client. Without it an image
+        // sits flush against the next author's name and reads as belonging to the message below
+        // it rather than the one above. INSIDE the cell's fill on purpose: on a highlighted row
+        // the wash should cover the attachment and its padding, since both belong to that message.
+        attachments.layoutMargins = UIEdgeInsets(top: 6, left: indent, bottom: 8, right: 0)
         attachments.configure(previews: previews, model: model)
     }
 
