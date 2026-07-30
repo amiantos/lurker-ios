@@ -173,7 +173,7 @@ struct MessageListRenderer {
                 $0.isAllowed(inlineMedia: previews.inlineMedia, linkPreviews: previews.linkPreviews)
             }
         guard !resolved.isEmpty else { return }
-        cell.showAttachments(resolved, model: previews.model)
+        cell.showAttachments(resolved, model: previews.model, traits: context.traits)
     }
 
     /// The header for a message, or nil when it continues the block above it.

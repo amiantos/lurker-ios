@@ -98,6 +98,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         column.isLayoutMarginsRelativeArrangement = true
         attachments.isHidden = true
         attachments.onOpen = { url in UIApplication.shared.open(url) }
+        // Line up with the message body, which sits one character in from its author (the
+        // paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
+        // starts flush with the nick while the words above it don't, and the block loses the
+        // single left edge that makes a run of messages read as one column.
+        attachments.isLayoutMarginsRelativeArrangement = true
 
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
@@ -202,7 +207,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     ///
     /// Nothing here is conditional on the settings — the renderer resolves those once per
     /// reload rather than once per cell, and hands down an already-filtered list.
-    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel) {
+    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel, traits: UITraitCollection) {
+        // Resolved from the screen's traits, not `UITraitCollection.current`, which isn't
+        // reliably set during `cellForRowAt` — the same trap MessageRenderer.compactFont was
+        // caught in. The indent scales with Dynamic Type, so it can't be a constant.
+        let indent = MessageRenderer.compactIndent(compatibleWith: traits)
+        attachments.layoutMargins = UIEdgeInsets(top: 6, left: indent, bottom: 0, right: 0)
         attachments.configure(previews: previews, model: model)
     }
 

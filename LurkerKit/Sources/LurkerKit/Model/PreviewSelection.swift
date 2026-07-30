@@ -13,11 +13,23 @@ import Foundation
 /// count" is a question with one right answer.
 public enum PreviewSelection {
 
-    /// Cap per message.
+    /// Cap on CARDS per message.
     ///
     /// Slack allows five, halloy defaults to one. Three is enough for a message genuinely
-    /// sharing a few links, and short of enough for one message to take over a screen.
-    public static let maxPerMessage = 3
+    /// sharing a few links, and short of enough for one message to take over a screen. Each
+    /// card costs real vertical space, so this one stays tight.
+    public static let maxCardsPerMessage = 3
+
+    /// Cap on MEDIA per message — deliberately generous.
+    ///
+    /// Media doesn't cost vertical space the way a card does: two or more images render as one
+    /// horizontally-scrolling strip of fixed height, so the tenth image costs exactly as much
+    /// screen as the second.
+    ///
+    /// A limit still exists, because a message carrying fifty image URLs is spam and each one
+    /// is an outbound fetch on the server's behalf. Set high enough not to bind on anything a
+    /// person would actually post. Matches the web client.
+    public static let maxMediaPerMessage = 20
 
     /// URL-ish spans in a message, matching the server's shared `urlPattern`.
     ///
@@ -58,6 +70,8 @@ public enum PreviewSelection {
 
         var out: [String] = []
         var seen = Set<String>()
+        var mediaCount = 0
+        var cardCount = 0
         let full = NSRange(text.startIndex..., in: text)
 
         for match in detector.matches(in: text, range: full) {
@@ -76,11 +90,15 @@ public enum PreviewSelection {
             let url = String(raw.reversed().drop { ".,;:!?)]}'\"".contains($0) }.reversed())
             guard !url.isEmpty, !seen.contains(url) else { continue }
 
-            guard looksLikeMedia(url) ? inlineMedia : linkPreviews else { continue }
+            let isMedia = looksLikeMedia(url)
+            guard isMedia ? inlineMedia : linkPreviews else { continue }
+            // Counted separately: one class filling up must not consume the other's budget.
+            guard isMedia ? mediaCount < maxMediaPerMessage : cardCount < maxCardsPerMessage
+            else { continue }
 
+            if isMedia { mediaCount += 1 } else { cardCount += 1 }
             seen.insert(url)
             out.append(url)
-            if out.count >= maxPerMessage { break }
         }
         return out
     }

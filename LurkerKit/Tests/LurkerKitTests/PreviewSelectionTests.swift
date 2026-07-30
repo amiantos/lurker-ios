@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import CoreGraphics
 import Testing
 
 @testable import LurkerKit
@@ -108,10 +109,34 @@ struct PreviewSelectionTests {
         #expect(urls("https://e.test/a https://e.test/a https://e.test/a") == ["https://e.test/a"])
     }
 
-    @Test("caps a link-spam message")
-    func caps() {
+    @Test("caps CARDS tightly, because each one costs vertical space")
+    func capsCards() {
         let text = (0..<12).map { "https://e.test/\($0)" }.joined(separator: " ")
-        #expect(urls(text).count == PreviewSelection.maxPerMessage)
+        #expect(urls(text).count == PreviewSelection.maxCardsPerMessage)
+    }
+
+    @Test("lets many images through, because a strip costs the same at 2 or at 12")
+    func manyImages() {
+        // Media renders as one horizontally-scrolling strip of fixed height, so the tenth
+        // image costs no more screen than the second.
+        let text = (0..<12).map { "https://e.test/\($0).png" }.joined(separator: " ")
+        #expect(urls(text).count == 12)
+    }
+
+    @Test("still bounds media, so a spam message is not fifty outbound fetches")
+    func mediaBounded() {
+        let text = (0..<40).map { "https://e.test/\($0).png" }.joined(separator: " ")
+        #expect(urls(text).count == PreviewSelection.maxMediaPerMessage)
+    }
+
+    @Test("counts the two caps independently")
+    func independentCaps() {
+        // One class filling up must not consume the other's budget.
+        let pages = (0..<5).map { "https://e.test/page\($0)" }
+        let images = (0..<5).map { "https://e.test/img\($0).png" }
+        let got = urls((pages + images).joined(separator: " "))
+        #expect(got.filter { $0.hasSuffix(".png") }.count == 5)
+        #expect(got.filter { !$0.hasSuffix(".png") }.count == PreviewSelection.maxCardsPerMessage)
     }
 
     @Test("counts the cap after deduping, not before")
@@ -160,5 +185,66 @@ struct LinkPreviewGatingTests {
         let surprise = LinkPreview(url: "https://e.test/no-extension", status: .ok, kind: .image)
         #expect(!surprise.isAllowed(inlineMedia: false, linkPreviews: true))
         #expect(surprise.isAllowed(inlineMedia: true, linkPreviews: false))
+    }
+}
+
+@Suite("MediaStrip row height")
+struct MediaStripHeightTests {
+    // The row-height RULE is shared with the web client (two heights, chosen by dominant
+    // orientation); only the pixel values differ, because a phone has less vertical room to
+    // give away. This asserts the rule, which is the part that has to match.
+    private func media(_ sizes: [(Int, Int)]) -> [LinkPreview] {
+        sizes.enumerated().map { index, size in
+            LinkPreview(
+                url: "https://e.test/\(index).png", status: .ok, kind: .image,
+                thumbWidth: size.0, thumbHeight: size.1
+            )
+        }
+    }
+
+    @Test("a mostly-wide group gets the shorter row, a mostly-tall one the taller row")
+    func orientation() {
+        #expect(
+            MediaStripLayout.height(for: media([(800, 600), (1200, 500)]))
+                == MediaStripLayout.landscapeHeight)
+        #expect(
+            MediaStripLayout.height(for: media([(600, 900), (500, 1000)]))
+                == MediaStripLayout.portraitHeight)
+    }
+
+    @Test("one tall image does not make a wide group tall")
+    func primarilyPortrait() {
+        #expect(
+            MediaStripLayout.height(for: media([(600, 900), (1200, 500), (1000, 400)]))
+                == MediaStripLayout.landscapeHeight)
+    }
+
+    @Test("a group with no dimensions falls back to the shorter row")
+    func unknownDimensions() {
+        let unknown = [LinkPreview(url: "https://e.test/x.png", status: .ok, kind: .image)]
+        #expect(MediaStripLayout.height(for: unknown) == MediaStripLayout.landscapeHeight)
+    }
+
+    @Test("tile width follows the image's aspect against the row height")
+    func itemWidth() {
+        let wide = media([(1600, 900)])[0]
+        let tall = media([(900, 1600)])[0]
+        #expect(
+            MediaStripLayout.itemWidth(for: tall, rowHeight: 270)
+                < MediaStripLayout.itemWidth(for: wide, rowHeight: 270))
+    }
+
+    @Test("a panorama is capped rather than allowed to fill the strip")
+    func widthCapped() {
+        let panorama = media([(6000, 800)])[0]
+        #expect(
+            MediaStripLayout.itemWidth(for: panorama, rowHeight: 180)
+                == MediaStripLayout.maxItemWidth)
+    }
+
+    @Test("an unmeasured image gets a landscape-ish tile, not a square one")
+    func fallbackAspect() {
+        let unknown = LinkPreview(url: "https://e.test/x.png", status: .ok, kind: .image)
+        #expect(MediaStripLayout.itemWidth(for: unknown, rowHeight: 180) > 180)
     }
 }

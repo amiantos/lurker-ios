@@ -31,13 +31,18 @@ final class MessageAttachmentsView: UIStackView {
     /// Opens a URL. Held rather than hardcoded so a future in-app viewer is a wiring change.
     var onOpen: ((URL) -> Void)?
 
+    /// Two or more images/videos share one horizontal strip. Held rather than rebuilt so a
+    /// scroll position survives the cell being reconfigured mid-scroll.
+    private let strip = MediaStripView()
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         axis = .vertical
         spacing = 6
         alignment = .fill
+        // Margins are set by the cell, which knows the body's indent for the current Dynamic
+        // Type size — see CompactCell.showAttachments.
         isLayoutMarginsRelativeArrangement = true
-        layoutMargins = UIEdgeInsets(top: 6, left: 0, bottom: 0, right: 0)
     }
 
     @available(*, unavailable)
@@ -53,7 +58,19 @@ final class MessageAttachmentsView: UIStackView {
         isHidden = previews.isEmpty
         guard !previews.isEmpty else { return }
 
-        for preview in previews {
+        // Pictures and video read as a row; audio doesn't — a row of transport controls is not
+        // a gallery — so it stays stacked and full-width alongside the cards.
+        let stripItems = previews.filter { $0.kind == .image || $0.kind == .video }
+        let grouped = stripItems.count > 1
+
+        if grouped {
+            strip.configure(previews: stripItems, model: model) { [weak self] url in
+                self?.onOpen?(url)
+            }
+            addArrangedSubview(strip)
+        }
+
+        for preview in previews where !(grouped && stripItems.contains(where: { $0.url == preview.url })) {
             switch preview.kind {
             case .image, .video, .audio:
                 addArrangedSubview(mediaView(preview, model: model))
