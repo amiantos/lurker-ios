@@ -31,8 +31,9 @@ final class MessageAttachmentsView: UIStackView {
     /// Opens a URL. Held rather than hardcoded so a future in-app viewer is a wiring change.
     var onOpen: ((URL) -> Void)?
 
-    /// Two or more images/videos share one horizontal strip. Held rather than rebuilt so a
-    /// scroll position survives the cell being reconfigured mid-scroll.
+    /// Two or more images/videos share one horizontal strip. Held rather than rebuilt per
+    /// configure so the view and its constraints aren't churned on every dequeue; the scroll
+    /// position is deliberately reset (a recycled cell must not inherit one).
     private let strip = MediaStripView()
 
     override init(frame: CGRect) {
@@ -48,13 +49,25 @@ final class MessageAttachmentsView: UIStackView {
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("not from a nib") }
 
-    /// Draw the previews for one message. Passing an empty array collapses the view entirely,
-    /// which is the common case and has to stay cheap — most messages have no links.
-    func configure(previews: [LinkPreview], model: ChatViewModel) {
-        for view in arrangedSubviews {
+    /// Release every attachment view. Called for EVERY row, so a recycled cell doesn't keep the
+    /// previous message's decoded images alive for its whole lifetime.
+    func clear() {
+        for view in arrangedSubviews where view !== strip {
             removeArrangedSubview(view)
             view.removeFromSuperview()
         }
+        if strip.superview != nil {
+            removeArrangedSubview(strip)
+            strip.removeFromSuperview()
+        }
+        strip.releaseImages()
+        isHidden = true
+    }
+
+    /// Draw the previews for one message. Passing an empty array collapses the view entirely,
+    /// which is the common case and has to stay cheap — most messages have no links.
+    func configure(previews: [LinkPreview], model: ChatViewModel) {
+        clear()
         isHidden = previews.isEmpty
         guard !previews.isEmpty else { return }
 

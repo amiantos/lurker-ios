@@ -109,6 +109,12 @@ public final class ChatViewModel {
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.
         settingsCache.clear()
+        // Previews carry the same hazard the settings cache does, plus two more: the metadata
+        // is the previous account's reading history, and the `asked` set would suppress
+        // re-resolution against a DIFFERENT instance — whose signed proxy tokens wouldn't verify
+        // anyway, so every image would 403. Both of these were dead code until now.
+        linkPreviews.reset()
+        onPreviewCachesCleared?()
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
@@ -208,6 +214,10 @@ public final class ChatViewModel {
         await self?.client.resolveLinkPreviews(urls) ?? []
     }
 
+
+    /// Called on sign-out so the app layer can drop its decoded-image cache. A closure rather
+    /// than a direct call because the image cache is UIKit and this package is not.
+    public var onPreviewCachesCleared: (() -> Void)?
 
     /// Bytes from the server's media proxy, for a server-minted path off a `LinkPreview`.
     ///
@@ -629,6 +639,12 @@ public final class ChatViewModel {
         case .backlog(_, let messages, _, _): texts = messages.map(\.text)
         case .history(_, _, let events, _, _, _): texts = events.map(\.text)
         case .live(_, _, let message): texts = [message.text]
+        // ⚠ A settings change has to re-prime what's ALREADY loaded. Priming is ingest-driven,
+        // and turning a toggle on doesn't re-ingest anything — so without this the fix shows
+        // previews only for messages that arrive afterwards, which reads as the setting being
+        // broken. Exactly the "I turned it on and nothing happened" report.
+        case .settingsBootstrap, .settingsChanged, .settingsValues:
+            texts = store.state.messages.values.flatMap { $0.map(\.text) }
         default: return
         }
 
@@ -644,7 +660,6 @@ public final class ChatViewModel {
     }
 
     private func handle(_ frame: ServerFrame) {
-        primePreviews(frame)
         switch frame {
         case .settingsBootstrap, .settingsChanged, .settingsValues:
             store.apply(frame)
@@ -675,6 +690,16 @@ public final class ChatViewModel {
         default:
             store.apply(frame)
         }
+
+        // ⚠⚠ AFTER `store.apply`, never before. `primePreviews` reads the settings out of the
+        // store to decide whether either feature is on — so running it first meant a
+        // `settingsChanged` frame was evaluated against the OLD values, the guard returned
+        // early, and turning a toggle on primed nothing at all. The fix for "I enabled it and
+        // nothing happened" was itself inert until this moved.
+        //
+        // It also means the message frames prime against a store that already holds them, which
+        // is the more obviously correct order even though those read their texts from the frame.
+        primePreviews(frame)
     }
 
     // MARK: - Reconnect
@@ -723,6 +748,12 @@ public final class ChatViewModel {
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.
         settingsCache.clear()
+        // Previews carry the same hazard the settings cache does, plus two more: the metadata
+        // is the previous account's reading history, and the `asked` set would suppress
+        // re-resolution against a DIFFERENT instance — whose signed proxy tokens wouldn't verify
+        // anyway, so every image would 403. Both of these were dead code until now.
+        linkPreviews.reset()
+        onPreviewCachesCleared?()
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()

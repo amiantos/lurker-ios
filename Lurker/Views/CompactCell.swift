@@ -188,9 +188,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             : 0
 
         messageText.attributedText = attributed
-        // Cleared on every configure, so a recycled cell never shows the previous message's
-        // attachments for the frame before the renderer gets to say otherwise.
-        attachments.isHidden = true
+        // Torn down, not merely hidden. Hiding left the previous message's image views — and
+        // their strong references to decoded UIImages, plus a strip's width constraints — alive
+        // for the cell's whole lifetime, quietly defeating the NSCache eviction the loader
+        // relies on. `showAttachments` re-populates when there IS something to show.
+        attachments.clear()
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear

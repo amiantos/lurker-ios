@@ -29,6 +29,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        // Decoded preview images live in UIKit, so LurkerKit can't drop them itself. Sign-out
+        // must: they're the previous account's reading history, and against a different instance
+        // the signed proxy tokens wouldn't verify anyway.
+        viewModel.onPreviewCachesCleared = { PreviewImageLoader.shared.reset() }
         // Pilled, so the status pill belongs to the stack rather than to either screen — see
         // NavigationPill. Its `viewDidLoad` installs the pill, which the `showBufferList`
         // below triggers.

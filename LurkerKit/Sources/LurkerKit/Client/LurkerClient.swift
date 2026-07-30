@@ -49,7 +49,18 @@ final class LurkerClient {
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
-        self.session = URLSession(configuration: .default)
+        let configuration = URLSessionConfiguration.default
+        // ⚠ A dedicated, larger URLCache, not the shared default. `URLCache` refuses to store
+        // any single response bigger than ~5% of its capacity, so against the shared 10 MB disk
+        // budget the ceiling is ~512 KB — under the size of a typical full-width preview image.
+        // On the default, preview bytes were re-downloaded on every launch and after every
+        // in-memory eviction, and the proxy's `max-age=86400, immutable` bought nothing.
+        // 200 MB puts the per-response ceiling around 10 MB, above the proxy's own 8 MB cap.
+        configuration.urlCache = URLCache(
+            memoryCapacity: 16 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024
+        )
+        self.session = URLSession(configuration: configuration)
     }
 
     // MARK: - Auth
@@ -893,9 +904,14 @@ final class LurkerClient {
     /// built here. It needs a `URLRequest` rather than a plain `UIImage(contentsOf:)` because
     /// the proxy is authenticated and native auth is a Bearer header, not a cookie.
     ///
-    /// The shared `URLCache` does the caching: the server marks these `immutable` with a long
-    /// max-age (the token is a pure function of the URL, so a token always denotes the same
-    /// bytes), which means scrolling back over an image-heavy channel doesn't re-fetch.
+    /// Caching is the shared `URLCache`'s job — the server marks these `immutable` with a long
+    /// max-age, and the token is a pure function of the URL so it always denotes the same bytes.
+    ///
+    /// ⚠ That only works because `previewCache` below is sized for it. `URLCache.shared` refuses
+    /// to store any single response larger than ~5% of its capacity, which against the default
+    /// 10 MB disk budget is roughly 512 KB — under the size of a typical full-width preview
+    /// image. Left on the default, these were silently re-downloaded on every launch and after
+    /// every NSCache eviction, and the `max-age` bought nothing at all.
     func fetchProxiedMedia(path: String) async -> Data? {
         guard let token, let url = URL(string: baseURL + path) else { return nil }
         var request = URLRequest(url: url)

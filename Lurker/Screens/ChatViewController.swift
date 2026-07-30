@@ -1123,6 +1123,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
+    /// A drag that ends without a fling settles here; one with a fling settles in
+    /// `scrollViewDidEndDecelerating`. Both have to flush, or a preview that arrived mid-gesture
+    /// waits for the row to leave the screen and come back.
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { flushPendingPreviewReload() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        flushPendingPreviewReload()
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         // Back at the bottom — however you got there — means caught up: the badge counts
         // "new since you scrolled away", and you're not away anymore.
@@ -2114,15 +2125,36 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// one image finishes, which reads as the list glitching rather than as content arriving.
     private func reloadVisibleForPreviews() {
         // Never mid-gesture. Reloading rows out from under an active drag or a decelerating
-        // fling is what produced "it resets the entire scroll back to the bottom": the reload
-        // remeasures self-sizing cells, the content size moves, and the in-flight scroll
-        // animation resolves against the new geometry. Rows skipped here are measured
-        // correctly whenever they're next dequeued, so waiting costs nothing.
-        guard !tableView.isDragging, !tableView.isDecelerating else { return }
+        // fling remeasures self-sizing cells, the content size moves, and the in-flight scroll
+        // animation resolves against the new geometry — which is what reset scroll to the bottom.
+        guard !tableView.isDragging, !tableView.isDecelerating else {
+            // ⚠ But remember to come back. A row already ON SCREEN when metadata landed is not
+            // re-dequeued when the gesture ends, so without this it stayed bare until it left
+            // the viewport and returned. Only rows scrolling IN are covered by the dequeue.
+            previewReloadPending = true
+            return
+        }
+        previewReloadPending = false
         guard let visible = tableView.indexPathsForVisibleRows, !visible.isEmpty else { return }
+
+        // A preview appearing grows the row, and `reloadRows` preserves contentOffset — so a
+        // reader sitting at the live tail gets pushed up by however tall the attachment is, and
+        // the image they were waiting for lands off-screen. Follow it down, exactly as a live
+        // append does.
+        let wasNearBottom = isNearBottom
         UIView.performWithoutAnimation {
             tableView.reloadRows(at: visible, with: .none)
         }
+        if wasNearBottom { scrollToBottom() }
+    }
+
+    /// Set when metadata arrived mid-gesture, so the reload can be retried once the list settles.
+    private var previewReloadPending = false
+
+    /// Run a deferred preview reload once scrolling stops.
+    private func flushPendingPreviewReload() {
+        guard previewReloadPending else { return }
+        reloadVisibleForPreviews()
     }
 
     /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range

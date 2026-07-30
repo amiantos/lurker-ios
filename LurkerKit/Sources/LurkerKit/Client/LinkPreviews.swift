@@ -27,10 +27,22 @@ public final class LinkPreviewStore {
     /// batch, short enough that a preview never visibly lags the scroll.
     private static let coalesceDelay = Duration.milliseconds(24)
 
+    /// Pause between batches once there's more than one.
+    ///
+    /// The server allows 120 resolve requests/min per account and takes 20 URLs each. A connect
+    /// burst can prime thousands of URLs across every buffer, which sails past that — so the
+    /// client paces itself rather than discovering the limit. ~100 requests/min, comfortably
+    /// under. Only the first batch is immediate, so the buffer you're looking at isn't delayed.
+    private static let interBatchDelay = Duration.milliseconds(600)
+
     private var cache: [String: LinkPreview] = [:]
-    /// URLs already asked about — whether or not an answer arrived. Prevents a URL that
-    /// resolved to `unavailable`, or whose request failed, from being re-requested on every
-    /// single redraw of the row it's in.
+    /// URLs already asked about, so a redraw never re-requests one.
+    ///
+    /// ⚠ A URL is REMOVED from this on transport failure. Keeping it meant any batch that
+    /// failed — a 429 in particular, which the connect-time backlog burst can provoke by
+    /// itself once scrollback spans enough channels — was remembered as a permanent verdict,
+    /// and those links stayed blank for the rest of the app session. A failure says nothing
+    /// about the URL.
     private var asked = Set<String>()
     private var pending = Set<String>()
     private var flushTask: Task<Void, Never>?
@@ -73,7 +85,11 @@ public final class LinkPreviewStore {
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
             try? await Task.sleep(for: Self.coalesceDelay)
-            guard let self else { return }
+            // ⚠ `try?` swallows the cancellation error, so a cancelled task RESUMES here.
+            // Without this guard it would clear `flushTask` — clobbering the handle of any
+            // newer task scheduled since the reset — and then flush with no coalescing window,
+            // leaving two flushes racing.
+            guard !Task.isCancelled, let self else { return }
             self.flushTask = nil
             await self.flush()
         }
@@ -85,17 +101,23 @@ public final class LinkPreviewStore {
         guard !urls.isEmpty else { return }
 
         var changed = false
-        for chunk in stride(from: 0, to: urls.count, by: Self.maxBatch).map({
+        let batches = stride(from: 0, to: urls.count, by: Self.maxBatch).map {
             Array(urls[$0..<min($0 + Self.maxBatch, urls.count)])
-        }) {
+        }
+        for (index, chunk) in batches.enumerated() {
+            if index > 0 { try? await Task.sleep(for: Self.interBatchDelay) }
             let previews = await resolve(chunk)
+            if previews.isEmpty {
+                // The whole batch failed (offline, 401, 429). Forget we asked so a later
+                // priming pass can try again; the server negative-caches genuine per-URL
+                // failures itself, so nothing is retried in a loop.
+                for url in chunk { asked.remove(url) }
+                continue
+            }
             for preview in previews {
                 cache[preview.url] = preview
                 changed = true
             }
-            // A URL that came back with nothing stays in `asked`, so a failed request isn't
-            // retried on every redraw. It'll be retried next launch, which is the right
-            // cadence for something the server itself negative-caches for an hour.
         }
         if changed { onUpdate?() }
     }

@@ -86,6 +86,19 @@ final class MediaStripView: UIView {
     @available(*, unavailable)
     required init(coder: NSCoder) { fatalError("not from a nib") }
 
+    /// Drop the tiles, so a recycled cell doesn't hold decoded images the NSCache is trying to
+    /// evict. The view itself is retained by its owner and reconfigured on demand.
+    func releaseImages() {
+        for view in row.arrangedSubviews {
+            row.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        items = []
+        itemWidths = []
+        urls = []
+        lastLaidOutWidth = 0
+    }
+
     func configure(
         previews: [LinkPreview], model: ChatViewModel, onOpen: @escaping (URL) -> Void
     ) {
@@ -134,7 +147,12 @@ final class MediaStripView: UIView {
         constraint.isActive = true
         itemWidths.append(constraint)
 
-        if let path = preview.src {
+        // ⚠ ONLY for images. The server puts the proxied CONTENT in `src` for image, video AND
+        // audio — so loading `src` unconditionally meant a video tile pulled up to 8 MB of MP4
+        // through the authenticated proxy, handed it to `UIImage(data:)`, got nil, and stayed
+        // grey anyway. Two video links on cellular was 16 MB for two grey squares.
+        // MessageAttachmentsView.mediaView had this right; the strip didn't.
+        if preview.kind == .image, let path = preview.src {
             PreviewImageLoader.shared.load(path: path, using: model) { [weak imageView] image in
                 imageView?.image = image
             }

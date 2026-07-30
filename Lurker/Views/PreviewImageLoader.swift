@@ -32,6 +32,13 @@ final class PreviewImageLoader {
     /// order-dependent flakiness that reads as random.
     private var waiters: [String: [(UIImage) -> Void]] = [:]
 
+    /// Paths that failed, so they aren't refetched on every cell dequeue.
+    ///
+    /// Without this a broken image — a proxy 404/413, or anything `UIImage(data:)` can't
+    /// decode — started a fresh download and decode every time its row was configured, which
+    /// during a scroll is several times a second.
+    private var failed = Set<String>()
+
     private init() {
         // Counted in decoded bytes via `cost` below; a few dozen full-width previews.
         cache.totalCostLimit = 32 * 1024 * 1024
@@ -54,6 +61,7 @@ final class PreviewImageLoader {
             deliver(cached)
             return
         }
+        if failed.contains(path) { return }
         if waiters[path] != nil {
             waiters[path]?.append(deliver)
             return
@@ -68,7 +76,10 @@ final class PreviewImageLoader {
                 image = await Self.decode(data)
             }
             let pending = waiters.removeValue(forKey: path) ?? []
-            guard let image else { return }
+            guard let image else {
+                failed.insert(path)
+                return
+            }
             cache.setObject(image, forKey: path as NSString, cost: Self.cost(of: image))
             for callback in pending { callback(image) }
         }
@@ -89,8 +100,12 @@ final class PreviewImageLoader {
         return Int(size.width * scale * size.height * scale * 4)
     }
 
+    /// Drop everything. Called on sign-out — decoded images from the previous account must not
+    /// survive into the next one's session, and a different instance's signed proxy tokens
+    /// wouldn't verify anyway.
     func reset() {
         cache.removeAllObjects()
         waiters.removeAll()
+        failed.removeAll()
     }
 }
