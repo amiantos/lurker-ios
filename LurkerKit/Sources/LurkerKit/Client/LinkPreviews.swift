@@ -3,6 +3,16 @@
 
 import Foundation
 
+/// Instance feature flags from the public `/api/config`.
+///
+/// Absent means off: a server that doesn't advertise a flag doesn't have the feature. Defaults
+/// are deliberately the OFF value, so a failed fetch can't conjure a feature the server may not
+/// have — the settings rows would appear and then every resolve would 404.
+public struct InstanceFeatures: Sendable, Equatable {
+    public var linkPreviews: Bool = false
+    public init(linkPreviews: Bool = false) { self.linkPreviews = linkPreviews }
+}
+
 /// The client half of link previews.
 ///
 /// Everything expensive is on the server — the fetch, the HTML parse, the cache, the byte

@@ -83,6 +83,7 @@ public final class ChatViewModel {
         case .success(let token):
             sessions.save(PersistedSession(backend: backend, server: server, token: token))
             sessionSubject.value = .loggedIn
+            await loadFeatures()
             await client.start()
             return true
         case .failure(let message):
@@ -115,6 +116,7 @@ public final class ChatViewModel {
         // anyway, so every image would 403. Both of these were dead code until now.
         linkPreviews.reset()
         onPreviewCachesCleared?()
+        features = InstanceFeatures()
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
@@ -218,6 +220,23 @@ public final class ChatViewModel {
     /// Called on sign-out so the app layer can drop its decoded-image cache. A closure rather
     /// than a direct call because the image cache is UIKit and this package is not.
     public var onPreviewCachesCleared: (() -> Void)?
+
+    /// Instance feature flags, fetched once per session from `/api/config`.
+    ///
+    /// ⚠ Off until proven on. Link previews are a whole feature behind an operator env flag: when
+    /// it's off the server doesn't even mount the routes, so the settings rows are HIDDEN rather
+    /// than offered inert, and nothing is primed.
+    public private(set) var features = InstanceFeatures()
+
+
+    /// Resolve instance feature flags. Awaited before `client.start()` so the first backlog burst
+    /// is primed (or not) against the right answer rather than against the off-by-default guess.
+    /// Awaited before `client.start()` in both session entry points, so the first backlog burst
+    /// is primed (or not) against the real answer rather than the off-by-default guess. No
+    /// change notification needed: nothing can open Settings before a session exists.
+    private func loadFeatures() async {
+        features = await client.fetchFeatures()
+    }
 
     /// Bytes from the server's media proxy, for a server-minted path off a `LinkPreview`.
     ///
@@ -612,7 +631,10 @@ public final class ChatViewModel {
         }
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
-        Task { await client.start() }
+        Task {
+            await loadFeatures()
+            await client.start()
+        }
     }
 
     // MARK: - Frame routing
@@ -630,6 +652,9 @@ public final class ChatViewModel {
     ///
     /// Fire-and-forget: a history page must not wait on the internet before it can be read.
     private func primePreviews(_ frame: ServerFrame) {
+        // The instance flag gates everything: a stored `true` from another instance must not
+        // start priming against one that has the feature off.
+        guard features.linkPreviews else { return }
         let wantMedia = store.state.settings.bool("chat.inline_media.enabled", default: false)
         let wantPages = store.state.settings.bool("chat.link_previews.enabled", default: false)
         guard wantMedia || wantPages else { return }

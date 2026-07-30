@@ -867,6 +867,24 @@ final class LurkerClient {
         }
     }
 
+    /// Read the public, unauthenticated `/api/config` for instance feature flags.
+    ///
+    /// Unauthenticated by design on the server, but called after sign-in here because that's when
+    /// `baseURL` is known. Returns the all-off default on any failure — see `InstanceFeatures`.
+    func fetchFeatures() async -> InstanceFeatures {
+        guard let url = URL(string: baseURL + "/api/config") else { return InstanceFeatures() }
+        do {
+            let (data, response) = try await session.data(for: URLRequest(url: url))
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
+                let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return InstanceFeatures() }
+            let features = body["features"] as? [String: Any]
+            return InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true)
+        } catch {
+            return InstanceFeatures()
+        }
+    }
+
     // MARK: - Link previews
 
     /// Resolve a batch of URLs to preview descriptors (`POST /api/link-preview/resolve`).
