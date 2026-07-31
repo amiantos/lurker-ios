@@ -210,12 +210,44 @@ class HistoryFeedViewController: UITableViewController {
             if items.isEmpty { renderPlaceholder(.error) }
             return
         }
-        items = page.items
+        items = visible(page.items)
         nextBefore = page.nextBefore
         reachedEnd = !page.hasMore
         rebuildSections()
         tableView.reloadData()
-        renderPlaceholderForCurrentState()
+        // A page can filter down to nothing — an ignored sender who fills a channel is exactly
+        // the person whose lines a search turns up by the hundred. Paging is driven by
+        // `willDisplay`, which can't fire on a table with no rows, so pull the next page in
+        // directly rather than stranding the feed on "nothing here" with more to fetch. Same
+        // treatment `removeItem` gives an emptied list, for the same reason.
+        if items.isEmpty, !reachedEnd, nextBefore != nil {
+            renderPlaceholder(.loading)
+            loadMore()
+        } else {
+            renderPlaceholderForCurrentState()
+        }
+    }
+
+    /// The rows an ignore rule doesn't hide (lurker #301).
+    ///
+    /// These feeds are cross-buffer, so each row carries its own network and target and is
+    /// judged against that network's rules rather than one buffer's. Level, channel and
+    /// content-pattern rules all apply here, not just whole-identity ones: a `/ignore x PUBLIC`
+    /// or a `-pattern` rule is a statement about what you want to read, and a search that
+    /// returned exactly what you'd told the client to hide would be the one place the rule
+    /// didn't hold.
+    ///
+    /// Filtered as pages land rather than reactively, because this screen deliberately doesn't
+    /// subscribe to live state (see the class doc) — a rule created while the list is open
+    /// takes effect on the next pull-to-refresh, which is also when everything else about
+    /// these rows would be re-read.
+    private func visible(_ items: [HighlightItem]) -> [HighlightItem] {
+        let ignores = viewModel.state.ignores
+        return items.filter { item in
+            !ignores.isMessageHidden(
+                networkId: item.networkId, message: item.message, target: item.target
+            )
+        }
     }
 
     @MainActor
@@ -237,14 +269,26 @@ class HistoryFeedViewController: UITableViewController {
             }
             return
         }
-        guard !page.items.isEmpty else {
+        // Filtered before the emptiness check, so a page that holds nothing but ignored lines
+        // takes the same path as one the server returned empty: record the cursor, then let
+        // the next `willDisplay` (or the retry below) fetch past it.
+        let fresh = visible(page.items)
+        guard !fresh.isEmpty else {
             nextBefore = page.nextBefore
             reachedEnd = !page.hasMore
             // Same boundary: an empty page onto an empty list is the genuine end of the feed.
-            if items.isEmpty { renderPlaceholderForCurrentState() }
+            // Unless there's more to fetch — with no rows on screen `willDisplay` can't fire
+            // again, so an all-ignored page would end the feed early.
+            if items.isEmpty {
+                if !reachedEnd, nextBefore != nil {
+                    loadMore()
+                } else {
+                    renderPlaceholderForCurrentState()
+                }
+            }
             return
         }
-        items.append(contentsOf: page.items)
+        items.append(contentsOf: fresh)
         nextBefore = page.nextBefore
         reachedEnd = !page.hasMore
         rebuildSections()

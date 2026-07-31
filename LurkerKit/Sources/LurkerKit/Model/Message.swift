@@ -17,7 +17,10 @@ public struct Message: Equatable, Sendable {
     /// here rather than re-derived per read.
     public let date: Date?
     /// A highlight rule matched this line — renders as a mention.
-    public let matched: Bool
+    ///
+    /// Server-stamped and settable only from inside this package, by `unhighlighted()`: the
+    /// server decides what matched, and the one thing a client may do is take a match *off*.
+    public internal(set) var matched: Bool
     /// Severity, carried only by system-buffer lines. The server does NOT encode severity
     /// in `type` — an error is `type: "system"` with `level: "error"` — so styling a
     /// system line means reading this, never the type.
@@ -104,6 +107,20 @@ public struct Message: Equatable, Sendable {
         self.userhost = userhost
         self.account = account
         self.bookmarked = bookmarked
+    }
+
+    /// This line with its highlight taken off — what a `NOHIGHLIGHT` ignore rule leaves behind
+    /// (lurker #301): still visible, still counted, but never drawn as a mention.
+    ///
+    /// The server already suppresses the match at insert time for rules that existed then, so
+    /// this is what makes a rule added *later* apply to backlog the server stamped before it —
+    /// and, just as importantly, what lets the wash come back when the rule is removed, since
+    /// the demotion happens per render rather than being written into the store.
+    public func unhighlighted() -> Message {
+        guard matched else { return self }
+        var copy = self
+        copy.matched = false
+        return copy
     }
 
     /// The `user@host` half of `userhost` (which arrives as the full `nick!user@host`), or nil

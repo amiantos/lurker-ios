@@ -443,6 +443,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // is the default, so this costs nothing until someone turns it on.
                     && Self.modePrefixes(for: old, buffer: thisBuffer)
                         == Self.modePrefixes(for: new, buffer: thisBuffer)
+                    // Ignore rules decide which of `messages` actually renders and which of
+                    // them highlight, and they arrive on their own from another device — the
+                    // same trap settings and typing hit. Without this an `/ignore` typed in a
+                    // browser changes nothing on screen until the next message happens to
+                    // arrive, and the `/unignore` that should bring lines back does nothing
+                    // visible at all. Compared by identity: the store replaces the set
+                    // wholesale on every change and never mutates one in place, so `===` is
+                    // both correct and free — which matters, because this predicate runs on
+                    // every frame the socket delivers.
+                    && old.ignores === new.ignores
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -597,8 +607,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Filter by what this *kind* of buffer renders. The system buffer's content is
         // entirely `type: "system"`, which isn't speech — a blanket `isSpeech` filter
         // (right for channels) left it permanently empty.
-        let updated = (state.messages[buffer.key.id] ?? [])
-            .filter { buffer.kind.renders($0.type) && $0.isRenderable }
+        let updated = Self.applyIgnores(
+            (state.messages[buffer.key.id] ?? [])
+                .filter { buffer.kind.renders($0.type) && $0.isRenderable },
+            ignores: state.ignores,
+            buffer: buffer
+        )
         let oldFirstId = messages.first?.id
         let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom
@@ -1032,6 +1046,47 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             network: buffer.networkId.flatMap { state.networks[$0]?.state }
         )
         navigationPill?.refresh(from: self)
+    }
+
+    /// The render-time ignore filter (lurker #301): drop the lines a rule hides, and demote
+    /// the ones a `NOHIGHLIGHT` rule covers.
+    ///
+    /// At render rather than on the way into the store, which is what makes it retroactive
+    /// both ways: a rule made on the web lands as an `ignore-list-updated` frame, this runs
+    /// again on the next `apply`, and backlog the server had already sent disappears —
+    /// removing the rule brings it straight back with no refetch. The server's own insert-time
+    /// stamp can't do that; it only knows the rules that existed when the line arrived.
+    ///
+    /// Your own lines are never hidden, however broad the rule. A mask can legitimately cover
+    /// your nick — `*!*@somehost` on a shared host, say — and vanishing your own messages from
+    /// your own screen is never what the rule meant.
+    ///
+    /// The `isEmpty` gate is what keeps this off the hot path for the accounts (most of them)
+    /// that have no rules: one dictionary lookup per `apply`, and the array is returned
+    /// untouched.
+    private static func applyIgnores(
+        _ messages: [Message],
+        ignores: IgnoreSet,
+        buffer: Buffer
+    ) -> [Message] {
+        guard !ignores.isEmpty(for: buffer.networkId) else { return messages }
+        let isDm = buffer.kind == .dm
+        return messages.compactMap { message -> Message? in
+            guard !message.isSelf, let nick = message.nick, !nick.isEmpty else { return message }
+            let verdict = ignores.evaluate(
+                networkId: buffer.networkId,
+                IgnoreInput(
+                    nick: nick,
+                    userhost: message.userhost,
+                    target: buffer.target,
+                    text: message.text ?? "",
+                    type: message.type,
+                    isDm: isDm
+                )
+            )
+            if verdict.hide { return nil }
+            return verdict.nohilight ? message.unhighlighted() : message
+        }
     }
 
     /// The channel-mode glyph for each current member, keyed by lowercased nick.
@@ -1706,12 +1761,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func nickCandidates(matching query: String) -> [String] {
-        NickCompletion.candidates(
+        let ignores = viewModel.state.ignores
+        let networkId = buffer.networkId
+        return NickCompletion.candidates(
             messages: messages,
             members: viewModel.state.members[buffer.key.id] ?? [],
             selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
             query: query,
-            isChannel: buffer.kind == .channel
+            isChannel: buffer.kind == .channel,
+            isIgnored: ignores.isEmpty(for: networkId)
+                ? nil
+                : { ignores.isIgnored(networkId: networkId, nick: $0, userhost: $1) }
         )
     }
 

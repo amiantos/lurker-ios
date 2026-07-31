@@ -27,6 +27,23 @@ public enum URLMatcher {
         }
     }
 
+    /// `text` with every URL replaced by a single space — what a content pattern is matched
+    /// against, so a word that appears only inside a link doesn't trigger it (a nick in
+    /// `https://example.com/nick`, say). The web's `stripUrls`.
+    ///
+    /// A space rather than nothing: removing the URL outright would fuse the words on either
+    /// side of it into one that was never written.
+    ///
+    /// Deliberately the raw pattern, *not* `matches(in:)` — that one trims trailing
+    /// punctuation so a link can be tapped without swallowing the sentence's full stop, which
+    /// is a rendering concern. Here the whole match goes, exactly as the shared matcher does
+    /// it, so the two clients agree on what "the text" is.
+    public static func blanked(_ text: String) -> String {
+        guard let regex else { return text }
+        let whole = NSRange(location: 0, length: (text as NSString).length)
+        return regex.stringByReplacingMatches(in: text, range: whole, withTemplate: " ")
+    }
+
     /// Strip trailing sentence punctuation and one unbalanced closing bracket, so
     /// `(see https://x.com)` and `end of https://x.com.` don't swallow the delimiter.
     static func trimTrailingPunctuation(_ url: String) -> String {

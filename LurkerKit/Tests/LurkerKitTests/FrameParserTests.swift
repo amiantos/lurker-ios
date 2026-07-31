@@ -192,7 +192,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":1,"state":"connected","nick":"me","channels":[{"name":"#lurker","topic":"hi","members":[{"nick":"alice","modes":["o"],"away":false},{"nick":"bob","modes":[],"away":true}]}]}]}"##
         )
-        guard case let .snapshot(networks) = frame else {
+        guard case let .snapshot(networks, _) = frame else {
             return XCTFail("expected snapshot, got \(frame)")
         }
         XCTAssertEqual(networks.count, 1)

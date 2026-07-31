@@ -14,7 +14,12 @@ enum ServerFrame: Equatable, Sendable {
     /// every network without a live connection, and is read before auto-rejoin JOINs land even
     /// for one that has it. DMs and `:server:` logs aren't in it at all — they arrive as
     /// separate `backlog` frames afterwards. Use `backlogComplete` to know the burst is done.
-    case snapshot([NetworkSnapshot])
+    ///
+    /// `globalIgnores` is the un-scoped half of the ignore rules (lurker #350) — rules that
+    /// apply on every network, so they belong to no network blob. Spelled out as its own
+    /// value rather than hidden in a default because a snapshot that dropped it would leave
+    /// the most common kind of rule silently inert until the next time one was edited.
+    case snapshot([NetworkSnapshot], globalIgnores: [IgnoreRule])
 
     /// WS `backlog-complete`: the terminal frame of a snapshot burst (lurker #635).
     ///
@@ -123,6 +128,19 @@ enum ServerFrame: Equatable, Sendable {
     /// worth preserving. `Buffer.state` has no `closed` case for the same reason.
     case bufferClosed(networkId: Int?, target: String)
 
+    /// WS `ignore-list-updated`: one scope's ignore rules, re-sent whole (lurker #301).
+    ///
+    /// `networkId` nil means the global bucket, a number means that network's own — the
+    /// server fans one or the other, never both, and the client replaces the matching bucket.
+    /// Note this is the opposite of the nil convention buffer frames use, where nil means the
+    /// app-scoped system buffer: an ignore scope of "no network" is *every* network.
+    ///
+    /// Fanned to every one of the account's devices, which is the point — rules are authored
+    /// on the web (`/ignore`, the settings pane) and this client has no editor, so this frame
+    /// is the whole of how a rule reaches the phone mid-session. It also carries the expiry
+    /// sweeper's deletions, so a `-time` rule stops applying here without a reconnect.
+    case ignoreListUpdated(networkId: Int?, rules: [IgnoreRule])
+
     /// A `peer-presence` ephemeral (rides `irc`, `type:"peer-presence"`, network-scoped via a
     /// `:server:<id>` target): a watched nick changed state. `state` is nil when the server
     /// reports no known state, which the store reads as `unknown`.
@@ -198,6 +216,10 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// seed the live `peer-presence` events then patch. Defaulted so the many existing
     /// snapshot call sites that predate presence don't have to name it.
     var peerPresence: [String: PresenceState] = [:]
+    /// This network's own ignore rules — the connect-time seed for the per-network bucket
+    /// that `ignore-list-updated` then replaces. Rules with no network scope ride the
+    /// snapshot frame itself (`globalIgnores`), not this.
+    var ignoredMasks: [IgnoreRule] = []
 }
 
 struct ChannelSnapshot: Equatable, Sendable {
