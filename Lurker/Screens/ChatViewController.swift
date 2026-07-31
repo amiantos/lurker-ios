@@ -390,6 +390,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         observeKeyboard()
         observeDateLabelInvalidation()
+        observeAppearanceInvalidation()
         addEdgeSwipes()
 
         // Re-render when this buffer's messages or the error change — a frame for some
@@ -1963,6 +1964,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     self?.tableView.reloadData()
                 }
             }
+    }
+
+    /// Redraw when the appearance flips, for the one thing in a row that can't follow it.
+    ///
+    /// Same shape as the date labels above and for the same reason — a value baked into a cell
+    /// at `cellForRowAt` that no unrelated state change would come along to correct — but with a
+    /// different trigger. Nearly every color in the list is stored *unresolved* and re-resolves
+    /// itself as the text draws; the typing row's keyboard symbol can't, because tinting an
+    /// image is a draw and the grey goes into its pixels (`MessageRenderer.typingGlyph`). Left
+    /// alone, flipping to dark while someone is typing leaves a light-mode glyph on the dark
+    /// list until the row next rebuilds — and a quiet buffer with one steady typist is exactly
+    /// the case that produces no rebuild, since the typing predicate compares nick lists and a
+    /// list that hasn't changed doesn't reload.
+    private func observeAppearanceInvalidation() {
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+            self.tableView.reloadData()
+        }
     }
 
     // MARK: - Keyboard

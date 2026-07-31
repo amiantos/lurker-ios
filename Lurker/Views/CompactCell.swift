@@ -179,7 +179,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
         // Empties dropped as well as nils: a header can carry a time with no nick (a `/me` in the
         // highlights feed), and an unfiltered join would open the spoken label with a comma.
-        messageText.accessibilityLabel = [header?.nick, attributed.string, header?.time]
+        messageText.accessibilityLabel = [header?.nick, MessageRenderer.spoken(attributed), header?.time]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")

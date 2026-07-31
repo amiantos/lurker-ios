@@ -139,12 +139,18 @@ enum MessageRenderer {
         return line
     }
 
-    /// "alice is typing…" — the live composing line that sits at the foot of the buffer.
+    /// "⌨ alice, bob" — the live composing line that sits at the foot of the buffer.
     ///
     /// Built like a consolidation summary rather than as a bubble: it's narration about the
     /// room, not speech in it, and it has no author to caption. Names keep their palette
-    /// colors so you can pick out who without reading; the connective text is muted, which
-    /// with the absent timestamp is enough to place it as an aside rather than a record.
+    /// colors so you can pick out who without reading; the keyboard glyph and the separators
+    /// are muted, which with the absent timestamp is enough to place it as an aside rather
+    /// than a record.
+    ///
+    /// A symbol and a bare list rather than a sentence, matching the web status bar: the row
+    /// exists to be glanced at, and "is typing…"/"are typing…" spent a third of a phone-width
+    /// line restating what the glyph already says — while the singular/plural swap made the
+    /// most-often-redrawn row in the buffer reflow as people joined and left the list.
     ///
     /// Upright, not italic. The line already reads as apart from the conversation — it sits
     /// below the newest message, carries no bubble and no time — and setting the one row that
@@ -152,32 +158,112 @@ enum MessageRenderer {
     /// nothing has earned.
     ///
     /// Returns nil for an empty list so the caller has one thing to check rather than
-    /// rendering a stray " is typing…".
+    /// rendering a lone glyph.
     static func renderTyping(
-        _ nicks: [String], base: UIFont = .preferredFont(forTextStyle: .subheadline)
+        _ nicks: [String],
+        base: UIFont = .preferredFont(forTextStyle: .subheadline),
+        traits: UITraitCollection = .current
     ) -> NSAttributedString? {
         guard !nicks.isEmpty else { return nil }
-        // Past three names the list stops being scannable and starts being a wall — the same
-        // judgement `Consolidation` makes about a join flood, and the same phrasing.
+        // Past three names the list stops being scannable and starts being a wall. Fixed, unlike
+        // `Consolidation`'s `chat.consolidate_max_names`: that setting is about how much of a
+        // netsplit you want written into the log permanently, and this line isn't a record — it's
+        // gone the moment they stop. The web hardcodes its own cap for the same reason. The
+        // overflow is the web's `+N` rather than "and N others": prose the glyph replaced
+        // everywhere else.
         let visible = nicks.prefix(3)
         let hidden = nicks.count - visible.count
 
-        let line = NSMutableAttributedString()
+        let line = NSMutableAttributedString(attributedString: typingGlyph(base: base, traits: traits))
+        // Non-breaking, so the row can't wrap here. A breakable space let TextKit end line one
+        // after the glyph — a first line holding nothing but a keyboard symbol, which the old
+        // wording couldn't produce because it opened with a name.
+        line.append(muted("\u{00A0}", base: base))
         for (index, nick) in visible.enumerated() {
-            if index > 0 {
-                // "and" before the final name only when nothing is truncated; a truncated
-                // list ends "…, and N others" instead.
-                let isLast = index == visible.count - 1
-                line.append(muted(isLast && hidden == 0 ? " and " : ", ", base: base))
-            }
+            if index > 0 { line.append(muted(", ", base: base)) }
             line.append(nickToken(nick, base: base))
         }
         if hidden > 0 {
-            line.append(muted(", and \(hidden) other\(hidden == 1 ? "" : "s")", base: base))
+            line.append(muted(", +\(hidden)", base: base))
         }
-        // Singular only for one name: "alice and bob are", "alice, bob, and 2 others are".
-        line.append(muted(nicks.count == 1 ? " is typing…" : " are typing…", base: base))
         return line
+    }
+
+    /// The keyboard symbol that opens the typing line, sized and colored like the muted text
+    /// beside it.
+    ///
+    /// `withTintColor(.alwaysOriginal)` rather than leaving it a template: a text attachment
+    /// doesn't take the label's color the way glyphs do, and a template one would draw in the
+    /// text view's tint — the accent — which is louder than an aside wants to be.
+    ///
+    /// The color has to be *resolved* here rather than handed over dynamic: baking a color
+    /// into an image is a draw, and it happens with whatever traits are current at the moment
+    /// this runs. Those aren't the row's during `cellForRowAt` (the same trap the rest of the
+    /// renderer takes `traits` for), so a dark-mode buffer would get the light-mode grey.
+    ///
+    /// Sized off `base.pointSize` rather than `SymbolConfiguration(font:)`. A configuration
+    /// built from a font carries that font's *text style* and rescales at image-creation time
+    /// against whatever traits are current then — which puts `.current` back in the path the
+    /// `traits` parameter exists to keep it out of, and lands a glyph sized for one category
+    /// beside text sized for another. A point size is just a number: `base` is already scaled
+    /// for `traits`, so the symbol tracks the text at every size.
+    ///
+    /// Centered on the cap height instead of sitting on the baseline, where a square symbol
+    /// reads as riding low next to lowercase nicks. The `.font` is carried on the attachment's
+    /// own run too — a run with no font is laid out in TextKit's ~12pt default, which made the
+    /// typing row taller than every other row at small text sizes.
+    ///
+    /// `accessibilityLabel` is what `spoken(_:)` substitutes for the attachment character —
+    /// without it the row is read out as a bare list of names with no hint of what they're doing.
+    private static func typingGlyph(base: UIFont, traits: UITraitCollection) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        attachment.accessibilityLabel = "Typing"
+        if let image = UIImage(
+            systemName: "keyboard",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: base.pointSize)
+        )?.withTintColor(
+            UIColor.secondaryLabel.resolvedColor(with: traits), renderingMode: .alwaysOriginal
+        ) {
+            attachment.image = image
+            attachment.bounds = CGRect(
+                x: 0, y: (base.capHeight - image.size.height) / 2,
+                width: image.size.width, height: image.size.height
+            )
+        }
+        let glyph = NSMutableAttributedString(attachment: attachment)
+        glyph.addAttribute(.font, value: base, range: NSRange(location: 0, length: glyph.length))
+        return glyph
+    }
+
+    /// A rendered line as VoiceOver should hear it: attachment characters swapped for the
+    /// words they stand in for.
+    ///
+    /// `NSAttributedString.string` keeps an attachment as U+FFFC, which is spoken as nothing —
+    /// so any meaning carried by a glyph rather than by text is simply lost from a label built
+    /// out of it. Anything without a label of its own drops out rather than leaving the
+    /// placeholder in the sentence.
+    ///
+    /// The scan for U+FFFC comes first because this runs for every row in `cellForRowAt` while
+    /// at most one row in a buffer — the typing line — can ever hold an attachment. Without it
+    /// every message pays for a deep copy and an attribute walk to discover it had nothing to
+    /// substitute. It also leaves those rows' labels byte-identical to the plain string, so the
+    /// trim below can't turn a whitespace-only body into an empty label.
+    static func spoken(_ attributed: NSAttributedString) -> String {
+        let plain = attributed.string
+        guard plain.utf16.contains(0xFFFC) else { return plain }
+
+        let text = NSMutableAttributedString(attributedString: attributed)
+        // Backwards, so replacing one attachment doesn't shift the ranges of the ones before it.
+        var ranges: [(NSRange, String)] = []
+        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) {
+            value, range, _ in
+            guard let attachment = value as? NSTextAttachment else { return }
+            ranges.append((range, attachment.accessibilityLabel ?? ""))
+        }
+        for (range, label) in ranges.reversed() {
+            text.replaceCharacters(in: range, with: label)
+        }
+        return text.string.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Compact (terminal) style
@@ -315,12 +401,23 @@ enum MessageRenderer {
     }
 
     /// The typing line in the compact style.
+    ///
+    /// Hangs by the glyph's width on top of the usual one character, so a list long enough to
+    /// wrap puts its continuation under the first *name* rather than under the middle of the
+    /// keyboard. One character was the right hang while the line opened with a nick; the glyph
+    /// is about two and a half characters wide at default size, and the ratio drifts with
+    /// Dynamic Type — so it's measured, not guessed.
     static func renderCompactTyping(
         _ nicks: [String], traits: UITraitCollection = .current
     ) -> NSAttributedString? {
-        guard let typists = renderTyping(nicks, base: compactFont(compatibleWith: traits)) else { return nil }
+        guard let typists = renderTyping(
+            nicks, base: compactFont(compatibleWith: traits), traits: traits
+        ) else { return nil }
+        // Read back off the attachment rather than re-rendering the symbol to measure it.
+        let glyph = typists.attribute(.attachment, at: 0, effectiveRange: nil) as? NSTextAttachment
         return spaced(
-            NSMutableAttributedString(attributedString: typists), flushFirstLine: true, traits: traits
+            NSMutableAttributedString(attributedString: typists), flushFirstLine: true,
+            extraIndent: glyph?.bounds.width ?? 0, traits: traits
         )
     }
 
@@ -352,7 +449,8 @@ enum MessageRenderer {
     ///
     /// `indentCharacters` is how far. One for most things; two for a `/me`, whose `* ` prefix is
     /// two characters wide, so a one-character hang put the wrap under the space rather than under
-    /// the words.
+    /// the words. `extraIndent` is for a prefix that isn't a whole number of characters wide at
+    /// all — the typing line's keyboard symbol, which has to be measured.
     ///
     /// Set on the whole range last, so it wins over any paragraph style a shared builder left on
     /// the text.
@@ -360,9 +458,10 @@ enum MessageRenderer {
         _ line: NSMutableAttributedString,
         flushFirstLine: Bool,
         indentCharacters: Int = 1,
+        extraIndent: CGFloat = 0,
         traits: UITraitCollection
     ) -> NSAttributedString {
-        let indent = compactIndent(compatibleWith: traits) * CGFloat(indentCharacters)
+        let indent = compactIndent(compatibleWith: traits) * CGFloat(indentCharacters) + extraIndent
         let style = NSMutableParagraphStyle()
         style.lineSpacing = compactLineGap
         style.headIndent = indent
