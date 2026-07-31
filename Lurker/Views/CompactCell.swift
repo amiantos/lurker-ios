@@ -64,12 +64,22 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         selectionStyle = .none
         backgroundColor = .clear
 
-        nickLabel.adjustsFontForContentSizeCategory = true
+        // No `adjustsFontForContentSizeCategory` on either label. It only rescales a font that
+        // carries a text style, and the compact face is a `monospacedSystemFont` at an
+        // already-scaled point size — no style to track, so the flag was doing nothing but
+        // implying it was.
+        //
+        // What does carry a text size change through is the table rebuilding its cells, since
+        // `configure` re-assigns the font every time. That's measured, not promised: a probe
+        // counted `cellForRowAt` on a category change (+7/+17/+14/+16 calls, the font tracking
+        // each category exactly) against a control where an appearance change produced none —
+        // which is why the appearance trait needs the explicit observer in `ChatViewController`
+        // and this one doesn't. If that ever stops holding, the fix is an observer beside that
+        // one rather than this flag, which cannot help whatever UIKit does.
         nickLabel.lineBreakMode = .byTruncatingTail
         // Spoken as part of the body's label instead; addressable here it would be said twice.
         nickLabel.isAccessibilityElement = false
 
-        timeLabel.adjustsFontForContentSizeCategory = true
         timeLabel.textColor = .secondaryLabel
         timeLabel.isAccessibilityElement = false
         // The nick truncates before the clock does: a long nick is recoverable from context, a
