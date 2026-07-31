@@ -59,12 +59,19 @@ final class BufferInfoViewController: UITableViewController {
         // off the member list. Neither moves often, and a busy channel would otherwise
         // rebuild this table once per arriving message.
         viewModel.statePublisher
-            .removeDuplicates {
-                $0.buffers[key]?.topic == $1.buffers[key]?.topic
-                    && $0.members[key]?.count == $1.members[key]?.count
-                    // The count is of *visible* members, so an ignore rule moves it with
-                    // nothing else changing. (`===` is the right test — see `IgnoreSet`.)
-                    && $0.ignores === $1.ignores
+            .removeDuplicates { [bufferKey = buffer.key] old, new in
+                // The rendered count is of VISIBLE members, so that is what has to be
+                // compared. The raw count moves independently of it: a CHGHOST replaces a
+                // member in place (raw count unchanged) and can flip whether a hostmask rule
+                // covers them, and a part+join in one delta nets to zero raw change while the
+                // visible count moves. Either left the sheet showing a stale number beside a
+                // nicklist that had already updated.
+                //
+                // Comparing the derived value also subsumes the `ignores` identity check —
+                // a rule change that doesn't move this count doesn't need a repaint.
+                old.buffers[key]?.topic == new.buffers[key]?.topic
+                    && old.visibleMembers(in: bufferKey).count
+                        == new.visibleMembers(in: bufferKey).count
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }

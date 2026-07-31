@@ -43,7 +43,8 @@ public enum NickCompletion {
         isChannel: Bool,
         limit: Int = 4,
         ignores: IgnoreSet = .empty,
-        networkId: Int? = nil
+        networkId: Int? = nil,
+        channel: String = ""
     ) -> [String] {
         let prefix = query.lowercased()
         var seen = Set<String>()
@@ -55,7 +56,9 @@ public enum NickCompletion {
         let filtering = !ignores.isEmpty(for: networkId)
         func isIgnored(_ nick: String, _ userhost: String?) -> Bool {
             guard filtering else { return false }
-            return ignores.isIgnored(networkId: networkId, nick: nick, userhost: userhost)
+            return ignores.isIgnored(
+                networkId: networkId, nick: nick, userhost: userhost, channel: channel
+            )
         }
         var out: [String] = []
 

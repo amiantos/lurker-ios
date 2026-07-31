@@ -68,6 +68,17 @@ enum FrameParser {
             guard let token = obj.intOrNull("token") else { return .ignored }
             return .searchResult(token: token, page: parseSearchPage(obj))
         case "ignore-list-updated":
+            // A frame with no usable `masks` array is dropped rather than read as "this scope
+            // now has no rules". `objects()` answers `[]` for a missing, null or mistyped key,
+            // and the store treats the payload as complete-for-that-scope — so without this
+            // guard one malformed frame silently deletes every rule in the bucket, live, and
+            // nothing re-seeds them short of a reconnect. A hide feature must not fail open.
+            // Both siblings in this switch refuse a payload they can't trust the same way
+            // (`search-result` on a missing token, `buffer-closed` on an empty target).
+            //
+            // The check is on the raw value, not on emptiness: `masks: []` is a legitimate
+            // "the last rule was removed" and has to keep working.
+            guard obj["masks"] is [Any] else { return .ignored }
             // `networkId` is nullable and its null means the GLOBAL bucket — not the system
             // buffer, which is what a null networkId means on every other frame. `intOrNull`
             // keeps the two apart; `int()` would fold global onto network 0.

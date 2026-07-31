@@ -162,6 +162,26 @@ final class IgnoreScopeTests: XCTestCase {
         XCTAssertEqual(rule.expiresAt, ISOTime.parse("2999-01-01T00:00:00.000Z"))
     }
 
+    /// A frame with no usable `masks` is DROPPED, not read as "this scope has no rules".
+    ///
+    /// `objects()` answers `[]` for a missing, null or mistyped key, and the store treats the
+    /// payload as complete for its scope — so without the guard one malformed frame silently
+    /// deletes every rule in the bucket, live. A hide feature has to fail closed.
+    func testAnIgnoreUpdateWithoutAUsableMasksArrayIsDroppedNotReadAsEmpty() {
+        for body in [
+            ##"{"kind":"ignore-list-updated","networkId":null}"##,
+            ##"{"kind":"ignore-list-updated","networkId":null,"masks":null}"##,
+            ##"{"kind":"ignore-list-updated","networkId":null,"masks":"nope"}"##,
+        ] {
+            XCTAssertEqual(FrameParser.parseWs(body), .ignored, "should be dropped: \(body)")
+        }
+        // …but a genuinely empty list is a real "the last rule was removed" and must apply.
+        guard case let .ignoreListUpdated(_, rules) = FrameParser.parseWs(
+            ##"{"kind":"ignore-list-updated","networkId":null,"masks":[]}"##
+        ) else { return XCTFail("an empty masks array is a legitimate update") }
+        XCTAssertTrue(rules.isEmpty)
+    }
+
     /// A global-scope update carries `networkId: null`, which must not read as network 0.
     func testANullNetworkIdParsesAsTheGlobalScope() {
         let frame = FrameParser.parseWs(
@@ -283,6 +303,94 @@ final class IgnoreScopeTests: XCTestCase {
             ),
             "your own line is never hidden by a rule that happens to cover your nick"
         )
+    }
+
+    // MARK: - The message list's filter
+
+    /// `visible` is what the message list actually calls, and the only caller of
+    /// `unhighlighted()` — so without this the whole client half of NOHIGHLIGHT was unverified:
+    /// changing the demote to a plain pass-through left every suite green while every mention
+    /// wash a rule was written to remove stayed on screen.
+    func testVisibleDropsHiddenRowsAndDemotesNohighlightedOnes() {
+        func message(_ id: Int, _ nick: String, matched: Bool = false) -> Message {
+            Message(
+                id: id, type: .message, nick: nick, text: "hi",
+                matched: matched, userhost: "\(nick)!u@h"
+            )
+        }
+        let messages = [message(1, "bob", matched: true), message(2, "alice", matched: true)]
+
+        let hiding = IgnoreSet(global: [rule(mask: "bob")])
+        XCTAssertEqual(
+            hiding.visible(messages, networkId: 1, target: "#chan").map(\.id), [2],
+            "a hide rule drops the row"
+        )
+
+        let quieting = IgnoreSet(global: [rule(mask: "bob", levels: ["NOHIGHLIGHT"])])
+        let quieted = quieting.visible(messages, networkId: 1, target: "#chan")
+        XCTAssertEqual(quieted.map(\.id), [1, 2], "NOHIGHLIGHT keeps the row")
+        XCTAssertFalse(quieted[0].matched, "…but takes its mention wash off")
+        XCTAssertTrue(quieted[1].matched, "and leaves everyone else's alone")
+    }
+
+    /// Your own lines survive a rule broad enough to cover them — the exemption `verdict`
+    /// states once for every surface.
+    func testVisibleNeverHidesYourOwnLines() {
+        let mine = Message(
+            id: 1, type: .message, nick: "me", text: "hi", isSelf: true, userhost: "me!u@h"
+        )
+        let set = IgnoreSet(global: [rule(mask: "*")])
+        XCTAssertEqual(set.visible([mine], networkId: 1, target: "#chan").map(\.id), [1])
+    }
+
+    /// The jump target survives whatever the rules say. Landing resolves the anchor against
+    /// the RENDERED rows, so filtering it out doesn't just hide a line — it strands the jump
+    /// and, with it, the buffer's hydration for the life of the screen.
+    func testVisibleKeepsTheJumpTargetButStillDemotesIt() {
+        let target = Message(
+            id: 7, type: .message, nick: "bob", text: "hi", matched: true, userhost: "bob!u@h"
+        )
+        let other = Message(id: 8, type: .message, nick: "bob", text: "hi", userhost: "bob!u@h")
+        let set = IgnoreSet(global: [rule(mask: "bob")])
+        XCTAssertEqual(
+            set.visible([target, other], networkId: 1, target: "#chan", keeping: 7).map(\.id), [7],
+            "the exempt id survives; its neighbour from the same sender does not"
+        )
+
+        // The exemption is about the row existing, not about overriding the verdict's styling.
+        let quieting = IgnoreSet(global: [rule(mask: "bob", levels: ["NOHIGHLIGHT"])])
+        let kept = quieting.visible([target], networkId: 1, target: "#chan", keeping: 7)
+        XCTAssertFalse(kept[0].matched)
+    }
+
+    /// An expired rule stops applying through `IgnoreSet` too, not just when `IgnoreMatch` is
+    /// driven directly — the `now:` plumbing is threaded through five methods and was untested
+    /// on all of them.
+    func testExpiryIsHonoredThroughTheSet() {
+        let past = Date(timeIntervalSince1970: 946_684_800)
+        let future = Date(timeIntervalSince1970: 32_503_680_000)
+        let set = IgnoreSet(global: [IgnoreRule(mask: "bob", levels: ["ALL"], expiresAt: past)])
+        let message = Message(id: 1, type: .message, nick: "bob", text: "hi", userhost: "bob!u@h")
+        XCTAssertEqual(set.visible([message], networkId: 1, target: "#chan").count, 1)
+        XCTAssertFalse(set.isIgnored(networkId: 1, nick: "bob", userhost: "bob!u@h"))
+
+        let live = IgnoreSet(global: [IgnoreRule(mask: "bob", levels: ["ALL"], expiresAt: future)])
+        XCTAssertEqual(live.visible([message], networkId: 1, target: "#chan").count, 0)
+        XCTAssertTrue(live.isIgnored(networkId: 1, nick: "bob", userhost: "bob!u@h"))
+    }
+
+    /// `&`-prefixed targets are DMs to the matcher (the server's `isDmTarget` is "not `#`, not
+    /// `:server:`") even though the client renders them as channels. Reusing the rendering
+    /// classification here inverted PUBLIC and MSGS for them.
+    func testAmpersandChannelsAreDmsToTheMatcherAsTheyAreToTheServer() {
+        let message = Message(id: 1, type: .message, nick: "bob", text: "hi", userhost: "bob!u@h")
+        let publicRule = IgnoreSet(global: [rule(mask: "bob", levels: ["PUBLIC"])])
+        let dmRule = IgnoreSet(global: [rule(mask: "bob", levels: ["MSGS"])])
+
+        XCTAssertTrue(publicRule.isMessageHidden(networkId: 1, message: message, target: "#chan"))
+        XCTAssertFalse(publicRule.isMessageHidden(networkId: 1, message: message, target: "&local"))
+        XCTAssertTrue(dmRule.isMessageHidden(networkId: 1, message: message, target: "&local"))
+        XCTAssertFalse(dmRule.isMessageHidden(networkId: 1, message: message, target: "#chan"))
     }
 
     // MARK: - Completion

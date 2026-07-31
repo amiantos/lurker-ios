@@ -112,10 +112,29 @@ public final class IgnoreSet: Sendable {
                 type: message.type,
                 // Derived from the target rather than taken from a caller's buffer record, so
                 // two callers looking at the same line can't classify it differently.
-                isDm: BufferKind.of(networkId: networkId, target: target) == .dm
+                //
+                // Deliberately NOT `BufferKind.of`, which is the client's *rendering*
+                // classification and counts a `&`-prefixed target as a channel. The server's
+                // `isDmTarget` (`wsHub.ts`, `ircConnection.ts:isDmTargetName`) is
+                // "not `#`, not `:server:`" — so `&local` is a DM to the matcher, and using
+                // the rendering answer here inverted PUBLIC and MSGS for those channels: the
+                // server stamped a line not-ignored while this client hid it.
+                isDm: Self.isDmTarget(target)
             ),
             now: now
         )
+    }
+
+    /// Whether a target is a DM **as the matcher means it** — the client-side twin of the
+    /// server's `isDmTarget`.
+    ///
+    /// This is the one matcher input derived here rather than received on the wire, so it is
+    /// the one place a client can disagree with the server about what a rule covers. Kept as
+    /// its own named answer, next to the only thing that asks the question, rather than
+    /// reusing `BufferKind.of` — the two look interchangeable and are not, and the last time
+    /// they were conflated it cost the `&` channels their PUBLIC/MSGS split.
+    static func isDmTarget(_ target: String) -> Bool {
+        !target.isEmpty && !target.hasPrefix("#") && !target.hasPrefix(":server:")
     }
 
     /// Whether a message row is hidden, for the surfaces that hold the message object — the
@@ -139,10 +158,17 @@ public final class IgnoreSet: Sendable {
     /// no test bundle) and so the highest-traffic surface reads through the same adapter the
     /// low-traffic feeds do. Returns the input untouched when nothing could apply, which is
     /// the common case and costs one dictionary lookup.
+    /// `keeping` is a message id that must survive the filter whatever the rules say — the
+    /// message a jump was aimed at. Navigating to a specific line and being shown the space
+    /// where it isn't is worse than showing a line a rule would otherwise hide, and on this
+    /// client it also strands the landing (see `ChatViewController.jumpExemptId`). Its
+    /// highlight is still demoted: the exemption is about the row existing, not about
+    /// overriding what the rule says the row should look like.
     public func visible(
         _ messages: [Message],
         networkId: Int?,
         target: String,
+        keeping: Int? = nil,
         now: Date = Date()
     ) -> [Message] {
         guard !isEmpty(for: networkId) else { return messages }
@@ -150,25 +176,34 @@ public final class IgnoreSet: Sendable {
             let verdict = verdict(
                 networkId: networkId, message: message, target: target, now: now
             )
-            if verdict.hide { return nil }
+            if verdict.hide, message.id == 0 || message.id != keeping { return nil }
             return verdict.nohilight ? message.unhighlighted() : message
         }
     }
 
-    /// Whether this sender is *broadly* ignored — hidden regardless of what they say or where.
+    /// Whether this sender is *broadly* ignored — hidden regardless of what they say.
     ///
-    /// For the callers that have a nick and nothing else: nick completion, the typing
-    /// indicator. Deliberately narrow — a level-scoped, channel-scoped, content-pattern or
-    /// NOHIGHLIGHT rule does not count here, because answering "should this person be offered
-    /// for completion" from a rule that only hides their joins would be inventing an opinion
-    /// the rule never expressed. Those need full event context; use `evaluate`.
+    /// For the callers that have a nick and a buffer but no message: nick completion, the
+    /// typing indicator. Deliberately narrow — a level-scoped, content-pattern or NOHIGHLIGHT
+    /// rule does not count here, because answering "should this person be offered for
+    /// completion" from a rule that only hides their joins would be inventing an opinion the
+    /// rule never expressed. Those need full event context; use `evaluate`.
+    ///
+    /// `channel` is where the question is being asked, and passing it is what makes a
+    /// channel-scoped rule work on these two surfaces. Omitting it (the web's behavior, which
+    /// hardcodes `''`) means only unscoped rules ever match — so `/ignore bob -channels #foo`
+    /// erased bob from #foo's message list and nicklist while "bob is typing…" kept appearing
+    /// at the foot of that same buffer, and `@bo` still completed to him.
     public func isIgnored(
         networkId: Int?,
         nick: String,
         userhost: String?,
+        channel: String = "",
         now: Date = Date()
     ) -> Bool {
-        isMemberHidden(networkId: networkId, nick: nick, userhost: userhost, channel: "", now: now)
+        isMemberHidden(
+            networkId: networkId, nick: nick, userhost: userhost, channel: channel, now: now
+        )
     }
 
     /// The nicklist filter: whether a whole-identity `ALL` rule erases this member from the

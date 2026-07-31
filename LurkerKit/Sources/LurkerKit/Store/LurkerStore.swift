@@ -342,8 +342,11 @@ public struct ChatState: Sendable {
             .filter {
                 guard $0.isLive(at: now) else { return false }
                 guard filtering else { return true }
+                // Scoped to this buffer, so a `-channels #foo` rule silences the indicator in
+                // the same buffer it silences the messages.
                 return !ignores.isIgnored(
-                    networkId: key.networkId, nick: $0.nick, userhost: $0.userhost, now: now
+                    networkId: key.networkId, nick: $0.nick, userhost: $0.userhost,
+                    channel: key.target, now: now
                 )
             }
             .sorted { ($0.startedAt, $0.nick.lowercased()) < ($1.startedAt, $1.nick.lowercased()) }

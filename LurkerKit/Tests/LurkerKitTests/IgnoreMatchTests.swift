@@ -226,6 +226,82 @@ final class IgnoreMatchTests: XCTestCase {
         XCTAssertFalse(evaluate([rule(mask: "bob", levels: ["INVENTED"])], input()).hide)
     }
 
+    /// The types NOT in `IgnoreLevels.all`, stated explicitly. `.invite`, `.e2e` and `.ctcp`
+    /// sat in neither list, so an `ALL` rule visibly leaving invites standing was untested in
+    /// both directions.
+    func testAllLeavesInvitesAndClientSideLinesStanding() {
+        let rules = [rule(mask: "bob", levels: ["ALL"])]
+        for type in [EventType.invite, .e2e, .ctcp] {
+            XCTAssertFalse(
+                evaluate(rules, input(text: "x", type: type)).hide,
+                "ALL should not cover \(type) — it is outside IgnoreLevels.all"
+            )
+        }
+    }
+
+    /// The literal fast paths must never disagree with the glob path they exist to avoid.
+    /// The earlier version of this suite asserted exactly that and only tested ASCII, where
+    /// the split is invisible — a `lowercased()` comparison answered differently from ICU for
+    /// `WEIß` and `ς`, so an optimization was quietly changing verdicts.
+    func testTheLiteralAndGlobPathsAgreeOnNonAsciiToo() {
+        // Each pair is (mask, nick) chosen so the two paths could diverge: German sharp s
+        // (full vs simple case folding) and Greek final sigma.
+        for (mask, nick) in [("weiss", "WEIß"), ("weiß", "WEISS"), ("σ", "ς"), ("Straße", "STRASSE")] {
+            // `mask` has no wildcard, so it takes the literal path; `mask + "*"` forces the
+            // regex path against the same nick with a suffix that matches nothing extra.
+            let literal = evaluate([rule(mask: mask, levels: ["ALL"])], input(nick: nick)).hide
+            let glob = evaluate([rule(mask: mask + "*", levels: ["ALL"])], input(nick: nick)).hide
+            XCTAssertEqual(literal, glob, "literal and glob disagree for mask=\(mask) nick=\(nick)")
+        }
+    }
+
+    /// Same requirement for channel scopes, which have their own literal path.
+    func testTheLiteralAndGlobChannelPathsAgreeOnNonAsciiToo() {
+        for (scope, target) in [("#weiss", "#WEIß"), ("#σ", "#ς")] {
+            let literal = evaluate([rule(channels: [scope], levels: ["PUBLIC"])], input(target: target)).hide
+            let glob = evaluate([rule(channels: [scope + "*"], levels: ["PUBLIC"])], input(target: target)).hide
+            XCTAssertEqual(literal, glob, "literal and glob disagree for scope=\(scope) target=\(target)")
+        }
+    }
+
+    /// A substring pattern compares code units, like the JS `includes` it ports — NOT Swift's
+    /// default canonical equivalence, which would hide a decomposed line the server counted.
+    func testASubstringPatternDoesNotMatchAcrossCanonicalEquivalence() {
+        let rules = [rule(pattern: "caf\u{e9}", levels: ["PUBLIC"])] // precomposed é
+        XCTAssertTrue(evaluate(rules, input(text: "caf\u{e9} time")).hide)
+        XCTAssertFalse(
+            evaluate(rules, input(text: "cafe\u{301} time")).hide,
+            "decomposed text is a different string to the reference engine, so it must be here"
+        )
+    }
+
+    /// The compile failure fallbacks match NOTHING. The tempting alternative — "matches
+    /// anything" — silently promotes `hide bob` into `hide everyone`, which for an `ALL` rule
+    /// blanks the message list, the nicklist and completion at once, and widens a channel
+    /// scope from one buffer to the whole network.
+    ///
+    /// Asserted on the cases themselves because `globToRegex` escapes everything a user can
+    /// type, so the branch that selects them isn't reachable today. That is exactly why the
+    /// direction is worth pinning now: an unreachable wrong default stays invisible right up
+    /// until the escaping changes.
+    func testTheCompileFailureFallbacksMatchNothing() {
+        XCTAssertFalse(IgnoreMatch.MaskMatcher.nobody.matches(nick: "bob", userhost: "bob!u@h"))
+        XCTAssertFalse(IgnoreMatch.MaskMatcher.nobody.matches(nick: nil, userhost: nil))
+        XCTAssertFalse(IgnoreMatch.ChannelMatcher.none.matches("#chan"))
+        // The sibling that already got this right, for contrast.
+        XCTAssertFalse(IgnoreMatch.TextMatcher.never.matches("anything", lowered: "anything"))
+    }
+
+    /// Longest-mask-wins is decided against the server's answer for the same rules, and the
+    /// server counts JS `String.length` — UTF-16 units, where a non-BMP character counts 2.
+    func testMaskLengthIsCountedInUtf16UnitsLikeTheReference() {
+        let compiled = IgnoreMatch.compile([rule(mask: "🙂🙂", levels: ["ALL"])])
+        XCTAssertEqual(
+            compiled.rules[0].maskLength, 4,
+            "two non-BMP characters are 4 UTF-16 units, not 2 graphemes"
+        )
+    }
+
     // MARK: - Except
 
     func testTheLongerExceptMaskWins() {

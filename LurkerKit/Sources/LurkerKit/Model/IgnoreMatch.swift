@@ -11,6 +11,30 @@ import Foundation
 /// directions: adding one hides backlog the server had already sent, and removing one brings
 /// those lines back without a refetch. That's why this exists client-side at all, and why it
 /// has to agree with the server's copy exactly rather than approximate it.
+///
+/// ## Known divergences, all confined to non-ASCII rules
+///
+/// The reference runs on V8; this runs on ICU. The two do not agree everywhere, and no amount
+/// of care in this file closes the gap — it would take shipping a case-folding table and a
+/// regex engine. What IS held is internal consistency, which is testable: the literal and glob
+/// paths below answer identically for every input, so an optimization can never change a
+/// verdict. The residue, for anyone chasing a line hidden on one client and not the other:
+///
+///  - **Case folding.** V8's `/…/i` uses *simple* folding, ICU's uses full. `/^weiss$/i`
+///    does not match `WEIß` on the server but does here; `σ`/`ς` fold together in both. Only
+///    reachable via a non-ASCII mask or channel scope, which RFC-1459 nicks can't be.
+///  - **Regex shorthands.** A user's `-pattern regex` is compiled by V8 without the `u` flag,
+///    where `\d`/`\w`/`\s`/`\b` are ASCII-only; ICU makes them Unicode-aware. So
+///    `-pattern regex \w+bank` matches `Ünterbank` here and not on the server.
+///  - **Truecolor stripping.** `cleanForMatch` reuses `IRCFormatting.strip`, which consumes a
+///    `\u{04}` code plus up to six hex and an optional `,hex6`; the server's `FORMAT_RE` only
+///    strips it when followed by *exactly* six hex and has no `,bg` branch. A content pattern
+///    can therefore match against slightly different text on either side of a malformed
+///    truecolor code.
+///
+/// These are documented rather than fixed because each is a whole engine's worth of work to
+/// close, and every one needs a non-ASCII rule to reach. If a report ever lands that fits one,
+/// this is the list to check it against.
 public enum IgnoreMatch {
 
     // MARK: - Glob
@@ -70,10 +94,25 @@ public enum IgnoreMatch {
     enum MaskMatcher {
         /// No mask, or `*`: anyone.
         case anyone
+        /// A mask that wouldn't compile — matches nobody, so the rule is inert.
+        ///
+        /// Failing CLOSED is the whole point. The obvious fallback, `.anyone`, silently
+        /// promotes "hide bob" into "hide everyone": an `ALL` rule in that state blanks the
+        /// message list, the nicklist and completion at once. Today's escaping makes the
+        /// failure hard to reach, which is exactly why the wrong default would go unnoticed
+        /// until it wasn't. Same choice `TextMatcher.never` makes for the same class of
+        /// failure.
+        case nobody
         /// A bare token with no wildcards in it — `/ignore bob`, far and away the commonest
-        /// rule there is. Held as an already-lowered literal so the per-row cost is a string
-        /// compare rather than an ICU regex execution; the glob cases below are what the
-        /// wildcards are for.
+        /// rule there is. Compared with `caseInsensitiveCompare` so the per-row cost is a
+        /// string compare rather than an ICU regex execution; the glob cases below are what
+        /// the wildcards are for.
+        ///
+        /// **Not** `lowercased() ==`, which is the obvious form and answers differently from
+        /// the regex path it stands in for: `lowercased()` maps `ß` to itself while ICU's
+        /// case-insensitive matching folds it to `ss`, so `/ignore weiss` stopped matching
+        /// `WEIß` the moment this optimization landed. An optimization that changes verdicts
+        /// isn't one — see `testTheLiteralAndGlobPathsAgreeOnNonAsciiToo`.
         case literalNick(String)
         /// A bare token — a nick glob, and nothing said about the hostmask.
         case nick(NSRegularExpression)
@@ -93,9 +132,11 @@ public enum IgnoreMatch {
             switch self {
             case .anyone:
                 return true
-            case .literalNick(let lowered):
+            case .nobody:
+                return false
+            case .literalNick(let literal):
                 guard let nick else { return false }
-                return nick.lowercased() == lowered
+                return nick.caseInsensitiveCompare(literal) == .orderedSame
             case .nick(let regex):
                 guard let nick else { return false }
                 return regex.matches(nick)
@@ -120,18 +161,22 @@ public enum IgnoreMatch {
     enum ChannelMatcher {
         case any
         /// Wildcard-free targets — the shape every mute rule and most `-channels` scopes take.
-        /// Pre-lowered literals, so scoping a rule to a channel costs a string compare per
-        /// buffer rather than an ICU execution.
+        /// Compared case-insensitively, so scoping a rule to a channel costs a string compare
+        /// per buffer rather than an ICU execution.
         case literals([String])
         case globs([NSRegularExpression])
+        /// Every glob in the scope failed to compile — matches nothing, so the rule is inert.
+        /// Fails closed for the same reason `MaskMatcher.nobody` does: the `.any` fallback
+        /// would widen a rule from one channel to every buffer on the network.
+        case none
 
         func matches(_ target: String) -> Bool {
             switch self {
             case .any: return true
-            case .literals(let lowered):
+            case .none: return false
+            case .literals(let literals):
                 guard !target.isEmpty else { return false }
-                let folded = target.lowercased()
-                return lowered.contains(folded)
+                return literals.contains { target.caseInsensitiveCompare($0) == .orderedSame }
             case .globs(let regexes):
                 guard !target.isEmpty else { return false }
                 return regexes.contains { $0.matches(target) }
@@ -156,7 +201,12 @@ public enum IgnoreMatch {
         func matches(_ text: String, lowered: String) -> Bool {
             switch self {
             case .any: return true
-            case .substring(let needle): return lowered.contains(needle)
+            case .substring(let needle):
+                // `.literal` — i.e. code-unit comparison, NOT canonical equivalence. Swift's
+                // `String.contains` treats a decomposed `cafe\u{301}` and a precomposed
+                // `café` as equal; the reference is JS `includes`, which does not. Without
+                // this a `-pattern café` rule hides a decomposed line the server counted.
+                return lowered.range(of: needle, options: .literal) != nil
             case .regex(let regex): return regex.matches(text)
             case .never: return false
             }
@@ -172,6 +222,12 @@ public enum IgnoreMatch {
         let isExcept: Bool
         /// The mask's length, which is the whole of "longest mask wins": a more specific mask
         /// is a longer string, so an `-except` only beats a hide it's more specific than.
+        ///
+        /// Counted in UTF-16 units, not graphemes, because the reference is JS `String.length`
+        /// and this number is *compared against the server's answer for the same rules*. An
+        /// emoji or other non-BMP character in a mask counts 2 there and would count 1 as a
+        /// Swift `Character`, which is enough to flip which of two rules wins and hide a line
+        /// the server showed.
         let maskLength: Int
         let expiresAt: Date?
         /// Whether the rule carries any hide levels at all (a modifier-only rule doesn't).
@@ -241,7 +297,7 @@ public enum IgnoreMatch {
             compiled.append(
                 CompiledRule(
                     isExcept: rule.isExcept,
-                    maskLength: rule.mask?.count ?? 0,
+                    maskLength: rule.mask?.utf16.count ?? 0,
                     expiresAt: rule.expiresAt,
                     hides: !hideLevels.isEmpty,
                     nohilight: rule.levels.contains("NOHIGHLIGHT"),
@@ -270,15 +326,15 @@ public enum IgnoreMatch {
     static func maskMatcher(_ mask: String?) -> MaskMatcher {
         guard let mask, !mask.isEmpty, mask != "*" else { return .anyone }
         guard mask.contains("!") || mask.contains("@") else {
-            guard hasWildcard(mask) else { return .literalNick(mask.lowercased()) }
-            guard let regex = globToRegex(mask, caseInsensitive: true) else { return .anyone }
+            guard hasWildcard(mask) else { return .literalNick(mask) }
+            guard let regex = globToRegex(mask, caseInsensitive: true) else { return .nobody }
             return .nick(regex)
         }
         let parts = splitMask(mask)
         guard let nick = globToRegex(parts.nick, caseInsensitive: true),
               let user = globToRegex(parts.user, caseInsensitive: false),
               let host = globToRegex(parts.host, caseInsensitive: false)
-        else { return .anyone }
+        else { return .nobody }
         return .identity(
             nick: nick, user: user, host: host,
             hostmaskOptional: parts.user == "*" && parts.host == "*"
@@ -287,11 +343,9 @@ public enum IgnoreMatch {
 
     static func channelMatcher(_ channels: [String]?) -> ChannelMatcher {
         guard let channels, !channels.isEmpty else { return .any }
-        guard channels.contains(where: hasWildcard) else {
-            return .literals(channels.map { $0.lowercased() })
-        }
+        guard channels.contains(where: hasWildcard) else { return .literals(channels) }
         let regexes = channels.compactMap { globToRegex($0, caseInsensitive: true) }
-        return regexes.isEmpty ? .any : .globs(regexes)
+        return regexes.isEmpty ? .none : .globs(regexes)
     }
 
     /// A word character for whole-word matching: any Unicode letter or number, or underscore.
