@@ -391,6 +391,58 @@ final class LurkerClient {
         ])
     }
 
+    /// Store an ignore rule (`/ignore`, #86).
+    ///
+    /// **A nil `networkId` is a global rule — every network — not "no network."** That's the
+    /// opposite of the guard every conversation verb above takes, and the reason this one has
+    /// none: nil is the *default* scope here, and dropping the frame for it would silently
+    /// swallow the commonest rule there is. `NSNull` rather than a missing key, so the scope is
+    /// stated rather than inferred (the server distinguishes a null id from a malformed one).
+    ///
+    /// Fire-and-ask: the server re-validates, and the rule only exists once it fans an
+    /// `ignore-list-updated` back. Surfaces a socket-level failure like the other deliberate
+    /// writes — there's no queue behind it.
+    func addIgnore(networkId: Int?, rule: IgnoreRule) {
+        send(
+            [
+                "type": "add-ignore",
+                "networkId": networkId.map { $0 as Any } ?? NSNull(),
+                "rule": ruleJSON(rule),
+            ],
+            surfacesFailure: true
+        )
+    }
+
+    /// Drop ignore rules (`/unignore`): by `id` — what a listed index resolves to — or by
+    /// `mask`, which clears every rule carrying it. `networkId` scopes it, nil meaning the
+    /// global bucket; a by-mask removal on a network scope also clears matching globals, which
+    /// is the server's behavior and why it answers with both buckets refreshed.
+    func removeIgnore(networkId: Int?, id: Int?, mask: String?) {
+        var verb: [String: Any] = [
+            "type": "remove-ignore",
+            "networkId": networkId.map { $0 as Any } ?? NSNull(),
+        ]
+        if let id { verb["id"] = id }
+        if let mask { verb["mask"] = mask }
+        send(verb, surfacesFailure: true)
+    }
+
+    /// A rule as `add-ignore` carries it. Unset dimensions are *omitted* rather than sent as
+    /// null: the server reads an absent field as "unconstrained", which is the same thing and
+    /// keeps the frame to what the rule actually says.
+    private func ruleJSON(_ rule: IgnoreRule) -> [String: Any] {
+        var out: [String: Any] = [
+            "levels": rule.levels,
+            "patternKind": rule.patternKind.rawValue,
+            "isExcept": rule.isExcept,
+        ]
+        if let mask = rule.mask { out["mask"] = mask }
+        if let channels = rule.channels, !channels.isEmpty { out["channels"] = channels }
+        if let pattern = rule.pattern { out["pattern"] = pattern }
+        if let expiresAt = rule.expiresAt { out["expiresAt"] = ISOTime.string(from: expiresAt) }
+        return out
+    }
+
     /// Set yourself away on every network (`/away`), or clear it (`/back`, or `/away` with no
     /// message). User-scoped, so neither verb carries a networkId — the server keys on the
     /// account and fans out to all connections.

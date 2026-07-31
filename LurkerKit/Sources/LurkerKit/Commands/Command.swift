@@ -13,7 +13,7 @@ import Foundation
 /// What the app deliberately does NOT carry, and why:
 ///  - `/set` `/get` — web-only settings console; iOS settings are a native screen (#20).
 ///  - `/network` `/net` — network CRUD is REST-heavy and owns its own issue (#11).
-///  - `/ignore` `/highlight` and friends — rule *management* is out of 1.0 scope (#13).
+///  - `/highlight` `/unhighlight` — highlight-rule management, still unported (#13).
 ///  - `/relay` `/dcc` `/e2e` `/list` `/jitsi` `/clear` — web-specific or unbuilt features.
 ///  - `/quit` `/reconnect` — network lifecycle (#11); intercepted with a note rather than
 ///    left to the raw fallback, where a bare `/quit` would fire a real IRC `QUIT`.
@@ -54,6 +54,19 @@ public enum CommandEffect: Equatable, Sendable {
     /// Open the target buffer and switch the UI to it — the DM that `/msg` and `/query`
     /// open. The executor turns this into navigation.
     case activate(target: String)
+    /// Ask the server to store an ignore rule (#86).
+    ///
+    /// Unlike every wire effect above, this carries its own scope rather than running on the
+    /// issuing buffer's network — because the two aren't the same question. **A nil `scope` is
+    /// a GLOBAL rule, applying on every network**, and it's the default: `-network` is what
+    /// opts a rule into the connection it was typed on (#350). (Note that's the opposite of
+    /// the nil convention buffers use, where no network means the app-scoped system buffer.)
+    case addIgnore(scope: Int?, rule: IgnoreRule)
+    /// Ask the server to drop ignore rules — by `id` (what a listed index resolves to) or by
+    /// `mask` (every rule carrying it). `scope` reads as it does for `addIgnore`; a by-mask
+    /// removal on a network scope clears matching globals too, which is the server's rule and
+    /// why the confirmation counts what the client can see rather than claiming a total.
+    case removeIgnore(scope: Int?, id: Int?, mask: String?)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -225,6 +238,15 @@ public enum CommandRegistry {
                     args: [ArgSpec("mask", .nick, rest: true)]),
         CommandSpec(["unquiet"], .moderation, "Lift a quiet",
                     args: [ArgSpec("mask", .nick, rest: true)]),
+        // Ignoring is personal moderation — it files with /ban and /quiet, which are the same
+        // intent aimed at a channel instead of at your own screen. Network-agnostic: rules are
+        // global by default, so the system buffer can list and write them.
+        CommandSpec(["ignore"], .moderation, "Ignore someone, or list your ignore rules",
+                    args: [ArgSpec("mask", .nick, optional: true),
+                           ArgSpec("levels", .text, optional: true, rest: true)],
+                    networkAgnostic: true),
+        CommandSpec(["unignore"], .moderation, "Drop an ignore rule by its listed number or mask",
+                    args: [ArgSpec("index|mask", .word)], networkAgnostic: true),
 
         // Server
         CommandSpec(["raw", "quote"], .server, "Send a raw IRC line",

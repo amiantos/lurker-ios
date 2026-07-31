@@ -3,15 +3,33 @@
 
 import Foundation
 
+/// One rule as a listing sees it: the rule, plus which bucket it came from.
+///
+/// The scope isn't on the rule — the row the server ships is identical in both buckets — so it
+/// is carried alongside, and it's what makes a listed rule removable: a by-id delete has to be
+/// addressed to the bucket the rule lives in. Nil is the global bucket, i.e. every network.
+public struct ScopedIgnoreRule: Equatable, Sendable {
+    public let rule: IgnoreRule
+    public let scope: Int?
+
+    public init(rule: IgnoreRule, scope: Int?) {
+        self.rule = rule
+        self.scope = scope
+    }
+}
+
 /// The account's ignore rules, compiled and ready to ask (lurker #301, #350).
 ///
 /// Two buckets, exactly as the server keeps them: `global` rules apply on every network — the
 /// default scope a bare `/ignore` creates — and `byNetwork` rules are scoped to one. A
 /// network's effective set is the union of the two, and every query below takes it.
 ///
-/// Server-authoritative. Rules are created and removed on the web (`/ignore`, the settings
-/// pane); the server fans the resulting list to every device, so a rule made in a browser
-/// takes effect on the phone without either side coordinating. **This client only reads.**
+/// Server-authoritative. `/ignore` and `/unignore` here (#86), like `/ignore` and the settings
+/// pane on the web, *ask* — the server validates, stores, and fans the resulting list back to
+/// every device, which is what makes a rule made in a browser take effect on the phone without
+/// either side coordinating. **Nothing writes to this type but a frame:** it is replaced whole
+/// by `snapshot`/`ignore-list-updated`, never mutated in place by the command that caused the
+/// change, so a rule the server refuses simply never appears.
 ///
 /// Immutable, and replaced rather than mutated: a `snapshot` or `ignore-list-updated` frame
 /// builds a whole new one. That's what makes compiling eager rather than cached — the globs
@@ -58,6 +76,25 @@ public final class IgnoreSet: Sendable {
         var next = byNetwork
         next[networkId] = rules
         return IgnoreSet(global: global, byNetwork: next)
+    }
+
+    /// The rules visible from `networkId`, in listing order: the globals first, then that
+    /// network's own. The one read accessor on the stored buckets — everything else here
+    /// answers a *question* about the rules, and this hands them over.
+    ///
+    /// Order is the contract, not a detail: the number a user reads off `/ignore` is a
+    /// position in this array, so `/unignore <n>` resolves both the rule's id and the bucket
+    /// to send the removal to from it. Matches the web's `combinedIgnores`, so the same
+    /// account numbers its rules identically on both clients.
+    ///
+    /// A nil `networkId` is the system buffer, where only global rules are in scope — there's
+    /// no connection for a network-scoped rule to be about.
+    public func listing(for networkId: Int?) -> [ScopedIgnoreRule] {
+        let globals = global.map { ScopedIgnoreRule(rule: $0, scope: nil) }
+        guard let networkId else { return globals }
+        return globals + (byNetwork[networkId] ?? []).map {
+            ScopedIgnoreRule(rule: $0, scope: networkId)
+        }
     }
 
     /// The rules in force on `networkId`.

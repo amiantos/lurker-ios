@@ -300,4 +300,152 @@ final class CommandParserTests: XCTestCase {
             return XCTFail("expected /quit to be intercepted with a note")
         }
     }
+
+    // MARK: - Ignore rules (#86)
+
+    /// Two rules the tests can list: one global, one on network 1 — the two buckets, in the
+    /// order `IgnoreSet.listing(for:)` hands them over.
+    private var listedRules: [ScopedIgnoreRule] {
+        [
+            ScopedIgnoreRule(rule: IgnoreRule(id: 7, mask: "spammer"), scope: nil),
+            ScopedIgnoreRule(rule: IgnoreRule(id: 9, mask: "bob", levels: ["JOINS"]), scope: 1),
+        ]
+    }
+
+    private func effects(
+        _ input: String,
+        ignores: [ScopedIgnoreRule],
+        networkId: Int? = 1,
+        target: String = "#chan"
+    ) -> [CommandEffect] {
+        guard case .command(let effects) = CommandParser.parse(
+            input, networkId: networkId, target: target, ignores: ignores
+        ) else {
+            XCTFail("expected a command from \(input)")
+            return []
+        }
+        return effects
+    }
+
+    func testIgnoreNoLongerPutsARawIgnoreLineOnTheWire() {
+        // The bug #86 exists to fix: the unknown-verb fallback sent a literal `IGNORE bob` to
+        // a server that has no such command, so the user got a numeric back and no rule.
+        for effect in effects("/ignore bob") + effects("/unignore bob", ignores: listedRules) {
+            if case .raw = effect { XCTFail("an ignore verb must never reach the raw fallback") }
+        }
+    }
+
+    func testIgnoreDefaultsToAGlobalRule() {
+        // The default scope is global (#350) — nil, not the issuing network.
+        XCTAssertEqual(
+            effects("/ignore bob").first,
+            .addIgnore(scope: nil, rule: IgnoreRule(mask: "bob", levels: ["ALL"]))
+        )
+    }
+
+    func testIgnoreNetworkScopesToTheIssuingConnection() {
+        XCTAssertEqual(
+            effects("/ignore -network bob NOHIGHLIGHT").first,
+            .addIgnore(scope: 1, rule: IgnoreRule(mask: "bob", levels: ["NOHIGHLIGHT"]))
+        )
+    }
+
+    func testIgnoreConfirmsWhatItSent() {
+        guard case .info(let text) = effects("/ignore bob").last else {
+            return XCTFail("expected a confirmation")
+        }
+        XCTAssertTrue(text.contains("bob"), text)
+        XCTAssertTrue(text.contains("[global]"), text)
+    }
+
+    func testIgnoreRunsFromTheSystemBufferBecauseRulesAreGlobal() {
+        XCTAssertEqual(
+            effects("/ignore bob", networkId: nil, target: ":system:").first,
+            .addIgnore(scope: nil, rule: IgnoreRule(mask: "bob", levels: ["ALL"]))
+        )
+    }
+
+    func testIgnoreNetworkInTheSystemBufferIsRefusedRatherThanMadeGlobal() {
+        // Writing the global rule they didn't ask for would be a wider ignore than intended.
+        let effects = effects("/ignore -network bob", networkId: nil, target: ":system:")
+        guard case .info(let text) = effects.first, effects.count == 1 else {
+            return XCTFail("expected a refusal and nothing else")
+        }
+        XCTAssertTrue(text.contains("needs an active network"), text)
+    }
+
+    func testIgnoreReportsAParseErrorRatherThanStoringSomethingElse() {
+        let effects = effects("/ignore -bogus bob")
+        guard case .info(let text) = effects.first, effects.count == 1 else {
+            return XCTFail("expected an error and no rule")
+        }
+        XCTAssertTrue(text.contains("unknown flag"), text)
+    }
+
+    func testBareIgnoreListsTheRulesNumberedGlobalsFirst() {
+        guard case .info(let text) = effects("/ignore", ignores: listedRules).first else {
+            return XCTFail("expected a listing")
+        }
+        let lines = text.split(separator: "\n").map(String.init)
+        XCTAssertEqual(lines.count, 3, text)
+        XCTAssertTrue(lines[0].contains("(2)"), lines[0])
+        XCTAssertTrue(lines[1].contains("1. spammer"), lines[1])
+        XCTAssertTrue(lines[1].contains("[global]"), lines[1])
+        XCTAssertTrue(lines[2].contains("2. bob"), lines[2])
+        XCTAssertFalse(lines[2].contains("[global]"), lines[2])
+    }
+
+    func testBareIgnoreWithNoRulesSaysSoAndPointsAtTheVerb() {
+        guard case .info(let text) = effects("/ignore").first else {
+            return XCTFail("expected a listing")
+        }
+        XCTAssertTrue(text.contains("empty"), text)
+    }
+
+    func testUnignoreByIndexRemovesThatRuleByIdInItsOwnScope() {
+        // #2 is the network-scoped rule: both the id and the scope come from the listing, which
+        // is the whole reason `IgnoreRule.id` is carried.
+        XCTAssertEqual(
+            effects("/unignore 2", ignores: listedRules).first,
+            .removeIgnore(scope: 1, id: 9, mask: nil)
+        )
+        XCTAssertEqual(
+            effects("/unignore 1", ignores: listedRules).first,
+            .removeIgnore(scope: nil, id: 7, mask: nil)
+        )
+    }
+
+    func testUnignoreByIndexOutOfRangeRemovesNothing() {
+        for input in ["/unignore 0", "/unignore 3", "/unignore 99999999999999999999"] {
+            let effects = effects(input, ignores: listedRules)
+            guard case .info(let text) = effects.first, effects.count == 1 else {
+                return XCTFail("expected a complaint and no removal from \(input)")
+            }
+            XCTAssertTrue(text.contains("see /ignore"), text)
+        }
+    }
+
+    func testUnignoreByMaskClearsEveryRuleCarryingIt() {
+        // Scoped to the issuing network: the server's by-mask delete spans the globals plus
+        // that one network, which is the set the count describes.
+        XCTAssertEqual(
+            effects("/unignore BOB", ignores: listedRules).first,
+            .removeIgnore(scope: 1, id: nil, mask: "BOB")
+        )
+    }
+
+    func testUnignoreByMaskWithNoMatchRemovesNothing() {
+        let effects = effects("/unignore nobody", ignores: listedRules)
+        guard case .info(let text) = effects.first, effects.count == 1 else {
+            return XCTFail("expected a complaint and no removal")
+        }
+        XCTAssertTrue(text.contains("no ignore with mask"), text)
+    }
+
+    func testBareUnignoreExplainsItself() {
+        guard case .info(let text) = effects("/unignore").first else {
+            return XCTFail("expected usage")
+        }
+        XCTAssertTrue(text.contains("index|mask"), text)
+    }
 }

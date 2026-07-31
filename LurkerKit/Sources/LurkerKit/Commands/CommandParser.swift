@@ -17,7 +17,21 @@ public enum CommandParser {
     ///  - `/…` is a command.
     ///  - anything else is a plain message — except in the system buffer, which has no
     ///    network to send to, where it's `notCommand`.
-    public static func parse(_ input: String, networkId: Int?, target: String) -> ParsedInput {
+    ///
+    /// `ignores` is the account's rules as `/ignore` lists them (`IgnoreSet.listing(for:)`),
+    /// passed in rather than reached for so this stays pure: `/ignore` with no arguments prints
+    /// them and `/unignore <n>` addresses one by its position, and both have to answer from the
+    /// same list the user just read. It defaults to empty, which is the honest answer for a
+    /// caller that doesn't have them — an empty listing and "no such rule".
+    ///
+    /// `now` is likewise injected, for `/ignore -time`.
+    public static func parse(
+        _ input: String,
+        networkId: Int?,
+        target: String,
+        ignores: [ScopedIgnoreRule] = [],
+        now: Date = Date()
+    ) -> ParsedInput {
         // The composer trims before it hands text over, but be total about it anyway.
         let raw = input
 
@@ -40,7 +54,10 @@ public enum CommandParser {
             ? []
             : argLine.split(whereSeparator: { $0.isWhitespace }).map(String.init)
 
-        return .command(resolve(verb: verb, fullBody: body, argLine: argLine, rest: rest, networkId: networkId, target: target))
+        return .command(resolve(
+            verb: verb, fullBody: body, argLine: argLine, rest: rest,
+            networkId: networkId, target: target, ignores: ignores, now: now
+        ))
     }
 
     // MARK: - Dispatch
@@ -51,7 +68,9 @@ public enum CommandParser {
         argLine: String,
         rest: [String],
         networkId: Int?,
-        target: String
+        target: String,
+        ignores: [ScopedIgnoreRule],
+        now: Date
     ) -> [CommandEffect] {
         // A lone `/` (or `/ `) has no verb — nudge rather than fall through to the raw
         // default, which would put an empty line on the wire.
@@ -69,6 +88,13 @@ public enum CommandParser {
             return [.away(message: argLine)]
         case "back":
             return [.back]
+        // Ignore rules are global by default, so both verbs run without a network — the system
+        // buffer can list them and write them. Only `-network` needs a connection, and that's
+        // checked where it's read.
+        case "ignore":
+            return resolveIgnore(argLine: argLine, networkId: networkId, ignores: ignores, now: now)
+        case "unignore":
+            return resolveUnignore(argLine: argLine, networkId: networkId, ignores: ignores)
         default:
             break
         }
@@ -249,6 +275,101 @@ public enum CommandParser {
             // casing is preserved: `line.slice(1)`.
             return [.raw(line: fullBody.trimmingCharacters(in: .whitespaces))]
         }
+    }
+
+    // MARK: - Ignore rules (#86)
+
+    /// `/ignore` — with no arguments, the rule listing; otherwise a rule to store.
+    ///
+    /// Nothing is mutated locally: the effect asks, and the rule appears when the server's
+    /// `ignore-list-updated` lands. The confirmation line therefore describes what was *sent*,
+    /// which is why it doesn't claim the rule is in force — a rule the server refuses (a regex
+    /// its engine won't compile, say) simply never shows up in `/ignore`.
+    private static func resolveIgnore(
+        argLine: String,
+        networkId: Int?,
+        ignores: [ScopedIgnoreRule],
+        now: Date
+    ) -> [CommandEffect] {
+        let args = argLine.trimmingCharacters(in: .whitespaces)
+        guard !args.isEmpty else { return [.info(listing(ignores))] }
+
+        let parsed: IgnoreArgs.Parsed
+        switch IgnoreArgs.parse(args, now: now) {
+        case .success(let value): parsed = value
+        case .failure(let failure): return [.info("/ignore: \(failure.message)")]
+        }
+        // Global (the default) works anywhere; `-network` names a connection the system buffer
+        // doesn't have. Refusing beats quietly writing the global rule they didn't ask for.
+        guard !parsed.scopeNetwork || networkId != nil else {
+            return [.info("/ignore -network needs an active network — switch to a channel or DM.")]
+        }
+        let scope = parsed.scopeNetwork ? networkId : nil
+        return [
+            .addIgnore(scope: scope, rule: parsed.rule),
+            .info("ignore added: \(parsed.rule.summary(global: scope == nil))"),
+        ]
+    }
+
+    /// `/unignore <index|mask>` — a number addresses a rule by its position in the last
+    /// listing, anything else is a mask to clear.
+    ///
+    /// The two remove differently on purpose, matching the web: by-index is exact (it resolves
+    /// to the rule's id and its bucket), while by-mask clears every rule carrying that mask,
+    /// which is what makes the common `/ignore bob` → `/unignore bob` round trip work without
+    /// anyone having to read a listing first.
+    private static func resolveUnignore(
+        argLine: String,
+        networkId: Int?,
+        ignores: [ScopedIgnoreRule]
+    ) -> [CommandEffect] {
+        let arg = argLine.trimmingCharacters(in: .whitespaces)
+        guard !arg.isEmpty else {
+            return [.info("usage: /unignore <index|mask>  (index from /ignore)")]
+        }
+
+        // ASCII digits only — the web's `/^\d+$/`. `Int(_:)` alone would accept `+5` and a
+        // non-ASCII digit, either of which would silently address a different rule.
+        if arg.allSatisfy({ $0.isASCII && $0.isNumber }) {
+            // An index too large for an Int is out of range by definition, so it takes the
+            // same path as one merely past the end rather than falling through to mask
+            // matching (where it would report "no rule with that mask", about a number).
+            let index = Int(arg) ?? 0
+            guard index >= 1, index <= ignores.count else {
+                return [.info("/unignore: no ignore #\(arg) (see /ignore)")]
+            }
+            let item = ignores[index - 1]
+            return [
+                .removeIgnore(scope: item.scope, id: item.rule.id, mask: nil),
+                .info("removed ignore #\(index): \(item.rule.summary(global: item.scope == nil))"),
+            ]
+        }
+
+        // Case-insensitive exact match of the stored mask, not a glob: `*` would otherwise
+        // read as "clear everything" from a rule that merely contains one.
+        let matches = ignores.filter {
+            ($0.rule.mask ?? "").caseInsensitiveCompare(arg) == .orderedSame
+        }
+        guard !matches.isEmpty else {
+            return [.info("/unignore: no ignore with mask \"\(arg)\" (see /ignore)")]
+        }
+        // Scoped to the issuing network, not to the matches': the server's by-mask delete
+        // spans the globals plus that one network, which is exactly the set just counted.
+        return [
+            .removeIgnore(scope: networkId, id: nil, mask: arg),
+            .info("removed \(matches.count) ignore\(matches.count > 1 ? "s" : "") matching \"\(arg)\"."),
+        ]
+    }
+
+    /// The `/ignore` listing as one block — one local line, not one per rule, so a long list
+    /// arrives as a single message row rather than as N (the same shape `/commands` takes).
+    private static func listing(_ ignores: [ScopedIgnoreRule]) -> String {
+        guard !ignores.isEmpty else {
+            return "ignore list is empty — /ignore <nick> adds one."
+        }
+        return (["ignore list (\(ignores.count)):"] + ignores.enumerated().map { index, item in
+            "  \(index + 1). \(item.rule.summary(global: item.scope == nil))"
+        }).joined(separator: "\n")
     }
 
     // MARK: - Helpers

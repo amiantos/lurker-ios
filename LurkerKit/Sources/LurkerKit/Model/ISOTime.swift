@@ -31,4 +31,13 @@ public enum ISOTime {
         defer { lock.unlock() }
         return withFraction.date(from: iso) ?? plain.date(from: iso)
     }
+
+    /// The other direction, for the one field this client sends as a timestamp: an ignore
+    /// rule's `expiresAt` (#86). Fractional seconds and `Z`, which is what JS `toISOString()`
+    /// produces and therefore what every other row in that table was written with.
+    public static func string(from date: Date) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return withFraction.string(from: date)
+    }
 }

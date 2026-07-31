@@ -85,6 +85,34 @@ final class IgnoreScopeTests: XCTestCase {
         )
     }
 
+    // MARK: - Listing (#86)
+
+    func testListingPutsGlobalsFirstAndTagsEachRuleWithItsBucket() {
+        // The order is `/unignore <n>`'s addressing scheme, so it's the contract, not a
+        // detail: a listing that ordered the buckets the other way would have `/unignore 1`
+        // delete a different rule than the one printed as #1.
+        let set = IgnoreSet(
+            global: [rule(mask: "spammer")],
+            byNetwork: [1: [rule(mask: "local")], 2: [rule(mask: "elsewhere")]]
+        )
+        let listing = set.listing(for: 1)
+        XCTAssertEqual(listing.map(\.rule.mask), ["spammer", "local"])
+        XCTAssertEqual(listing.map(\.scope), [nil, 1])
+    }
+
+    func testListingFromTheSystemBufferShowsGlobalsOnly() {
+        // Nothing network-scoped is in scope where there's no network — and a global rule is
+        // exactly what a bare `/ignore` there creates, so the list stays actionable.
+        let set = IgnoreSet(global: [rule(mask: "spammer")], byNetwork: [1: [rule(mask: "local")]])
+        XCTAssertEqual(set.listing(for: nil).map(\.rule.mask), ["spammer"])
+        XCTAssertTrue(IgnoreSet.empty.listing(for: nil).isEmpty)
+    }
+
+    func testListingCarriesTheServerRowIdThatByIndexRemovalNeeds() {
+        let set = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 42, mask: "bob")]])
+        XCTAssertEqual(set.listing(for: 1).first?.rule.id, 42)
+    }
+
     // MARK: - Frames
 
     func testTheSnapshotSeedsBothBucketsAndReplacesThemWholesale() {
