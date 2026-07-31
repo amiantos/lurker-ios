@@ -333,15 +333,53 @@ public struct ChatState: Sendable {
     /// carries no body or event type, so a content or level-scoped rule has nothing to judge.
     public func typists(in key: BufferKey, now: Date = Date()) -> [String] {
         guard let entries = typing[key.id] else { return [] }
+        // Gated once rather than per entry: this runs inside the chat screen's
+        // `removeDuplicates` on every frame the socket delivers, and again every second from
+        // the typing ticker, so an account with no rules should pay one dictionary lookup for
+        // the whole call and not one per person composing.
+        let filtering = !ignores.isEmpty(for: key.networkId)
         return entries.values
-            .filter { $0.isLive(at: now) }
             .filter {
-                !ignores.isIgnored(
+                guard $0.isLive(at: now) else { return false }
+                guard filtering else { return true }
+                return !ignores.isIgnored(
                     networkId: key.networkId, nick: $0.nick, userhost: $0.userhost, now: now
                 )
             }
             .sorted { ($0.startedAt, $0.nick.lowercased()) < ($1.startedAt, $1.nick.lowercased()) }
             .map(\.nick)
+    }
+
+    /// A channel's members minus anyone an ignore rule erases (lurker #301).
+    ///
+    /// Here, next to `typists(in:)`, for the reason that one gives: `members` is read by the
+    /// nicklist, the buffer-info count and nick completion, and a filter each of them has to
+    /// remember to apply isn't one — the info sheet reported a count that included people the
+    /// nicklist next to it was hiding.
+    ///
+    /// Only a whole-identity `ALL` rule removes somebody (see `IgnoreMatch.isMemberHidden`). A
+    /// content, level-scoped or `NOHIGHLIGHT` rule leaves them listed, because they are still
+    /// in the channel and still talking — a nicklist that disagreed with who is actually
+    /// present would be lying about the room rather than filtering it.
+    ///
+    /// You are always listed. A hostmask rule can legitimately cover your own nick (a shared
+    /// bouncer host, a wildcard on the network you're on), and disappearing yourself from your
+    /// own nicklist is never what such a rule meant.
+    public func visibleMembers(in key: BufferKey) -> [Member] {
+        let members = self.members[key.id] ?? []
+        guard !ignores.isEmpty(for: key.networkId) else { return members }
+        let ownNick = key.networkId.flatMap { networks[$0]?.nick }
+        return members.filter { member in
+            if let ownNick, member.nick.caseInsensitiveCompare(ownNick) == .orderedSame {
+                return true
+            }
+            return !ignores.isMemberHidden(
+                networkId: key.networkId,
+                nick: member.nick,
+                userhost: member.userhost,
+                channel: key.target
+            )
+        }
     }
 
     /// A friend's status: the presence of its primary target — the DM that opens when the

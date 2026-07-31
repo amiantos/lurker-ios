@@ -42,8 +42,7 @@ final class MemberListViewController: UITableViewController {
         viewModel.statePublisher
             // The ignore set decides who's *listed*, not just who's in the room, so a rule
             // arriving from another device has to wake this screen the same way a join does.
-            // Compared by identity: the store replaces it wholesale on every change and never
-            // mutates one in place, so `===` is exactly "the rules are the same rules".
+            // (`===` is the right test — see `IgnoreSet`.)
             .removeDuplicates { $0.members[key] == $1.members[key] && $0.ignores === $1.ignores }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -52,35 +51,10 @@ final class MemberListViewController: UITableViewController {
     }
 
     private func apply(_ state: ChatState) {
-        members = MemberPrefix.sorted(Self.visibleMembers(state, buffer: buffer))
+        members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key))
         title = members.isEmpty ? "Members" : "Members (\(members.count))"
         tableView.backgroundView = members.isEmpty ? emptyLabel : nil
         tableView.reloadData()
-    }
-
-    /// The channel's members minus anyone an ignore rule erases (lurker #301).
-    ///
-    /// Only a whole-identity `ALL` rule removes somebody — see `IgnoreMatch.isMemberHidden`.
-    /// A content, level-scoped or `NOHIGHLIGHT` rule leaves them listed, because they are
-    /// still in the channel and still talking, and a nicklist that disagreed with who is
-    /// actually present would be lying about the room rather than filtering it.
-    ///
-    /// You are always visible. A hostmask rule can legitimately cover your own nick (a shared
-    /// bouncer host, a wildcard on the network you're on), and disappearing yourself from your
-    /// own nicklist is never what such a rule meant.
-    private static func visibleMembers(_ state: ChatState, buffer: Buffer) -> [Member] {
-        let members = state.members[buffer.key.id] ?? []
-        guard !state.ignores.isEmpty(for: buffer.networkId) else { return members }
-        let ownNick = buffer.networkId.flatMap { state.networks[$0]?.nick }?.lowercased()
-        return members.filter { member in
-            if let ownNick, member.nick.lowercased() == ownNick { return true }
-            return !state.ignores.isMemberHidden(
-                networkId: buffer.networkId,
-                nick: member.nick,
-                userhost: member.userhost,
-                channel: buffer.target
-            )
-        }
     }
 
     /// Says which of the two reasons the list is empty, because they need different things

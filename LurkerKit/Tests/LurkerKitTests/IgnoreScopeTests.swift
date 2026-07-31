@@ -219,6 +219,34 @@ final class IgnoreScopeTests: XCTestCase {
         XCTAssertEqual(state.typists(in: key, now: now), ["bob", "alice"])
     }
 
+    /// The nicklist filter lives on `ChatState` for the same reason the typing one does: the
+    /// member list, the buffer-info count and nick completion all read through it, and the
+    /// info sheet used to report a count including people the nicklist beside it was hiding.
+    func testVisibleMembersDropsIgnoredPeopleButNeverYou() {
+        var state = ChatState()
+        let key = BufferKey(networkId: 1, target: "#chan")
+        state.networks[1] = Network(id: 1, name: "libera", state: .connected, nick: "Me")
+        state.buffers[key.id] = Buffer(networkId: 1, target: "#chan", kind: .channel)
+        state.members[key.id] = [
+            Member(nick: "me", user: "u", host: "shared.host"),
+            Member(nick: "bob", user: "u", host: "shared.host"),
+            Member(nick: "alice", user: "u", host: "elsewhere"),
+        ]
+        XCTAssertEqual(state.visibleMembers(in: key).map(\.nick), ["me", "bob", "alice"])
+
+        state.ignores = IgnoreSet(global: [rule(mask: "bob")])
+        XCTAssertEqual(state.visibleMembers(in: key).map(\.nick), ["me", "alice"])
+
+        // A mask broad enough to cover your own nick still can't remove you — and the compare
+        // folds case, since the roster's casing needn't match the nicklist's.
+        state.ignores = IgnoreSet(global: [rule(mask: "*!*@shared.host")])
+        XCTAssertEqual(state.visibleMembers(in: key).map(\.nick), ["me", "alice"])
+
+        // A level-scoped rule leaves everyone listed: they're still in the channel.
+        state.ignores = IgnoreSet(global: [rule(mask: "bob", levels: ["PUBLIC"])])
+        XCTAssertEqual(state.visibleMembers(in: key).map(\.nick), ["me", "bob", "alice"])
+    }
+
     func testAMutedBufferIsReportedByTheSetTheBufferListReads() {
         let set = IgnoreSet(
             byNetwork: [1: [IgnoreRule(channels: ["#loud"], levels: ["NOUNREAD", "NONOTIFY"])]]
@@ -268,7 +296,7 @@ final class IgnoreScopeTests: XCTestCase {
         let set = IgnoreSet(global: [rule(mask: "bobby")])
         let candidates = NickCompletion.candidates(
             messages: messages, members: members, selfNick: "me", query: "bo", isChannel: true,
-            isIgnored: { set.isIgnored(networkId: 1, nick: $0, userhost: $1) }
+            ignores: set, networkId: 1
         )
         XCTAssertEqual(candidates, ["bonnie"])
     }
@@ -282,7 +310,7 @@ final class IgnoreScopeTests: XCTestCase {
         XCTAssertEqual(
             NickCompletion.candidates(
                 messages: [], members: members, selfNick: "me", query: "bo", isChannel: true,
-                isIgnored: { set.isIgnored(networkId: 1, nick: $0, userhost: $1) }
+                ignores: set, networkId: 1
             ),
             []
         )

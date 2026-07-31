@@ -215,8 +215,8 @@ final class BufferListViewController: UICollectionViewController {
                     && $0.peerPresence == $1.peerPresence
                     // Muting is an ignore rule (lurker #359), so a mute set on another device
                     // moves nothing else on this screen — without this, a badge stays loud
-                    // until some unrelated change happens to let a rebuild through. Compared
-                    // by identity: the store replaces the set wholesale, never mutates one.
+                    // until some unrelated change happens to let a rebuild through.
+                    // (`===` is the right test — see `IgnoreSet`.)
                     && $0.ignores === $1.ignores
             }
             .receive(on: DispatchQueue.main)

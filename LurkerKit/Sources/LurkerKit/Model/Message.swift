@@ -18,9 +18,11 @@ public struct Message: Equatable, Sendable {
     public let date: Date?
     /// A highlight rule matched this line — renders as a mention.
     ///
-    /// Server-stamped and settable only from inside this package, by `unhighlighted()`: the
-    /// server decides what matched, and the one thing a client may do is take a match *off*.
-    public internal(set) var matched: Bool
+    /// Server-stamped, and writable only from this file, by `unhighlighted()`: the server
+    /// decides what matched, and the one thing a client may do is take a match *off*. Scoped
+    /// `private(set)` rather than `internal(set)` so even the store — the layer that must not
+    /// write it — can't, which is where the invariant is actually stated.
+    public private(set) var matched: Bool
     /// Severity, carried only by system-buffer lines. The server does NOT encode severity
     /// in `type` — an error is `type: "system"` with `level: "error"` — so styling a
     /// system line means reading this, never the type.

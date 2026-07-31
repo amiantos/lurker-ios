@@ -18,9 +18,14 @@ import Foundation
 /// and patterns are compiled once per list change, and the render path, which runs per row,
 /// only ever reads. A list that changes maybe twice a session against a set that's walked for
 /// every visible line is the right way round for that trade.
+///
+/// **Because it is only ever replaced, `===` is a valid test for "the rules changed."** That's
+/// what lets the screens' `removeDuplicates` predicates compare it with a pointer test instead
+/// of walking every rule on every frame the socket delivers. The contract lives here rather
+/// than being restated at each of those predicates, because it's a property of this type.
 public final class IgnoreSet: Sendable {
-    public let global: [IgnoreRule]
-    public let byNetwork: [Int: [IgnoreRule]]
+    private let global: [IgnoreRule]
+    private let byNetwork: [Int: [IgnoreRule]]
 
     /// The effective compiled set per network — global ∪ that network's own — precomputed for
     /// every network the store knows about. A network with no rules of its own isn't in here
@@ -77,24 +82,27 @@ public final class IgnoreSet: Sendable {
     }
 
     /// Whether this event is hidden outright.
-    public func isHidden(networkId: Int?, _ input: IgnoreInput, now: Date = Date()) -> Bool {
+    func isHidden(networkId: Int?, _ input: IgnoreInput, now: Date = Date()) -> Bool {
         evaluate(networkId: networkId, input, now: now).hide
     }
 
-    /// Whether a message row is hidden, for the surfaces that hold the message object — the
-    /// highlights, bookmarks and search feeds.
+    /// The verdict for a stored message in `target`. **The one adapter from `Message` to
+    /// `IgnoreInput`** — every surface that holds a message object comes through here, so
+    /// there is a single answer to what a line's sender, body and DM-ness are, and a new field
+    /// on `IgnoreInput` is added in one place.
     ///
-    /// Unlike `isIgnored` this honors level, channel and content-pattern rules, so an
-    /// `/ignore x PUBLIC` or a `-pattern` rule keeps those lines out of search results too.
-    /// A line with no sender (a system line, your own echo) is never hidden.
-    public func isMessageHidden(
+    /// A line with no sender is never hidden, and neither is your own: a mask can legitimately
+    /// cover your nick (`*!*@somehost` on a shared host), and hiding your own messages from
+    /// your own screen is never what such a rule meant. That exemption is stated here, once,
+    /// for all of them.
+    public func verdict(
         networkId: Int?,
         message: Message,
         target: String,
         now: Date = Date()
-    ) -> Bool {
-        guard let nick = message.nick, !nick.isEmpty, !message.isSelf else { return false }
-        return isHidden(
+    ) -> IgnoreVerdict {
+        guard let nick = message.nick, !nick.isEmpty, !message.isSelf else { return .visible }
+        return evaluate(
             networkId: networkId,
             IgnoreInput(
                 nick: nick,
@@ -102,10 +110,49 @@ public final class IgnoreSet: Sendable {
                 target: target,
                 text: message.text ?? "",
                 type: message.type,
+                // Derived from the target rather than taken from a caller's buffer record, so
+                // two callers looking at the same line can't classify it differently.
                 isDm: BufferKind.of(networkId: networkId, target: target) == .dm
             ),
             now: now
         )
+    }
+
+    /// Whether a message row is hidden, for the surfaces that hold the message object — the
+    /// highlights, bookmarks and search feeds.
+    ///
+    /// Unlike `isIgnored` this honors level, channel and content-pattern rules, so an
+    /// `/ignore x PUBLIC` or a `-pattern` rule keeps those lines out of search results too.
+    public func isMessageHidden(
+        networkId: Int?,
+        message: Message,
+        target: String,
+        now: Date = Date()
+    ) -> Bool {
+        verdict(networkId: networkId, message: message, target: target, now: now).hide
+    }
+
+    /// A buffer's lines with the ignored ones dropped and the `NOHIGHLIGHT`-covered ones
+    /// demoted — the message list's whole use of this type, in one call.
+    ///
+    /// Here rather than in the view controller so it's reachable by tests (the app target has
+    /// no test bundle) and so the highest-traffic surface reads through the same adapter the
+    /// low-traffic feeds do. Returns the input untouched when nothing could apply, which is
+    /// the common case and costs one dictionary lookup.
+    public func visible(
+        _ messages: [Message],
+        networkId: Int?,
+        target: String,
+        now: Date = Date()
+    ) -> [Message] {
+        guard !isEmpty(for: networkId) else { return messages }
+        return messages.compactMap { message in
+            let verdict = verdict(
+                networkId: networkId, message: message, target: target, now: now
+            )
+            if verdict.hide { return nil }
+            return verdict.nohilight ? message.unhighlighted() : message
+        }
     }
 
     /// Whether this sender is *broadly* ignored — hidden regardless of what they say or where.
@@ -134,10 +181,8 @@ public final class IgnoreSet: Sendable {
         now: Date = Date()
     ) -> Bool {
         guard let networkId else { return false }
-        let compiled = compiled(for: networkId)
-        guard !compiled.isEmpty else { return false }
         return IgnoreMatch.isMemberHidden(
-            compiled, nick: nick, userhost: userhost, channel: channel, now: now
+            compiled(for: networkId), nick: nick, userhost: userhost, channel: channel, now: now
         )
     }
 
@@ -145,8 +190,6 @@ public final class IgnoreSet: Sendable {
     /// reads to downgrade a badge from "everything" to "highlights only".
     public func mutesUnread(networkId: Int?, target: String, now: Date = Date()) -> Bool {
         guard let networkId else { return false }
-        let compiled = compiled(for: networkId)
-        guard !compiled.isEmpty else { return false }
-        return IgnoreMatch.channelMutesUnread(compiled, channel: target, now: now)
+        return IgnoreMatch.channelMutesUnread(compiled(for: networkId), channel: target, now: now)
     }
 }

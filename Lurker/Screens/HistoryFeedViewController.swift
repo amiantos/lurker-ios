@@ -215,11 +215,25 @@ class HistoryFeedViewController: UITableViewController {
         reachedEnd = !page.hasMore
         rebuildSections()
         tableView.reloadData()
-        // A page can filter down to nothing — an ignored sender who fills a channel is exactly
-        // the person whose lines a search turns up by the hundred. Paging is driven by
-        // `willDisplay`, which can't fire on a table with no rows, so pull the next page in
-        // directly rather than stranding the feed on "nothing here" with more to fetch. Same
-        // treatment `removeItem` gives an emptied list, for the same reason.
+        settle()
+    }
+
+    /// Close out a list mutation: either re-arm paging, or say what the list now shows.
+    ///
+    /// **Every path that can change `items` ends here** — the first page, an appended page, a
+    /// removed row. They all share one invariant: this feed pages off `willDisplay`, which
+    /// cannot fire on a table with no rows, so anything that can empty the list while a cursor
+    /// is still live has to fetch the next page itself or the feed strands on "nothing here"
+    /// with more to fetch.
+    ///
+    /// That rule predates the ignore filter (`removeItem` already had it), but the filter is
+    /// what made it load-bearing: an ignored sender who fills a channel is exactly the person
+    /// whose lines a search turns up by the hundred, so a whole page filtering to nothing is
+    /// now routine rather than a corner. Written once so the next filter this screen grows
+    /// can't forget it — the three hand-written copies had already drifted, one of them
+    /// leaving a bare table where the others showed a spinner.
+    @MainActor
+    private func settle() {
         if items.isEmpty, !reachedEnd, nextBefore != nil {
             renderPlaceholder(.loading)
             loadMore()
@@ -276,16 +290,10 @@ class HistoryFeedViewController: UITableViewController {
         guard !fresh.isEmpty else {
             nextBefore = page.nextBefore
             reachedEnd = !page.hasMore
-            // Same boundary: an empty page onto an empty list is the genuine end of the feed.
-            // Unless there's more to fetch — with no rows on screen `willDisplay` can't fire
-            // again, so an all-ignored page would end the feed early.
-            if items.isEmpty {
-                if !reachedEnd, nextBefore != nil {
-                    loadMore()
-                } else {
-                    renderPlaceholderForCurrentState()
-                }
-            }
+            // Same boundary: an empty page onto an empty list is the genuine end of the feed —
+            // or, if a cursor is still live, a page that filtered to nothing and has to be
+            // paged past. `settle` decides which.
+            if items.isEmpty { settle() }
             return
         }
         items.append(contentsOf: fresh)
@@ -296,9 +304,10 @@ class HistoryFeedViewController: UITableViewController {
         // ones, so a targeted insert would have to reconcile section moves; a reload is
         // simpler and, since the added rows are below the fold, invisible.
         tableView.reloadData()
-        // Normally a no-op (the placeholder is already hidden), but it's what takes the
-        // spinner down when this page was fetched into an emptied list.
-        renderPlaceholderForCurrentState()
+        // Normally just takes the placeholder down (rows were appended, so the top-up branch
+        // can't fire) — but it's what removes the spinner when this page was fetched into an
+        // emptied list.
+        settle()
     }
 
     /// Drop one row from the feed, rebuilding the grouped view around it.
@@ -325,16 +334,7 @@ class HistoryFeedViewController: UITableViewController {
         // otherwise leave "Couldn't load / Pull to try again" as the epitaph for a list the
         // user just successfully cleared.
         if items.isEmpty { loadFailed = false }
-        // Paging is driven by `willDisplay`, which can't fire on a table with no rows — so
-        // clearing every loaded row while older pages exist would strand the feed on "nothing
-        // here" with more to fetch. Pull the next page in directly, showing the spinner
-        // rather than a bare table while it lands.
-        if items.isEmpty, !reachedEnd, nextBefore != nil {
-            renderPlaceholder(.loading)
-            loadMore()
-        } else {
-            renderPlaceholderForCurrentState()
-        }
+        settle()
     }
 
     // MARK: - Sections (channel + day runs)

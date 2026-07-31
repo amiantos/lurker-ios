@@ -26,9 +26,12 @@ public enum NickCompletion {
     /// (newest last, as buffers hold them); `members` supplies the fallback pool and the
     /// still-here check.
     ///
-    /// `isIgnored` is passed `(nick, userhost)` and strips ignored candidates. Injected as a
-    /// closure rather than taking an `IgnoreSet` so this stays a pure function of its inputs —
-    /// it's the tested core of the feature, and the caller is the one that knows the network.
+    /// `ignores`/`networkId` strip ignored candidates. Taken as the shared type rather than an
+    /// injected predicate: `IgnoreSet` lives in this module, is immutable, and already carries
+    /// the cheap "no rules on this network" gate — so a closure would only move that gate to
+    /// the caller and make every call site restate it. Defaulted to `.empty`, which answers
+    /// "nobody is ignored" for the callers that don't care.
+    ///
     /// A member's userhost is reconstructed from the member row when the server sent both
     /// halves; a speaker carries only a nick, so a hostmask-only rule can't suppress one
     /// (matching the web, which has the same information at the same point).
@@ -39,17 +42,21 @@ public enum NickCompletion {
         query: String,
         isChannel: Bool,
         limit: Int = 4,
-        isIgnored: ((String, String?) -> Bool)? = nil
+        ignores: IgnoreSet = .empty,
+        networkId: Int? = nil
     ) -> [String] {
         let prefix = query.lowercased()
         var seen = Set<String>()
         if let selfNick { seen.insert(selfNick.lowercased()) }
-        let memberSet = Set(members.map { $0.nick.lowercased() })
+        // One index over `members`, answering both "are they still here" and "what's their
+        // hostmask" — the membership check is just a lookup that found something.
         var memberByNick: [String: Member] = [:]
-        if isIgnored != nil {
-            for member in members { memberByNick[member.nick.lowercased()] = member }
+        for member in members { memberByNick[member.nick.lowercased()] = member }
+        let filtering = !ignores.isEmpty(for: networkId)
+        func isIgnored(_ nick: String, _ userhost: String?) -> Bool {
+            guard filtering else { return false }
+            return ignores.isIgnored(networkId: networkId, nick: nick, userhost: userhost)
         }
-        func userhost(for nick: String) -> String? { memberByNick[nick.lowercased()]?.userhost }
         var out: [String] = []
 
         // Speakers, newest first. Only speech counts — the web records speakers on
@@ -61,11 +68,12 @@ public enum NickCompletion {
             else { continue }
             let lc = nick.lowercased()
             guard !seen.contains(lc), lc.hasPrefix(prefix) else { continue }
-            if isChannel, !memberSet.contains(lc) { continue }
+            let member = memberByNick[lc]
+            if isChannel, member == nil { continue }
             // Marked seen either way: an ignored nick is *decided*, and leaving it unseen would
             // let the member pass below offer the same person the speaker pass just refused.
             seen.insert(lc)
-            if isIgnored?(nick, message.userhost ?? userhost(for: nick)) == true { continue }
+            if isIgnored(nick, message.userhost ?? member?.userhost) { continue }
             out.append(nick)
         }
 
@@ -77,7 +85,7 @@ public enum NickCompletion {
             let lc = member.nick.lowercased()
             guard !seen.contains(lc), lc.hasPrefix(prefix) else { continue }
             seen.insert(lc)
-            if isIgnored?(member.nick, userhost(for: member.nick)) == true { continue }
+            if isIgnored(member.nick, member.userhost) { continue }
             out.append(member.nick)
         }
         return out

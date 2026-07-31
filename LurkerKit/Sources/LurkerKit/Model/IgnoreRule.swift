@@ -111,6 +111,12 @@ public enum IgnoreLevels {
 
     /// What an `ALL` rule covers — everything with a sender to ignore, so the system/self
     /// rows (motd, error, usermode, names, the app's own system lines) are deliberately out.
+    ///
+    /// Listed literally rather than derived as the union of `defs`, which today it happens to
+    /// equal. The two answer different questions and are free to diverge: `defs` maps the
+    /// tokens a user can *name*, and `CTCPS` is already in it mapping to nothing. Deriving
+    /// would silently couple "what ALL means" to that vocabulary. `shared/ignoreLevels.ts`
+    /// spells out its `ALL_TYPES` for the same reason, so the two stay comparable by eye.
     static let all: Set<EventType> = [
         .message, .action, .notice, .join, .part, .quit, .nick, .kick, .mode, .topic, .chghost,
     ]

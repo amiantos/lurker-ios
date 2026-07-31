@@ -161,6 +161,30 @@ final class IgnoreMatchTests: XCTestCase {
         XCTAssertFalse(evaluate(rules, input(userhost: "anynick!other@evil.example")).hide)
     }
 
+    /// A channel scope with a wildcard takes the regex path while a plain name takes the
+    /// literal one, and the two have to agree — the literal case exists purely to keep ICU off
+    /// the render path, so it must not also change what matches.
+    func testAChannelScopeMatchesLiterallyAndByGlobAlike() {
+        let literal = [rule(channels: ["#chan"], levels: ["PUBLIC"])]
+        XCTAssertTrue(evaluate(literal, input(target: "#chan")).hide)
+        XCTAssertTrue(evaluate(literal, input(target: "#CHAN")).hide, "targets fold case")
+        XCTAssertFalse(evaluate(literal, input(target: "#chan2")).hide, "anchored, not a prefix")
+
+        let glob = [rule(channels: ["#chan*"], levels: ["PUBLIC"])]
+        XCTAssertTrue(evaluate(glob, input(target: "#chan")).hide)
+        XCTAssertTrue(evaluate(glob, input(target: "#chan2")).hide)
+        XCTAssertFalse(evaluate(glob, input(target: "#other")).hide)
+    }
+
+    /// A literal mask that happens to contain regex metacharacters must stay a literal —
+    /// `[` and `.` are legal in some networks' nicks, and the fast path must not treat them
+    /// as syntax where the regex path escapes them.
+    func testAMaskWithRegexMetacharactersIsMatchedLiterally() {
+        let rules = [rule(mask: "a.b[c]", levels: ["ALL"])]
+        XCTAssertTrue(evaluate(rules, input(nick: "a.b[c]")).hide)
+        XCTAssertFalse(evaluate(rules, input(nick: "axbc")).hide)
+    }
+
     // MARK: - Levels
 
     func testPublicMatchesChannelMessagesOnlyAndMsgsDmsOnly() {

@@ -62,6 +62,9 @@ final class BufferInfoViewController: UITableViewController {
             .removeDuplicates {
                 $0.buffers[key]?.topic == $1.buffers[key]?.topic
                     && $0.members[key]?.count == $1.members[key]?.count
+                    // The count is of *visible* members, so an ignore rule moves it with
+                    // nothing else changing. (`===` is the right test — see `IgnoreSet`.)
+                    && $0.ignores === $1.ignores
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -93,7 +96,10 @@ final class BufferInfoViewController: UITableViewController {
     private func apply(_ state: ChatState) {
         let key = buffer.key.id
         let live = state.buffers[key] ?? buffer
-        let memberCount = state.members[key]?.count ?? 0
+        // Visible members, not every member: this count sits one tap from the nicklist, and
+        // the two disagreeing about how many people are in the channel reads as a bug in
+        // whichever the reader looks at second.
+        let memberCount = state.visibleMembers(in: buffer.key).count
 
         // The `on:` half needs the network's *name*, which only the roster has. Nil for a
         // buffer with no meaningful scope, and the row simply isn't offered then.

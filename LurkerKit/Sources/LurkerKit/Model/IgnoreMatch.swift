@@ -70,6 +70,11 @@ public enum IgnoreMatch {
     enum MaskMatcher {
         /// No mask, or `*`: anyone.
         case anyone
+        /// A bare token with no wildcards in it — `/ignore bob`, far and away the commonest
+        /// rule there is. Held as an already-lowered literal so the per-row cost is a string
+        /// compare rather than an ICU regex execution; the glob cases below are what the
+        /// wildcards are for.
+        case literalNick(String)
         /// A bare token — a nick glob, and nothing said about the hostmask.
         case nick(NSRegularExpression)
         /// A `nick!user@host` form, each part globbed independently.
@@ -88,11 +93,14 @@ public enum IgnoreMatch {
             switch self {
             case .anyone:
                 return true
+            case .literalNick(let lowered):
+                guard let nick else { return false }
+                return nick.lowercased() == lowered
             case .nick(let regex):
                 guard let nick else { return false }
-                return regex.matchesWhole(nick)
+                return regex.matches(nick)
             case .identity(let nickRegex, let userRegex, let hostRegex, let hostmaskOptional):
-                guard let nick, nickRegex.matchesWhole(nick) else { return false }
+                guard let nick, nickRegex.matches(nick) else { return false }
                 guard let userhost else { return hostmaskOptional }
                 // The wire form is `nick!user@host`; the `@` is looked for *after* the `!` so
                 // an `@` inside a nick can't split it in the wrong place.
@@ -103,7 +111,7 @@ public enum IgnoreMatch {
                 }
                 let user = String(userhost[afterBang..<at])
                 let host = String(userhost[userhost.index(after: at)...])
-                return userRegex.matchesWhole(user) && hostRegex.matchesWhole(host)
+                return userRegex.matches(user) && hostRegex.matches(host)
             }
         }
     }
@@ -111,14 +119,22 @@ public enum IgnoreMatch {
     /// A rule's buffer scope: every buffer, or a set of case-insensitive target globs.
     enum ChannelMatcher {
         case any
+        /// Wildcard-free targets — the shape every mute rule and most `-channels` scopes take.
+        /// Pre-lowered literals, so scoping a rule to a channel costs a string compare per
+        /// buffer rather than an ICU execution.
+        case literals([String])
         case globs([NSRegularExpression])
 
         func matches(_ target: String) -> Bool {
             switch self {
             case .any: return true
+            case .literals(let lowered):
+                guard !target.isEmpty else { return false }
+                let folded = target.lowercased()
+                return lowered.contains(folded)
             case .globs(let regexes):
                 guard !target.isEmpty else { return false }
-                return regexes.contains { $0.matchesWhole(target) }
+                return regexes.contains { $0.matches(target) }
             }
         }
     }
@@ -134,11 +150,14 @@ public enum IgnoreMatch {
         /// drops one broken rule rather than throwing away the whole set.
         case never
 
-        func matches(_ text: String) -> Bool {
+        /// `lowered` is `text` case-folded, computed once per event by the caller rather than
+        /// once per rule here — it's a full Unicode-folding allocation, and a message matched
+        /// against several substring rules would otherwise pay for it several times over.
+        func matches(_ text: String, lowered: String) -> Bool {
             switch self {
             case .any: return true
-            case .substring(let needle): return text.lowercased().contains(needle)
-            case .regex(let regex): return regex.matchesAnywhere(text)
+            case .substring(let needle): return lowered.contains(needle)
+            case .regex(let regex): return regex.matches(text)
             case .never: return false
             }
         }
@@ -198,13 +217,11 @@ public enum IgnoreMatch {
 
         var isEmpty: Bool { rules.isEmpty }
 
-        static let empty = CompiledSet(rules: [], hasPattern: false)
-
         /// Concatenate two sets — how a network's effective rules are formed from the global
-        /// bucket and its own.
+        /// bucket and its own. The short-circuit is for the common account that has only
+        /// network rules or only global ones, and keeps the union free of a copy there.
         static func merged(_ first: CompiledSet, _ second: CompiledSet) -> CompiledSet {
             if first.isEmpty { return second }
-            if second.isEmpty { return first }
             return CompiledSet(
                 rules: first.rules + second.rules,
                 hasPattern: first.hasPattern || second.hasPattern
@@ -243,9 +260,17 @@ public enum IgnoreMatch {
         return CompiledSet(rules: compiled, hasPattern: hasPattern)
     }
 
+    /// Whether a glob has any wildcard in it at all. A pattern without one is a literal, and
+    /// compiling it to `^literal$` only to run ICU over it per row is the single most
+    /// avoidable cost on this path — `/ignore bob` is the rule people actually write.
+    private static func hasWildcard(_ pattern: String) -> Bool {
+        pattern.contains("*") || pattern.contains("?")
+    }
+
     static func maskMatcher(_ mask: String?) -> MaskMatcher {
         guard let mask, !mask.isEmpty, mask != "*" else { return .anyone }
         guard mask.contains("!") || mask.contains("@") else {
+            guard hasWildcard(mask) else { return .literalNick(mask.lowercased()) }
             guard let regex = globToRegex(mask, caseInsensitive: true) else { return .anyone }
             return .nick(regex)
         }
@@ -262,6 +287,9 @@ public enum IgnoreMatch {
 
     static func channelMatcher(_ channels: [String]?) -> ChannelMatcher {
         guard let channels, !channels.isEmpty else { return .any }
+        guard channels.contains(where: hasWildcard) else {
+            return .literals(channels.map { $0.lowercased() })
+        }
         let regexes = channels.compactMap { globToRegex($0, caseInsensitive: true) }
         return regexes.isEmpty ? .any : .globs(regexes)
     }
@@ -324,8 +352,10 @@ public enum IgnoreMatch {
         now: Date = Date()
     ) -> IgnoreVerdict {
         guard !compiled.isEmpty else { return .visible }
-        // Only pay for the strip when some rule actually reads the text.
+        // Only pay for the strip when some rule actually reads the text — which, for most
+        // accounts, is never: a content pattern is the rarest thing a rule carries.
         let text = compiled.hasPattern && !input.text.isEmpty ? cleanForMatch(input.text) : ""
+        let lowered = text.isEmpty ? "" : text.lowercased()
 
         var bestHide = -1, bestHideExcept = -1
         var bestNohilight = -1, bestNohilightExcept = -1
@@ -333,22 +363,24 @@ public enum IgnoreMatch {
 
         for rule in compiled.rules {
             guard rule.isLive(at: now) else { continue }
-            let hideApplies = rule.hides && rule.hidesLevel(input.type, isDm: input.isDm)
+            // Computed once and shared by all three verdicts below: they ask the same
+            // question of the same rule, and it's a set lookup per level token.
+            let levelHit = rule.hides && rule.hidesLevel(input.type, isDm: input.isDm)
+            let hideApplies = levelHit
             // NOHIGHLIGHT only sensibly applies to the types a highlight can land on; when the
             // rule also carries hide levels it's bounded to those as well.
             let nohilightApplies = rule.nohilight
                 && IgnoreLevels.highlightable.contains(input.type)
-                && (rule.hides ? rule.hidesLevel(input.type, isDm: input.isDm) : true)
+                && (rule.hides ? levelHit : true)
             // NONOTIFY is NOT bounded to highlightable types. A channel's notify-always can
             // fire a notification for any event — a notice, a join — so muting a channel or
             // network has to veto those too ("quietest wins", lurker #359). Bounded only by
             // the rule's own hide levels, if it has any.
-            let nonotifyApplies = rule.nonotify
-                && (rule.hides ? rule.hidesLevel(input.type, isDm: input.isDm) : true)
+            let nonotifyApplies = rule.nonotify && (rule.hides ? levelHit : true)
             guard hideApplies || nohilightApplies || nonotifyApplies else { continue }
             guard rule.mask.matches(nick: input.nick, userhost: input.userhost) else { continue }
             guard rule.channels.matches(input.target) else { continue }
-            guard rule.text.matches(text) else { continue }
+            guard rule.text.matches(text, lowered: lowered) else { continue }
 
             if hideApplies {
                 if rule.isExcept {
@@ -484,15 +516,13 @@ public struct IgnoreVerdict: Equatable, Sendable {
 }
 
 private extension NSRegularExpression {
-    /// Whether the pattern matches `text` in full. The patterns built by `globToRegex` are
-    /// already `^…$`-anchored, so this is just "did it match at all" — but stated as a whole
-    /// match so an unanchored pattern can never silently become a substring test.
-    func matchesWhole(_ text: String) -> Bool {
-        matchesAnywhere(text)
-    }
-
-    func matchesAnywhere(_ text: String) -> Bool {
-        let range = NSRange(location: 0, length: (text as NSString).length)
-        return firstMatch(in: text, range: range) != nil
+    /// Whether the pattern matches anywhere in `text`. Anchoring is the pattern's own business
+    /// — `globToRegex` builds `^…$`-anchored sources, a user's `-pattern regex` is matched as
+    /// written — so there is one method rather than two names for the same call.
+    ///
+    /// The range is built from String indices rather than by bridging to `NSString`, matching
+    /// `NickHighlighter.matches(in:)` and avoiding a bridge per call on the render path.
+    func matches(_ text: String) -> Bool {
+        firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 }
