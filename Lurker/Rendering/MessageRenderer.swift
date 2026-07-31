@@ -215,9 +215,12 @@ enum MessageRenderer {
     ///
     /// `accessibilityLabel` is what `spoken(_:)` substitutes for the attachment character —
     /// without it the row is read out as a bare list of names with no hint of what they're doing.
+    /// The colon is doing work in speech that the glyph does in print: it's what makes the word
+    /// a lead-in to the list rather than the first word of one phrase ("Typing: alice, bob", not
+    /// "Typing alice bob"). It's never drawn.
     private static func typingGlyph(base: UIFont, traits: UITraitCollection) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        attachment.accessibilityLabel = "Typing"
+        attachment.accessibilityLabel = "Typing:"
         if let image = UIImage(
             systemName: "keyboard",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: base.pointSize)
