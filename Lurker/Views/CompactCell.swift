@@ -64,12 +64,17 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         selectionStyle = .none
         backgroundColor = .clear
 
-        nickLabel.adjustsFontForContentSizeCategory = true
+        // No `adjustsFontForContentSizeCategory` on either label. It only rescales a font that
+        // carries a text style, and the compact face is a `monospacedSystemFont` at an
+        // already-scaled point size — no style to track, so the flag was doing nothing but
+        // implying it was. Dynamic Type still lands: the table re-requests its cells on a
+        // content-size-category change and `configure` re-assigns the font, which is why the
+        // *appearance* trait needs an explicit observer (`ChatViewController`) and this one
+        // doesn't.
         nickLabel.lineBreakMode = .byTruncatingTail
         // Spoken as part of the body's label instead; addressable here it would be said twice.
         nickLabel.isAccessibilityElement = false
 
-        timeLabel.adjustsFontForContentSizeCategory = true
         timeLabel.textColor = .secondaryLabel
         timeLabel.isAccessibilityElement = false
         // The nick truncates before the clock does: a long nick is recoverable from context, a

@@ -309,8 +309,8 @@ enum MessageRenderer {
     }
 
     /// The monospaced face the compact style draws in — a fixed-width log, the way irssi and
-    /// weechat look. Scaled through `UIFontMetrics` so it still answers to Dynamic Type, and sized
-    /// off `.subheadline` so it matches the rest of the app rather than introducing a second size.
+    /// weechat look. Sized off `.subheadline` at the caller's traits, so it answers to Dynamic Type
+    /// and matches the rest of the app rather than introducing a second size.
     ///
     /// Resolved against the caller's `traits`, never `UITraitCollection.current` — the same rule
     /// `render` follows above, and for the same reason: `.current` isn't reliably set during
@@ -337,11 +337,15 @@ enum MessageRenderer {
         if let cached = cachedCompactMetrics, cached.category == category {
             return (cached.font, cached.indent)
         }
+        // `preferredFont(compatibleWith:)` has *already* applied `traits` — its point size is the
+        // scaled one. Handing that to `UIFontMetrics.scaledFont(for:)`, which exists to scale a
+        // font written at the default (Large) size, scaled it a second time: 142pt where 49pt is
+        // right at AX-XXXL, and 10pt where 12pt is right at extraSmall, since a double scale
+        // over-shrinks below Large as surely as it overshoots above it. The two agree exactly at
+        // Large, which is why it went unseen. A monospaced face at an already-scaled size needs no
+        // metrics of its own.
         let reference = UIFont.preferredFont(forTextStyle: .subheadline, compatibleWith: traits)
-        let font = UIFontMetrics(forTextStyle: .subheadline).scaledFont(
-            for: .monospacedSystemFont(ofSize: reference.pointSize, weight: .regular),
-            compatibleWith: traits
-        )
+        let font = UIFont.monospacedSystemFont(ofSize: reference.pointSize, weight: .regular)
         let indent = (" " as NSString).size(withAttributes: [.font: font]).width
         cachedCompactMetrics = (category, font, indent)
         return (font, indent)
