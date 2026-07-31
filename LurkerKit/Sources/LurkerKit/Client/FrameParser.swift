@@ -67,6 +67,25 @@ enum FrameParser {
             // gone.
             guard let token = obj.intOrNull("token") else { return .ignored }
             return .searchResult(token: token, page: parseSearchPage(obj))
+        case "ignore-list-updated":
+            // A frame with no usable `masks` array is dropped rather than read as "this scope
+            // now has no rules". `objects()` answers `[]` for a missing, null or mistyped key,
+            // and the store treats the payload as complete-for-that-scope — so without this
+            // guard one malformed frame silently deletes every rule in the bucket, live, and
+            // nothing re-seeds them short of a reconnect. A hide feature must not fail open.
+            // Both siblings in this switch refuse a payload they can't trust the same way
+            // (`search-result` on a missing token, `buffer-closed` on an empty target).
+            //
+            // The check is on the raw value, not on emptiness: `masks: []` is a legitimate
+            // "the last rule was removed" and has to keep working.
+            guard obj["masks"] is [Any] else { return .ignored }
+            // `networkId` is nullable and its null means the GLOBAL bucket — not the system
+            // buffer, which is what a null networkId means on every other frame. `intOrNull`
+            // keeps the two apart; `int()` would fold global onto network 0.
+            return .ignoreListUpdated(
+                networkId: obj.intOrNull("networkId"),
+                rules: obj.objects("masks").map(parseIgnoreRule)
+            )
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
@@ -149,10 +168,34 @@ enum FrameParser {
                 state: ConnectionState.from(network.stringOrNull("state")),
                 nick: network.string("nick"),
                 channels: network.objects("channels").map(parseChannel),
-                peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any])
+                peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any]),
+                ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule)
             )
         }
-        return .snapshot(networks)
+        return .snapshot(networks, globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule))
+    }
+
+    /// One stored ignore rule. Shared by the snapshot's two seeds (per-network `ignoredMasks`
+    /// and the frame-level `globalIgnores`) and by `ignore-list-updated`, which is the same
+    /// row shape in all three.
+    ///
+    /// Absent optional fields read as "unconstrained", which is what the matcher wants: no
+    /// mask is anyone, no channels is everywhere, no pattern is any body. `levels` arrives
+    /// already canonicalized by the server, so the irssi alias spellings never reach here.
+    private static func parseIgnoreRule(_ obj: [String: Any]) -> IgnoreRule {
+        IgnoreRule(
+            id: obj.int("id"),
+            mask: obj.stringOrNull("mask"),
+            channels: obj["channels"] as? [String],
+            pattern: obj.stringOrNull("pattern"),
+            patternKind: IgnorePatternKind.from(obj.stringOrNull("patternKind")),
+            levels: (obj["levels"] as? [String]) ?? [],
+            isExcept: obj.bool("isExcept"),
+            // Parsed here rather than compared as a string at match time: expiry is checked
+            // once per rule per rendered row, and `Date.parse` on every one of those would be
+            // the most expensive thing in the filter.
+            expiresAt: ISOTime.parse(obj.stringOrNull("expiresAt"))
+        )
     }
 
     /// The snapshot's `peerPresence` blob — `lowercased nick → {nick, state, stateAt,

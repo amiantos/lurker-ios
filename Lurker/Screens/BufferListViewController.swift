@@ -58,19 +58,34 @@ final class BufferListViewController: UICollectionViewController {
         var presence: FriendPresence?
         var displayName: String?
         var contactId: Int?
+        /// Whether an ignore rule mutes this buffer's plain-unread signal (lurker #359).
+        /// Carried on the row — and therefore compared by `Equatable` — so muting or unmuting
+        /// from another device reconfigures the one cell it affects.
+        var muted: Bool = false
+
+        /// What the unread pill counts.
+        ///
+        /// A muted buffer drops the plain-unread signal and shows highlights only, so ordinary
+        /// traffic stops moving the badge while someone saying your name still does — which is
+        /// the entire point of muting a busy room you nonetheless follow. Highlights pass
+        /// through untouched, and the red tint with them. Same downgrade the web applies in
+        /// `BufferList.vue`'s `displayCount`.
+        var displayUnread: Int { muted ? buffer.highlights : buffer.unread }
 
         init(
             buffer: Buffer,
             subtitle: String?,
             presence: FriendPresence? = nil,
             displayName: String? = nil,
-            contactId: Int? = nil
+            contactId: Int? = nil,
+            muted: Bool = false
         ) {
             self.buffer = buffer
             self.subtitle = subtitle
             self.presence = presence
             self.displayName = displayName
             self.contactId = contactId
+            self.muted = muted
         }
     }
 
@@ -198,6 +213,11 @@ final class BufferListViewController: UICollectionViewController {
                     // change with no buffer change, so without these the chip's dot never moves.
                     && $0.contacts == $1.contacts
                     && $0.peerPresence == $1.peerPresence
+                    // Muting is an ignore rule (lurker #359), so a mute set on another device
+                    // moves nothing else on this screen — without this, a badge stays loud
+                    // until some unrelated change happens to let a rebuild through.
+                    // (`===` is the right test — see `IgnoreSet`.)
+                    && $0.ignores === $1.ignores
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -447,7 +467,7 @@ final class BufferListViewController: UICollectionViewController {
 
         // The unread pill *replaces* the disclosure chevron, as the table did — a row either
         // says how much is waiting or it says "there's more inside", never both.
-        if let badge = makeUnreadBadge(unread: row.buffer.unread, highlights: row.buffer.highlights) {
+        if let badge = makeUnreadBadge(unread: row.displayUnread, highlights: row.buffer.highlights) {
             cell.accessories = [.customView(configuration: .init(customView: badge, placement: .trailing()))]
         } else {
             cell.accessories = [.disclosureIndicator()]
@@ -461,7 +481,7 @@ final class BufferListViewController: UICollectionViewController {
             // nick); every other chip falls back to the buffer's own name.
             name: row.displayName ?? row.buffer.displayName(),
             network: row.subtitle,
-            unread: row.buffer.unread,
+            unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence
         )
@@ -737,13 +757,13 @@ final class BufferListViewController: UICollectionViewController {
             seen.insert(network.id)
             let buffers = (byNetwork[network.id] ?? []).sorted(by: Self.order)
             guard !buffers.isEmpty else { continue }
-            sections.append(Section(title: header(for: network), layout: .list, rows: buffers.map(rosterRow)))
+            sections.append(Section(title: header(for: network), layout: .list, rows: buffers.map { rosterRow($0, state) }))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
             let rest = buffers.sorted(by: Self.order)
             guard !rest.isEmpty else { continue }
-            sections.append(Section(title: "network", layout: .list, rows: rest.map(rosterRow)))
+            sections.append(Section(title: "network", layout: .list, rows: rest.map { rosterRow($0, state) }))
         }
         return sections
     }
@@ -783,12 +803,14 @@ final class BufferListViewController: UICollectionViewController {
             // `buffer(for:)` resolves an existing DM (keeping its server-cased target and
             // unread count) or synthesizes an unhydrated one to open — the same handoff the
             // join flow uses, so tapping the chip hydrates on the chat screen.
+            let buffer = state.buffer(for: key)
             return Row(
-                buffer: state.buffer(for: key),
+                buffer: buffer,
                 subtitle: state.networks[target.networkId]?.name,
                 presence: state.primaryPresence(contact),
                 displayName: contact.displayName,
-                contactId: contact.id
+                contactId: contact.id,
+                muted: Self.isMuted(buffer, state)
             )
         }
     }
@@ -817,12 +839,22 @@ final class BufferListViewController: UICollectionViewController {
     private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer,
-            subtitle: buffer.networkId.flatMap { state.networks[$0]?.name }
+            subtitle: buffer.networkId.flatMap { state.networks[$0]?.name },
+            muted: Self.isMuted(buffer, state)
         )
     }
 
-    private func rosterRow(_ buffer: Buffer) -> Row {
-        Row(buffer: buffer, subtitle: nil)
+    private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
+        Row(buffer: buffer, subtitle: nil, muted: Self.isMuted(buffer, state))
+    }
+
+    /// Whether this buffer's plain-unread signal is muted (lurker #359).
+    ///
+    /// Mute isn't a flag on the buffer — it's an ignore rule carrying `NOUNREAD`, which is
+    /// what lets one rule mute a channel, a DM, or a whole network's worth of buffers at once.
+    /// See `Row.displayUnread` for what the badge then shows.
+    private static func isMuted(_ buffer: Buffer, _ state: ChatState) -> Bool {
+        state.ignores.mutesUnread(networkId: buffer.networkId, target: buffer.target)
     }
 
     private func header(for network: Network) -> String {

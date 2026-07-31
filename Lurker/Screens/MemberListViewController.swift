@@ -40,7 +40,10 @@ final class MemberListViewController: UITableViewController {
 
         let key = buffer.key.id
         viewModel.statePublisher
-            .removeDuplicates { $0.members[key] == $1.members[key] }
+            // The ignore set decides who's *listed*, not just who's in the room, so a rule
+            // arriving from another device has to wake this screen the same way a join does.
+            // (`===` is the right test — see `IgnoreSet`.)
+            .removeDuplicates { $0.members[key] == $1.members[key] && $0.ignores === $1.ignores }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
@@ -48,7 +51,7 @@ final class MemberListViewController: UITableViewController {
     }
 
     private func apply(_ state: ChatState) {
-        members = MemberPrefix.sorted(state.members[buffer.key.id] ?? [])
+        members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key))
         title = members.isEmpty ? "Members" : "Members (\(members.count))"
         tableView.backgroundView = members.isEmpty ? emptyLabel : nil
         tableView.reloadData()

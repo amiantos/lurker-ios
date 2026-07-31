@@ -151,6 +151,17 @@ public struct ChatState: Sendable {
     /// burst behind it must not be read as "the server listed nothing", which would wipe
     /// the roster.
     var burstActive = false
+    /// The account's ignore rules (lurker #301). Seeded by the connect `snapshot` — global
+    /// rules from the frame, per-network ones from each network blob — and replaced a bucket
+    /// at a time by `ignore-list-updated`.
+    ///
+    /// Server-authoritative and read-only here: rules are authored on the web and fanned to
+    /// every device, so what this holds is the same set the server itself matched against
+    /// when it stamped the messages now on screen. Filtering happens at *render* time
+    /// (`ChatViewController.apply`, the member list, the feeds) rather than on the way into
+    /// this store, so a rule arriving mid-session re-filters the backlog already held — and
+    /// a rule going away brings those lines straight back with no refetch.
+    public var ignores: IgnoreSet = .empty
     /// The user's server-side settings (#65). Seeded by `/api/settings/bootstrap` and patched
     /// by live `settings` frames, so a change made on the web takes effect here without a
     /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
@@ -313,12 +324,65 @@ public struct ChatState: Sendable {
     /// two entries stamped from the same instant (which is every fixture in the tests, and a
     /// real possibility for two frames in one runloop) still come out in a fixed order rather
     /// than at the mercy of dictionary iteration.
+    ///
+    /// An ignored peer is left out: someone whose messages you've hidden shouldn't announce
+    /// that they're about to send one — the line would name a person whose next line you'll
+    /// never see. The filter sits here rather than at the call site because every surface that
+    /// shows typists reads through this one method, and a gate you have to remember to apply
+    /// at each of them isn't one. Only a whole-identity rule counts (`isIgnored`): a typing tag
+    /// carries no body or event type, so a content or level-scoped rule has nothing to judge.
     public func typists(in key: BufferKey, now: Date = Date()) -> [String] {
         guard let entries = typing[key.id] else { return [] }
+        // Gated once rather than per entry: this runs inside the chat screen's
+        // `removeDuplicates` on every frame the socket delivers, and again every second from
+        // the typing ticker, so an account with no rules should pay one dictionary lookup for
+        // the whole call and not one per person composing.
+        let filtering = !ignores.isEmpty(for: key.networkId)
         return entries.values
-            .filter { $0.isLive(at: now) }
+            .filter {
+                guard $0.isLive(at: now) else { return false }
+                guard filtering else { return true }
+                // Scoped to this buffer, so a `-channels #foo` rule silences the indicator in
+                // the same buffer it silences the messages.
+                return !ignores.isIgnored(
+                    networkId: key.networkId, nick: $0.nick, userhost: $0.userhost,
+                    channel: key.target, now: now
+                )
+            }
             .sorted { ($0.startedAt, $0.nick.lowercased()) < ($1.startedAt, $1.nick.lowercased()) }
             .map(\.nick)
+    }
+
+    /// A channel's members minus anyone an ignore rule erases (lurker #301).
+    ///
+    /// Here, next to `typists(in:)`, for the reason that one gives: `members` is read by the
+    /// nicklist, the buffer-info count and nick completion, and a filter each of them has to
+    /// remember to apply isn't one — the info sheet reported a count that included people the
+    /// nicklist next to it was hiding.
+    ///
+    /// Only a whole-identity `ALL` rule removes somebody (see `IgnoreMatch.isMemberHidden`). A
+    /// content, level-scoped or `NOHIGHLIGHT` rule leaves them listed, because they are still
+    /// in the channel and still talking — a nicklist that disagreed with who is actually
+    /// present would be lying about the room rather than filtering it.
+    ///
+    /// You are always listed. A hostmask rule can legitimately cover your own nick (a shared
+    /// bouncer host, a wildcard on the network you're on), and disappearing yourself from your
+    /// own nicklist is never what such a rule meant.
+    public func visibleMembers(in key: BufferKey) -> [Member] {
+        let members = self.members[key.id] ?? []
+        guard !ignores.isEmpty(for: key.networkId) else { return members }
+        let ownNick = key.networkId.flatMap { networks[$0]?.nick }
+        return members.filter { member in
+            if let ownNick, member.nick.caseInsensitiveCompare(ownNick) == .orderedSame {
+                return true
+            }
+            return !ignores.isMemberHidden(
+                networkId: key.networkId,
+                nick: member.nick,
+                userhost: member.userhost,
+                channel: key.target
+            )
+        }
     }
 
     /// A friend's status: the presence of its primary target — the DM that opens when the
@@ -404,7 +468,7 @@ final class LurkerStore {
         switch frame {
         case .networks(let networks):
             return applyNetworks(state, networks)
-        case .snapshot(let networks):
+        case .snapshot(let networks, let globalIgnores):
             // Frame 1 of every burst (CLIENT_PROTOCOL.md §4.3), so this is where the
             // roster reconciliation window opens. Start collecting the keys the server
             // names; `backlog-complete` closes the window and prunes the rest.
@@ -416,7 +480,7 @@ final class LurkerStore {
             next.burstSeen = []
             next.burstActive = true
             next.burstGeneration &+= 1
-            return applySnapshot(next, networks)
+            return applySnapshot(next, networks, globalIgnores: globalIgnores)
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
             // when that's nothing. Latched: a later resync re-sends it, and re-asserting true
@@ -471,6 +535,13 @@ final class LurkerStore {
                 // connect snapshot, the set only knows the lines this session has loaded.
                 next.bookmarkedIds.remove(messageId)
             }
+            return next
+        case .ignoreListUpdated(let networkId, let rules):
+            // One bucket at a time — the server fans the global list or one network's, never
+            // both — and the list it carries is complete for that scope, so it replaces rather
+            // than merges. A removal has no other way to reach us.
+            var next = state
+            next.ignores = state.ignores.replacing(networkId: networkId, with: rules)
             return next
         case .bufferClosed(let networkId, let target):
             // The live half: a close on another device while this one is connected. The
@@ -620,8 +691,22 @@ final class LurkerStore {
         return next
     }
 
-    private static func applySnapshot(_ state: ChatState, _ networks: [NetworkSnapshot]) -> ChatState {
+    private static func applySnapshot(
+        _ state: ChatState,
+        _ networks: [NetworkSnapshot],
+        globalIgnores: [IgnoreRule]
+    ) -> ChatState {
         var next = state
+        // Ignore rules replace wholesale, both buckets at once — the snapshot IS the account's
+        // rule set, so a rule deleted while this device was away has to disappear here rather
+        // than survive as a leftover. Built from the frame alone for the same reason: merging
+        // the per-network buckets into what we already held would keep a rule belonging to a
+        // network that has since been removed.
+        var ignoresByNetwork: [Int: [IgnoreRule]] = [:]
+        for snapshot in networks where !snapshot.ignoredMasks.isEmpty {
+            ignoresByNetwork[snapshot.id] = snapshot.ignoredMasks
+        }
+        next.ignores = IgnoreSet(global: globalIgnores, byNetwork: ignoresByNetwork)
         for snapshot in networks {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state

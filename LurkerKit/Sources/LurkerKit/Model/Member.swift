@@ -23,4 +23,16 @@ public struct Member: Equatable, Sendable {
         self.user = user
         self.host = host
     }
+
+    /// This member's `nick!user@host`, when the server sent both halves — the form an ignore
+    /// rule's mask is matched against.
+    ///
+    /// Nil unless both are present: a half-mask would be matched against a rule's `user` and
+    /// `host` globs as if the missing half were empty, quietly failing a rule that would have
+    /// matched. Absent is the honest answer, and the matcher already knows what to do with it.
+    /// Same rule the web applies inline in its nicklist filter (`MemberList.vue:173`).
+    public var userhost: String? {
+        guard let user, let host, !user.isEmpty, !host.isEmpty else { return nil }
+        return "\(nick)!\(user)@\(host)"
+    }
 }

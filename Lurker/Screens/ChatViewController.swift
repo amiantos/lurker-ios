@@ -52,6 +52,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// inflate the jump-to-latest badge — that count is live traffic only, and a detached buffer
     /// holds live out, so any growth there is history the reader deliberately pulled (#45).
     private var wasDetached = false
+    /// The rule set the last `apply` rendered against, so this one can tell a genuine append
+    /// from rows appearing or vanishing because the rules themselves moved. Identity is the
+    /// whole comparison — see `IgnoreSet`. Nil until the first apply, which is correct: there
+    /// is no previous render to have counted against.
+    private var lastIgnores: IgnoreSet?
     /// The completion pill strip and the context currently driving it (nil = nothing under
     /// the caret). The composer reports what *kind* of completion is live; this screen owns
     /// the candidates, because they come from state the bar never sees — the command table,
@@ -158,6 +163,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// if it isn't already held the screen fetches an `around` slice centered on it first.
     /// Consumed once the landing scrolls to it, so it's a one-shot like `needsInitialScroll`.
     private var pendingJumpId: Int?
+    /// The one message id the ignore filter must not drop.
+    ///
+    /// A jump target is exempt for as long as this screen lives. You reach one by naming a
+    /// specific message — a bookmark, a search hit, a notification tap — and the rules can
+    /// have changed since (the feeds don't subscribe to live state, so an ignored line stays
+    /// tappable there). Filtering it out would land the reader on a message that isn't drawn:
+    /// the landing resolves its anchor against the RENDERED rows, so it would never resolve,
+    /// `pendingJumpId` would never clear, and `hydrateIfNeeded`'s `guard pendingJumpId == nil`
+    /// would keep the buffer from hydrating for the life of the screen.
+    ///
+    /// Set alongside every `pendingJumpId` assignment rather than by an observer on it — a
+    /// `didSet` would not fire for the one in `init`, which is the notification-tap path.
+    /// Outlives the landing that consumes `pendingJumpId`, so the row doesn't vanish from
+    /// under the reader the instant they arrive on it.
+    private var jumpExemptId: Int?
     /// The snapshot burst during which the `around` slice for `pendingJumpId` was requested,
     /// or nil if it hasn't been asked for. Same shape, and the same reasoning, as
     /// `hydrateRequestedAtGeneration`: a request written to a socket that is silently replaced
@@ -197,6 +217,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         self.viewModel = viewModel
         self.buffer = buffer
         self.pendingJumpId = jumpTo
+        self.jumpExemptId = jumpTo
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -443,6 +464,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // is the default, so this costs nothing until someone turns it on.
                     && Self.modePrefixes(for: old, buffer: thisBuffer)
                         == Self.modePrefixes(for: new, buffer: thisBuffer)
+                    // Ignore rules decide which of `messages` actually renders and which of
+                    // them highlight, and they arrive on their own from another device — the
+                    // same trap settings and typing hit. Without this an `/ignore` typed in a
+                    // browser changes nothing on screen until the next message happens to
+                    // arrive, and the `/unignore` that should bring lines back does nothing
+                    // visible at all. (`===` is the right test — see `IgnoreSet`.)
+                    && old.ignores === new.ignores
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -597,8 +625,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Filter by what this *kind* of buffer renders. The system buffer's content is
         // entirely `type: "system"`, which isn't speech — a blanket `isSpeech` filter
         // (right for channels) left it permanently empty.
-        let updated = (state.messages[buffer.key.id] ?? [])
-            .filter { buffer.kind.renders($0.type) && $0.isRenderable }
+        // The render-time ignore filter (lurker #301) sits on top of the kind/renderable one:
+        // hidden lines drop out, and a NOHIGHLIGHT-covered line loses its mention wash. At
+        // render rather than on the way into the store, which is what makes a rule retroactive
+        // both ways — one made in a browser hides backlog the server had already sent, and
+        // removing it brings those lines straight back with no refetch.
+        let updated = state.ignores.visible(
+            (state.messages[buffer.key.id] ?? [])
+                .filter { buffer.kind.renders($0.type) && $0.isRenderable },
+            networkId: buffer.networkId,
+            target: buffer.target,
+            keeping: jumpExemptId
+        )
         let oldFirstId = messages.first?.id
         let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom
@@ -608,7 +646,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // same line back in the same place — which pins scroll position precisely, where the
         // old "shift by the content-height delta" could only approximate it (off-screen rows
         // self-size from an estimate, and consolidation can reshape the run at the boundary).
-        let anchor = wasNearBottom ? nil : topVisibleAnchor()
+        let anchors = wasNearBottom ? [] : visibleAnchors()
 
         // What the jump pill badges: live messages that landed below while the reader was up
         // in history. Appends only — the first id moving means the reader pulled older pages,
@@ -619,8 +657,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // pulled by scrolling down (#45), not a surprise from below. `wasDetached` covers the
         // re-attach apply too, where the final `after` page both appends and clears the flag.
         let nowDetached = state.buffers[buffer.key.id]?.hasMoreNewer == true
-        if !wasNearBottom, !wasDetached, !nowDetached,
-           newFirstId == oldFirstId, updated.count > messages.count {
+        // Sat out entirely on the frame the rules changed: an `/unignore` restores rows
+        // *throughout* the loaded window, which is a count increase that nothing arrived to
+        // cause. Counting it announced "12 new" for a conversation that hadn't moved, and
+        // then sampled the wrong twelve rows to classify.
+        let rulesChanged = lastIgnores !== state.ignores
+        lastIgnores = state.ignores
+        if !wasNearBottom, !wasDetached, !nowDetached, !rulesChanged, newFirstId == oldFirstId {
+            // Counted by id rather than by how much longer the array got. The two agree for a
+            // plain append and disagree for everything else — a restored row lands in the
+            // middle, and `suffix(delta)` would then measure the tail, which is neither the
+            // rows that appeared nor the same number of them.
+            //
+            // Ephemerals (id 0) are excluded: a `/e2e` status line or a local command echo is
+            // not something the reader is missing below.
+            let previousTail = messages.last(where: { $0.id != 0 })?.id ?? 0
+            let appended = updated.filter { $0.id > previousTail }
             // Count what the reader will actually SEE arrive. At the `none` tier (#666) a
             // netsplit rejoin appends dozens of rows that build to nothing, and counting
             // them raw advertises "40 new" on a pill that jumps to a bottom looking exactly
@@ -628,7 +680,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // 40 folds to one summary line — but that overcounts things that exist, which
             // is a different kind of wrong from counting things that don't.
             let mode = EventFilter.rendered(EventFilter.mode(state.settings))
-            let appended = updated.suffix(updated.count - messages.count)
             newWhileDetached += mode == .none
                 ? appended.count { !EventFilter.isNoise($0.type) }
                 : appended.count
@@ -659,7 +710,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // content, suppresses the placeholder, and leaves the reader on a completely blank
         // screen with no empty-state and no spinner — and nothing to scroll, so no paging
         // fires to correct it. Runs after `rebuildRows()` above, so `rows` is current.
-        updatePlaceholder(hasMessages: !rows.isEmpty, known: state.buffers[buffer.key.id])
+        //
+        // The top-up runs first and reports whether it asked for more, so a window filtered
+        // down to nothing says "Loading messages…" rather than claiming the buffer is empty
+        // while a page is on its way to prove otherwise.
+        let toppingUp = topUpIfFilteredEmpty(state)
+        updatePlaceholder(
+            hasMessages: !rows.isEmpty,
+            known: state.buffers[buffer.key.id],
+            forceLoading: toppingUp
+        )
         // New traffic arrived while we're on screen → keep it marked read.
         if view.window != nil { viewModel.markRead(buffer.key) }
 
@@ -704,12 +764,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
-                if let anchor, let index = rowIndex(containing: anchor.id) {
+                // The first captured line that still has a row — see `visibleAnchors`.
+                let survivor = anchors.lazy
+                    .compactMap { anchor in
+                        self.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
+                    }
+                    .first
+                if let (index, offset) = survivor {
                     // Put the anchored line back at the same screen offset it had before.
-                    let target = tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - anchor.offset
+                    let target = tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - offset
                     tableView.contentOffset.y = target
-                } else if prepended {
-                    // No line to anchor to (or it vanished) — fall back to the height delta.
+                } else if prepended || tableView.contentSize.height < oldContentHeight {
+                    // Nothing anchorable survived. Fall back to the height delta — which is
+                    // the right approximation in both directions: content grew above us (a
+                    // prepend) or shrank (rows filtered away). Not applied when the content
+                    // merely grew *below* the viewport, where the offset is already correct.
                     tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
                 }
                 clampToContent()
@@ -984,8 +1053,36 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Show a loading spinner or an empty-state placeholder behind an empty message list,
     /// or nothing when there are messages. Set as the table's `backgroundView`, so it sits
     /// behind the cells and the table hides it the instant there's a row to draw.
-    private func updatePlaceholder(hasMessages: Bool, known: Buffer?) {
-        let placeholder = BufferPlaceholder.of(
+    /// Pull older history when everything loaded is filtered out but more exists.
+    ///
+    /// Paging is driven by scrolling, and a table with no rows cannot scroll — so a window
+    /// whose every line is hidden is a dead end: the buffer shows "No messages yet", nothing
+    /// can fire `loadOlder`, and it stays that way for the life of the screen even though the
+    /// server has plenty more. An ignored sender who dominates a channel reaches this easily,
+    /// and so does the `.none` event tier in a channel whose recent traffic is all joins.
+    ///
+    /// So the filters that can empty the view have to re-arm paging themselves, exactly as
+    /// `HistoryFeedViewController.settle()` does for the same reason. `loadOlder` is guarded
+    /// against re-entry and reads the RAW store list for its cursor, so calling it here is
+    /// safe and correctly paged even though the visible list is empty.
+    ///
+    /// Gated on the raw list being non-empty: with genuinely nothing loaded this is an
+    /// un-hydrated buffer, which `hydrateIfNeeded` owns.
+    /// Returns whether a page was requested, so the caller can show the spinner instead of an
+    /// empty state while it lands.
+    @discardableResult
+    private func topUpIfFilteredEmpty(_ state: ChatState) -> Bool {
+        guard rows.isEmpty, pendingJumpId == nil else { return false }
+        guard let known = state.buffers[buffer.key.id], known.hydrated, known.hasMoreOlder else {
+            return false
+        }
+        guard !(state.messages[buffer.key.id] ?? []).isEmpty else { return false }
+        viewModel.loadOlder(buffer.key)
+        return true
+    }
+
+    private func updatePlaceholder(hasMessages: Bool, known: Buffer?, forceLoading: Bool = false) {
+        let placeholder = forceLoading ? .loading : BufferPlaceholder.of(
             hasMessages: hasMessages,
             hydrated: known?.hydrated ?? false,
             hydratesOnDemand: buffer.kind.hydratesOnDemand,
@@ -1081,18 +1178,29 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The line at the top of the viewport and how far its top sits from the viewport's
     /// top edge, captured from the *current* layout. Restoring both after a reload pins the
     /// reading position, whatever the rows above re-estimate or re-consolidate to.
-    private func topVisibleAnchor() -> (id: Int, offset: CGFloat)? {
+    /// Every anchorable visible row and where it sits, top-down — the first entry is the line
+    /// being read, the rest are fallbacks.
+    ///
+    /// It returns a list rather than just the top row because the anchor can be one of the
+    /// rows that just went away. A history prepend can only *add* above the viewport, but an
+    /// ignore rule arriving from another device removes rows anywhere in the loaded window,
+    /// the anchor included — and with no anchor and no prepend the old code adjusted nothing
+    /// while the content above the viewport shrank, silently relocating the reader into a
+    /// different part of the conversation. Restoring against the first row that survived
+    /// keeps them where they were, and the second-choice row is usually inches from the first.
+    private func visibleAnchors() -> [(id: Int, offset: CGFloat)] {
         let viewportTop = tableView.contentOffset.y + tableView.adjustedContentInset.top
-        guard let visible = tableView.indexPathsForVisibleRows?.sorted() else { return nil }
+        guard let visible = tableView.indexPathsForVisibleRows?.sorted() else { return [] }
+        var anchors: [(id: Int, offset: CGFloat)] = []
         for indexPath in visible {
             guard rows.indices.contains(indexPath.row), let id = rows[indexPath.row].anchorId else { continue }
             let frame = tableView.rectForRow(at: indexPath)
-            // The first row still showing below the viewport top is the one being read.
-            if frame.maxY > viewportTop {
-                return (id, frame.minY - tableView.contentOffset.y)
-            }
+            // Rows above the viewport top aren't being read and make poor anchors — the first
+            // one still showing is the line the reader is on.
+            guard frame.maxY > viewportTop else { continue }
+            anchors.append((id, frame.minY - tableView.contentOffset.y))
         }
-        return nil
+        return anchors
     }
 
     /// The row that now represents message `id` — its own row, or the summary whose span
@@ -1336,6 +1444,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         resetJumpState()
         needsInitialScroll = true
         pendingJumpId = boundary
+        jumpExemptId = boundary
         jumpFlashesFirstUnread = true
         // Down now rather than when the divider lands: the `around` fetch can take a moment and
         // the tap has to be acknowledged. `pendingJumpId` (set just above) is what *keeps* it
@@ -1708,10 +1817,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func nickCandidates(matching query: String) -> [String] {
         NickCompletion.candidates(
             messages: messages,
-            members: viewModel.state.members[buffer.key.id] ?? [],
+            members: viewModel.state.visibleMembers(in: buffer.key),
             selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
             query: query,
-            isChannel: buffer.kind == .channel
+            isChannel: buffer.kind == .channel,
+            ignores: viewModel.state.ignores,
+            networkId: buffer.networkId,
+            channel: buffer.target
         )
     }
 

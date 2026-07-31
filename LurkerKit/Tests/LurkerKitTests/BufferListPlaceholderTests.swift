@@ -58,7 +58,7 @@ final class BufferListPlaceholderTests: XCTestCase {
     /// had landed with nothing in it, and the list would flash "No buffers yet".
     func testASnapshotAloneDoesNotMeanTheRosterLanded() {
         let store = LurkerStore()
-        store.apply(.snapshot([]))
+        store.apply(.snapshot([], globalIgnores: []))
         XCTAssertFalse(store.state.backlogComplete, "the snapshot is a prefix, not the whole answer")
     }
 
