@@ -57,10 +57,15 @@ public enum IgnoreArgs {
     /// `Int` would have overflowed to nil before the range check could say so.
     static func duration(_ raw: String?) -> Double? {
         guard let raw else { return nil }
-        let text = raw.trimmingCharacters(in: .whitespaces)
+        // `whitespacesAndNewlines`, not `whitespaces`: the reference's `\s` matches a newline
+        // and `whitespaces` doesn't, so a pasted `-time "5\ndays"` would have died here on a
+        // duration the web accepts. The tokenizer only lets interior whitespace through inside
+        // a quoted token, so this is exactly the case that reaches it.
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let digits = text.prefix { $0.isASCII && $0.isNumber }
         guard !digits.isEmpty, let count = Double(digits) else { return nil }
-        let unit = text.dropFirst(digits.count).trimmingCharacters(in: .whitespaces).lowercased()
+        let unit = text.dropFirst(digits.count)
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let multiplier = multipliers[unit.isEmpty ? "s" : unit] else { return nil }
         let millis = count * multiplier
         guard millis.isFinite, millis <= maxDurationMillis else { return nil }
@@ -71,6 +76,14 @@ public enum IgnoreArgs {
 
     /// Split on whitespace, but keep a balanced `(…)` group or a `"quoted"` string whole, so
     /// `-pattern (a|b c)` and `-pattern "two words"` survive as one token each.
+    ///
+    /// Whitespace is Swift's (`Character.isWhitespace`, the Unicode White_Space property),
+    /// which is what the rest of `CommandParser` splits on. It is not quite the reference's
+    /// `/\s/`: ECMAScript also counts U+FEFF, which Unicode stopped calling whitespace in
+    /// 4.0.1. A pasted `bob<U+FEFF>JOINS` is therefore one token here and two on the web —
+    /// stored as an unmatchable mask rather than a mask plus a level. Left alone deliberately:
+    /// following ECMA's list would make this the one place in the app that disagrees with
+    /// every other command about what a space is, to rescue a rule nobody can type on purpose.
     static func tokenize(_ line: String) -> [String] {
         var tokens: [String] = []
         let characters = Array(line)
@@ -114,10 +127,12 @@ public enum IgnoreArgs {
         return tokens
     }
 
-    private static func isChannelToken(_ token: String) -> Bool {
-        guard let first = token.first else { return false }
-        return first == "#" || first == "&" || first == "!" || first == "+"
-    }
+    /// The flags this grammar knows, lowercased — what `-pattern` refuses to swallow as its
+    /// value. Kept as one set so a flag added above can't quietly become a pattern.
+    private static let flags: Set<String> = [
+        "-regexp", "-regex", "-full", "-word", "-except", "-network", "-net", "-global",
+        "-replies", "-pattern", "-time",
+    ]
 
     // MARK: - Parse
 
@@ -171,7 +186,17 @@ public enum IgnoreArgs {
                 return fail("-replies is not supported")
             case "-pattern":
                 guard index < tokens.count else { return fail("-pattern needs a value") }
-                pattern = tokens[index]
+                // A flag is never the pattern. The reference takes the next token whatever it
+                // is, so `/ignore bob -pattern -network` there stores a rule matching the
+                // literal text "-network" AND drops the scope the user asked for — silently
+                // making global the rule they scoped to one connection. A deliberate
+                // divergence: a pattern that merely *starts* with `-` (say `-_-`) still works,
+                // because only the known flags are refused.
+                let value = tokens[index]
+                guard !flags.contains(value.lowercased()) else {
+                    return fail("-pattern needs a value (got the flag \(value))")
+                }
+                pattern = value
                 index += 1
                 continue
             case "-time":
@@ -197,7 +222,7 @@ public enum IgnoreArgs {
                 continue
             }
 
-            if isChannelToken(token) {
+            if ChannelName.isPrefixed(token) {
                 channels.append(token.lowercased())
                 continue
             }
@@ -208,8 +233,11 @@ public enum IgnoreArgs {
             }
 
             if mask == nil {
-                // `*` is "anyone", which the matcher spells as no mask at all.
-                mask = token == "*" ? nil : token
+                // `*` is "anyone", which the matcher spells as no mask at all — and so is an
+                // empty quoted token, which `/ignore ""` produces. Both normalize to nil, the
+                // way the server's `strOrNull` and `IgnoreMatch.maskMatcher` already read
+                // them; leaving `""` here would have listed the rule under a blank subject.
+                mask = (token == "*" || token.isEmpty) ? nil : token
                 continue
             }
             return fail("unexpected argument: \(token)")
@@ -224,6 +252,17 @@ public enum IgnoreArgs {
             for level in subLevels { levelSet.remove(level) }
         }
         guard !levelSet.isEmpty else { return fail("no levels remain") }
+
+        // Compile a `-regexp` pattern here rather than letting the server refuse it. That
+        // rejection arrives as silence — `wsHub`'s `add-ignore` drops a failed validation with
+        // a bare `break` and sends nothing back — so an unclosed `[` would otherwise be
+        // confirmed as added and simply never exist. Not a guarantee the server will agree:
+        // it compiles with V8 and this is ICU, and the two disagree about some patterns
+        // (`IgnoreMatch` documents which). It catches the typo, which is the case that happens.
+        if sawRegexp, let pattern, !pattern.isEmpty,
+           (try? NSRegularExpression(pattern: pattern)) == nil {
+            return fail("invalid regex: \(pattern)")
+        }
 
         return .success(
             Parsed(

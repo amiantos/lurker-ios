@@ -89,12 +89,23 @@ public final class IgnoreSet: Sendable {
     ///
     /// A nil `networkId` is the system buffer, where only global rules are in scope — there's
     /// no connection for a network-scoped rule to be about.
-    public func listing(for networkId: Int?) -> [ScopedIgnoreRule] {
-        let globals = global.map { ScopedIgnoreRule(rule: $0, scope: nil) }
-        guard let networkId else { return globals }
-        return globals + (byNetwork[networkId] ?? []).map {
-            ScopedIgnoreRule(rule: $0, scope: networkId)
+    ///
+    /// Lapsed rules are left out, which is what makes this answer the same question every
+    /// other accessor here does: a rule past its `expiresAt` stops matching the instant it
+    /// runs out (`CompiledRule.isLive`), so listing it would show a rule that isn't in force
+    /// and — worse — give it an index that `/unignore <n>` would spend. The server sweeps the
+    /// rows within a minute and fans the shortened list back; this is what covers the phone
+    /// that was asleep or offline when that happened.
+    public func listing(for networkId: Int?, now: Date = Date()) -> [ScopedIgnoreRule] {
+        func live(_ rules: [IgnoreRule], scope: Int?) -> [ScopedIgnoreRule] {
+            rules.compactMap { rule in
+                if let expiresAt = rule.expiresAt, expiresAt <= now { return nil }
+                return ScopedIgnoreRule(rule: rule, scope: scope)
+            }
         }
+        let globals = live(global, scope: nil)
+        guard let networkId else { return globals }
+        return globals + live(byNetwork[networkId] ?? [], scope: networkId)
     }
 
     /// The rules in force on `networkId`.

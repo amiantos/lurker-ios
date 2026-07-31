@@ -303,18 +303,22 @@ final class CommandParserTests: XCTestCase {
 
     // MARK: - Ignore rules (#86)
 
-    /// Two rules the tests can list: one global, one on network 1 — the two buckets, in the
-    /// order `IgnoreSet.listing(for:)` hands them over.
-    private var listedRules: [ScopedIgnoreRule] {
-        [
-            ScopedIgnoreRule(rule: IgnoreRule(id: 7, mask: "spammer"), scope: nil),
-            ScopedIgnoreRule(rule: IgnoreRule(id: 9, mask: "bob", levels: ["JOINS"]), scope: 1),
-        ]
+    /// Three rules across both buckets: one global and two on network 1, the second pair
+    /// sharing a mask so a by-mask removal has something to count. Listed order is globals
+    /// first, so the indices are 1: spammer, 2: bob, 3: BOB.
+    private var listedRules: IgnoreSet {
+        IgnoreSet(
+            global: [IgnoreRule(id: 7, mask: "spammer")],
+            byNetwork: [1: [
+                IgnoreRule(id: 9, mask: "bob", levels: ["JOINS"]),
+                IgnoreRule(id: 11, mask: "BOB", levels: ["PARTS"]),
+            ]]
+        )
     }
 
     private func effects(
         _ input: String,
-        ignores: [ScopedIgnoreRule],
+        ignores: IgnoreSet,
         networkId: Int? = 1,
         target: String = "#chan"
     ) -> [CommandEffect] {
@@ -339,30 +343,58 @@ final class CommandParserTests: XCTestCase {
         // The default scope is global (#350) — nil, not the issuing network.
         XCTAssertEqual(
             effects("/ignore bob").first,
-            .addIgnore(scope: nil, rule: IgnoreRule(mask: "bob", levels: ["ALL"]))
+            .addIgnore(
+                scope: nil,
+                rule: IgnoreRule(mask: "bob", levels: ["ALL"]),
+                receipt: "ignore added: bob  [global]  ALL"
+            )
         )
     }
 
     func testIgnoreNetworkScopesToTheIssuingConnection() {
         XCTAssertEqual(
             effects("/ignore -network bob NOHIGHLIGHT").first,
-            .addIgnore(scope: 1, rule: IgnoreRule(mask: "bob", levels: ["NOHIGHLIGHT"]))
+            .addIgnore(
+                scope: 1,
+                rule: IgnoreRule(mask: "bob", levels: ["NOHIGHLIGHT"]),
+                receipt: "ignore added: bob  NOHIGHLIGHT"
+            )
         )
     }
 
-    func testIgnoreConfirmsWhatItSent() {
-        guard case .info(let text) = effects("/ignore bob").last else {
-            return XCTFail("expected a confirmation")
+    func testTheReceiptRidesOnTheEffectSoAFailedSendCanWithholdIt() {
+        // Not a separate `.info`: whether the line may be printed isn't known until the verb
+        // has been handed to a socket, and nothing queues these. See `ChatViewModel.report`.
+        let effects = effects("/ignore bob")
+        XCTAssertEqual(effects.count, 1, "the confirmation must not be a second, unconditional effect")
+        for effect in effects {
+            if case .info = effect { XCTFail("an ignore add must not print unconditionally") }
         }
-        XCTAssertTrue(text.contains("bob"), text)
-        XCTAssertTrue(text.contains("[global]"), text)
     }
 
     func testIgnoreRunsFromTheSystemBufferBecauseRulesAreGlobal() {
         XCTAssertEqual(
             effects("/ignore bob", networkId: nil, target: ":system:").first,
-            .addIgnore(scope: nil, rule: IgnoreRule(mask: "bob", levels: ["ALL"]))
+            .addIgnore(
+                scope: nil,
+                rule: IgnoreRule(mask: "bob", levels: ["ALL"]),
+                receipt: "ignore added: bob  [global]  ALL"
+            )
         )
+    }
+
+    func testEveryNetworkAgnosticSpecIsActuallyReachableFromTheSystemBuffer() {
+        // `networkAgnostic` is documentation — the real gate is where the verb's case sits in
+        // `resolve`. This is what keeps the two from drifting apart.
+        for spec in CommandRegistry.all where spec.networkAgnostic {
+            let effects = effects("/\(spec.name)", networkId: nil, target: ":system:")
+            if case .info(let text) = effects.first {
+                XCTAssertFalse(
+                    text.contains("needs an active network"),
+                    "/\(spec.name) claims to be network-agnostic but is gated"
+                )
+            }
+        }
     }
 
     func testIgnoreNetworkInTheSystemBufferIsRefusedRatherThanMadeGlobal() {
@@ -387,19 +419,40 @@ final class CommandParserTests: XCTestCase {
             return XCTFail("expected a listing")
         }
         let lines = text.split(separator: "\n").map(String.init)
-        XCTAssertEqual(lines.count, 3, text)
-        XCTAssertTrue(lines[0].contains("(2)"), lines[0])
+        XCTAssertTrue(lines[0].contains("(3)"), lines[0])
         XCTAssertTrue(lines[1].contains("1. spammer"), lines[1])
         XCTAssertTrue(lines[1].contains("[global]"), lines[1])
         XCTAssertTrue(lines[2].contains("2. bob"), lines[2])
         XCTAssertFalse(lines[2].contains("[global]"), lines[2])
     }
 
-    func testBareIgnoreWithNoRulesSaysSoAndPointsAtTheVerb() {
+    func testTheListingCarriesTheGrammarBecauseNothingElseDoes() {
+        // `/commands` can only print the positional form, so the flags are unreachable without
+        // this — including `-network`, the only way to scope a rule to one connection.
         guard case .info(let text) = effects("/ignore").first else {
             return XCTFail("expected a listing")
         }
         XCTAssertTrue(text.contains("empty"), text)
+        XCTAssertTrue(text.contains("-network"), text)
+        XCTAssertTrue(text.contains("-pattern"), text)
+        XCTAssertTrue(text.contains("NOHIGHLIGHT"), text)
+    }
+
+    func testTheListingLeavesOutRulesThatHaveLapsed() {
+        // A lapsed rule isn't in force, so listing it would both misreport and spend an index.
+        let now = Date()
+        let set = IgnoreSet(global: [
+            IgnoreRule(id: 1, mask: "gone", expiresAt: now.addingTimeInterval(-60)),
+            IgnoreRule(id: 2, mask: "live", expiresAt: now.addingTimeInterval(60)),
+        ])
+        guard case .command(let effects) = CommandParser.parse(
+            "/ignore", networkId: 1, target: "#chan", ignores: set, now: now
+        ), case .info(let text) = effects.first else {
+            return XCTFail("expected a listing")
+        }
+        XCTAssertTrue(text.contains("(1)"), text)
+        XCTAssertTrue(text.contains("1. live"), text)
+        XCTAssertFalse(text.contains("gone"), text)
     }
 
     func testUnignoreByIndexRemovesThatRuleByIdInItsOwnScope() {
@@ -407,16 +460,19 @@ final class CommandParserTests: XCTestCase {
         // is the whole reason `IgnoreRule.id` is carried.
         XCTAssertEqual(
             effects("/unignore 2", ignores: listedRules).first,
-            .removeIgnore(scope: 1, id: 9, mask: nil)
+            .removeIgnore(scope: 1, id: 9, mask: nil, receipt: "removed ignore #2: bob  JOINS")
         )
         XCTAssertEqual(
             effects("/unignore 1", ignores: listedRules).first,
-            .removeIgnore(scope: nil, id: 7, mask: nil)
+            .removeIgnore(
+                scope: nil, id: 7, mask: nil,
+                receipt: "removed ignore #1: spammer  [global]  ALL"
+            )
         )
     }
 
     func testUnignoreByIndexOutOfRangeRemovesNothing() {
-        for input in ["/unignore 0", "/unignore 3", "/unignore 99999999999999999999"] {
+        for input in ["/unignore 0", "/unignore 4", "/unignore 99999999999999999999"] {
             let effects = effects(input, ignores: listedRules)
             guard case .info(let text) = effects.first, effects.count == 1 else {
                 return XCTFail("expected a complaint and no removal from \(input)")
@@ -425,13 +481,65 @@ final class CommandParserTests: XCTestCase {
         }
     }
 
+    func testAnAllDigitMaskIsStillRemovableByMask() {
+        // The index branch wins when the number names a rule that exists; otherwise the digits
+        // are tried as a mask, so a numeric nick (bots, `*!*@1234`) isn't create-only.
+        let set = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 3, mask: "12345")]])
+        XCTAssertEqual(
+            effects("/unignore 12345", ignores: set).first,
+            .removeIgnore(
+                scope: 1, id: nil, mask: "12345",
+                receipt: "removed 1 ignore matching \"12345\"."
+            )
+        )
+        // An in-range index still means the index.
+        XCTAssertEqual(
+            effects("/unignore 1", ignores: set).first,
+            .removeIgnore(scope: 1, id: 3, mask: nil, receipt: "removed ignore #1: 12345  ALL")
+        )
+    }
+
     func testUnignoreByMaskClearsEveryRuleCarryingIt() {
         // Scoped to the issuing network: the server's by-mask delete spans the globals plus
-        // that one network, which is the set the count describes.
+        // that one network, which is the set the count describes. Two rules share this mask up
+        // to case, and SQLite's NOCASE folds them the same way.
         XCTAssertEqual(
             effects("/unignore BOB", ignores: listedRules).first,
-            .removeIgnore(scope: 1, id: nil, mask: "BOB")
+            .removeIgnore(
+                scope: 1, id: nil, mask: "BOB",
+                receipt: "removed 2 ignores matching \"BOB\"."
+            )
         )
+    }
+
+    func testTheByMaskCountFoldsCaseTheWayTheServersDeleteDoes() {
+        // `caseInsensitiveCompare` would count these as matches; SQLite's `COLLATE NOCASE`
+        // (ASCII-only, byte-exact otherwise) does not — so counting them would report a
+        // removal the DELETE never makes.
+        let set = IgnoreSet(byNetwork: [1: [
+            IgnoreRule(id: 1, mask: "caf\u{00E9}"),   // composed
+            IgnoreRule(id: 2, mask: "stra\u{00DF}e"),
+        ]])
+        for input in ["/unignore cafe\u{0301}", "/unignore STRASSE"] {
+            let effects = effects(input, ignores: set)
+            guard case .info(let text) = effects.first, effects.count == 1 else {
+                return XCTFail("expected no removal from \(input)")
+            }
+            XCTAssertTrue(text.contains("no ignore with mask"), text)
+        }
+        // ASCII case still folds, because NOCASE folds it.
+        XCTAssertNotNil(effects("/unignore CAF\u{00C9}", ignores: set).first)
+    }
+
+    func testUnignoreStarSaysWhyItCannotMatch() {
+        // The listing prints a maskless rule as `*`, so typing it back is the obvious move —
+        // but `*` normalizes to no mask at all, and the server's delete matches on a string.
+        let set = IgnoreSet(global: [IgnoreRule(id: 1, mask: nil, levels: ["JOINS"])])
+        let effects = effects("/unignore *", ignores: set)
+        guard case .info(let text) = effects.first, effects.count == 1 else {
+            return XCTFail("expected an explanation and no removal")
+        }
+        XCTAssertTrue(text.contains("by number"), text)
     }
 
     func testUnignoreByMaskWithNoMatchRemovesNothing() {

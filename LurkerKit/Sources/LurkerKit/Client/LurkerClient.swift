@@ -402,12 +402,18 @@ final class LurkerClient {
     /// Fire-and-ask: the server re-validates, and the rule only exists once it fans an
     /// `ignore-list-updated` back. Surfaces a socket-level failure like the other deliberate
     /// writes — there's no queue behind it.
-    func addIgnore(networkId: Int?, rule: IgnoreRule) {
+    ///
+    /// **Returns false when it went nowhere**, and the caller must check: the command that
+    /// sent this prints a receipt, and nothing else would contradict it. The window is real —
+    /// `start()` awaits a REST call before opening the socket, and the composer is live the
+    /// whole time.
+    @discardableResult
+    func addIgnore(networkId: Int?, rule: IgnoreRule) -> Bool {
         send(
             [
                 "type": "add-ignore",
                 "networkId": networkId.map { $0 as Any } ?? NSNull(),
-                "rule": ruleJSON(rule),
+                "rule": Self.ruleJSON(rule),
             ],
             surfacesFailure: true
         )
@@ -417,20 +423,29 @@ final class LurkerClient {
     /// `mask`, which clears every rule carrying it. `networkId` scopes it, nil meaning the
     /// global bucket; a by-mask removal on a network scope also clears matching globals, which
     /// is the server's behavior and why it answers with both buckets refreshed.
-    func removeIgnore(networkId: Int?, id: Int?, mask: String?) {
+    ///
+    /// Returns false when it went nowhere, for the same reason `addIgnore` does — and it
+    /// matters more here, where the receipt the caller holds says something was *removed*.
+    @discardableResult
+    func removeIgnore(networkId: Int?, id: Int?, mask: String?) -> Bool {
         var verb: [String: Any] = [
             "type": "remove-ignore",
             "networkId": networkId.map { $0 as Any } ?? NSNull(),
         ]
         if let id { verb["id"] = id }
         if let mask { verb["mask"] = mask }
-        send(verb, surfacesFailure: true)
+        return send(verb, surfacesFailure: true)
     }
 
     /// A rule as `add-ignore` carries it. Unset dimensions are *omitted* rather than sent as
     /// null: the server reads an absent field as "unconstrained", which is the same thing and
     /// keeps the frame to what the rule actually says.
-    private func ruleJSON(_ rule: IgnoreRule) -> [String: Any] {
+    ///
+    /// `nonisolated static` so a test can assert the payload without a socket or the main
+    /// actor — it is pure, and the isolation this class needs is about the socket. It's the
+    /// encoder half of a shape `FrameParser.parseIgnoreRule` decodes, and the two are held
+    /// together only by agreeing on these key names, so there is a round-trip test.
+    nonisolated static func ruleJSON(_ rule: IgnoreRule) -> [String: Any] {
         var out: [String: Any] = [
             "levels": rule.levels,
             "patternKind": rule.patternKind.rawValue,

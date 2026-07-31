@@ -61,12 +61,18 @@ public enum CommandEffect: Equatable, Sendable {
     /// a GLOBAL rule, applying on every network**, and it's the default: `-network` is what
     /// opts a rule into the connection it was typed on (#350). (Note that's the opposite of
     /// the nil convention buffers use, where no network means the app-scoped system buffer.)
-    case addIgnore(scope: Int?, rule: IgnoreRule)
+    ///
+    /// `receipt` is the line to print *if the frame reaches a socket*. It rides along rather
+    /// than being a separate `info` effect because whether it may be said isn't known until
+    /// the verb is sent: there is no queue behind these, so a composer used before the socket
+    /// is up (the cold-launch window, where `start()` awaits a REST call first) would
+    /// otherwise print "ignore added" for a rule that went nowhere.
+    case addIgnore(scope: Int?, rule: IgnoreRule, receipt: String)
     /// Ask the server to drop ignore rules — by `id` (what a listed index resolves to) or by
-    /// `mask` (every rule carrying it). `scope` reads as it does for `addIgnore`; a by-mask
-    /// removal on a network scope clears matching globals too, which is the server's rule and
-    /// why the confirmation counts what the client can see rather than claiming a total.
-    case removeIgnore(scope: Int?, id: Int?, mask: String?)
+    /// `mask` (every rule carrying it). `scope` and `receipt` read as they do for `addIgnore`;
+    /// a by-mask removal on a network scope clears matching globals too, which is the server's
+    /// rule and why the receipt counts what the client can see rather than claiming a total.
+    case removeIgnore(scope: Int?, id: Int?, mask: String?, receipt: String)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -140,7 +146,12 @@ public struct CommandSpec: Equatable, Sendable {
     public let summary: String
     public let args: [ArgSpec]
     /// Runs without an active network — the system buffer can issue it (`/away`, `/back`,
-    /// `/commands`). Everything else needs a channel or DM and is gated otherwise.
+    /// `/commands`, `/ignore`, `/unignore`). Everything else needs a channel or DM.
+    ///
+    /// Documentation, not the gate: what actually lets a verb run there is its `case` sitting
+    /// above `CommandParser.resolve`'s `guard networkId != nil`, and nothing reads this field.
+    /// Kept as the table's statement of the same fact — the two are checked against each other
+    /// by `testEveryNetworkAgnosticSpecIsActuallyReachableFromTheSystemBuffer`.
     public let networkAgnostic: Bool
 
     public init(

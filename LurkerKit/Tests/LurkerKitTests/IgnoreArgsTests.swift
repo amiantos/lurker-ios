@@ -135,11 +135,14 @@ final class IgnoreArgsTests: XCTestCase {
     func testAllMinusLevelsExpandsThenRemoves() {
         let rule = parse("#irssi ALL -PUBLIC -ACTIONS")?.rule
         XCTAssertEqual(rule?.channels, ["#irssi"])
-        let levels = rule?.levels ?? []
-        XCTAssertFalse(levels.contains("PUBLIC"))
-        XCTAssertFalse(levels.contains("ACTIONS"))
-        XCTAssertTrue(levels.contains("JOINS"))
-        XCTAssertTrue(levels.contains("MSGS"))
+        // Pinned exactly, not by `contains`: the stored CSV is what the server's dedupe
+        // compares as a string, so both the membership AND the canonical order are the
+        // contract. A drift in either writes a duplicate rule rather than matching an
+        // existing one.
+        XCTAssertEqual(
+            rule?.levels,
+            ["MSGS", "NOTICES", "JOINS", "PARTS", "QUITS", "NICKS", "KICKS", "MODES", "TOPICS", "CTCPS"]
+        )
     }
 
     func testSubtractingEveryLevelIsAnError() {
@@ -258,10 +261,81 @@ final class IgnoreArgsTests: XCTestCase {
         let rule = parse("-pattern spam -time 1day bob")?.rule
         let summary = rule?.summary(global: false) ?? ""
         XCTAssertTrue(summary.contains("\"spam\""), summary)
-        XCTAssertTrue(summary.contains("expires"), summary)
+        // `contains("expires")` alone would pass on an empty formatter result — the word is
+        // this file's own literal. Assert the stamp itself is there, without pinning a format
+        // the reader's locale and calendar decide.
+        guard let marker = summary.range(of: "(expires ") else {
+            return XCTFail("expected an expiry in: \(summary)")
+        }
+        let stamp = summary[marker.upperBound...].prefix { $0 != ")" }
+        XCTAssertTrue(stamp.contains(where: \.isNumber), "expected a formatted stamp in: \(summary)")
     }
 
     func testSummaryOfAMasklessRuleSaysAnyone() {
         XCTAssertTrue(parse("#idlerpg NOUNREAD")?.rule.summary(global: false).hasPrefix("*") ?? false)
+    }
+
+    // MARK: - Flag hygiene
+
+    func testPatternRefusesToSwallowAFlagAsItsValue() {
+        // The reference takes the next token whatever it is, so this stores a rule matching
+        // the literal text "-network" and silently drops the scope — making global the rule
+        // the user scoped to one connection. Refused here instead.
+        XCTAssertEqual(error("bob -pattern -network")?.contains("got the flag"), true)
+        XCTAssertEqual(error("-pattern -regexp foo")?.contains("got the flag"), true)
+        // Only the known flags are refused: a pattern may still start with a dash.
+        XCTAssertEqual(parse("bob -pattern -_-")?.rule.pattern, "-_-")
+    }
+
+    func testAnUncompilableRegexIsRefusedHereRatherThanInSilence() {
+        // The server drops a failed validation without answering, so an unclosed bracket would
+        // otherwise be confirmed as added and never exist.
+        XCTAssertEqual(error("-regexp -pattern [ bob")?.contains("invalid regex"), true)
+        // A pattern that isn't a regex isn't compiled — `[` is a fine substring to look for.
+        XCTAssertEqual(parse("-pattern [ bob")?.rule.pattern, "[")
+    }
+
+    func testAnEmptyQuotedMaskIsAnyoneRatherThanABlankSubject() {
+        // `/ignore ""` — the server's `strOrNull` and this client's matcher both read `""` as
+        // "anyone", so storing it as a mask would list the rule under a blank subject.
+        XCTAssertNil(parse("\"\"")?.rule.mask)
+        XCTAssertEqual(parse("\"\"")?.rule.summary(global: true).hasPrefix("*  [global]"), true)
+    }
+
+    // MARK: - The wire
+
+    func testTheEncodedRuleRoundTripsThroughTheFrameDecoder() {
+        // `ruleJSON` and `FrameParser`'s decoder are held together only by agreeing on these
+        // key names: a rule sent from here has to come back from the server's fan-out as the
+        // same rule, or the client would be authoring a broader one than it shows.
+        let rule = parse("-except -regexp -pattern (a|b) *zzz* #chan -time 1day NICKS")?.rule
+        let payload: [String: Any] = [
+            "kind": "ignore-list-updated",
+            "networkId": 3,
+            "masks": [LurkerClient.ruleJSON(rule!)],
+        ]
+        let text = String(
+            data: try! JSONSerialization.data(withJSONObject: payload), encoding: .utf8
+        )!
+        guard case .ignoreListUpdated(let networkId, let decoded) = FrameParser.parseWs(text) else {
+            return XCTFail("expected an ignore-list-updated frame")
+        }
+        XCTAssertEqual(networkId, 3)
+        // Everything but the id, which is the server's to assign and isn't sent.
+        XCTAssertEqual(decoded.first, rule)
+    }
+
+    func testTheEncoderOmitsUnsetDimensionsRatherThanSendingNulls() {
+        let json = LurkerClient.ruleJSON(IgnoreRule(mask: "bob", levels: ["ALL"]))
+        XCTAssertEqual(json["mask"] as? String, "bob")
+        XCTAssertEqual(json["levels"] as? [String], ["ALL"])
+        XCTAssertEqual(json["patternKind"] as? String, "substr")
+        XCTAssertEqual(json["isExcept"] as? Bool, false)
+        for absent in ["channels", "pattern", "expiresAt"] {
+            XCTAssertNil(json[absent], "\(absent) should be omitted, not null")
+        }
+        // The whole payload has to survive JSONSerialization — an unencodable value would
+        // otherwise drop the verb at `send` with no error.
+        XCTAssertTrue(JSONSerialization.isValidJSONObject(json))
     }
 }

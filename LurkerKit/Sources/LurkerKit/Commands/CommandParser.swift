@@ -18,18 +18,18 @@ public enum CommandParser {
     ///  - anything else is a plain message — except in the system buffer, which has no
     ///    network to send to, where it's `notCommand`.
     ///
-    /// `ignores` is the account's rules as `/ignore` lists them (`IgnoreSet.listing(for:)`),
-    /// passed in rather than reached for so this stays pure: `/ignore` with no arguments prints
-    /// them and `/unignore <n>` addresses one by its position, and both have to answer from the
-    /// same list the user just read. It defaults to empty, which is the honest answer for a
-    /// caller that doesn't have them — an empty listing and "no such rule".
+    /// `ignores` is the account's rules, passed in rather than reached for so this stays pure:
+    /// `/ignore` with no arguments prints them and `/unignore <n>` addresses one by its
+    /// position. The whole set goes in rather than a materialized listing so that the two
+    /// verbs that need one build it and the other fifty don't — every plain message comes
+    /// through here too. It defaults to empty, the honest answer for a caller that has none.
     ///
-    /// `now` is likewise injected, for `/ignore -time`.
+    /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
     public static func parse(
         _ input: String,
         networkId: Int?,
         target: String,
-        ignores: [ScopedIgnoreRule] = [],
+        ignores: IgnoreSet = .empty,
         now: Date = Date()
     ) -> ParsedInput {
         // The composer trims before it hands text over, but be total about it anyway.
@@ -69,7 +69,7 @@ public enum CommandParser {
         rest: [String],
         networkId: Int?,
         target: String,
-        ignores: [ScopedIgnoreRule],
+        ignores: IgnoreSet,
         now: Date
     ) -> [CommandEffect] {
         // A lone `/` (or `/ `) has no verb — nudge rather than fall through to the raw
@@ -94,7 +94,7 @@ public enum CommandParser {
         case "ignore":
             return resolveIgnore(argLine: argLine, networkId: networkId, ignores: ignores, now: now)
         case "unignore":
-            return resolveUnignore(argLine: argLine, networkId: networkId, ignores: ignores)
+            return resolveUnignore(argLine: argLine, networkId: networkId, ignores: ignores, now: now)
         default:
             break
         }
@@ -282,17 +282,18 @@ public enum CommandParser {
     /// `/ignore` — with no arguments, the rule listing; otherwise a rule to store.
     ///
     /// Nothing is mutated locally: the effect asks, and the rule appears when the server's
-    /// `ignore-list-updated` lands. The confirmation line therefore describes what was *sent*,
-    /// which is why it doesn't claim the rule is in force — a rule the server refuses (a regex
-    /// its engine won't compile, say) simply never shows up in `/ignore`.
+    /// `ignore-list-updated` lands. The receipt rides on the effect rather than being printed
+    /// here, so it's withheld when the verb never reached a socket.
     private static func resolveIgnore(
         argLine: String,
         networkId: Int?,
-        ignores: [ScopedIgnoreRule],
+        ignores: IgnoreSet,
         now: Date
     ) -> [CommandEffect] {
         let args = argLine.trimmingCharacters(in: .whitespaces)
-        guard !args.isEmpty else { return [.info(listing(ignores))] }
+        guard !args.isEmpty else {
+            return [.info(listing(ignores.listing(for: networkId, now: now)))]
+        }
 
         let parsed: IgnoreArgs.Parsed
         switch IgnoreArgs.parse(args, now: now) {
@@ -305,10 +306,11 @@ public enum CommandParser {
             return [.info("/ignore -network needs an active network — switch to a channel or DM.")]
         }
         let scope = parsed.scopeNetwork ? networkId : nil
-        return [
-            .addIgnore(scope: scope, rule: parsed.rule),
-            .info("ignore added: \(parsed.rule.summary(global: scope == nil))"),
-        ]
+        return [.addIgnore(
+            scope: scope,
+            rule: parsed.rule,
+            receipt: "ignore added: \(parsed.rule.summary(global: scope == nil))"
+        )]
     }
 
     /// `/unignore <index|mask>` — a number addresses a rule by its position in the last
@@ -321,56 +323,110 @@ public enum CommandParser {
     private static func resolveUnignore(
         argLine: String,
         networkId: Int?,
-        ignores: [ScopedIgnoreRule]
+        ignores: IgnoreSet,
+        now: Date
     ) -> [CommandEffect] {
         let arg = argLine.trimmingCharacters(in: .whitespaces)
         guard !arg.isEmpty else {
             return [.info("usage: /unignore <index|mask>  (index from /ignore)")]
         }
+        let listed = ignores.listing(for: networkId, now: now)
 
         // ASCII digits only — the web's `/^\d+$/`. `Int(_:)` alone would accept `+5` and a
         // non-ASCII digit, either of which would silently address a different rule.
         if arg.allSatisfy({ $0.isASCII && $0.isNumber }) {
-            // An index too large for an Int is out of range by definition, so it takes the
-            // same path as one merely past the end rather than falling through to mask
-            // matching (where it would report "no rule with that mask", about a number).
+            // An index too large for an Int is out of range by definition, so it reads as one
+            // past the end rather than becoming a different number.
             let index = Int(arg) ?? 0
-            guard index >= 1, index <= ignores.count else {
+            if index >= 1, index <= listed.count {
+                let item = listed[index - 1]
+                return [.removeIgnore(
+                    scope: item.scope,
+                    id: item.rule.id,
+                    mask: nil,
+                    receipt: "removed ignore #\(index): \(item.rule.summary(global: item.scope == nil))"
+                )]
+            }
+            // Not an index that exists — but numeric masks are real (bots, `*!*@1234`), and
+            // the web's parser stops here, leaving a rule you can create and never name.
+            // Falling through to mask matching is a deliberate divergence: an in-range index
+            // still wins, so nothing that worked before changes meaning.
+            if !listed.contains(where: { matchesMask($0, arg) }) {
                 return [.info("/unignore: no ignore #\(arg) (see /ignore)")]
             }
-            let item = ignores[index - 1]
-            return [
-                .removeIgnore(scope: item.scope, id: item.rule.id, mask: nil),
-                .info("removed ignore #\(index): \(item.rule.summary(global: item.scope == nil))"),
-            ]
         }
 
-        // Case-insensitive exact match of the stored mask, not a glob: `*` would otherwise
-        // read as "clear everything" from a rule that merely contains one.
-        let matches = ignores.filter {
-            ($0.rule.mask ?? "").caseInsensitiveCompare(arg) == .orderedSame
+        // A rule that applies to anyone is stored with no mask at all (`*` normalizes to nil
+        // on both sides), so there is no string for the server's `mask = ?` delete to match —
+        // it can only go by number. Said plainly, because the listing prints those rules as
+        // `*` and typing what you were shown is the obvious next move.
+        guard arg != "*" else {
+            return [.info("/unignore: a rule that applies to anyone has no mask to match — remove it by number (see /ignore).")]
         }
+
+        // Case-insensitive exact match of the stored mask, not a glob.
+        let matches = listed.filter { matchesMask($0, arg) }
         guard !matches.isEmpty else {
             return [.info("/unignore: no ignore with mask \"\(arg)\" (see /ignore)")]
         }
         // Scoped to the issuing network, not to the matches': the server's by-mask delete
         // spans the globals plus that one network, which is exactly the set just counted.
-        return [
-            .removeIgnore(scope: networkId, id: nil, mask: arg),
-            .info("removed \(matches.count) ignore\(matches.count > 1 ? "s" : "") matching \"\(arg)\"."),
-        ]
+        return [.removeIgnore(
+            scope: networkId,
+            id: nil,
+            mask: arg,
+            receipt: "removed \(matches.count) ignore\(matches.count > 1 ? "s" : "") matching \"\(arg)\"."
+        )]
+    }
+
+    /// Whether a listed rule's mask is the one the user typed, folded **the way the server's
+    /// delete folds it**: SQLite's `COLLATE NOCASE`, which is ASCII-only and byte-exact
+    /// otherwise.
+    ///
+    /// Deliberately not `caseInsensitiveCompare`, which is the obvious spelling and folds far
+    /// wider — it treats a decomposed `café` as equal to the composed one, and `STRASSE` as
+    /// equal to `straße`. Those all count a match here that the `DELETE` will not make, so the
+    /// user is told a rule was removed and it is still there on the next `/ignore`. This
+    /// number is a claim about what the server did, so it has to be answered in the server's
+    /// terms.
+    private static func matchesMask(_ item: ScopedIgnoreRule, _ arg: String) -> Bool {
+        guard let mask = item.rule.mask else { return false }
+        // Compared as UTF-8, not with `==`, which is the second half of the same trap: Swift's
+        // string equality is canonical, so a decomposed `cafe\u{301}` equals a composed `café`
+        // to it and not to the byte compare SQLite will make. `IgnoreMatch` takes the same care
+        // with `.literal` for the same reason.
+        return asciiLowered(mask).utf8.elementsEqual(asciiLowered(arg).utf8)
+    }
+
+    /// Lowercase the ASCII range and nothing else — SQLite's `NOCASE`.
+    private static func asciiLowered(_ text: String) -> String {
+        String(text.map { $0.isASCII ? Character($0.lowercased()) : $0 })
     }
 
     /// The `/ignore` listing as one block — one local line, not one per rule, so a long list
     /// arrives as a single message row rather than as N (the same shape `/commands` takes).
     private static func listing(_ ignores: [ScopedIgnoreRule]) -> String {
-        guard !ignores.isEmpty else {
-            return "ignore list is empty — /ignore <nick> adds one."
-        }
-        return (["ignore list (\(ignores.count)):"] + ignores.enumerated().map { index, item in
-            "  \(index + 1). \(item.rule.summary(global: item.scope == nil))"
-        }).joined(separator: "\n")
+        let head = ignores.isEmpty
+            ? ["ignore list is empty."]
+            : ["ignore list (\(ignores.count)):"] + ignores.enumerated().map { index, item in
+                "  \(index + 1). \(item.rule.summary(global: item.scope == nil))"
+            }
+        return (head + [grammar]).joined(separator: "\n")
     }
+
+    /// The flag and level vocabulary, printed under every listing.
+    ///
+    /// This is the only place it's reachable. `/commands` builds its usage line from the
+    /// positional `ArgSpec`s, so it can only say `/ignore [mask] [levels]` — and the grammar
+    /// is irssi's, which nobody guesses: without this, `-network`, the one flag that scopes a
+    /// rule to a single connection, cannot be discovered from inside the app. The web spends
+    /// four cheatsheet lines on the same problem.
+    private static let grammar = """
+          usage: /ignore [flags] [nick|mask|#chan] [LEVELS…] — no arguments lists
+          flags: -network (this network only) -except -regexp -full -pattern <text> -time <dur>
+          levels: PUBLIC MSGS NOTICES ACTIONS JOINS PARTS QUITS NICKS KICKS MODES TOPICS \
+        NOHIGHLIGHT NOUNREAD NONOTIFY, or ALL -PUBLIC to subtract
+        """
 
     // MARK: - Helpers
 

@@ -323,12 +323,13 @@ public final class ChatViewModel {
         // The ignore rules go in because two commands read them: `/ignore` prints the listing
         // and `/unignore <n>` resolves a number against it. Handed to the parser rather than
         // fetched by it, so the whole command vocabulary stays pure and testable — this is the
-        // only place that knows where the rules live.
+        // only place that knows where the rules live. The set itself, not a listing built from
+        // it: only those two verbs materialize one, and this runs on every line typed.
         switch CommandParser.parse(
             text,
             networkId: key.networkId,
             target: key.target,
-            ignores: store.state.ignores.listing(for: key.networkId)
+            ignores: store.state.ignores
         ) {
         case .message(let body):
             client.sendMessage(networkId: key.networkId, target: key.target, text: body)
@@ -381,19 +382,32 @@ public final class ChatViewModel {
                 // backlog) into being.
                 client.openBuffer(networkId: networkId, target: target, countBy: historyCountBy)
                 outcome = .activate(BufferKey(networkId: networkId, target: target))
-            case .addIgnore(let scope, let rule):
+            case .addIgnore(let scope, let rule, let receipt):
                 // `scope`, not `networkId`: nil is a global rule, which is the default and the
                 // one an unqualified `/ignore bob` makes. Nothing is written locally — the
                 // rule arrives on the server's `ignore-list-updated` fan-out, the same path a
                 // rule made on the web takes to get here.
-                client.addIgnore(networkId: scope, rule: rule)
-            case .removeIgnore(let scope, let id, let mask):
-                client.removeIgnore(networkId: scope, id: id, mask: mask)
+                report(client.addIgnore(networkId: scope, rule: rule), receipt, in: key)
+            case .removeIgnore(let scope, let id, let mask, let receipt):
+                report(client.removeIgnore(networkId: scope, id: id, mask: mask), receipt, in: key)
             case .info(let text):
                 store.appendLocal(key, text: text)
             }
         }
         return outcome
+    }
+
+    /// Print a command's receipt, or say why there isn't one.
+    ///
+    /// `sent` is whether the verb reached a socket at all. Nothing queues these, so a false
+    /// means it went nowhere and will not be retried — and a receipt printed anyway would be
+    /// the app's own word for something that didn't happen. The failure line says what to do
+    /// about it, which "failed" wouldn't.
+    private func report(_ sent: Bool, _ receipt: String, in key: BufferKey) {
+        store.appendLocal(
+            key,
+            text: sent ? receipt : "Not sent — you're not connected. Try again once you're back."
+        )
     }
 
     /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an
