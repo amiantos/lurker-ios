@@ -363,6 +363,23 @@ final class IgnoreScopeTests: XCTestCase {
         XCTAssertFalse(kept[0].matched)
     }
 
+    /// The exemption is off unless something is being jumped to, and an ephemeral can never be
+    /// the thing jumped to — id 0 is the absence of an address, so matching on it would exempt
+    /// every ephemeral in the buffer at once.
+    func testTheJumpExemptionCoversNothingWhenThereIsNoJump() {
+        let ephemeral = Message(id: 0, type: .message, nick: "bob", text: "hi", userhost: "bob!u@h")
+        let persisted = Message(id: 9, type: .message, nick: "bob", text: "hi", userhost: "bob!u@h")
+        let set = IgnoreSet(global: [rule(mask: "bob")])
+        XCTAssertTrue(
+            set.visible([ephemeral, persisted], networkId: 1, target: "#chan").isEmpty,
+            "no `keeping` means no exemption"
+        )
+        XCTAssertTrue(
+            set.visible([ephemeral], networkId: 1, target: "#chan", keeping: 0).isEmpty,
+            "id 0 is not an address and must not be exempted by a 0 `keeping`"
+        )
+    }
+
     /// An expired rule stops applying through `IgnoreSet` too, not just when `IgnoreMatch` is
     /// driven directly — the `now:` plumbing is threaded through five methods and was untested
     /// on all of them.

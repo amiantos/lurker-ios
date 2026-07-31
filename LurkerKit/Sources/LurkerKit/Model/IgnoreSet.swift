@@ -176,7 +176,11 @@ public final class IgnoreSet: Sendable {
             let verdict = verdict(
                 networkId: networkId, message: message, target: target, now: now
             )
-            if verdict.hide, message.id == 0 || message.id != keeping { return nil }
+            // Ephemerals (id 0) can never be the exempt row: 0 is the *absence* of a
+            // persisted id, not an address, so nothing can have jumped to one — and treating
+            // it as a match would exempt every ephemeral at once.
+            let isJumpTarget = message.id != 0 && message.id == keeping
+            if verdict.hide, !isJumpTarget { return nil }
             return verdict.nohilight ? message.unhighlighted() : message
         }
     }
