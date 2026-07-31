@@ -25,7 +25,8 @@ public enum MessageRow: Equatable, Sendable {
     /// "You've reached the beginning", once the buffer has no older history left. The honest
     /// counterpart to a loading placeholder: "nothing more" vs "still fetching".
     case startOfHistory
-    /// "alice is typing…" at the foot of the buffer (#61). Not a message: it has no id,
+    /// The live composing line at the foot of the buffer (#61) — a keyboard glyph and the
+    /// nicks, rendered by `MessageRenderer.renderTyping`. Not a message: it has no id,
     /// never anchors a scroll, and disappears without leaving a gap in the record.
     case typing([String])
 
