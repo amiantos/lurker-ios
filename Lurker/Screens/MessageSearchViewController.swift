@@ -331,13 +331,23 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the field still holds that query on reopen is UIKit's call, not ours — so rather than
     /// assume either way, adopt whatever it says.
     ///
-    /// Both outcomes are then right for free. If the text survived, it matches `query` and
-    /// nothing happens: the results stay, which is what you want for "search → read one →
-    /// come back for the next one" (the web client persists its query across opens for exactly
-    /// that flow). If UIKit cleared it, this snaps back to the landing view *now* rather than
-    /// after the debounce, which would have flashed the stale results on the way.
+    /// Both outcomes are then right for free. If the text survived, it matches `query` and the
+    /// results stay, which is what you want for "search → read one → come back for the next one"
+    /// (the web client persists its query across opens for exactly that flow). If UIKit cleared
+    /// it, this snaps back to the landing view *now* rather than after the debounce, which would
+    /// have flashed the stale results on the way.
+    ///
+    /// The landing view is the exception to "unchanged text changes nothing", because its answer
+    /// expires: highlights accumulate while you're elsewhere in the app, and since this screen is
+    /// built once and reused, an unchanged empty field would otherwise show whatever was fetched
+    /// the first time search was opened — for the rest of the session. Bookmarks tolerated that;
+    /// mentions are the set that goes stale if you don't look. A search's rows are left alone,
+    /// because a query's answer is a fact about history rather than a feed.
     func syncToField(_ text: String) {
-        guard text != query else { return }
+        guard text != query else {
+            if showing == .landing { reload() }
+            return
+        }
         debounce?.cancel()
         commit(text)
     }

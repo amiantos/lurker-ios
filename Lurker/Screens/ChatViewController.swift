@@ -642,30 +642,30 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Latch the read boundary the first time the server tells us where it is, and
         // never again — marking messages read live must not move the divider under us.
         //
-        // Gated on `hydrated`, because a buffer ROW existing is not the server telling us
-        // anything about its read state: the connect `snapshot` materializes a row per joined
-        // channel (`LurkerStore.applySnapshot`) and it ships *before* the per-buffer backlogs,
-        // so in that window every buffer reads `lastReadId: 0` — the field's default, not a
-        // boundary. Latching there pinned this screen's divider at 0 for its whole life, and
-        // `MessageRows` draws none for a zero boundary, so the buffer opened with no divider
-        // and no unread banner however many unreads it had. That's every launch that restores
-        // straight into a buffer (#49) and any buffer opened during the connect burst — the
-        // hit-or-miss half of this. The backlog frame is what carries the real pointer, and it
-        // is also what sets `hydrated`.
+        // Gated on `readStateKnown`, because a buffer ROW existing is not the server telling us
+        // anything about its read state, and neither is its HISTORY arriving. Three paths
+        // materialize a row carrying nothing but the struct's defaults — the connect `snapshot`
+        // (a row per joined channel, shipped *before* the per-buffer backlogs), a live event for
+        // an unseen target, and a `history` reply, which flips `hydrated` while `parseHistory`
+        // reads no read fields at all. Under all of them `lastReadId` is 0, which is
+        // indistinguishable by value from "read nothing". Latching there pinned this screen's
+        // divider at 0 for its whole life, and `MessageRows` draws none for a zero boundary, so
+        // the buffer opened with no divider and no unread banner however many unreads it had:
+        // every launch that restores straight into a buffer (#49), and anything opened during
+        // the connect burst. Only `backlog` and `read-state` carry the pointer, and
+        // `readStateKnown` is set by exactly those two.
+        //
+        // ⚠ `hydrated` is NOT a stand-in for this, which is what the first version of this fix
+        // got wrong: `hydrateIfNeeded` asks for `history mode:latest`, and that reply sets
+        // `hydrated` without carrying a pointer — so on a cold launch the gate could open with
+        // `lastReadId` still 0, and the now-ungated `markRead` below would then push the
+        // server's pointer to the newest message and destroy the real boundary before the
+        // `backlog` frame carrying it ever landed. Same bug, different door.
         //
         // Safe against our own mark-read from both ends: this runs before the `markRead` below,
-        // the frame that flips `hydrated` carries the pre-open `lastReadId` in the same state,
-        // and that `markRead` waits for this to have happened at all.
-        //
-        // "The server has spoken about this buffer" is `hydrated` only for the kinds that
-        // hydrate on demand. The system buffer and `:server:` logs never do — their history
-        // ships complete in the connect backlog — so `hydrated` can stay false under them
-        // forever, and requiring it would cost those two the divider entirely. Nothing
-        // fabricates their rows either (the snapshot only materializes joined *channels*), so
-        // for them the row existing IS the server speaking. Same rule, same reasoning, as
-        // `BufferPlaceholder.of`'s `historyLanded`.
-        let boundaryKnown = !buffer.kind.hydratesOnDemand || state.buffers[buffer.key.id]?.hydrated == true
-        if dividerAfterId == nil, boundaryKnown, let known = state.buffers[buffer.key.id] {
+        // the frame that sets `readStateKnown` carries the pre-open `lastReadId` in the same
+        // state, and that `markRead` waits for this to have happened at all.
+        if dividerAfterId == nil, let known = state.buffers[buffer.key.id], known.readStateKnown {
             dividerAfterId = known.lastReadId
         }
         // Filter by what this *kind* of buffer renders. The system buffer's content is
