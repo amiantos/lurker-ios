@@ -320,7 +320,23 @@ public final class ChatViewModel {
     /// out. Returns the UI follow-up, if any.
     @discardableResult
     public func send(_ key: BufferKey, text: String) -> SendOutcome {
-        switch CommandParser.parse(text, networkId: key.networkId, target: key.target) {
+        // The ignore rules go in because two commands read them: `/ignore` prints the listing
+        // and `/unignore <n>` resolves a number against it. Handed to the parser rather than
+        // fetched by it, so the whole command vocabulary stays pure and testable — this is the
+        // only place that knows where the rules live. The set itself, not a listing built from
+        // it: only those two verbs materialize one, and this runs on every line typed.
+        switch CommandParser.parse(
+            text,
+            networkId: key.networkId,
+            target: key.target,
+            // Nil until the connect burst has finished, because until then an empty set is
+            // indistinguishable from an account with no rules — and both `/ignore` and
+            // `/unignore` would answer that difference out loud ("ignore list is empty", "no
+            // ignore with mask bob") for an account with a dozen of them. `backlogComplete` is
+            // the latch that says the burst is done, and it isn't cleared by a drop, so a
+            // reconnect doesn't take the answer away again.
+            ignores: store.state.backlogComplete ? store.state.ignores : nil
+        ) {
         case .message(let body):
             client.sendMessage(networkId: key.networkId, target: key.target, text: body)
             return .none
@@ -372,11 +388,38 @@ public final class ChatViewModel {
                 // backlog) into being.
                 client.openBuffer(networkId: networkId, target: target, countBy: historyCountBy)
                 outcome = .activate(BufferKey(networkId: networkId, target: target))
+            case .addIgnore(let scope, let rule, let receipt):
+                // `scope`, not `networkId`: nil is a global rule, which is the default and the
+                // one an unqualified `/ignore bob` makes. Nothing is written locally — the
+                // rule arrives on the server's `ignore-list-updated` fan-out, the same path a
+                // rule made on the web takes to get here.
+                report(client.addIgnore(networkId: scope, rule: rule), receipt, in: key)
+            case .removeIgnore(let scope, let id, let mask, let receipt):
+                report(client.removeIgnore(networkId: scope, id: id, mask: mask), receipt, in: key)
             case .info(let text):
                 store.appendLocal(key, text: text)
             }
         }
         return outcome
+    }
+
+    /// Print a command's receipt, or say why there isn't one.
+    ///
+    /// `sent` is what `LurkerClient.send` returned. It is necessary and **not sufficient**: it
+    /// only says a socket object was there to hand the frame to, and a dropped socket isn't
+    /// nil'd — `handleClose` reports the closure and leaves the task assigned, so a write into
+    /// a connection that died while backgrounded returns true. `state.connection` is the flag
+    /// that actually knows, because it's driven by the open/closed frames themselves.
+    ///
+    /// Nothing queues these verbs, so anything short of both being true means it went nowhere
+    /// and will not be retried — and a receipt printed anyway is the app's own word for
+    /// something that didn't happen. The failure line says what to do about it.
+    private func report(_ sent: Bool, _ receipt: String, in key: BufferKey) {
+        let delivered = sent && store.state.connection == .connected
+        store.appendLocal(
+            key,
+            text: delivered ? receipt : "Not sent — you're not connected. Try again once you're back."
+        )
     }
 
     /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an

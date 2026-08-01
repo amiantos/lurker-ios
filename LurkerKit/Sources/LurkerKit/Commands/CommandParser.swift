@@ -17,7 +17,21 @@ public enum CommandParser {
     ///  - `/…` is a command.
     ///  - anything else is a plain message — except in the system buffer, which has no
     ///    network to send to, where it's `notCommand`.
-    public static func parse(_ input: String, networkId: Int?, target: String) -> ParsedInput {
+    ///
+    /// `ignores` is the account's rules, passed in rather than reached for so this stays pure:
+    /// `/ignore` with no arguments prints them and `/unignore <n>` addresses one by its
+    /// position. The whole set goes in rather than a materialized listing so that the two
+    /// verbs that need one build it and the other fifty don't — every plain message comes
+    /// through here too. It defaults to empty, the honest answer for a caller that has none.
+    ///
+    /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
+    public static func parse(
+        _ input: String,
+        networkId: Int?,
+        target: String,
+        ignores: IgnoreSet? = .empty,
+        now: Date = Date()
+    ) -> ParsedInput {
         // The composer trims before it hands text over, but be total about it anyway.
         let raw = input
 
@@ -40,7 +54,10 @@ public enum CommandParser {
             ? []
             : argLine.split(whereSeparator: { $0.isWhitespace }).map(String.init)
 
-        return .command(resolve(verb: verb, fullBody: body, argLine: argLine, rest: rest, networkId: networkId, target: target))
+        return .command(resolve(
+            verb: verb, fullBody: body, argLine: argLine, rest: rest,
+            networkId: networkId, target: target, ignores: ignores, now: now
+        ))
     }
 
     // MARK: - Dispatch
@@ -51,7 +68,9 @@ public enum CommandParser {
         argLine: String,
         rest: [String],
         networkId: Int?,
-        target: String
+        target: String,
+        ignores: IgnoreSet?,
+        now: Date
     ) -> [CommandEffect] {
         // A lone `/` (or `/ `) has no verb — nudge rather than fall through to the raw
         // default, which would put an empty line on the wire.
@@ -69,6 +88,13 @@ public enum CommandParser {
             return [.away(message: argLine)]
         case "back":
             return [.back]
+        // Ignore rules are global by default, so both verbs run without a network — the system
+        // buffer can list them and write them. Only `-network` needs a connection, and that's
+        // checked where it's read.
+        case "ignore":
+            return resolveIgnore(argLine: argLine, networkId: networkId, ignores: ignores, now: now)
+        case "unignore":
+            return resolveUnignore(argLine: argLine, networkId: networkId, ignores: ignores, now: now)
         default:
             break
         }
@@ -250,6 +276,213 @@ public enum CommandParser {
             return [.raw(line: fullBody.trimmingCharacters(in: .whitespaces))]
         }
     }
+
+    // MARK: - Ignore rules (#86)
+
+    /// `/ignore` — with no arguments, the rule listing; otherwise a rule to store.
+    ///
+    /// Nothing is mutated locally: the effect asks, and the rule appears when the server's
+    /// `ignore-list-updated` lands. The receipt rides on the effect rather than being printed
+    /// here, so it's withheld when the verb never reached a socket.
+    private static func resolveIgnore(
+        argLine: String,
+        networkId: Int?,
+        ignores: IgnoreSet?,
+        now: Date
+    ) -> [CommandEffect] {
+        // `whitespacesAndNewlines`: the composer is multi-line and Return inserts a newline, so
+        // `/ignore\n` reaches here with one still attached — and an argLine that is only a
+        // newline would otherwise skip the listing and author a rule instead.
+        let args = argLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !args.isEmpty else {
+            // Only the *listing* needs the rules to have arrived. Authoring below doesn't, and
+            // gating it would refuse a perfectly good `/ignore bob` during the connect burst.
+            guard let ignores else { return [.info(unsynced)] }
+            return [.info(listing(ignores.listing(for: networkId), now: now))]
+        }
+
+        let parsed: IgnoreArgs.Parsed
+        switch IgnoreArgs.parse(args, now: now) {
+        case .success(let value): parsed = value
+        case .failure(let failure): return [.info("/ignore: \(failure.message)")]
+        }
+        // Global (the default) works anywhere; `-network` names a connection the system buffer
+        // doesn't have. Refusing beats quietly writing the global rule they didn't ask for.
+        guard !parsed.scopeNetwork || networkId != nil else {
+            return [.info("/ignore -network needs an active network — switch to a channel or DM.")]
+        }
+        let scope = parsed.scopeNetwork ? networkId : nil
+        // `add-ignore` is an upsert, not an insert: the server matches an existing rule on
+        // every dimension EXCEPT expiry and rewrites that row's `expires_at` in place
+        // (`findIdenticalStmt`/`addRule`). So `/ignore -time 1h bob` followed by `/ignore bob`
+        // doesn't make a second rule — it makes the hour-long mute permanent, and vice versa.
+        // Saying "added" for that is how someone loses a timed rule without being told.
+        // Without the rules, an add and an upsert are indistinguishable — so the receipt
+        // claims neither rather than guessing "added" in the one window this command is
+        // careful about everywhere else. Authoring itself stays allowed here: the rule is
+        // fine, it's only our ability to describe what it did to the list that's missing.
+        let verb: String
+        if let listed = ignores?.listing(for: networkId) {
+            verb = listed.contains { $0.scope == scope && sameRule($0.rule, parsed.rule) }
+                ? "ignore updated"
+                : "ignore added"
+        } else {
+            verb = "ignore sent"
+        }
+        return [.addIgnore(
+            scope: scope,
+            rule: parsed.rule,
+            receipt: "\(verb): \(parsed.rule.summary(global: scope == nil, now: now))"
+        )]
+    }
+
+    /// Whether two rules are the same one as far as the server's dedupe is concerned — every
+    /// dimension but the id and the expiry, which is exactly what `findIdenticalStmt` compares
+    /// and exactly what makes a re-issued `/ignore` change a rule's lifetime instead of adding
+    /// a rule.
+    private static func sameRule(_ lhs: IgnoreRule, _ rhs: IgnoreRule) -> Bool {
+        lhs.mask == rhs.mask
+            && (lhs.channels ?? []) == (rhs.channels ?? [])
+            && (lhs.pattern ?? "") == (rhs.pattern ?? "")
+            && lhs.patternKind == rhs.patternKind
+            && lhs.levels == rhs.levels
+            && lhs.isExcept == rhs.isExcept
+    }
+
+    /// `/unignore <index|mask>` — a number addresses a rule by its position in the last
+    /// listing, anything else is a mask to clear.
+    ///
+    /// The two remove differently on purpose, matching the web: by-index is exact (it resolves
+    /// to the rule's id and its bucket), while by-mask clears every rule carrying that mask,
+    /// which is what makes the common `/ignore bob` → `/unignore bob` round trip work without
+    /// anyone having to read a listing first.
+    private static func resolveUnignore(
+        argLine: String,
+        networkId: Int?,
+        ignores: IgnoreSet?,
+        now: Date
+    ) -> [CommandEffect] {
+        // Run through the same tokenizer `/ignore` used to create the mask, so a mask is
+        // removable in the spelling that made it: `/ignore "bob smith"` stores `bob smith`, and
+        // comparing the raw arg would have matched only the unquoted form. Trimming is
+        // `whitespacesAndNewlines` for the multi-line composer (see `resolveIgnore`).
+        let arg = IgnoreArgs.tokenize(argLine).first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !arg.isEmpty else {
+            return [.info("usage: /unignore <index|mask>  (index from /ignore)")]
+        }
+        // Every answer below is a claim about which rules exist — "no ignore #3", "no ignore
+        // with mask bob". Made against a set that hasn't arrived yet, each of them is a
+        // confident denial of a rule the account really has.
+        guard let ignores else { return [.info(unsynced)] }
+        let listed = ignores.listing(for: networkId)
+
+        // ASCII digits only — the web's `/^\d+$/`. `Int(_:)` alone would accept `+5` and a
+        // non-ASCII digit, either of which would silently address a different rule.
+        if arg.allSatisfy({ $0.isASCII && $0.isNumber }) {
+            // An index too large for an Int is out of range by definition, so it reads as one
+            // past the end rather than becoming a different number.
+            let index = Int(arg) ?? 0
+            if index >= 1, index <= listed.count {
+                let item = listed[index - 1]
+                return [.removeIgnore(
+                    scope: item.scope,
+                    id: item.rule.id,
+                    mask: nil,
+                    receipt: "removed ignore #\(index): \(item.rule.summary(global: item.scope == nil, now: now))"
+                )]
+            }
+            // Not an index that exists — but numeric masks are real (bots, `*!*@1234`), and
+            // the web's parser stops here, leaving a rule you can create and never name.
+            // Falling through to mask matching is a deliberate divergence: an in-range index
+            // still wins, so nothing that worked before changes meaning.
+            if !listed.contains(where: { matchesMask($0, arg) }) {
+                return [.info("/unignore: no ignore #\(arg) (see /ignore)")]
+            }
+        }
+
+        // A rule that applies to anyone is stored with no mask at all (`*` normalizes to nil
+        // on both sides), so there is no string for the server's `mask = ?` delete to match —
+        // it can only go by number. Said plainly, because the listing prints those rules as
+        // `*` and typing what you were shown is the obvious next move.
+        guard arg != "*" else {
+            return [.info("/unignore: a rule that applies to anyone has no mask to match — remove it by number (see /ignore).")]
+        }
+
+        // Case-insensitive exact match of the stored mask, not a glob.
+        let matches = listed.filter { matchesMask($0, arg) }
+        guard !matches.isEmpty else {
+            return [.info("/unignore: no ignore with mask \"\(arg)\" (see /ignore)")]
+        }
+        // Scoped to the issuing network, not to the matches': the server's by-mask delete
+        // spans the globals plus that one network, which is exactly the set just counted.
+        return [.removeIgnore(
+            scope: networkId,
+            id: nil,
+            mask: arg,
+            receipt: "removed \(matches.count) ignore\(matches.count > 1 ? "s" : "") matching \"\(arg)\"."
+        )]
+    }
+
+    /// Whether a listed rule's mask is the one the user typed, folded **the way the server's
+    /// delete folds it**: SQLite's `COLLATE NOCASE`, which is ASCII-only and byte-exact
+    /// otherwise.
+    ///
+    /// Deliberately not `caseInsensitiveCompare`, which is the obvious spelling and folds far
+    /// wider — it treats a decomposed `café` as equal to the composed one, and `STRASSE` as
+    /// equal to `straße`. Those all count a match here that the `DELETE` will not make, so the
+    /// user is told a rule was removed and it is still there on the next `/ignore`. This
+    /// number is a claim about what the server did, so it has to be answered in the server's
+    /// terms.
+    private static func matchesMask(_ item: ScopedIgnoreRule, _ arg: String) -> Bool {
+        guard let mask = item.rule.mask else { return false }
+        return asciiLowered(mask) == asciiLowered(arg)
+    }
+
+    /// A mask folded the way SQLite folds it: **per byte**, `A`–`Z` only.
+    ///
+    /// Bytes, not `Character`s, which is what makes this agree rather than merely look like it
+    /// does. A grapheme cluster like `A` + combining acute is not `isASCII`, so folding by
+    /// character leaves its `A` alone while `NOCASE` — which walks bytes — lowers it. That's
+    /// the *inverse* of the divergence this function exists to prevent: the client would report
+    /// "no ignore with that mask" for a rule the `DELETE` would have removed.
+    ///
+    /// Comparing the byte arrays also sidesteps Swift's canonical `==`, under which a
+    /// decomposed `cafe\u{301}` equals a composed `café` and to SQLite does not.
+    private static func asciiLowered(_ text: String) -> [UInt8] {
+        text.utf8.map { $0 >= 0x41 && $0 <= 0x5A ? $0 + 0x20 : $0 }
+    }
+
+    /// The `/ignore` listing as one block — one local line, not one per rule, so a long list
+    /// arrives as a single message row rather than as N (the same shape `/commands` takes).
+    private static func listing(_ ignores: [ScopedIgnoreRule], now: Date) -> String {
+        let head = ignores.isEmpty
+            ? ["ignore list is empty."]
+            : ["ignore list (\(ignores.count)):"] + ignores.enumerated().map { index, item in
+                "  \(index + 1). \(item.rule.summary(global: item.scope == nil, now: now))"
+            }
+        return (head + [grammar]).joined(separator: "\n")
+    }
+
+    /// What to say when the account's rules haven't reached this device yet — the connect
+    /// burst hasn't finished, or the socket is down. Distinct from "you have no rules", which
+    /// is what an empty set would otherwise be read as.
+    private static let unsynced =
+        "Your ignore rules haven't arrived yet — try again once you're connected."
+
+    /// The flag and level vocabulary, printed under every listing.
+    ///
+    /// This is the only place it's reachable. `/commands` builds its usage line from the
+    /// positional `ArgSpec`s, so it can only say `/ignore [mask] [levels]` — and the grammar
+    /// is irssi's, which nobody guesses: without this, `-network`, the one flag that scopes a
+    /// rule to a single connection, cannot be discovered from inside the app. The web spends
+    /// four cheatsheet lines on the same problem.
+    private static let grammar = """
+          usage: /ignore [flags] [nick|mask|#chan] [LEVELS…] — no arguments lists
+          flags: -network (this network only) -except -regexp -full -pattern <text> -time <dur>
+          levels: PUBLIC MSGS NOTICES ACTIONS JOINS PARTS QUITS NICKS KICKS MODES TOPICS \
+        NOHIGHLIGHT NOUNREAD NONOTIFY, or ALL -PUBLIC to subtract
+        """
 
     // MARK: - Helpers
 

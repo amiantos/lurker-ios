@@ -391,6 +391,77 @@ final class LurkerClient {
         ])
     }
 
+    /// Store an ignore rule (`/ignore`, #86).
+    ///
+    /// **A nil `networkId` is a global rule — every network — not "no network."** That's the
+    /// opposite of the guard every conversation verb above takes, and the reason this one has
+    /// none: nil is the *default* scope here, and dropping the frame for it would silently
+    /// swallow the commonest rule there is. `NSNull` rather than a missing key, so the scope is
+    /// stated rather than inferred (the server distinguishes a null id from a malformed one).
+    ///
+    /// Fire-and-ask: the server re-validates, and the rule only exists once it fans an
+    /// `ignore-list-updated` back. Surfaces a socket-level failure like the other deliberate
+    /// writes — there's no queue behind it.
+    ///
+    /// **Returns false when it went nowhere**, and the caller must check: the command that
+    /// sent this prints a receipt, and nothing else would contradict it. The window is real —
+    /// `start()` awaits a REST call before opening the socket, and the composer is live the
+    /// whole time.
+    @discardableResult
+    func addIgnore(networkId: Int?, rule: IgnoreRule) -> Bool {
+        send(
+            [
+                "type": "add-ignore",
+                "networkId": networkId.map { $0 as Any } ?? NSNull(),
+                "rule": Self.ruleJSON(rule),
+            ],
+            surfacesFailure: true
+        )
+    }
+
+    /// Drop ignore rules (`/unignore`): by `id` — what a listed index resolves to — or by
+    /// `mask`, which clears every rule carrying it. `networkId` scopes it, nil meaning the
+    /// global bucket; a by-mask removal on a network scope also clears matching globals, which
+    /// is the server's behavior and why it answers with both buckets refreshed.
+    ///
+    /// Returns false when it went nowhere, for the same reason `addIgnore` does — and it
+    /// matters more here, where the receipt the caller holds says something was *removed*.
+    @discardableResult
+    func removeIgnore(networkId: Int?, id: Int?, mask: String?) -> Bool {
+        // Naming neither is a frame the server reads and discards, and reporting it as sent
+        // would put a "removed …" receipt under it. The reference refuses the same call
+        // (`ignores.ts`'s `if (by.id == null && !by.mask) return`).
+        guard id != nil || mask != nil else { return false }
+        var verb: [String: Any] = [
+            "type": "remove-ignore",
+            "networkId": networkId.map { $0 as Any } ?? NSNull(),
+        ]
+        if let id { verb["id"] = id }
+        if let mask { verb["mask"] = mask }
+        return send(verb, surfacesFailure: true)
+    }
+
+    /// A rule as `add-ignore` carries it. Unset dimensions are *omitted* rather than sent as
+    /// null: the server reads an absent field as "unconstrained", which is the same thing and
+    /// keeps the frame to what the rule actually says.
+    ///
+    /// `nonisolated static` so a test can assert the payload without a socket or the main
+    /// actor — it is pure, and the isolation this class needs is about the socket. It's the
+    /// encoder half of a shape `FrameParser.parseIgnoreRule` decodes, and the two are held
+    /// together only by agreeing on these key names, so there is a round-trip test.
+    nonisolated static func ruleJSON(_ rule: IgnoreRule) -> [String: Any] {
+        var out: [String: Any] = [
+            "levels": rule.levels,
+            "patternKind": rule.patternKind.rawValue,
+            "isExcept": rule.isExcept,
+        ]
+        if let mask = rule.mask { out["mask"] = mask }
+        if let channels = rule.channels, !channels.isEmpty { out["channels"] = channels }
+        if let pattern = rule.pattern { out["pattern"] = pattern }
+        if let expiresAt = rule.expiresAt { out["expiresAt"] = ISOTime.string(from: expiresAt) }
+        return out
+    }
+
     /// Set yourself away on every network (`/away`), or clear it (`/back`, or `/away` with no
     /// message). User-scoped, so neither verb carries a networkId — the server keys on the
     /// account and fans out to all connections.

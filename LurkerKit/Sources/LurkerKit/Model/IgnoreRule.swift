@@ -10,13 +10,14 @@ import Foundation
 /// everything. `isExcept` inverts the whole thing into a whitelist entry (longest mask wins),
 /// and `expiresAt` lapses it.
 ///
-/// Read-only here on purpose. Authoring rules is `/ignore` on the web (and the settings pane
-/// it feeds); this client only *honors* what the account already has, which is what makes a
-/// rule made anywhere apply everywhere.
+/// The rules themselves are server-authoritative: `/ignore` here (#86) and on the web both
+/// *ask*, and the list only changes when the server fans `ignore-list-updated` back. Nothing
+/// on this client mutates a rule locally, which is what makes a rule made anywhere apply
+/// everywhere.
 public struct IgnoreRule: Equatable, Sendable {
-    /// The server's row id. Nothing on this client addresses a rule by id yet — it's carried
-    /// because it's the rule's identity, and a list diffed without one can only compare
-    /// contents.
+    /// The server's row id, and how `/unignore <n>` addresses a rule (#86): the listed index
+    /// resolves to this. Zero for a rule this client has just parsed off a command line and
+    /// not yet sent — identity is the server's to assign, and it arrives on the echo.
     public let id: Int
     /// Who this rule is about: nil or `*` means anyone, a bare token is a nick glob, and a
     /// `nick!user@host` form globs each part. See `IgnoreMatch.maskMatcher`.
@@ -58,6 +59,59 @@ public struct IgnoreRule: Equatable, Sendable {
         self.isExcept = isExcept
         self.expiresAt = expiresAt
     }
+
+    /// One line naming every dimension the rule constrains — `*zzz*  [global]  NICKS  #chan
+    /// "spam"  [except]  (expires Today at 4:15 PM)` — for the `/ignore` listing and the
+    /// confirmations `/ignore`/`/unignore` print (#86).
+    ///
+    /// `global` is the rule's *scope*, which isn't on the rule: the server keeps globals and
+    /// per-network rules in separate buckets and the row is identical in both, so the caller
+    /// (which knows which bucket it read) supplies it. See `IgnoreSet.listing(for:)`.
+    ///
+    /// Mirrors the web's `summarizeIgnoreEntry` field for field, so the same rule reads the
+    /// same on both clients — except the expiry, which is a wall-clock stamp for a person to
+    /// read rather than the web's raw ISO string.
+    public func summary(global: Bool, now: Date = Date()) -> String {
+        var parts = [mask ?? "*"]
+        if global { parts.append("[global]") }
+        if !levels.isEmpty { parts.append(levels.joined(separator: ",")) }
+        if let channels, !channels.isEmpty { parts.append(channels.joined(separator: ",")) }
+        if let pattern, !pattern.isEmpty {
+            parts.append(patternKind == .regex ? "/\(pattern)/" : "\"\(pattern)\"")
+        }
+        if isExcept { parts.append("[except]") }
+        if let expiresAt {
+            // Past tense when it has already run out. A lapsed rule is still a row on the
+            // server until its sweeper gets to it — it keeps its place in the listing (see
+            // `IgnoreSet.listing`) — but it has stopped hiding anything, and "expires" in the
+            // past reads as a rule that's still working.
+            let lapsed = expiresAt <= now
+            parts.append("(\(lapsed ? "expired" : "expires") \(ExpiryText.of(expiresAt)))")
+        }
+        return parts.joined(separator: "  ")
+    }
+}
+
+/// When a rule lapses, as a person reads it: local time, short, and relative where the locale
+/// has a word for the day ("Today at 4:15 PM").
+///
+/// Built once rather than per call — a `DateFormatter` is expensive to construct, and a rule
+/// listing formats one per line. The locale is `autoupdatingCurrent` because a `static let`
+/// outlives a region change, the same care `MessageRenderer.dayFormatter` takes for the day
+/// dividers.
+private enum ExpiryText {
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        formatter.doesRelativeDateFormatting = true
+        formatter.locale = .autoupdatingCurrent
+        return formatter
+    }()
+
+    static func of(_ date: Date) -> String {
+        formatter.string(from: date)
+    }
 }
 
 /// How a rule's `pattern` is matched against a message body. Mirrors the server's
@@ -80,9 +134,12 @@ public enum IgnorePatternKind: String, Sendable {
 
 /// The ignore-level vocabulary (lurker #301), ported from `shared/ignoreLevels.ts`.
 ///
-/// Only the half this client needs: which event types each level token covers. The alias
-/// table (irssi's `PUBLICS`/`NOHILITE`/`NO_ACT` spellings) lives on the server, which
-/// canonicalizes before storing — so a rule always arrives here spelled one way.
+/// Two halves, and until #86 this client only needed one. **Matching** needs the event types
+/// each canonical token covers — rules arrive off the wire already canonicalized, so the
+/// matcher never sees an alias. **Authoring** needs the rest: `/ignore bob nohilight` is a
+/// person typing irssi's spelling, and the command line is parsed here now, so the alias table
+/// and the canonical order have to be here too. The server canonicalizes again on insert; that
+/// they agree is what keeps the stored CSV identical whichever client wrote the rule.
 public enum IgnoreLevels {
 
     /// Level token → the event types it covers. `PUBLIC` and `MSGS` split `message` by
@@ -128,4 +185,61 @@ public enum IgnoreLevels {
     /// message is treated. Filtered out of the hide-level set so a modifier-only rule keeps
     /// `hides` false (lurker #301 for NOHIGHLIGHT, #359 for the two mute rungs).
     static let modifiers: Set<String> = ["NOHIGHLIGHT", "NOUNREAD", "NONOTIFY"]
+
+    /// What an `ALL` token expands to before a subtractive level is taken off it
+    /// (`ALL -PUBLIC`, irssi's form). Derived from `defs` — the tokens a user can *name* — so
+    /// it can't drift from the vocabulary, and deliberately not from `all`, which answers the
+    /// different question of which event types `ALL` hides. Unordered, because the result goes
+    /// through `canonicalize` before anyone sees it.
+    static var concrete: [String] { Array(defs.keys) }
+
+    /// alias → canonical token, accepting irssi's singular/plural and legacy spellings. The
+    /// only place a level token is spelled more than one way; everything downstream of
+    /// `canonical(_:)` is in canonical form.
+    static let aliases: [String: String] = [
+        "PUBLIC": "PUBLIC", "PUBLICS": "PUBLIC",
+        "MSG": "MSGS", "MSGS": "MSGS",
+        "NOTICE": "NOTICES", "NOTICES": "NOTICES",
+        "ACTION": "ACTIONS", "ACTIONS": "ACTIONS",
+        "JOIN": "JOINS", "JOINS": "JOINS",
+        "PART": "PARTS", "PARTS": "PARTS",
+        "QUIT": "QUITS", "QUITS": "QUITS",
+        "NICK": "NICKS", "NICKS": "NICKS",
+        "KICK": "KICKS", "KICKS": "KICKS",
+        "MODE": "MODES", "MODES": "MODES",
+        "TOPIC": "TOPICS", "TOPICS": "TOPICS",
+        "CTCP": "CTCPS", "CTCPS": "CTCPS",
+        "ALL": "ALL",
+        // Lurker calls them "highlights", so NOHIGHLIGHT(S) is canonical; irssi's
+        // NOHILIGHT/NOHILITE spellings are accepted as aliases.
+        "NOHIGHLIGHT": "NOHIGHLIGHT", "NOHIGHLIGHTS": "NOHIGHLIGHT",
+        "NOHILIGHT": "NOHIGHLIGHT", "NOHILITE": "NOHIGHLIGHT",
+        // The mute rungs (lurker #359). NOUNREAD suppresses the plain-unread signal (≙ irssi's
+        // NO_ACT); NONOTIFY suppresses toast/push/sound.
+        "NOUNREAD": "NOUNREAD", "NOUNREADS": "NOUNREAD",
+        "NO_ACT": "NOUNREAD", "NOACT": "NOUNREAD", "NOACTIVITY": "NOUNREAD",
+        "NONOTIFY": "NONOTIFY", "NONOTIFYS": "NONOTIFY",
+        "NONOTIFICATION": "NONOTIFY", "NONOTIFICATIONS": "NONOTIFY",
+    ]
+
+    /// The order a rule's levels are stored and listed in. Deterministic because the server
+    /// dedupes rules by comparing the stored CSV *as a string*: two clients that canonicalize
+    /// the same set into different orders would write the same rule twice.
+    static let canonicalOrder = [
+        "ALL", "PUBLIC", "MSGS", "NOTICES", "ACTIONS", "JOINS", "PARTS", "QUITS", "NICKS",
+        "KICKS", "MODES", "TOPICS", "CTCPS", "NOHIGHLIGHT", "NOUNREAD", "NONOTIFY",
+    ]
+
+    /// Resolve one token to its canonical form, or nil if it names no level. Nil is what tells
+    /// the parser a token is a mask or a flag rather than a level, so "unknown" has to be
+    /// answerable rather than defaulted.
+    static func canonical(_ token: String) -> String? {
+        aliases[token.uppercased()]
+    }
+
+    /// Canonicalize a level list: resolve aliases, drop unknowns, dedupe, and order.
+    static func canonicalize(_ levels: [String]) -> [String] {
+        let set = Set(levels.compactMap(canonical))
+        return canonicalOrder.filter(set.contains)
+    }
 }
