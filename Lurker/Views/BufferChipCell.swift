@@ -152,6 +152,31 @@ final class BufferChipCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's
+    /// square bounding box.
+    ///
+    /// The cell owns this for the same reason `MessageBodyHosting` owns its hit-testing: only
+    /// it knows where its visible body sits inside the row.
+    ///
+    /// `backgroundColor` has to be set as well as `visiblePath`, and to `.clear` specifically:
+    /// the property is `null_resettable`, so leaving it nil means *the system default fill*,
+    /// not transparency — and the four corner nubs that fall outside the rounded path would be
+    /// painted with it for the length of the drag.
+    ///
+    /// The path draws circular corners where the card draws continuous ones (`cornerCurve`),
+    /// because `UIBezierPath(roundedRect:cornerRadius:)` is the only public way to build one
+    /// and it makes quarter-circles. At 12pt the difference is a fraction of a point and it
+    /// only shows while a chip is in the air; approximating a squircle by hand would be a
+    /// visibly worse trade.
+    var dragPreviewParameters: UIDragPreviewParameters {
+        let parameters = UIDragPreviewParameters()
+        parameters.visiblePath = UIBezierPath(
+            roundedRect: card.frame, cornerRadius: card.layer.cornerRadius
+        )
+        parameters.backgroundColor = .clear
+        return parameters
+    }
+
     /// `presence` is set only for friend chips; nil leaves the chip exactly as a
     /// Favorites/Recent card (no dot). The dot color reads "is this friend reachable right
     /// now": green online, orange away, muted grey offline/unknown — deliberately understated
