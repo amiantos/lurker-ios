@@ -92,7 +92,13 @@ final class BufferListViewController: UICollectionViewController {
     private struct Section {
         let title: String?
         let layout: Layout
-        let rows: [Row]
+        var rows: [Row]
+        /// Whether these chips can be dragged into a new order (#53). Favorites only: Recent is
+        /// MRU-ordered and Friends is alphabetical, so a drag there would be undone by the next
+        /// rebuild — and the rosters below are the same, sorted list this screen has always
+        /// shown. Named for the capability rather than for the section, so the drag delegates
+        /// never have to recognize a section by its title.
+        var reorderable = false
     }
 
     private var state = ChatState()
@@ -147,6 +153,17 @@ final class BufferListViewController: UICollectionViewController {
         navigationItem.largeTitleDisplayMode = .always
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
+
+        // Drag-and-drop rather than `moveItemAt` + the standard interactive-movement gesture
+        // (#53). That gesture is a long press, which is already the chip's context menu — the
+        // two would race, and the one that lost would be the discoverable one. A drag session
+        // is how UIKit reconciles them: a lift that *moves* reorders, a lift that stays put
+        // opens the menu, which is what every reorderable grid on the system does.
+        //
+        // `dragInteractionEnabled` is only true by default on iPad.
+        collectionView.dragDelegate = self
+        collectionView.dropDelegate = self
+        collectionView.dragInteractionEnabled = true
 
         // This screen *is* its collection view, so the banner is a subview of a scroll view.
         // Two consequences worth naming:
@@ -745,7 +762,9 @@ final class BufferListViewController: UICollectionViewController {
         let favorites = favoriteRows(state, friendDmKeys: friendDmKeys)
         let recents = recentRows(state, friendDmKeys: friendDmKeys)
         let friends = friendRows(state)
-        if !favorites.isEmpty { sections.append(Section(title: "Favorites", layout: .grid, rows: favorites)) }
+        if !favorites.isEmpty {
+            sections.append(Section(title: "Favorites", layout: .grid, rows: favorites, reorderable: true))
+        }
         if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
         // Right under Recent, as its own two-up grid — the handful of people you keep coming
         // back to, with a live presence dot on each.
@@ -1092,6 +1111,110 @@ extension BufferListViewController: PillPresenting {
     /// tap does — this screen *is* the app, so there's no one buffer to describe.
     func pillTapped() {
         openSystemBuffer()
+    }
+}
+
+// MARK: - Reordering favorites (#53)
+
+/// Dragging a Favorites chip into a new position.
+///
+/// Purely local: favorites live in `UserDefaults` (app-level and cross-network, unlike the web
+/// client's per-network server pins), so a reorder is a write to this device and nothing else.
+///
+/// Confined to the Favorites section in both directions — a chip can't be lifted out of any
+/// other section, and can't be dropped into one. Recent is MRU-ordered and Friends is
+/// alphabetical, so a chip dropped there would snap back on the next rebuild, which is a worse
+/// answer than not accepting the drop.
+extension BufferListViewController: UICollectionViewDragDelegate, UICollectionViewDropDelegate {
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        itemsForBeginning session: UIDragSession,
+        at indexPath: IndexPath
+    ) -> [UIDragItem] {
+        guard reorderable(indexPath) else { return [] }
+        // An empty provider: this drag offers nothing to anywhere else, and `dropSessionDidUpdate`
+        // refuses any session that didn't start here. Reordering a local list is the whole
+        // feature — a favorite dragged into Mail should do nothing rather than paste a key.
+        let item = UIDragItem(itemProvider: NSItemProvider())
+        item.localObject = sections[indexPath.section].rows[indexPath.item].buffer.key.id
+        return [item]
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        dragSessionIsRestrictedToDraggingApplication session: UIDragSession
+    ) -> Bool { true }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        dragPreviewParametersForItemAt indexPath: IndexPath
+    ) -> UIDragPreviewParameters? {
+        (collectionView.cellForItem(at: indexPath) as? BufferChipCell)?.dragPreviewParameters
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        dropSessionDidUpdate session: UIDropSession,
+        withDestinationIndexPath destinationIndexPath: IndexPath?
+    ) -> UICollectionViewDropProposal {
+        guard session.localDragSession != nil, let destinationIndexPath,
+              sections.indices.contains(destinationIndexPath.section),
+              sections[destinationIndexPath.section].reorderable
+        else { return UICollectionViewDropProposal(operation: .cancel) }
+        // Deliberately not checking the *item* here, only the section: a drop past the last
+        // chip is a real gesture ("put it at the end") and UIKit can report it as an index one
+        // beyond the last row. `performDropWith` clamps it. Refusing it instead would show the
+        // no-drop badge over the one bit of empty space in the grid.
+        return UICollectionViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
+    }
+
+    func collectionView(
+        _ collectionView: UICollectionView,
+        performDropWith coordinator: UICollectionViewDropCoordinator
+    ) {
+        guard let item = coordinator.items.first,
+              let source = item.sourceIndexPath,
+              let proposed = coordinator.destinationIndexPath,
+              reorderable(source), source.section == proposed.section
+        else { return }
+        // A drop past the last chip reads as "put it at the end", so it's clamped to the last
+        // row rather than refused — the row count doesn't change during a reorder, so the last
+        // valid index is always `count - 1`.
+        let rows = sections[source.section].rows
+        let destination = IndexPath(item: min(proposed.item, rows.count - 1), section: proposed.section)
+
+        // The grid shows a subset of what's stored — a favorite whose network is still
+        // connecting has a slot and no chip — so the move is mapped rather than applied by
+        // index. `FavoriteOrder` owns that, and answers the stored list unchanged for anything
+        // it can't interpret.
+        let visible = rows.map(\.buffer.key.id)
+        let stored = UserPreferences.standard.favoriteBufferKeys
+        let reordered = FavoriteOrder.moved(stored, visible: visible, from: source.item, to: destination.item)
+        guard reordered != stored else { return }
+        UserPreferences.standard.setFavoriteBufferKeys(reordered)
+
+        // The model moves with the view rather than being rebuilt: `rebuild()` would reach the
+        // same answer, but it reloads on a row-order change (`sameStructure` compares keys
+        // positionally), and a reload mid-drop drops the drag animation on the floor. A move
+        // inside Favorites can't change any other section — Recent excludes favorites by
+        // membership, not by order — so the two are equivalent here.
+        sections[source.section].rows.insert(
+            sections[source.section].rows.remove(at: source.item), at: destination.item
+        )
+        collectionView.performBatchUpdates {
+            collectionView.moveItem(at: source, to: destination)
+        }
+        coordinator.drop(item.dragItem, toItemAt: destination)
+    }
+
+    /// Whether this index path is a chip in a section that can be reordered — and, because
+    /// `sections` is rebuilt from under a live drag session by any arriving frame, whether it
+    /// still addresses a row at all.
+    private func reorderable(_ indexPath: IndexPath) -> Bool {
+        guard sections.indices.contains(indexPath.section) else { return false }
+        let section = sections[indexPath.section]
+        return section.reorderable && section.rows.indices.contains(indexPath.item)
     }
 }
 

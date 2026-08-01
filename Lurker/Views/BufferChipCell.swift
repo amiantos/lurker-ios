@@ -152,6 +152,20 @@ final class BufferChipCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// The shape a drag lifts (#53) — the card, not the cell's bounding box.
+    ///
+    /// The cell owns this for the same reason `MessageBodyHosting` owns its hit-testing: only
+    /// it knows where its visible body sits inside the row. Without it a lifted favorite wears
+    /// square corners and a sliver of grid gutter, which reads as the wrong thing being picked
+    /// up.
+    var dragPreviewParameters: UIDragPreviewParameters {
+        let parameters = UIDragPreviewParameters()
+        parameters.visiblePath = UIBezierPath(
+            roundedRect: card.frame, cornerRadius: card.layer.cornerRadius
+        )
+        return parameters
+    }
+
     /// `presence` is set only for friend chips; nil leaves the chip exactly as a
     /// Favorites/Recent card (no dot). The dot color reads "is this friend reachable right
     /// now": green online, orange away, muted grey offline/unknown — deliberately understated

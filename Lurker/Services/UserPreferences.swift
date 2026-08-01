@@ -188,4 +188,13 @@ extension UserDefaults {
         set(keys, forKey: UserPreferences.Key.favoriteBufferKeys)
         return !wasFavorite
     }
+
+    /// Replace the pinned order wholesale, after a drag in the Favorites grid (#53).
+    ///
+    /// Takes the whole list rather than a from/to pair because the grid shows a *subset* of it
+    /// — see `FavoriteOrder`, which does the mapping and is the only thing that should be
+    /// building the value passed here.
+    func setFavoriteBufferKeys(_ keys: [String]) {
+        set(keys, forKey: UserPreferences.Key.favoriteBufferKeys)
+    }
 }
