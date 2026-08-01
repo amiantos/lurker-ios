@@ -90,22 +90,26 @@ public final class IgnoreSet: Sendable {
     /// A nil `networkId` is the system buffer, where only global rules are in scope — there's
     /// no connection for a network-scoped rule to be about.
     ///
-    /// Lapsed rules are left out, which is what makes this answer the same question every
-    /// other accessor here does: a rule past its `expiresAt` stops matching the instant it
-    /// runs out (`CompiledRule.isLive`), so listing it would show a rule that isn't in force
-    /// and — worse — give it an index that `/unignore <n>` would spend. The server sweeps the
-    /// rows within a minute and fans the shortened list back; this is what covers the phone
-    /// that was asleep or offline when that happened.
-    public func listing(for networkId: Int?, now: Date = Date()) -> [ScopedIgnoreRule] {
-        func live(_ rules: [IgnoreRule], scope: Int?) -> [ScopedIgnoreRule] {
-            rules.compactMap { rule in
-                if let expiresAt = rule.expiresAt, expiresAt <= now { return nil }
-                return ScopedIgnoreRule(rule: rule, scope: scope)
-            }
-        }
-        let globals = live(global, scope: nil)
+    /// **Lapsed rules are included**, unlike every other accessor here, which drops them. The
+    /// difference is what the question is: those answer "is this line hidden", where a rule
+    /// past its `expiresAt` has nothing to say; this one is an inventory of the rows the
+    /// server is holding, and the server does not delete a row the moment it lapses — its
+    /// sweeper gets to it within a minute, and a `DELETE … WHERE mask = ?` in the meantime
+    /// takes the lapsed row with the rest.
+    ///
+    /// Filtering them here looked tidier and was wrong twice over. The indices are minted from
+    /// this array and spent later: a rule lapsing between the `/ignore` that printed the
+    /// numbers and the `/unignore` that used one would silently renumber everything below it,
+    /// so `/unignore 2` would delete a different, still-live rule — with a receipt naming it.
+    /// And the by-mask receipt counts these rules to describe a delete that has no expiry
+    /// predicate, so it would have under-counted. A lapsed rule reads as `(expired …)` in the
+    /// listing instead, which is the honest form of the same information.
+    public func listing(for networkId: Int?) -> [ScopedIgnoreRule] {
+        let globals = global.map { ScopedIgnoreRule(rule: $0, scope: nil) }
         guard let networkId else { return globals }
-        return globals + live(byNetwork[networkId] ?? [], scope: networkId)
+        return globals + (byNetwork[networkId] ?? []).map {
+            ScopedIgnoreRule(rule: $0, scope: networkId)
+        }
     }
 
     /// The rules in force on `networkId`.

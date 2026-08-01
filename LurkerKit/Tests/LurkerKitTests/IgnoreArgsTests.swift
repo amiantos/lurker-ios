@@ -168,11 +168,22 @@ final class IgnoreArgsTests: XCTestCase {
         // A bare number is seconds.
         XCTAssertEqual(parse("-time 300 mike")?.rule.expiresAt, ISOTime.parse("2026-06-18T00:05:00.000Z"))
         XCTAssertEqual(parse("-time 30m bob")?.rule.expiresAt, ISOTime.parse("2026-06-18T00:30:00.000Z"))
-        // A space between the count and the unit needs quoting: `-time` reads ONE token, so
-        // `-time 7 days bob` makes a 7-second rule and then chokes on a second mask. The
-        // duration grammar allows the space for exactly this quoted form.
+        // A space between the count and the unit is joined, quoted or not. The reference reads
+        // ONE token, so `-time 7 days` there is a seven-SECOND rule whose mask is the word
+        // "days" — and with no mask of its own it lapses seconds later leaving no trace.
         XCTAssertEqual(parse("-time \"7 days\" bob")?.rule.expiresAt, ISOTime.parse("2026-06-25T00:00:00.000Z"))
-        XCTAssertEqual(error("-time 7 days bob")?.contains("unexpected argument"), true)
+        XCTAssertEqual(parse("-time 7 days bob")?.rule.expiresAt, ISOTime.parse("2026-06-25T00:00:00.000Z"))
+        XCTAssertEqual(parse("-time 7 days bob")?.rule.mask, "bob")
+        // Only a bare count followed by a unit word is joined; a mask still reads as a mask.
+        XCTAssertEqual(parse("-time 30 bob")?.rule.mask, "bob")
+    }
+
+    func testTimeRefusesADurationOfZero() {
+        // `-time 0` would expire the rule at the instant it was created: reported as added,
+        // never matching, and with no index, removable only by mask until the server sweeps.
+        for input in ["-time 0 bob", "-time 0m bob", "-time 000 bob"] {
+            XCTAssertEqual(error(input)?.contains("invalid -time"), true, input)
+        }
     }
 
     func testRejectsAnAbsurdTimeRatherThanOverflowingTheDate() {
@@ -259,8 +270,13 @@ final class IgnoreArgsTests: XCTestCase {
 
     func testSummaryQuotesANonRegexPatternAndNotesAnExpiry() {
         let rule = parse("-pattern spam -time 1day bob")?.rule
-        let summary = rule?.summary(global: false) ?? ""
+        let summary = rule?.summary(global: false, now: now) ?? ""
         XCTAssertTrue(summary.contains("\"spam\""), summary)
+        // Past tense once it has run out: a lapsed rule keeps its place in the listing (its
+        // row is still on the server) but has stopped hiding anything.
+        XCTAssertTrue(summary.contains("(expires "), summary)
+        let later = rule?.summary(global: false, now: now.addingTimeInterval(86_401)) ?? ""
+        XCTAssertTrue(later.contains("(expired "), later)
         // `contains("expires")` alone would pass on an empty formatter result — the word is
         // this file's own literal. Assert the stamp itself is there, without pinning a format
         // the reader's locale and calendar decide.
@@ -295,11 +311,47 @@ final class IgnoreArgsTests: XCTestCase {
         XCTAssertEqual(parse("-pattern [ bob")?.rule.pattern, "[")
     }
 
-    func testAnEmptyQuotedMaskIsAnyoneRatherThanABlankSubject() {
-        // `/ignore ""` — the server's `strOrNull` and this client's matcher both read `""` as
-        // "anyone", so storing it as a mask would list the rule under a blank subject.
-        XCTAssertNil(parse("\"\"")?.rule.mask)
-        XCTAssertEqual(parse("\"\"")?.rule.summary(global: true).hasPrefix("*  [global]"), true)
+    func testAnEmptyOrBlankMaskIsAnyoneRatherThanABlankSubject() {
+        // `/ignore ""` and `/ignore " "` — the server's `strOrNull` and this client's matcher
+        // both read those as "anyone", so keeping them as a mask would list a hide-everyone
+        // rule under a blank subject. Both are explicit, so both are allowed through.
+        for input in ["\"\" JOINS", "\" \" JOINS"] {
+            XCTAssertNil(parse(input)?.rule.mask, input)
+            XCTAssertEqual(parse(input)?.rule.summary(global: true).hasPrefix("*  [global]"), true)
+        }
+    }
+
+    func testABlankPatternIsDroppedRatherThanWideningTheRule() {
+        // The server nulls a whitespace-only pattern, and a null pattern turns "hide what they
+        // say about X" into "hide everything they say".
+        XCTAssertNil(parse("bob -pattern \" \"")?.rule.pattern)
+        XCTAssertEqual(error("-pattern \" \"")?.contains("names nobody"), true)
+    }
+
+    func testARuleThatNamesNobodyIsRefusedUnlessAnyoneWasAskedForExplicitly() {
+        // Each of these parses cleanly into "hide everything from everyone" on the reference.
+        for input in ["-network", "-global", "-time 1d", "", "   ", "Quit", "all"] {
+            XCTAssertEqual(error(input)?.contains("names nobody"), true, "expected a refusal from: \(input)")
+        }
+        // `*` said out loud is the escape hatch, and still works.
+        XCTAssertNil(parse("* JOINS")?.rule.mask)
+        XCTAssertEqual(parse("* JOINS")?.rule.levels, ["JOINS"])
+        // As is any other dimension: a channel scope or a content pattern names a subject too.
+        XCTAssertEqual(parse("#idlerpg NOUNREAD")?.rule.channels, ["#idlerpg"])
+        XCTAssertEqual(parse("-pattern spam")?.rule.pattern, "spam")
+    }
+
+    func testSubtractingAllIsRefusedRatherThanInverted() {
+        // The reference resolves `-ALL` to the MAXIMAL hide set: the base expands to the
+        // concrete levels first, so the removal then finds no `ALL` to take off.
+        XCTAssertEqual(error("bob -ALL")?.contains("-ALL"), true)
+        XCTAssertEqual(error("bob -all")?.contains("-ALL"), true)
+    }
+
+    func testAnOverLongPatternIsRefusedHereRatherThanInSilence() {
+        let long = String(repeating: "x", count: IgnoreArgs.maxPatternLength + 1)
+        XCTAssertEqual(error("bob -pattern \(long)")?.contains("exceeds"), true)
+        XCTAssertNotNil(parse("bob -pattern \(String(long.dropLast()))"))
     }
 
     // MARK: - The wire

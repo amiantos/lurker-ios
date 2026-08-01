@@ -438,8 +438,11 @@ final class CommandParserTests: XCTestCase {
         XCTAssertTrue(text.contains("NOHIGHLIGHT"), text)
     }
 
-    func testTheListingLeavesOutRulesThatHaveLapsed() {
-        // A lapsed rule isn't in force, so listing it would both misreport and spend an index.
+    func testALapsedRuleKeepsItsPlaceInTheListingAndIsMarkedExpired() {
+        // Filtering it out would renumber everything below it the moment it lapsed — so an
+        // index read off one `/ignore` and spent on the next `/unignore` would delete a
+        // different, still-live rule. Its row is also still on the server until the sweeper
+        // gets to it, and a by-mask DELETE takes it with the rest.
         let now = Date()
         let set = IgnoreSet(global: [
             IgnoreRule(id: 1, mask: "gone", expiresAt: now.addingTimeInterval(-60)),
@@ -450,9 +453,38 @@ final class CommandParserTests: XCTestCase {
         ), case .info(let text) = effects.first else {
             return XCTFail("expected a listing")
         }
-        XCTAssertTrue(text.contains("(1)"), text)
-        XCTAssertTrue(text.contains("1. live"), text)
-        XCTAssertFalse(text.contains("gone"), text)
+        XCTAssertTrue(text.contains("(2)"), text)
+        XCTAssertTrue(text.contains("1. gone"), text)
+        XCTAssertTrue(text.contains("(expired "), text)
+        XCTAssertTrue(text.contains("2. live"), text)
+        // And the index still means what it said.
+        guard case .command(let removal) = CommandParser.parse(
+            "/unignore 2", networkId: 1, target: "#chan", ignores: set, now: now
+        ) else { return XCTFail("expected a removal") }
+        XCTAssertEqual(removal.first.map { effect -> Int? in
+            if case .removeIgnore(_, let id, _, _) = effect { return id }
+            return nil
+        } ?? nil, 2)
+    }
+
+    func testBothVerbsRefuseToAnswerBeforeTheRulesHaveArrived() {
+        // `nil` is "not synced yet", which an empty set cannot express — and both verbs would
+        // otherwise deny out loud that rules the account really has exist.
+        for input in ["/ignore", "/unignore bob", "/unignore 1"] {
+            guard case .command(let effects) = CommandParser.parse(
+                input, networkId: 1, target: "#chan", ignores: nil
+            ), case .info(let text) = effects.first, effects.count == 1 else {
+                return XCTFail("expected one explanation from \(input)")
+            }
+            XCTAssertTrue(text.contains("haven't arrived yet"), text)
+        }
+        // Authoring doesn't need the listing, so it isn't gated — the send path reports
+        // whether it landed.
+        guard case .command(let effects) = CommandParser.parse(
+            "/ignore bob", networkId: 1, target: "#chan", ignores: nil
+        ), case .addIgnore = effects.first else {
+            return XCTFail("expected /ignore <nick> to still author a rule")
+        }
     }
 
     func testUnignoreByIndexRemovesThatRuleByIdInItsOwnScope() {
@@ -527,8 +559,71 @@ final class CommandParserTests: XCTestCase {
             }
             XCTAssertTrue(text.contains("no ignore with mask"), text)
         }
-        // ASCII case still folds, because NOCASE folds it.
-        XCTAssertNotNil(effects("/unignore CAF\u{00C9}", ignores: set).first)
+        // ASCII case still folds, because NOCASE folds it — and it has to fold per BYTE, not
+        // per grapheme: `A` + combining acute is one non-ASCII `Character` whose `A` byte
+        // SQLite still lowers. Folding by character left it alone and reported no match for a
+        // rule the DELETE would have removed.
+        let ascii = IgnoreSet(byNetwork: [1: [
+            IgnoreRule(id: 3, mask: "Bob"),
+            IgnoreRule(id: 4, mask: "A\u{0301}bc"),
+        ]])
+        XCTAssertEqual(
+            effects("/unignore BOB", ignores: ascii).first,
+            .removeIgnore(scope: 1, id: nil, mask: "BOB", receipt: "removed 1 ignore matching \"BOB\".")
+        )
+        XCTAssertEqual(
+            effects("/unignore a\u{0301}BC", ignores: ascii).first,
+            .removeIgnore(
+                scope: 1, id: nil, mask: "a\u{0301}BC",
+                receipt: "removed 1 ignore matching \"a\u{0301}BC\"."
+            )
+        )
+    }
+
+    func testAQuotedMaskIsRemovableInTheSpellingThatCreatedIt() {
+        // `/ignore "bob smith"` stores `bob smith`; comparing the raw arg would have matched
+        // only the unquoted spelling, which isn't the one that made the rule.
+        let set = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 5, mask: "bob smith")]])
+        XCTAssertEqual(
+            effects("/unignore \"bob smith\"", ignores: set).first,
+            .removeIgnore(
+                scope: 1, id: nil, mask: "bob smith",
+                receipt: "removed 1 ignore matching \"bob smith\"."
+            )
+        )
+    }
+
+    func testReIssuingAnIdenticalRuleReportsAnUpdateBecauseTheServerUpserts() {
+        // `add-ignore` matches on every dimension but expiry and rewrites that row's
+        // `expires_at` in place — so `/ignore -time 1h bob` then `/ignore bob` doesn't add a
+        // second rule, it makes the hour-long mute permanent. "added" would hide that.
+        let set = IgnoreSet(global: [
+            IgnoreRule(id: 1, mask: "bob", levels: ["ALL"], expiresAt: Date().addingTimeInterval(3600)),
+        ])
+        guard case .addIgnore(_, _, let receipt) = effects("/ignore bob", ignores: set).first else {
+            return XCTFail("expected an add")
+        }
+        XCTAssertTrue(receipt.hasPrefix("ignore updated:"), receipt)
+        // A rule that differs in any compared dimension is genuinely new.
+        guard case .addIgnore(_, _, let fresh) = effects("/ignore bob JOINS", ignores: set).first else {
+            return XCTFail("expected an add")
+        }
+        XCTAssertTrue(fresh.hasPrefix("ignore added:"), fresh)
+    }
+
+    func testAnInteriorNewlineDoesNotBecomePartOfTheMask() {
+        // The composer is multi-line and Return inserts a newline, so `/unignore \nbob` is
+        // reachable; `.whitespaces` (which excludes newlines) left it glued to the mask.
+        let set = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 6, mask: "bob")]])
+        XCTAssertEqual(
+            effects("/unignore \nbob", ignores: set).first,
+            .removeIgnore(scope: 1, id: nil, mask: "bob", receipt: "removed 1 ignore matching \"bob\".")
+        )
+        // And a newline-only argument lists rather than authoring a rule that names nobody.
+        guard case .info(let text) = effects("/ignore \n", ignores: set).first else {
+            return XCTFail("expected a listing")
+        }
+        XCTAssertTrue(text.contains("ignore list"), text)
     }
 
     func testUnignoreStarSaysWhyItCannotMatch() {

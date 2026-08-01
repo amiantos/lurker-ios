@@ -68,8 +68,16 @@ public enum IgnoreArgs {
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let multiplier = multipliers[unit.isEmpty ? "s" : unit] else { return nil }
         let millis = count * multiplier
-        guard millis.isFinite, millis <= maxDurationMillis else { return nil }
+        // A zero duration is rejected rather than taken literally: `-time 0` would expire the
+        // rule at the instant it was created — reported as added, never matching, never listed,
+        // and (having no index) removable only by mask until the server's sweep notices.
+        guard millis > 0, millis.isFinite, millis <= maxDurationMillis else { return nil }
         return millis
+    }
+
+    /// Whether a token is a bare unit word (`days`, `mins`) — what `-time 7 days` splits into.
+    static func isDurationUnit(_ token: String) -> Bool {
+        multipliers[token.lowercased()] != nil
     }
 
     // MARK: - Tokenizer
@@ -127,8 +135,17 @@ public enum IgnoreArgs {
         return tokens
     }
 
+    /// The server's `MAX_PATTERN_LENGTH` (`ignoreRulesService.ts`), mirrored so an over-long
+    /// pattern is refused where it was typed rather than dropped in silence. Duplicated
+    /// deliberately — the alternative is asking the server and getting no answer.
+    static let maxPatternLength = 512
+
     /// The flags this grammar knows, lowercased — what `-pattern` refuses to swallow as its
     /// value. Kept as one set so a flag added above can't quietly become a pattern.
+    ///
+    /// Checked after the tokenizer has stripped quotes, so it can't tell `-pattern -net` from
+    /// `-pattern "-net"` and refuses both. That costs a rule whose content pattern is exactly a
+    /// flag spelling, which is a fair trade for a clean refusal over the silent scope loss.
     private static let flags: Set<String> = [
         "-regexp", "-regex", "-full", "-word", "-except", "-network", "-net", "-global",
         "-replies", "-pattern", "-time",
@@ -146,8 +163,11 @@ public enum IgnoreArgs {
         }
 
         var mask: String?
+        /// Whether an explicit `*` (or an empty token) claimed the mask slot — "anyone", said
+        /// on purpose, as against never naming a subject at all.
+        var sawAnyone = false
         var channels: [String] = []
-        var pattern: String?
+        var patternText: String?
         var expiresAt: Date?
         var isExcept = false
         var scopeNetwork = false
@@ -196,12 +216,23 @@ public enum IgnoreArgs {
                 guard !flags.contains(value.lowercased()) else {
                     return fail("-pattern needs a value (got the flag \(value))")
                 }
-                pattern = value
+                patternText = value
                 index += 1
                 continue
             case "-time":
-                let value = index < tokens.count ? tokens[index] : nil
+                var value = index < tokens.count ? tokens[index] : nil
                 index += 1
+                // `7 days` typed without quotes arrives as two tokens. The reference takes only
+                // the first, so `/ignore -time 7 days` there is a SEVEN-SECOND rule whose mask
+                // is the word "days" — which then lapses and leaves no trace of what happened.
+                // Joining them is a deliberate divergence: it reads the line the way it was
+                // meant, and the pair is unambiguous (a bare count followed by a unit word).
+                if let count = value, index < tokens.count,
+                   count.allSatisfy({ $0.isASCII && $0.isNumber }),
+                   Self.isDurationUnit(tokens[index]) {
+                    value = "\(count) \(tokens[index])"
+                    index += 1
+                }
                 guard let millis = duration(value) else {
                     return fail("invalid -time value: \(value ?? "(missing)")")
                 }
@@ -218,6 +249,14 @@ public enum IgnoreArgs {
                 guard let level = IgnoreLevels.canonical(String(token.dropFirst())) else {
                     return fail("unknown flag: \(token)")
                 }
+                // `-ALL` reads as "everything except everything" and the reference resolves it
+                // to the MAXIMUM hide set: the base expands `ALL` to its concrete members
+                // first, and the removal loop then looks for a token that is no longer in the
+                // set. Refused rather than inverted — `bob PUBLIC -PUBLIC` already fails with
+                // "no levels remain", and this is the same request spelled shorter.
+                guard level != "ALL" else {
+                    return fail("-ALL isn't a level to subtract — name what to keep, or drop the rule")
+                }
                 subLevels.append(level)
                 continue
             }
@@ -232,12 +271,22 @@ public enum IgnoreArgs {
                 continue
             }
 
-            if mask == nil {
-                // `*` is "anyone", which the matcher spells as no mask at all — and so is an
-                // empty quoted token, which `/ignore ""` produces. Both normalize to nil, the
-                // way the server's `strOrNull` and `IgnoreMatch.maskMatcher` already read
-                // them; leaving `""` here would have listed the rule under a blank subject.
-                mask = (token == "*" || token.isEmpty) ? nil : token
+            if mask == nil, !sawAnyone {
+                // `*` is "anyone", which the matcher spells as no mask at all — and so are an
+                // empty quoted token (`/ignore ""`) and a whitespace-only one (`/ignore " "`).
+                // All three normalize to nil, the way the server's `strOrNull` and
+                // `IgnoreMatch.maskMatcher` already read them. Left alone, `" "` reached the
+                // server, was nulled there, and became a rule hiding everyone — while the
+                // receipt showed a blank subject.
+                let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed == "*" || trimmed.isEmpty {
+                    // Remembered, because "the user asked for everyone" and "the user named
+                    // nobody" are different requests that both leave `mask` nil — and only the
+                    // second one is a mistake. See the guard below.
+                    sawAnyone = true
+                } else {
+                    mask = trimmed
+                }
                 continue
             }
             return fail("unexpected argument: \(token)")
@@ -253,12 +302,32 @@ public enum IgnoreArgs {
         }
         guard !levelSet.isEmpty else { return fail("no levels remain") }
 
-        // Compile a `-regexp` pattern here rather than letting the server refuse it. That
-        // rejection arrives as silence — `wsHub`'s `add-ignore` drops a failed validation with
-        // a bare `break` and sends nothing back — so an unclosed `[` would otherwise be
-        // confirmed as added and simply never exist. Not a guarantee the server will agree:
-        // it compiles with V8 and this is ICU, and the two disagree about some patterns
-        // (`IgnoreMatch` documents which). It catches the typo, which is the case that happens.
+        // A rule that names no subject — no mask, no channel, no content — hides EVERY message
+        // from everyone, on every network if it's global. The server allows it (irssi does
+        // too) and it is occasionally what someone means, so the escape hatch is to say so:
+        // `/ignore * JOINS` is explicit and passes. What's refused is arriving there by
+        // accident, which several ordinary inputs do — `/ignore -network` sent early by a
+        // stray Return, or `/ignore Quit`, where a nick that happens to spell a level token is
+        // consumed as the level (the reference reads levels before masks, and this client
+        // matches it) leaving the rule with no subject at all.
+        let pattern = patternText?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if mask == nil, channels.isEmpty, pattern?.isEmpty != false, !sawAnyone {
+            return fail("that names nobody to ignore — try /ignore <nick>, or /ignore * <levels> to mean everyone")
+        }
+
+        // The server's own `add` checks, ported so the answer lands in the buffer the command
+        // was typed in. Its rejection arrives as silence — `wsHub`'s `add-ignore` drops a
+        // failed validation with a bare `break` and sends nothing back — so anything caught
+        // there and not here is confirmed as added and simply never exists.
+        if let pattern, pattern.count > maxPatternLength {
+            return fail("pattern exceeds \(maxPatternLength) chars")
+        }
+        // The regex check is the one that can't be exact: the server compiles with V8 and this
+        // is ICU. Measured divergences, both directions — ICU accepts inline `(?i)spam` which
+        // V8 rejects (so that one still reaches the server and dies quietly); V8 accepts `[]`,
+        // `a{,3}` and `free{` under Annex B where ICU refuses, so those few patterns are
+        // creatable in a browser and refused here. What it reliably catches is the unbalanced
+        // bracket or paren, which is the mistake that actually gets typed.
         if sawRegexp, let pattern, !pattern.isEmpty,
            (try? NSRegularExpression(pattern: pattern)) == nil {
             return fail("invalid regex: \(pattern)")
@@ -269,7 +338,10 @@ public enum IgnoreArgs {
                 rule: IgnoreRule(
                     mask: mask,
                     channels: channels.isEmpty ? nil : channels,
-                    pattern: pattern,
+                    // Trimmed, and empty means absent: the server's `strOrNull` nulls a
+                    // whitespace-only pattern, and a null pattern WIDENS the rule from "hide
+                    // what they say about X" to "hide everything they say".
+                    pattern: pattern?.isEmpty == false ? pattern : nil,
                     patternKind: sawRegexp ? .regex : sawFull ? .full : .substr,
                     levels: IgnoreLevels.canonicalize(Array(levelSet)),
                     isExcept: isExcept,

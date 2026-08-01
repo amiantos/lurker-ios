@@ -329,7 +329,13 @@ public final class ChatViewModel {
             text,
             networkId: key.networkId,
             target: key.target,
-            ignores: store.state.ignores
+            // Nil until the connect burst has finished, because until then an empty set is
+            // indistinguishable from an account with no rules — and both `/ignore` and
+            // `/unignore` would answer that difference out loud ("ignore list is empty", "no
+            // ignore with mask bob") for an account with a dozen of them. `backlogComplete` is
+            // the latch that says the burst is done, and it isn't cleared by a drop, so a
+            // reconnect doesn't take the answer away again.
+            ignores: store.state.backlogComplete ? store.state.ignores : nil
         ) {
         case .message(let body):
             client.sendMessage(networkId: key.networkId, target: key.target, text: body)
@@ -399,14 +405,20 @@ public final class ChatViewModel {
 
     /// Print a command's receipt, or say why there isn't one.
     ///
-    /// `sent` is whether the verb reached a socket at all. Nothing queues these, so a false
-    /// means it went nowhere and will not be retried — and a receipt printed anyway would be
-    /// the app's own word for something that didn't happen. The failure line says what to do
-    /// about it, which "failed" wouldn't.
+    /// `sent` is what `LurkerClient.send` returned. It is necessary and **not sufficient**: it
+    /// only says a socket object was there to hand the frame to, and a dropped socket isn't
+    /// nil'd — `handleClose` reports the closure and leaves the task assigned, so a write into
+    /// a connection that died while backgrounded returns true. `state.connection` is the flag
+    /// that actually knows, because it's driven by the open/closed frames themselves.
+    ///
+    /// Nothing queues these verbs, so anything short of both being true means it went nowhere
+    /// and will not be retried — and a receipt printed anyway is the app's own word for
+    /// something that didn't happen. The failure line says what to do about it.
     private func report(_ sent: Bool, _ receipt: String, in key: BufferKey) {
+        let delivered = sent && store.state.connection == .connected
         store.appendLocal(
             key,
-            text: sent ? receipt : "Not sent — you're not connected. Try again once you're back."
+            text: delivered ? receipt : "Not sent — you're not connected. Try again once you're back."
         )
     }
 

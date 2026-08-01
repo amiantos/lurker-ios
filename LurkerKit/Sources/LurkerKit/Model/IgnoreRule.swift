@@ -71,7 +71,7 @@ public struct IgnoreRule: Equatable, Sendable {
     /// Mirrors the web's `summarizeIgnoreEntry` field for field, so the same rule reads the
     /// same on both clients — except the expiry, which is a wall-clock stamp for a person to
     /// read rather than the web's raw ISO string.
-    public func summary(global: Bool) -> String {
+    public func summary(global: Bool, now: Date = Date()) -> String {
         var parts = [mask ?? "*"]
         if global { parts.append("[global]") }
         if !levels.isEmpty { parts.append(levels.joined(separator: ",")) }
@@ -80,7 +80,14 @@ public struct IgnoreRule: Equatable, Sendable {
             parts.append(patternKind == .regex ? "/\(pattern)/" : "\"\(pattern)\"")
         }
         if isExcept { parts.append("[except]") }
-        if let expiresAt { parts.append("(expires \(ExpiryText.of(expiresAt)))") }
+        if let expiresAt {
+            // Past tense when it has already run out. A lapsed rule is still a row on the
+            // server until its sweeper gets to it — it keeps its place in the listing (see
+            // `IgnoreSet.listing`) — but it has stopped hiding anything, and "expires" in the
+            // past reads as a rule that's still working.
+            let lapsed = expiresAt <= now
+            parts.append("(\(lapsed ? "expired" : "expires") \(ExpiryText.of(expiresAt)))")
+        }
         return parts.joined(separator: "  ")
     }
 }

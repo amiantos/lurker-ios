@@ -428,6 +428,10 @@ final class LurkerClient {
     /// matters more here, where the receipt the caller holds says something was *removed*.
     @discardableResult
     func removeIgnore(networkId: Int?, id: Int?, mask: String?) -> Bool {
+        // Naming neither is a frame the server reads and discards, and reporting it as sent
+        // would put a "removed …" receipt under it. The reference refuses the same call
+        // (`ignores.ts`'s `if (by.id == null && !by.mask) return`).
+        guard id != nil || mask != nil else { return false }
         var verb: [String: Any] = [
             "type": "remove-ignore",
             "networkId": networkId.map { $0 as Any } ?? NSNull(),
