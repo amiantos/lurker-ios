@@ -94,6 +94,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the typing ticker's `rebuildRows()` — which has no `state` to thread through — the same
     /// answer.
     private var settings = Settings()
+    /// Your own away state for this buffer's network, as of the last apply (#68) — nil for a
+    /// buffer that doesn't take presence markers.
+    ///
+    /// Snapshotted like `settings` above, and for the same reason: the typing ticker rebuilds
+    /// rows with no `state` in hand, and both paths have to agree on what they're rendering.
+    private var awayState: AwayState?
     /// Re-reads `typists` while anybody is typing.
     ///
     /// Needed because a typing entry's lease expires by the *clock*, not by a frame: the last
@@ -435,6 +441,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     && old.error == new.error
                     && old.connection == new.connection
                     && old.reachable == new.reachable
+                    // Also how an away/back change reaches the list (#68): the away state
+                    // hangs off `Network`, so comparing networks whole covers it. Worth
+                    // knowing before narrowing this arm — presence markers are exactly the
+                    // kind of state that changes with nothing else changing alongside it,
+                    // which is the trap typing and the mode glyph both fell into.
                     && old.networks == new.networks
                     // Typing is this buffer's only state that changes with nothing else
                     // changing alongside it — leave it out and every `typing` frame is
@@ -689,6 +700,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         messages = updated
         typists = state.typists(in: buffer.key)
         settings = state.settings
+        awayState = Self.awayState(for: state, buffer: buffer)
         // Covered by the `old.buffers[key] == new.buffers[key]` arm of the dedupe predicate,
         // so a buffer whose only change is exhausting its history still reaches us.
         hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
@@ -1151,6 +1163,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return prefixes
     }
 
+    /// Your own away state as it applies to *this* buffer (#68), or nil where it doesn't.
+    ///
+    /// The state itself is user-scoped — `/away` hits every connection — but the server
+    /// broadcasts a copy per network, so reading this buffer's network reads the user's state.
+    ///
+    /// Conversations only. The `:server:` log and the system buffer are narration about the
+    /// connection rather than a conversation you were absent from, so a marker there would be
+    /// noise in the one place noise is already densest — the same call the web makes.
+    private static func awayState(for state: ChatState, buffer: Buffer) -> AwayState? {
+        switch buffer.kind {
+        case .channel, .dm:
+            return buffer.networkId.flatMap { state.networks[$0]?.away }
+        case .server, .system:
+            return nil
+        }
+    }
+
     /// Rebuild `rows` from the current `messages` + `typists`, and re-cache the divider index.
     ///
     /// Two callers with different triggers — a state apply and the typing ticker — so the
@@ -1167,7 +1196,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             dividerAfterId: dividerAfterId,
             hasMoreOlder: hasMoreOlder,
             typists: typists,
-            settings: settings
+            settings: settings,
+            away: awayState
         )
         // Cached so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick and
         // jump-converge hot paths — `rows` only changes here.

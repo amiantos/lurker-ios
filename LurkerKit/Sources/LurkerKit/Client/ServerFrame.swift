@@ -146,6 +146,15 @@ enum ServerFrame: Equatable, Sendable {
     /// reports no known state, which the store reads as `unknown`.
     case peerPresence(networkId: Int, nick: String, state: PresenceState?)
 
+    /// An `away-state` ephemeral (rides `irc`, `type:"away-state"`, network-scoped via a
+    /// `:server:<id>` target): *your own* away state changed — from this device, another one,
+    /// or the server's own idle auto-away.
+    ///
+    /// `away` is nil when the account has no away on record. The server sends that literally
+    /// (`away: null` when there's no `since`), so it's a value to store rather than a frame to
+    /// drop: it is how "cleared" arrives.
+    case awayState(networkId: Int, away: AwayState?)
+
     /// A `typing` ephemeral (rides `irc`, `type:"typing"`): a peer's `+typing` tag, scoped to
     /// the channel or DM they're composing in. `activity` is nil for `done` and for anything
     /// unrecognized, which the store reads as "stop showing them".
@@ -220,6 +229,10 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// that `ignore-list-updated` then replaces. Rules with no network scope ride the
     /// snapshot frame itself (`globalIgnores`), not this.
     var ignoredMasks: [IgnoreRule] = []
+    /// Your own away state on this network (#68) — the connect-time seed for what live
+    /// `away-state` events then replace. Nil when the server reports none, which is the
+    /// normal case for a user who has never been away.
+    var away: AwayState?
 }
 
 struct ChannelSnapshot: Equatable, Sendable {

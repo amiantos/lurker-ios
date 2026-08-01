@@ -650,6 +650,45 @@ enum MessageRenderer {
         dayFormatter.string(from: date)
     }
 
+    /// The label on the away marker (#68). The reason rides the same line when there is one —
+    /// it's the useful half of the marker for anyone reading their own scrollback later ("was
+    /// I at lunch or asleep?"), and it's short by construction.
+    static func awayLabel(message: String?) -> String {
+        guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "You went away"
+        }
+        return "You went away: \(message)"
+    }
+
+    /// The label on the back marker. The duration is what makes it worth a row at all — "back"
+    /// alone says nothing the reader can't see — so it's dropped only when the away instant is
+    /// missing and there's nothing to measure.
+    static func backLabel(awayAt: Date?, backAt: Date) -> String {
+        guard let awayAt, let gone = awayDuration(from: awayAt, to: backAt) else { return "You're back" }
+        return "You're back — away \(gone)"
+    }
+
+    /// How long an away lasted, abbreviated and localized ("45m", "1h 5m", "2d 3h").
+    ///
+    /// Clamped up to a minute rather than shown as "0s": the marker is about a span the reader
+    /// missed, and a sub-minute one is better described by its floor than by its precision.
+    /// Nil for a backwards interval — that's a clock disagreeing with itself, not a duration.
+    private static func awayDuration(from: Date, to: Date) -> String? {
+        let seconds = to.timeIntervalSince(from)
+        guard seconds >= 0 else { return nil }
+        return durationFormatter.string(from: max(60, seconds))
+    }
+
+    private static let durationFormatter: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute]
+        formatter.unitsStyle = .abbreviated
+        // Without this a 65-minute away reads "1h 5m 0s"-style padding; the marker wants the
+        // units that carry information and nothing else.
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter
+    }()
+
     // MARK: - Colors
 
     static func nickColor(_ message: Message) -> UIColor {

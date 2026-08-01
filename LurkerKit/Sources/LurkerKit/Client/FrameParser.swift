@@ -169,7 +169,8 @@ enum FrameParser {
                 nick: network.string("nick"),
                 channels: network.objects("channels").map(parseChannel),
                 peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any]),
-                ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule)
+                ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule),
+                away: parseAwayState(network["away"])
             )
         }
         return .snapshot(networks, globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule))
@@ -213,6 +214,24 @@ enum FrameParser {
             out[nick.lowercased()] = state
         }
         return out
+    }
+
+    /// The `away` blob — `{active, since, message, autoSet, backAt}` — shared by the network
+    /// snapshot and the live `away-state` event, which carry the identical shape.
+    ///
+    /// A null (or missing, or mistyped) blob is nil, not a default-constructed state: the
+    /// server sends `away: null` for an account with nothing on record, and inventing an
+    /// `active: false` there would be a claim that the user *returned* rather than that we
+    /// were never told anything.
+    private static func parseAwayState(_ raw: Any?) -> AwayState? {
+        guard let obj = raw as? [String: Any] else { return nil }
+        return AwayState(
+            active: obj.bool("active"),
+            message: obj.stringOrNull("message"),
+            since: ISOTime.parse(obj.stringOrNull("since")),
+            autoSet: obj.bool("autoSet"),
+            backAt: ISOTime.parse(obj.stringOrNull("backAt"))
+        )
     }
 
     /// A `ContactRecord` → domain `Contact`, shared by the snapshot list and the
@@ -376,6 +395,15 @@ enum FrameParser {
                 nick: nick,
                 state: PresenceState(rawValue: obj.string("state"))
             )
+        }
+        // `away-state` is network-scoped state like `peer-presence`, and its `:server:<id>`
+        // target is the same kind of carrier — so it's handled above the target guard too,
+        // and for the extra reason that its payload is legitimately *null*: an account with
+        // no away on record sends `away: null`, which is a value to store rather than a frame
+        // to drop.
+        if obj.string("type") == "away-state" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            return .awayState(networkId: networkId, away: parseAwayState(obj["away"]))
         }
         let target = obj.string("target")
         if target.isEmpty { return .ignored }

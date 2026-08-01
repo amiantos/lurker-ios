@@ -25,6 +25,17 @@ public enum MessageRow: Equatable, Sendable {
     /// "You've reached the beginning", once the buffer has no older history left. The honest
     /// counterpart to a loading placeholder: "nothing more" vs "still fetching".
     case startOfHistory
+    /// Where your own `/away` falls in this buffer (#68) — the point past which the
+    /// conversation carried on without you. Carries the away reason when one was given.
+    ///
+    /// The instant rides the row for the same reason `dateDivider` carries a `Date` rather
+    /// than a string: what the label says is a render-time decision, and a row that had to be
+    /// paired back up with store state to be drawn would be a row a second message-list style
+    /// couldn't render on its own.
+    case awayDivider(at: Date, message: String?)
+    /// Where your own `/back` falls. Carries the away instant too, so the row can say how
+    /// long you were gone without the renderer having to hold the away state as well.
+    case backDivider(awayAt: Date?, at: Date)
     /// The live composing line at the foot of the buffer (#61) — a keyboard glyph and the
     /// nicks, rendered by `MessageRenderer.renderTyping`. Not a message: it has no id,
     /// never anchors a scroll, and disappears without leaving a gap in the record.
@@ -44,7 +55,7 @@ public enum MessageRow: Equatable, Sendable {
         case .bubble(let message, _): id = message.id
         case .line(let message): id = message.id
         case .consolidated(let summary): id = summary.lastId
-        case .unreadDivider, .dateDivider, .startOfHistory, .typing: return nil
+        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: return nil
         }
         return id > 0 ? id : nil
     }
@@ -56,7 +67,7 @@ public enum MessageRow: Equatable, Sendable {
     public var message: Message? {
         switch self {
         case .bubble(let message, _), .line(let message): message
-        case .consolidated, .unreadDivider, .dateDivider, .startOfHistory, .typing: nil
+        case .consolidated, .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: nil
         }
     }
 
@@ -70,7 +81,7 @@ public enum MessageRow: Equatable, Sendable {
         switch self {
         case .consolidated: true
         case .line(let message): message.type.isActivity
-        case .bubble, .unreadDivider, .dateDivider, .startOfHistory, .typing: false
+        case .bubble, .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: false
         }
     }
 
@@ -81,7 +92,7 @@ public enum MessageRow: Equatable, Sendable {
         case .bubble(let message, _): message.id == id
         case .line(let message): message.id == id
         case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
-        case .unreadDivider, .dateDivider, .startOfHistory, .typing: false
+        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: false
         }
     }
 }
@@ -92,6 +103,19 @@ public enum MessageRow: Equatable, Sendable {
 /// the list: the same rows feed whatever cell styles render them, so a second style inherits
 /// the dividers, the consolidation and the run positions rather than rebuilding them.
 public enum MessageRows {
+
+    /// How long after `/back` the away/back pair keeps being drawn. Matches the web's
+    /// `PRESENCE_MARKER_TTL_MS`.
+    public static let presenceMarkerTTL: TimeInterval = 30 * 60
+
+    /// Whether `date` falls after `instant` — the anchoring test both presence markers use.
+    /// A message with no clock is never "after" anything: there is no instant to compare, and
+    /// treating it as epoch (which the web's `Date.parse(…) || 0` effectively does) would put
+    /// a marker above a line that could as easily belong below it.
+    private static func crosses(_ date: Date?, _ instant: Date?) -> Bool {
+        guard let date, let instant else { return false }
+        return date > instant
+    }
 
     /// Build the row stream.
     ///
@@ -114,6 +138,11 @@ public enum MessageRows {
     ///     answer, or an unhydrated buffer claims to have reached its beginning.
     ///   - typists: who is composing right now, for the foot of the list.
     ///   - settings: the user's settings, for the two consolidation keys.
+    ///   - away: your own away state for this buffer's network, or nil for a buffer that
+    ///     doesn't take presence markers (the `:server:` log, the system buffer). See
+    ///     `presenceMarkerTTL` for when a settled pair stops being drawn.
+    ///   - now: the instant the TTL is judged against. Passed in rather than read, so expiry
+    ///     is testable at a chosen moment — the same read-time lease `typists(in:now:)` uses.
     ///   - calendar: which calendar decides a day boundary. Injected so tests can pin a
     ///     timezone; callers should take the default.
     public static func build(
@@ -122,9 +151,25 @@ public enum MessageRows {
         hasMoreOlder: Bool,
         typists: [String] = [],
         settings: Settings = Settings(),
+        away: AwayState? = nil,
+        now: Date = Date(),
         calendar: Calendar = .current
     ) -> [MessageRow] {
         let boundary = dividerAfterId ?? 0
+
+        // The away/back pair anchors on message *time*, never on id: ids are insertion order,
+        // so a later history prepend renumbers what sits either side of an id-anchored marker
+        // and moves it somewhere it never happened.
+        //
+        // Both halves retire together once the user has been back a while. In a slow buffer
+        // they'd otherwise sit there for days, describing an absence nobody remembers, and
+        // retiring only the `back` half would leave a permanent "away" over a user who is
+        // demonstrably here. Nothing forces a redraw at expiry — a marker survives in an idle
+        // buffer until the next rebuild — which is acceptable for something already half an
+        // hour stale, and is why this is a read-time lease rather than a timer.
+        let presenceSettled = away?.backAt.map { now.timeIntervalSince($0) > presenceMarkerTTL } ?? false
+        let awayAt = presenceSettled ? nil : away?.since
+        let backAt = presenceSettled ? nil : away?.backAt
 
         // All server-side (#65), so the phone agrees with whatever the user set on the web.
         // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
@@ -174,6 +219,8 @@ public enum MessageRows {
         var segment: [Message] = []
         var currentDay: Date?
         var unreadDividerPlaced = false
+        var awayDividerPlaced = false
+        var backDividerPlaced = false
 
         // A buffer can *open* with undated lines — `LurkerStore.appendLocal` synthesizes a
         // dateless system line for things like an unrecognized command, and in an otherwise
@@ -196,16 +243,31 @@ public enum MessageRows {
             let day = message.date.map { calendar.startOfDay(for: $0) }
             let dayChanged = day != nil && day != currentDay
             let crossesReadBoundary = !unreadDividerPlaced && boundary > 0 && message.id > boundary
+            // Each presence marker goes above the first line that happened *after* the
+            // transition, which is the first thing you missed (away) or the first thing you
+            // were back for (back). An undated line can't answer "after", so it never carries
+            // one — it just rides its segment, exactly as it does for the day divider.
+            let opensAway = !awayDividerPlaced && crosses(message.date, awayAt)
+            let opensBack = !backDividerPlaced && crosses(message.date, backAt)
 
-            if dayChanged || crossesReadBoundary {
+            if dayChanged || crossesReadBoundary || opensAway || opensBack {
                 appendSegment(segment)
                 segment = []
             }
             // Date above unread when both land on the same message, matching the web: the day
             // is context for what follows, the unread marker is the thing you're looking for.
+            // The presence pair sits between them, for the same reason in both directions.
             if dayChanged, let day {
                 rows.append(.dateDivider(day))
                 currentDay = day
+            }
+            if opensAway, let awayAt {
+                rows.append(.awayDivider(at: awayAt, message: away?.message))
+                awayDividerPlaced = true
+            }
+            if opensBack, let backAt {
+                rows.append(.backDivider(awayAt: awayAt, at: backAt))
+                backDividerPlaced = true
             }
             if crossesReadBoundary {
                 rows.append(.unreadDivider)
