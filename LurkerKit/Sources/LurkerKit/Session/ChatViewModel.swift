@@ -197,11 +197,25 @@ public final class ChatViewModel {
 
     /// Fetch a page of recent highlights (#13). `before` is the previous page's
     /// `nextBefore` cursor, nil for the first page. Returns nil on failure (a 401 also
-    /// bounces the session); the caller renders an error state. This is a REST read that
-    /// returns straight to the caller rather than folding into `state` — highlights span
-    /// every buffer and are shown in their own list, not merged into any one buffer's log.
+    /// bounces the session); the caller renders an error state. The page itself returns
+    /// straight to the caller rather than folding into `state` — highlights span every buffer
+    /// and are shown in their own list, not merged into any one buffer's log.
+    ///
+    /// The saved flags are the exception, for the same reason `fetchBookmarks` and
+    /// `searchMessages` fold theirs: a cross-buffer feed is one of the few places a saved line
+    /// the user has never opened can become known, and without it, jumping from the row to the
+    /// message offers "Save Message" for something already saved. Every feed that can surface a
+    /// bookmark now says so, rather than two of the three.
+    ///
+    /// Filtered to the saved rows and inserted (not reconciled): unlike a buffer's own page,
+    /// this one spans networks, whose id sequences overlap — `noteBookmarks(in:networkId:)`
+    /// clears the flag for rows it sees unset, which here could unsave a real bookmark that
+    /// merely shares an id with a highlight from another network. One mutation, not one per
+    /// row, because each `store.apply` publishes a whole `ChatState`.
     public func fetchHighlights(before: Int? = nil) async -> HighlightsPage? {
-        await client.fetchHighlights(before: before)
+        let page = await client.fetchHighlights(before: before)
+        store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
+        return page
     }
 
     // MARK: - Link previews
