@@ -14,6 +14,17 @@
 /// The rule instead: the visible keys keep the *slots* they already occupy in the stored list
 /// and are dealt back into them in their new order. Nothing invisible moves, nothing is lost,
 /// and the grid ends up in exactly the order the drag drew.
+///
+/// ## What that costs, deliberately
+///
+/// A hidden key holds its slot even when the slot is *first*. Pin a favorite on a network that
+/// is still connecting, drag another chip "to the top", and the hidden one still appears above
+/// it when its network arrives — because position 0 of the grid is not position 0 of the list.
+///
+/// The alternative is worse: to put the dragged key genuinely first, the drag would have to
+/// displace a key the user can't see and didn't touch, on every drag, forever. This way the
+/// only thing a drag ever reorders is what was on screen when it was made — and the hidden
+/// key is sitting where the user themselves last put it. Pinned by the boundary tests.
 public enum FavoriteOrder {
 
     /// The stored order after moving the visible item at `from` to `to`.
@@ -24,9 +35,19 @@ public enum FavoriteOrder {
     /// no server copy to restore it from.
     public static func moved(_ stored: [String], visible: [String], from: Int, to: Int) -> [String] {
         guard visible.indices.contains(from), visible.indices.contains(to), from != to else { return stored }
-        // Every visible key must have a slot to be dealt back into, or the deal runs short and
-        // leaves stale keys behind in the slots it never reached.
-        let slots = stored.indices.filter { visible.contains(stored[$0]) }
+        // Containment, not a count. Every visible key must occupy exactly one slot to be dealt
+        // back into — a deal that runs short leaves stale keys in the slots it never reached,
+        // and one that runs long writes a key that was never pinned.
+        //
+        // The cardinality check this replaces looked equivalent and wasn't: a duplicate in
+        // `stored` contributes two slots, which could make the counts agree while a visible key
+        // had no slot at all. `["a","a","b"]` against a visible `["a","b","c"]` reached three
+        // slots, passed, and dealt `"c"` into the list while destroying an `"a"`. Nothing can
+        // currently produce a duplicated `stored` — `toggleFavorite` appends only what isn't
+        // there — but this guard exists precisely for the input nothing is supposed to produce.
+        let unique = Set(visible)
+        guard unique.count == visible.count, unique.isSubset(of: stored) else { return stored }
+        let slots = stored.indices.filter { unique.contains(stored[$0]) }
         guard slots.count == visible.count else { return stored }
 
         var reordered = visible

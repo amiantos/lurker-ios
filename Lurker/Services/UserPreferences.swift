@@ -166,9 +166,17 @@ extension UserDefaults {
         forgetLastBuffer()
     }
 
-    /// `BufferKey.id`s the user pinned, in the order they pinned them.
+    /// `BufferKey.id`s the user pinned, in the order they want them.
+    ///
+    /// Append order until they say otherwise: a new pin goes on the end, and dragging a chip in
+    /// the Favorites grid rewrites the whole list (#53). So nothing may re-sort this — the
+    /// order *is* the user's answer.
+    ///
+    /// Settable so that pinning, unpinning and reordering all write through one place rather
+    /// than each reaching for the defaults key themselves.
     var favoriteBufferKeys: [String] {
-        stringArray(forKey: UserPreferences.Key.favoriteBufferKeys) ?? []
+        get { stringArray(forKey: UserPreferences.Key.favoriteBufferKeys) ?? [] }
+        set { set(newValue, forKey: UserPreferences.Key.favoriteBufferKeys) }
     }
 
     func isFavorite(_ key: String) -> Bool {
@@ -185,16 +193,7 @@ extension UserDefaults {
         } else {
             keys.append(key)
         }
-        set(keys, forKey: UserPreferences.Key.favoriteBufferKeys)
+        favoriteBufferKeys = keys
         return !wasFavorite
-    }
-
-    /// Replace the pinned order wholesale, after a drag in the Favorites grid (#53).
-    ///
-    /// Takes the whole list rather than a from/to pair because the grid shows a *subset* of it
-    /// — see `FavoriteOrder`, which does the mapping and is the only thing that should be
-    /// building the value passed here.
-    func setFavoriteBufferKeys(_ keys: [String]) {
-        set(keys, forKey: UserPreferences.Key.favoriteBufferKeys)
     }
 }

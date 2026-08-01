@@ -53,9 +53,49 @@ final class FavoriteOrderTests: XCTestCase {
         )
     }
 
-    func testEveryPairwiseMoveIsAPermutation() {
-        // The property that matters: whatever the drag, the stored list keeps exactly the keys
-        // it had. A reorder must never be able to add or drop a pin.
+    func testADuplicateInTheStoredListCannotSmuggleAKeyIn() {
+        // The case a count-only guard let through: the second "a" contributes a third slot, so
+        // the counts agreed while "c" — which was never pinned — had no slot at all. The deal
+        // then wrote "c" into the list and destroyed an "a".
+        XCTAssertEqual(
+            FavoriteOrder.moved(["a", "a", "b"], visible: ["a", "b", "c"], from: 0, to: 2),
+            ["a", "a", "b"]
+        )
+    }
+
+    func testADuplicateInTheVisibleListChangesNothing() {
+        // Two chips for one key can't be dealt into one slot. There's no sane answer, so the
+        // gesture is refused rather than resolved arbitrarily.
+        XCTAssertEqual(
+            FavoriteOrder.moved(["a", "b"], visible: ["a", "a"], from: 0, to: 1),
+            ["a", "b"]
+        )
+    }
+
+    // MARK: - Where a hidden favorite sits (the boundary cases)
+
+    func testAHiddenFavoriteAtTheHeadKeepsTheHead() {
+        // The documented cost: "drag this to the top" means the top of the *grid*, and a hidden
+        // key at stored index 0 still comes back above it. Pinned so the behavior is a decision
+        // rather than something a reader discovers on a bug report.
+        XCTAssertEqual(
+            FavoriteOrder.moved(["hidden", "b", "c"], visible: ["b", "c"], from: 1, to: 0),
+            ["hidden", "c", "b"]
+        )
+    }
+
+    func testAHiddenFavoriteAtTheTailKeepsTheTail() {
+        XCTAssertEqual(
+            FavoriteOrder.moved(["b", "c", "hidden"], visible: ["b", "c"], from: 0, to: 1),
+            ["c", "b", "hidden"]
+        )
+    }
+
+    func testEveryPairwiseMoveAppliesTheMoveAndKeepsEveryKey() {
+        // Two properties, because the first alone is satisfied by doing nothing — which is
+        // exactly the branch `moved` takes when it declines a gesture. Asserting only that the
+        // set survives would pass against `{ return stored }`, and the test guarding the
+        // lose-a-pin failure mode would never have exercised the code that can lose one.
         let stored = ["a", "b", "c", "d", "e"]
         let visible = ["a", "c", "e"]
         for from in visible.indices {
@@ -64,6 +104,14 @@ final class FavoriteOrderTests: XCTestCase {
                 XCTAssertEqual(next.sorted(), stored.sorted(), "move \(from)→\(to) changed the set")
                 XCTAssertEqual(next[1], "b", "move \(from)→\(to) moved a hidden key")
                 XCTAssertEqual(next[3], "d", "move \(from)→\(to) moved a hidden key")
+
+                // And the grid really is in the order the drag drew it.
+                var expected = visible
+                expected.insert(expected.remove(at: from), at: to)
+                XCTAssertEqual(
+                    next.filter(visible.contains), expected,
+                    "move \(from)→\(to) wasn't applied"
+                )
             }
         }
     }
