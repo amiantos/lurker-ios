@@ -297,13 +297,35 @@ final class MessageRowsTests: XCTestCase {
         XCTAssertEqual(row(rows, awayIndex + 2)?.message?.id, 2)
     }
 
-    func testNoMarkerWhenNothingHappenedWhileYouWereGone() {
-        // Anchored to what you missed, so an away nobody talked through leaves no trace. The
-        // alternative — a marker pinned to the foot of the list — would claim a gap in a
-        // conversation that doesn't have one.
-        let rows = build([msg(1, at: noon)], away: awayPair())
-        XCTAssertNil(markerIndex(rows, away: true))
-        XCTAssertNil(markerIndex(rows, away: false))
+    func testAMarkerWithNothingBelowItLandsAtTheFoot() {
+        // The common case, not an edge: you go away and nothing has been said since, so neither
+        // instant has a message after it to sit above. Anchoring alone would mean the markers
+        // only ever appeared in the buffers that kept talking without you — which is to say
+        // almost never at the moment you'd look for one.
+        let rows = build([msg(1, at: noon)], away: awayPair(back: false))
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 1, "below the last message")
+        XCTAssertEqual(row(rows, rows.count - 2)?.message?.id, 1)
+    }
+
+    func testASettledPairWithNothingBelowItLandsAtTheFootInOrder() {
+        let rows = build(
+            [msg(1, at: noon)], away: awayPair(), now: noon.addingTimeInterval(7500)
+        )
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 2)
+        XCTAssertEqual(markerIndex(rows, away: false), rows.count - 1)
+    }
+
+    func testTheTypingLineStillSitsBelowAFootMarker() {
+        // Typing describes the present; a marker describes something that already happened.
+        let rows = build([msg(1, at: noon)], typists: ["bob"], away: awayPair(back: false))
+        guard case .typing = rows.last else { return XCTFail("expected the typing line last") }
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 2)
+    }
+
+    func testAnEmptyBufferGetsNoMarkers() {
+        // A lone marker over no conversation isn't a marker — and it would suppress the
+        // empty-state placeholder, which reads `rows.isEmpty`.
+        XCTAssertTrue(build([], away: awayPair(back: false)).isEmpty)
     }
 
     func testNoMarkersWithoutAwayState() {
@@ -350,12 +372,25 @@ final class MessageRowsTests: XCTestCase {
         XCTAssertEqual(reason, "lunch")
     }
 
-    func testAnUndatedLineNeverCarriesAPresenceMarker() {
-        // There's no instant to compare, so it can't answer "did this happen after you left?".
-        // Treating it as epoch would put the marker above a line that could as easily belong
-        // below it.
+    func testAnUndatedLineNeverAnchorsAPresenceMarker() {
+        // An undated line can't answer "did this happen after you left?", so it can't be what a
+        // marker sits above — treating it as epoch (which the web's `Date.parse(…) || 0` does)
+        // would put the marker over a line that could as easily belong below it. It falls
+        // through to the foot instead, which is where "nothing has been said since" belongs.
         let rows = build([msg(1, at: nil), msg(2, at: nil)], away: awayPair(back: false))
-        XCTAssertNil(markerIndex(rows, away: true))
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 1, "at the foot, not between them")
+    }
+
+    func testADatedLineAnchorsTheMarkerAboveTheUndatedRunItFollows() {
+        // The pair to the test above: with a dated message available, the marker anchors to it
+        // rather than falling to the foot — so the undated line above stays above the marker.
+        let rows = build(
+            [msg(1, at: nil), msg(2, at: noon.addingTimeInterval(5400))],
+            away: awayPair(back: false)
+        )
+        guard let index = markerIndex(rows, away: true) else { return XCTFail("expected a marker") }
+        XCTAssertEqual(row(rows, index - 1)?.message?.id, 1)
+        XCTAssertEqual(row(rows, index + 1)?.message?.id, 2)
     }
 
     func testConsolidationDoesNotSpanAPresenceMarker() {

@@ -277,6 +277,26 @@ public enum MessageRows {
         }
         appendSegment(segment)
 
+        // A presence marker with nothing below it belongs at the foot of the buffer.
+        //
+        // This is the *common* case, not an edge: you go away, and by definition nothing has
+        // been said since — so neither timestamp has a message after it to sit above, and the
+        // loop above places nothing. Left to the loop alone the markers would only ever appear
+        // in the minority of buffers that kept talking without you, which is to say almost
+        // never at the moment you'd look for one.
+        //
+        // Suppressed on an empty buffer, like `startOfHistory` above and for the same reason: a
+        // lone marker over no conversation isn't a marker, and it would take the empty-state
+        // placeholder down with it (`ChatViewController` reads `rows.isEmpty` for that).
+        if !messages.isEmpty {
+            if !awayDividerPlaced, let awayAt {
+                rows.append(.awayDivider(at: awayAt, message: away?.message))
+            }
+            if !backDividerPlaced, let backAt {
+                rows.append(.backDivider(awayAt: awayAt, at: backAt))
+            }
+        }
+
         // The typing line goes last, below even the newest message — it's the only row that
         // describes the present rather than the past. Appended *after* the run pass so it
         // never participates in one: it isn't a bubble, and a run that tried to include it
