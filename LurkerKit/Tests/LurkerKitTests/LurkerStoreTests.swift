@@ -386,6 +386,52 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreOlder)
     }
 
+    /// ⚠⚠ The trap that made the first version of the unread-divider fix inert. `hydrateIfNeeded`
+    /// asks for `history mode:latest`, and that reply hydrates the buffer while carrying no read
+    /// fields at all (`parseHistory` reads none). So anything that treats `hydrated` as "the
+    /// server has stated the read boundary" opens its gate on a `lastReadId` that is still this
+    /// struct's default 0 — and a screen that then marks the buffer read destroys the real
+    /// pointer before the `backlog` frame carrying it ever lands.
+    func testHistoryHydratesWithoutClaimingToKnowTheReadState() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: false, messages: []))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(5, "e")],
+            mode: .latest, hasMoreOlder: false, hasMoreNewer: false
+        ))
+
+        let buffer = store.state.buffers[chanKey]!
+        XCTAssertTrue(buffer.hydrated, "a history reply is what hydrates a buffer")
+        XCTAssertFalse(buffer.readStateKnown, "…but it carries no pointer, so it states nothing")
+        XCTAssertEqual(buffer.lastReadId, 0, "still the default — not a boundary anyone gave us")
+    }
+
+    /// The other half: `read-state` carries the pointer by definition, so it may say so.
+    func testReadStateMarksTheBoundaryKnown() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: false, messages: []))
+        XCTAssertFalse(store.state.buffers[chanKey]!.readStateKnown, "a pointer-less shell states nothing")
+
+        store.apply(.readState(networkId: 1, target: "#lurker", lastReadId: 10, unread: 4, highlights: 2))
+        XCTAssertTrue(store.state.buffers[chanKey]!.readStateKnown)
+    }
+
+    /// A reconnect resyncs buffers as shells. One that carries no pointer hasn't retracted the
+    /// one we already have — and must not overwrite its value with the field's default either,
+    /// which would silently move a reader's divider to the top of the buffer.
+    func testAPointerlessResyncNeitherRetractsNorZeroesAKnownReadState() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(1, "a")]))
+        store.apply(.readState(networkId: 1, target: "#lurker", lastReadId: 10, unread: 4, highlights: 2))
+        store.apply(channelBuffer(hydrated: false, messages: []))
+
+        let buffer = store.state.buffers[chanKey]!
+        XCTAssertTrue(buffer.readStateKnown)
+        XCTAssertEqual(buffer.lastReadId, 10)
+        XCTAssertEqual(buffer.unread, 4)
+        XCTAssertEqual(buffer.highlights, 2)
+    }
+
     func testReadStateMirrorsCountsOntoTheBuffer() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(1, "a")]))

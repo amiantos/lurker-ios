@@ -20,6 +20,21 @@ public struct Buffer: Equatable, Sendable {
     /// connect channel/DM buffers arrive as SHELLS (`events: []`); their history is
     /// not read until the client asks for it (`ChatViewModel.hydrate`).
     public var hydrated: Bool
+    /// Whether `lastReadId` is something the server SAID, rather than this struct's default.
+    ///
+    /// Three paths materialize a buffer row without any read state attached — the connect
+    /// `snapshot` (a row per joined channel), a live event for an unseen target (a new DM), and
+    /// a `history` reply (which flips `hydrated` but carries no read fields at all). Under all
+    /// three, `lastReadId` reads 0, which is indistinguishable from "read nothing" and cannot be
+    /// told apart by looking at the value. Only `backlog` and `read-state` frames carry the
+    /// pointer, so only they set this.
+    ///
+    /// It exists because a reader whose boundary is latched from a defaulted 0 loses their
+    /// unread divider outright, and anything that marks the buffer read before the real pointer
+    /// arrives destroys it for good — the pointer is the only record of where they left off.
+    /// `hydrated` is NOT a stand-in for this: `history mode:latest` sets it while saying nothing
+    /// about read state, which is exactly the case that bug arrived through.
+    public var readStateKnown: Bool
     /// Whether more history exists above what's loaded — gates the scroll-up pagination
     /// (#6). Defaults true (an unopened buffer has all its history still to fetch).
     public var hasMoreOlder: Bool
@@ -46,6 +61,7 @@ public struct Buffer: Equatable, Sendable {
         lastReadId: Int = 0,
         joined: Bool = false,
         hydrated: Bool = false,
+        readStateKnown: Bool = false,
         hasMoreOlder: Bool = true,
         hasMoreNewer: Bool = false,
         topic: String? = nil
@@ -58,6 +74,7 @@ public struct Buffer: Equatable, Sendable {
         self.lastReadId = lastReadId
         self.joined = joined
         self.hydrated = hydrated
+        self.readStateKnown = readStateKnown
         self.hasMoreOlder = hasMoreOlder
         self.hasMoreNewer = hasMoreNewer
         self.topic = topic

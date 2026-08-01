@@ -314,6 +314,11 @@ enum FrameParser {
             lastReadId: obj.int("lastReadId"),
             joined: obj.bool("joined"),
             hydrated: hydrated,
+            // Read from the FIELD'S PRESENCE, not its value: `int()` reads a missing
+            // `lastReadId` as 0, which is also a legitimate "read nothing". Only a frame that
+            // actually carried the pointer may claim to have stated it — see
+            // `Buffer.readStateKnown`.
+            readStateKnown: obj.has("lastReadId"),
             hasMoreOlder: hasMoreOlder
         )
         return .backlog(buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append)

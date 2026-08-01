@@ -38,6 +38,35 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(buffer.kind, .channel)
         XCTAssertEqual(buffer.unread, 3)
         XCTAssertEqual(buffer.lastReadId, 42)
+        XCTAssertTrue(buffer.readStateKnown, "the frame carried a pointer, so it stated one")
+    }
+
+    /// ⚠ Read from the FIELD'S PRESENCE, never its value: `int()` reads a missing `lastReadId`
+    /// as 0, and 0 is also a legitimate "this buffer has been read up to nothing". A frame that
+    /// never mentioned the pointer must not be able to claim it stated one — a screen latching
+    /// its unread divider from that 0 loses the divider for good.
+    func testABacklogWithNoPointerStatesNoReadState() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"joined":true}"##
+        )
+        guard case let .backlog(buffer, _, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertEqual(buffer.lastReadId, 0, "absent parses as 0…")
+        XCTAssertFalse(buffer.readStateKnown, "…but that 0 is the default, not a statement")
+    }
+
+    /// And a pointer of 0 that the server actually sent IS a statement — the distinction the
+    /// value alone can't carry.
+    func testAnExplicitZeroPointerCounts() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"lastReadId":0}"##
+        )
+        guard case let .backlog(buffer, _, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertEqual(buffer.lastReadId, 0)
+        XCTAssertTrue(buffer.readStateKnown, "the server said 0; that's an answer")
     }
 
     func testHydratedBacklogParsesItsEvents() {
