@@ -84,6 +84,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// told us, not the absence of an answer. Same default the parser applies for the same
     /// reason (`FrameParser.swift:220`).
     private var hasMoreOlder = true
+    /// Whether this buffer is detached — showing an `around` slice below the live tail (#42) —
+    /// as of the last apply. Snapshotted rather than read live for the same reason as
+    /// `settings` below: the typing ticker rebuilds rows with no `state` in hand.
+    ///
+    /// `isDetached` is the same fact read from the store on demand, for the paging and pill
+    /// logic that runs outside a rebuild.
+    private var hasMoreNewer = false
     /// The settings in force as of the last apply.
     ///
     /// Snapshotted alongside `typists` rather than read live inside `buildRows`, so every path
@@ -704,6 +711,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Covered by the `old.buffers[key] == new.buffers[key]` arm of the dedupe predicate,
         // so a buffer whose only change is exhausting its history still reaches us.
         hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
+        hasMoreNewer = nowDetached
         modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
         rebuildRows()
         updateTypingTicker()
@@ -1195,6 +1203,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             messages: messages,
             dividerAfterId: dividerAfterId,
             hasMoreOlder: hasMoreOlder,
+            hasMoreNewer: hasMoreNewer,
             typists: typists,
             settings: settings,
             away: awayState

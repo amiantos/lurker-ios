@@ -654,10 +654,11 @@ enum MessageRenderer {
     /// it's the useful half of the marker for anyone reading their own scrollback later ("was
     /// I at lunch or asleep?"), and it's short by construction.
     static func awayLabel(message: String?) -> String {
-        guard let message, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return "You went away"
-        }
-        return "You went away: \(message)"
+        // Tested and shown as the same value. The server trims before it stores one, so this
+        // only ever differs on a reason that arrived some other way — and testing one string
+        // while printing another is the kind of seam that outlives the reason it was fine.
+        let reason = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return reason.isEmpty ? "You went away" : "You went away: \(reason)"
     }
 
     /// The label on the back marker. The duration is what makes it worth a row at all — "back"

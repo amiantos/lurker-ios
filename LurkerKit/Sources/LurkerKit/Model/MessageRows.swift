@@ -136,6 +136,9 @@ public enum MessageRows {
     ///   - hasMoreOlder: whether the server has older history left. Pass `true` when unknown:
     ///     "no more history" has to be something the server told us, not the absence of an
     ///     answer, or an unhydrated buffer claims to have reached its beginning.
+    ///   - hasMoreNewer: whether the loaded slice sits *below* the live tail — the buffer is
+    ///     detached (#42), showing an `around` window around some older message. Only the
+    ///     presence markers' foot fallback reads it, and only to suppress itself: see there.
     ///   - typists: who is composing right now, for the foot of the list.
     ///   - settings: the user's settings, for the two consolidation keys.
     ///   - away: your own away state for this buffer's network, or nil for a buffer that
@@ -149,6 +152,7 @@ public enum MessageRows {
         messages: [Message],
         dividerAfterId: Int?,
         hasMoreOlder: Bool,
+        hasMoreNewer: Bool = false,
         typists: [String] = [],
         settings: Settings = Settings(),
         away: AwayState? = nil,
@@ -288,7 +292,15 @@ public enum MessageRows {
         // Suppressed on an empty buffer, like `startOfHistory` above and for the same reason: a
         // lone marker over no conversation isn't a marker, and it would take the empty-state
         // placeholder down with it (`ChatViewController` reads `rows.isEmpty` for that).
-        if !messages.isEmpty {
+        //
+        // And suppressed on a *detached* buffer, where this fallback is a claim the window
+        // can't support. Its meaning is "nothing has been said since" — only knowable when the
+        // loaded slice reaches the tail. Jump to a search hit from last week and it would pin
+        // "You went away" under a week-old message, asserting an absence that happened days
+        // after anything on screen. Note this suppresses only the *fallback*: an anchored
+        // marker stays, because sitting above the first message after the away instant is true
+        // wherever that message is, tail or not.
+        if !messages.isEmpty, !hasMoreNewer {
             if !awayDividerPlaced, let awayAt {
                 rows.append(.awayDivider(at: awayAt, message: away?.message))
             }

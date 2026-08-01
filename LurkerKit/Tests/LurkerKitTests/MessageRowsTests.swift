@@ -40,6 +40,7 @@ final class MessageRowsTests: XCTestCase {
         _ messages: [Message],
         dividerAfterId: Int? = nil,
         hasMoreOlder: Bool = true,
+        hasMoreNewer: Bool = false,
         typists: [String] = [],
         settings: Settings = Settings(),
         away: AwayState? = nil,
@@ -47,7 +48,8 @@ final class MessageRowsTests: XCTestCase {
     ) -> [MessageRow] {
         MessageRows.build(
             messages: messages, dividerAfterId: dividerAfterId, hasMoreOlder: hasMoreOlder,
-            typists: typists, settings: settings, away: away, now: now ?? noon, calendar: utc
+            hasMoreNewer: hasMoreNewer, typists: typists, settings: settings, away: away,
+            now: now ?? noon, calendar: utc
         )
     }
 
@@ -320,6 +322,27 @@ final class MessageRowsTests: XCTestCase {
         let rows = build([msg(1, at: noon)], typists: ["bob"], away: awayPair(back: false))
         guard case .typing = rows.last else { return XCTFail("expected the typing line last") }
         XCTAssertEqual(markerIndex(rows, away: true), rows.count - 2)
+    }
+
+    func testADetachedBufferGetsNoFootMarker() {
+        // Jump to a search hit from last week (#42): the window sits below the live tail, so
+        // "nothing has been said since" is a claim about a tail this buffer can't see. Pinning
+        // it under a week-old message asserts an absence that happened days afterwards.
+        let rows = build([msg(1, at: noon)], hasMoreNewer: true, away: awayPair(back: false))
+        XCTAssertNil(markerIndex(rows, away: true))
+        XCTAssertNil(markerIndex(rows, away: false))
+    }
+
+    func testADetachedBufferStillAnchorsAMarkerItCanPlace() {
+        // Only the fallback is suppressed. A marker with a message to sit above is true
+        // wherever that message is — the window's relationship to the tail doesn't change what
+        // happened between two lines that are both on screen.
+        let rows = build(
+            [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(5400))],
+            hasMoreNewer: true, away: awayPair(back: false)
+        )
+        guard let index = markerIndex(rows, away: true) else { return XCTFail("expected a marker") }
+        XCTAssertEqual(row(rows, index + 1)?.message?.id, 2)
     }
 
     func testAnEmptyBufferGetsNoMarkers() {
