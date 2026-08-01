@@ -40,12 +40,16 @@ final class MessageRowsTests: XCTestCase {
         _ messages: [Message],
         dividerAfterId: Int? = nil,
         hasMoreOlder: Bool = true,
+        hasMoreNewer: Bool = false,
         typists: [String] = [],
-        settings: Settings = Settings()
+        settings: Settings = Settings(),
+        away: AwayState? = nil,
+        now: Date? = nil
     ) -> [MessageRow] {
         MessageRows.build(
             messages: messages, dividerAfterId: dividerAfterId, hasMoreOlder: hasMoreOlder,
-            typists: typists, settings: settings, calendar: utc
+            hasMoreNewer: hasMoreNewer, typists: typists, settings: settings, away: away,
+            now: now ?? noon, calendar: utc
         )
     }
 
@@ -219,6 +223,219 @@ final class MessageRowsTests: XCTestCase {
             msg(4, .join, "d", text: nil, at: noon.addingTimeInterval(86_400)),
         ])
         XCTAssertEqual(rows.filter(isSummary).count, 2, "one summary per day, not one across both")
+    }
+
+    // MARK: - Away/back presence markers (#68)
+
+    /// Away at noon+1h, back at noon+2h — so a message at noon is before both, one at +90m is
+    /// between them, and one at +3h is after both.
+    private func awayPair(back: Bool = true, message: String? = nil) -> AwayState {
+        AwayState(
+            active: !back,
+            message: message,
+            since: noon.addingTimeInterval(3600),
+            backAt: back ? noon.addingTimeInterval(7200) : nil
+        )
+    }
+
+    private func markerIndex(_ rows: [MessageRow], away: Bool) -> Int? {
+        rows.firstIndex {
+            switch $0 {
+            case .awayDivider: away
+            case .backDivider: !away
+            default: false
+            }
+        }
+    }
+
+    func testTheAwayMarkerLandsAboveTheFirstMessageYouMissed() {
+        // The point of the marker: everything below it happened while you were gone.
+        let rows = build(
+            [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(5400))],
+            away: awayPair(back: false)
+        )
+        guard let index = markerIndex(rows, away: true) else { return XCTFail("expected an away marker") }
+        XCTAssertEqual(row(rows, index - 1)?.message?.id, 1, "the last line you were present for")
+        XCTAssertEqual(row(rows, index + 1)?.message?.id, 2, "the first one you weren't")
+    }
+
+    func testTheBackMarkerLandsAboveTheFirstMessageYouWereBackFor() {
+        let rows = build(
+            [
+                msg(1, at: noon),
+                msg(2, at: noon.addingTimeInterval(5400)), // during the away
+                msg(3, at: noon.addingTimeInterval(7500)), // after the back
+            ],
+            away: awayPair(), now: noon.addingTimeInterval(7800)
+        )
+        guard let awayIndex = markerIndex(rows, away: true),
+              let backIndex = markerIndex(rows, away: false)
+        else { return XCTFail("expected both markers") }
+        XCTAssertLessThan(awayIndex, backIndex, "you go away before you come back")
+        XCTAssertEqual(row(rows, backIndex + 1)?.message?.id, 3)
+    }
+
+    func testTheBackMarkerCarriesTheAwayInstant() {
+        // So the row can say how long you were gone without the renderer holding away state.
+        let rows = build([msg(1, at: noon.addingTimeInterval(7500))], away: awayPair(),
+                         now: noon.addingTimeInterval(7800))
+        guard let index = markerIndex(rows, away: false), case .backDivider(let awayAt, let at) = rows[index]
+        else { return XCTFail("expected a back marker") }
+        XCTAssertEqual(awayAt, noon.addingTimeInterval(3600))
+        XCTAssertEqual(at, noon.addingTimeInterval(7200))
+    }
+
+    func testBothMarkersStackWhenNothingWasSaidInBetween() {
+        // Nobody spoke during the away, so both anchor to the first line after it. They stack
+        // rather than collapsing: the pair is what says the gap sat *here* and cost you
+        // nothing, and dropping the away half would take the reason with it. Same call the web
+        // makes — pinned so it stays a decision.
+        let rows = build(
+            [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(7500))],
+            away: awayPair(message: "lunch"), now: noon.addingTimeInterval(7800)
+        )
+        guard let awayIndex = markerIndex(rows, away: true) else { return XCTFail("expected an away marker") }
+        XCTAssertEqual(markerIndex(rows, away: false), awayIndex + 1, "back sits directly under away")
+        XCTAssertEqual(row(rows, awayIndex + 2)?.message?.id, 2)
+    }
+
+    func testAMarkerWithNothingBelowItLandsAtTheFoot() {
+        // The common case, not an edge: you go away and nothing has been said since, so neither
+        // instant has a message after it to sit above. Anchoring alone would mean the markers
+        // only ever appeared in the buffers that kept talking without you — which is to say
+        // almost never at the moment you'd look for one.
+        let rows = build([msg(1, at: noon)], away: awayPair(back: false))
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 1, "below the last message")
+        XCTAssertEqual(row(rows, rows.count - 2)?.message?.id, 1)
+    }
+
+    func testASettledPairWithNothingBelowItLandsAtTheFootInOrder() {
+        let rows = build(
+            [msg(1, at: noon)], away: awayPair(), now: noon.addingTimeInterval(7500)
+        )
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 2)
+        XCTAssertEqual(markerIndex(rows, away: false), rows.count - 1)
+    }
+
+    func testTheTypingLineStillSitsBelowAFootMarker() {
+        // Typing describes the present; a marker describes something that already happened.
+        let rows = build([msg(1, at: noon)], typists: ["bob"], away: awayPair(back: false))
+        guard case .typing = rows.last else { return XCTFail("expected the typing line last") }
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 2)
+    }
+
+    func testADetachedBufferGetsNoFootMarker() {
+        // Jump to a search hit from last week (#42): the window sits below the live tail, so
+        // "nothing has been said since" is a claim about a tail this buffer can't see. Pinning
+        // it under a week-old message asserts an absence that happened days afterwards.
+        let rows = build([msg(1, at: noon)], hasMoreNewer: true, away: awayPair(back: false))
+        XCTAssertNil(markerIndex(rows, away: true))
+        XCTAssertNil(markerIndex(rows, away: false))
+    }
+
+    func testADetachedBufferStillAnchorsAMarkerItCanPlace() {
+        // Only the fallback is suppressed. A marker with a message to sit above is true
+        // wherever that message is — the window's relationship to the tail doesn't change what
+        // happened between two lines that are both on screen.
+        let rows = build(
+            [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(5400))],
+            hasMoreNewer: true, away: awayPair(back: false)
+        )
+        guard let index = markerIndex(rows, away: true) else { return XCTFail("expected a marker") }
+        XCTAssertEqual(row(rows, index + 1)?.message?.id, 2)
+    }
+
+    func testAnEmptyBufferGetsNoMarkers() {
+        // A lone marker over no conversation isn't a marker — and it would suppress the
+        // empty-state placeholder, which reads `rows.isEmpty`.
+        XCTAssertTrue(build([], away: awayPair(back: false)).isEmpty)
+    }
+
+    func testNoMarkersWithoutAwayState() {
+        let rows = build([msg(1, at: noon), msg(2, at: noon.addingTimeInterval(7200))])
+        XCTAssertNil(markerIndex(rows, away: true))
+        XCTAssertNil(markerIndex(rows, away: false))
+    }
+
+    func testBothMarkersRetireOnceYouHaveBeenBackAWhile() {
+        // In a slow buffer they'd otherwise describe an absence nobody remembers. Both go, or
+        // the surviving "away" would sit permanently over a user who is demonstrably here.
+        let messages = [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(10_800))]
+        let backAt = noon.addingTimeInterval(7200)
+        let live = build(messages, away: awayPair(), now: backAt.addingTimeInterval(MessageRows.presenceMarkerTTL))
+        XCTAssertNotNil(markerIndex(live, away: true), "still inside the lease")
+        XCTAssertNotNil(markerIndex(live, away: false))
+
+        let expired = build(
+            messages, away: awayPair(), now: backAt.addingTimeInterval(MessageRows.presenceMarkerTTL + 1)
+        )
+        XCTAssertNil(markerIndex(expired, away: true))
+        XCTAssertNil(markerIndex(expired, away: false))
+    }
+
+    func testAnUnfinishedAwayNeverExpires() {
+        // The lease runs from `backAt`. While you're still away there's nothing to run from,
+        // and the marker is describing the present rather than a memory of it.
+        let rows = build(
+            [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(5400))],
+            away: awayPair(back: false),
+            now: noon.addingTimeInterval(86_400 * 7)
+        )
+        XCTAssertNotNil(markerIndex(rows, away: true))
+        XCTAssertNil(markerIndex(rows, away: false), "you haven't come back")
+    }
+
+    func testTheAwayMarkerCarriesItsReason() {
+        let rows = build(
+            [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(5400))],
+            away: awayPair(back: false, message: "lunch")
+        )
+        guard let index = markerIndex(rows, away: true), case .awayDivider(_, let reason) = rows[index]
+        else { return XCTFail("expected an away marker") }
+        XCTAssertEqual(reason, "lunch")
+    }
+
+    func testAnUndatedLineNeverAnchorsAPresenceMarker() {
+        // An undated line can't answer "did this happen after you left?", so it can't be what a
+        // marker sits above — treating it as epoch (which the web's `Date.parse(…) || 0` does)
+        // would put the marker over a line that could as easily belong below it. It falls
+        // through to the foot instead, which is where "nothing has been said since" belongs.
+        let rows = build([msg(1, at: nil), msg(2, at: nil)], away: awayPair(back: false))
+        XCTAssertEqual(markerIndex(rows, away: true), rows.count - 1, "at the foot, not between them")
+    }
+
+    func testADatedLineAnchorsTheMarkerAboveTheUndatedRunItFollows() {
+        // The pair to the test above: with a dated message available, the marker anchors to it
+        // rather than falling to the foot — so the undated line above stays above the marker.
+        let rows = build(
+            [msg(1, at: nil), msg(2, at: noon.addingTimeInterval(5400))],
+            away: awayPair(back: false)
+        )
+        guard let index = markerIndex(rows, away: true) else { return XCTFail("expected a marker") }
+        XCTAssertEqual(row(rows, index - 1)?.message?.id, 1)
+        XCTAssertEqual(row(rows, index + 1)?.message?.id, 2)
+    }
+
+    func testConsolidationDoesNotSpanAPresenceMarker() {
+        // Same rule as every other divider: a run half-before and half-after the marker would
+        // hide the absence inside a summary.
+        let joins = [
+            msg(1, .join, "a", text: nil, at: noon),
+            msg(2, .join, "b", text: nil, at: noon),
+            msg(3, .join, "c", text: nil, at: noon.addingTimeInterval(5400)),
+            msg(4, .join, "d", text: nil, at: noon.addingTimeInterval(5400)),
+        ]
+        let rows = build(joins, away: awayPair(back: false))
+        XCTAssertEqual(rows.filter(isSummary).count, 2, "one summary either side, not one across")
+    }
+
+    func testTheDateDividerSitsAboveThePresenceMarker() {
+        // Both land on the same message when an away spans midnight. The day is context for
+        // what follows; the marker is a thing that happened inside that day.
+        let away = AwayState(active: true, since: noon, backAt: nil)
+        let rows = build([msg(1, at: noon.addingTimeInterval(86_400))], away: away)
+        XCTAssertTrue(isDate(row(rows, 0)))
+        XCTAssertEqual(markerIndex(rows, away: true), 1)
     }
 
     // MARK: - Dividers are hard breaks for bubble runs

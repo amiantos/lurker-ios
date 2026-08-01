@@ -117,7 +117,7 @@ struct MessageListRenderer {
                 endsBlock: endsBlock(at: index, context: context),
                 traits: context.traits
             )
-        case .unreadDivider, .dateDivider, .startOfHistory:
+        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider:
             preconditionFailure("markers are handled above")
         }
         return cell
@@ -196,7 +196,8 @@ struct MessageListRenderer {
 
 // MARK: - Markers
 
-/// A centered marker row — the unread divider, a day change, the start of history.
+/// A centered marker row — the unread divider, a day change, the start of history, your own
+/// away/back.
 ///
 /// Its own type rather than a case inside the renderer: a break in the flow that names itself is
 /// not a message, shares none of a message's layout, and is the part a future second style would
@@ -220,7 +221,11 @@ enum MessageListMarker {
         return cell
     }
 
-    /// The three markers. Nil for anything that isn't one.
+    /// The markers. Nil for anything that isn't one.
+    ///
+    /// Only the unread divider is loud. It's the one the reader is *looking for* — everything
+    /// else here is context they read past on the way to it, and a second red row would cost
+    /// the first one its meaning.
     static func cell(for row: MessageRow, in tableView: UITableView) -> UITableViewCell? {
         switch row {
         case .unreadDivider:
@@ -229,6 +234,13 @@ enum MessageListMarker {
             cell(MessageRenderer.dayLabel(day), color: .secondaryLabel, bold: false, in: tableView)
         case .startOfHistory:
             cell("— start of history —", color: .tertiaryLabel, bold: false, in: tableView)
+        case .awayDivider(_, let message):
+            cell(MessageRenderer.awayLabel(message: message), color: .secondaryLabel, bold: false, in: tableView)
+        case .backDivider(let awayAt, let backAt):
+            cell(
+                MessageRenderer.backLabel(awayAt: awayAt, backAt: backAt),
+                color: .secondaryLabel, bold: false, in: tableView
+            )
         default:
             nil
         }

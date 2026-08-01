@@ -561,6 +561,16 @@ final class LurkerStore {
             }
             next.peerPresence[networkId] = map
             return next
+        case .awayState(let networkId, let away):
+            // Only ever a patch onto a network we already hold. The away stream is broadcast
+            // from a live connection, so its network is in the snapshot by definition —
+            // materializing a row from this frame would invent a network with no name, no
+            // state and no channels, which the roster would then render.
+            guard var network = state.networks[networkId] else { return state }
+            network.away = away
+            var next = state
+            next.networks[networkId] = network
+            return next
         case .typing(let networkId, let target, let nick, let activity, let userhost):
             return applyTyping(
                 state, networkId: networkId, target: target,
@@ -711,10 +721,16 @@ final class LurkerStore {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state
                 existing.nick = snapshot.nick
+                // Assigned rather than merged, nil included: the snapshot is this network's
+                // whole live state, so an away cleared while this device was disconnected has
+                // to disappear here. Keeping the old value would leave a stale "away" divider
+                // in every buffer with no event able to retract it.
+                existing.away = snapshot.away
                 next.networks[snapshot.id] = existing
             } else {
                 next.networks[snapshot.id] = Network(
-                    id: snapshot.id, name: "network", state: snapshot.state, nick: snapshot.nick
+                    id: snapshot.id, name: "network", state: snapshot.state, nick: snapshot.nick,
+                    away: snapshot.away
                 )
             }
             for channel in snapshot.channels {

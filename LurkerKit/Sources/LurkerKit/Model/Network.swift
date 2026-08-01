@@ -9,17 +9,25 @@ public struct Network: Equatable, Sendable {
     public var name: String
     public var state: ConnectionState
     public var nick: String
+    /// Your own away state, as this network last reported it (#68).
+    ///
+    /// Held per network because that's how the server broadcasts it, though the state itself
+    /// is user-scoped — every connected network carries the same value. Nil means the server
+    /// hasn't reported one, which is also what it sends for a user who has never been away.
+    public var away: AwayState?
 
     public init(
         id: Int,
         name: String,
         state: ConnectionState = .disconnected,
-        nick: String = ""
+        nick: String = "",
+        away: AwayState? = nil
     ) {
         self.id = id
         self.name = name
         self.state = state
         self.nick = nick
+        self.away = away
     }
 }
 
