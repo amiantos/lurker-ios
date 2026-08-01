@@ -916,11 +916,52 @@ final class LurkerClient {
         }
     }
 
-    /// Fetch bytes from the server's media proxy.
+    /// Resolve a `LinkPreview`'s `src`/`thumb` into a request.
     ///
-    /// `path` is a server-minted, HMAC-signed path out of a `LinkPreview` — never something
-    /// built here. It needs a `URLRequest` rather than a plain `UIImage(contentsOf:)` because
-    /// the proxy is authenticated and native auth is a Bearer header, not a cookie.
+    /// ⚠⚠ THE VALUE IS OPAQUE, and this is the only place that may interpret it. The server
+    /// mints it and documents it as a string a client never constructs or parses; today it is
+    /// either a proxy path (`/api/link-preview/media/<token>`) or, when the instance has a
+    /// bucket-backed byte cache configured, an absolute URL on that bucket's public CDN. Both
+    /// arrive in the same field and nothing distinguishes them on the wire.
+    ///
+    /// ⚠⚠ Concatenating unconditionally is what this replaces, and it did not fail loudly:
+    /// `baseURL + "https://cdn.example.com/..."` yields `https://instance.examplehttps://...`,
+    /// which `URL(string:)` rejects, so `fetchProxiedMedia` returned nil and
+    /// `PreviewImageLoader` latched the path into `failed` — every cached preview permanently
+    /// blank for the rest of the session, with no error surfaced anywhere.
+    ///
+    /// ⚠⚠ AN ABSOLUTE URL GETS NO BEARER TOKEN. It is a third-party host by construction, and
+    /// `URLSession` forwards manually-set headers to whatever it is given — so sending one here
+    /// would put the user's session token in a CDN operator's access log for every image. The
+    /// header belongs only to requests aimed at this instance.
+    ///
+    /// ⚠ `nonisolated static`, taking the base and the token rather than reading them off
+    /// `self`. Both are `private` state on a `@MainActor` class, so an instance method could
+    /// only be exercised by driving a whole configured client from the main actor — and the two
+    /// properties worth asserting (an absolute URL is not concatenated onto the base, and never
+    /// carries the token) are invisible from `fetchProxiedMedia`, which only answers `Data?`. A
+    /// wrong URL and an unreachable server look identical through it. The function touches no
+    /// actor state, so isolating it buys nothing and costs testability.
+    nonisolated static func mediaRequest(
+        for path: String,
+        baseURL: String,
+        token: String?
+    ) -> URLRequest? {
+        if let absolute = URL(string: path), absolute.scheme != nil {
+            guard absolute.scheme == "https" || absolute.scheme == "http" else { return nil }
+            return URLRequest(url: absolute)
+        }
+        guard let token, let url = URL(string: baseURL + path) else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Fetch bytes for a preview image.
+    ///
+    /// `path` is a server-minted value out of a `LinkPreview` — never something built here.
+    /// A proxy path needs a `URLRequest` rather than a plain `UIImage(contentsOf:)` because the
+    /// proxy is authenticated and native auth is a Bearer header, not a cookie.
     ///
     /// Caching is the shared `URLCache`'s job — the server marks these `immutable` with a long
     /// max-age, and the token is a pure function of the URL so it always denotes the same bytes.
@@ -931,9 +972,9 @@ final class LurkerClient {
     /// image. Left on the default, these were silently re-downloaded on every launch and after
     /// every NSCache eviction, and the `max-age` bought nothing at all.
     func fetchProxiedMedia(path: String) async -> Data? {
-        guard let token, let url = URL(string: baseURL + path) else { return nil }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
+            return nil
+        }
         do {
             let (data, response) = try await session.data(for: request)
             guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
