@@ -500,7 +500,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         // We're now looking at this buffer — mark it read up to the latest loaded message.
-        viewModel.markRead(buffer.key)
+        // Gated on the read boundary being latched, for the reason spelled out in `apply`:
+        // marking read is what destroys the record of where the reader left off, so it can't
+        // run before that record has been taken. The next `apply` picks it up.
+        if dividerAfterId != nil { viewModel.markRead(buffer.key) }
         // …and it's now the most recent, which is what the list promotes. Recorded on
         // appear rather than on the pick, so the launch buffer counts too and a buffer
         // reached any other way can't slip past the bookkeeping.
@@ -638,7 +641,31 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         requestAroundIfNeeded(state)
         // Latch the read boundary the first time the server tells us where it is, and
         // never again — marking messages read live must not move the divider under us.
-        if dividerAfterId == nil, let known = state.buffers[buffer.key.id] {
+        //
+        // Gated on `readStateKnown`, because a buffer ROW existing is not the server telling us
+        // anything about its read state, and neither is its HISTORY arriving. Three paths
+        // materialize a row carrying nothing but the struct's defaults — the connect `snapshot`
+        // (a row per joined channel, shipped *before* the per-buffer backlogs), a live event for
+        // an unseen target, and a `history` reply, which flips `hydrated` while `parseHistory`
+        // reads no read fields at all. Under all of them `lastReadId` is 0, which is
+        // indistinguishable by value from "read nothing". Latching there pinned this screen's
+        // divider at 0 for its whole life, and `MessageRows` draws none for a zero boundary, so
+        // the buffer opened with no divider and no unread banner however many unreads it had:
+        // every launch that restores straight into a buffer (#49), and anything opened during
+        // the connect burst. Only `backlog` and `read-state` carry the pointer, and
+        // `readStateKnown` is set by exactly those two.
+        //
+        // ⚠ `hydrated` is NOT a stand-in for this, which is what the first version of this fix
+        // got wrong: `hydrateIfNeeded` asks for `history mode:latest`, and that reply sets
+        // `hydrated` without carrying a pointer — so on a cold launch the gate could open with
+        // `lastReadId` still 0, and the now-ungated `markRead` below would then push the
+        // server's pointer to the newest message and destroy the real boundary before the
+        // `backlog` frame carrying it ever landed. Same bug, different door.
+        //
+        // Safe against our own mark-read from both ends: this runs before the `markRead` below,
+        // the frame that sets `readStateKnown` carries the pre-open `lastReadId` in the same
+        // state, and that `markRead` waits for this to have happened at all.
+        if dividerAfterId == nil, let known = state.buffers[buffer.key.id], known.readStateKnown {
             dividerAfterId = known.lastReadId
         }
         // Filter by what this *kind* of buffer renders. The system buffer's content is
@@ -660,12 +687,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom
         let oldContentHeight = tableView.contentSize.height
+        let nowDetached = state.buffers[buffer.key.id]?.hasMoreNewer == true
+        // Whether this screen should follow whatever just landed down to the newest row.
+        //
+        // Being at the bottom isn't enough on its own: at the bottom of a DETACHED slice, what
+        // lands is a newer-history page the reader pulled by scrolling into it (#45), and
+        // following it down re-triggers the near-bottom `loadNewer` that fetched it — which
+        // pages again, scrolls again, and walks the buffer to its end at reading speed with the
+        // reader pinned to the bottom the whole way, never seeing a line of what they asked for.
+        // A page appends BELOW where they are; leaving them where they are is what lets them
+        // read forward through it. Same distinction the badge below already draws, for the same
+        // reason, and `wasDetached` covers the re-attach apply the same way (the final `after`
+        // page both appends and clears the flag; a jump-to-latest re-attach is a `needsInitial-
+        // Scroll` landing, which is decided before any of this).
+        let followsTail = wasNearBottom && !wasDetached && !nowDetached
         // Remember the line at the top of the viewport and exactly where it sits, *before*
         // the rows change under us. If this turns out to be a history prepend, we put that
         // same line back in the same place — which pins scroll position precisely, where the
         // old "shift by the content-height delta" could only approximate it (off-screen rows
         // self-size from an estimate, and consolidation can reshape the run at the boundary).
-        let anchors = wasNearBottom ? [] : visibleAnchors()
+        let anchors = followsTail ? [] : visibleAnchors()
 
         // What the jump pill badges: live messages that landed below while the reader was up
         // in history. Appends only — the first id moving means the reader pulled older pages,
@@ -675,7 +716,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // traffic out of the log, so anything appended there is a newer-history page the reader
         // pulled by scrolling down (#45), not a surprise from below. `wasDetached` covers the
         // re-attach apply too, where the final `after` page both appends and clears the flag.
-        let nowDetached = state.buffers[buffer.key.id]?.hasMoreNewer == true
         // Sat out entirely on the frame the rules changed: an `/unignore` restores rows
         // *throughout* the loaded window, which is a count increase that nothing arrived to
         // cause. Counting it announced "12 new" for a conversation that hadn't moved, and
@@ -742,15 +782,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             forceLoading: toppingUp
         )
         // New traffic arrived while we're on screen → keep it marked read.
-        if view.window != nil { viewModel.markRead(buffer.key) }
+        //
+        // Never before the boundary above is latched. `markRead` pushes the server's pointer to
+        // the newest loaded message, and that pointer is the *only* record of where the reader
+        // left off — mark first and the value we latch afterwards is our own mark, which drops
+        // the divider below everything they hadn't read and silently reports the lot as read.
+        // Reachable on a cold launch straight into a buffer (#49): live traffic can land in a
+        // buffer before the backlog that would have said where the boundary was. The wait is
+        // short and self-clearing — the frame that answers the hydrate latches the boundary
+        // above, and this fires on that same pass.
+        if view.window != nil, dividerAfterId != nil { viewModel.markRead(buffer.key) }
 
-        // Being at the bottom decides everything here: preserving your position only means
-        // anything if you have one to preserve. At the bottom, the bottom is it — follow
-        // live traffic. Anywhere else, whatever changed (older pages prepended, live
-        // traffic appended, a run re-consolidated), the line being read goes back exactly
-        // where it was: a bare reload re-estimates off-screen row heights and shoves the
-        // viewport around, and that shove — on *appends*, not just prepends — is what made
-        // the list lurch mid-read.
+        // Following the tail decides everything here (see `followsTail`): preserving your
+        // position only means anything if you have one to preserve. Parked at the live bottom,
+        // the bottom is it — follow the traffic. Anywhere else — up in history, or reading
+        // forward through a detached slice — whatever changed (older pages prepended, newer
+        // pages appended, live traffic appended, a run re-consolidated), the line being read
+        // goes back exactly where it was: a bare reload re-estimates off-screen row heights and
+        // shoves the viewport around, and that shove — on *appends*, not just prepends — is what
+        // made the list lurch mid-read.
         // The around response has landed once the messages we held at request time are gone
         // (it replaces the slice) or the anchor itself shows up — NOT merely because the buffer
         // has *some* messages (a pre-existing connect backlog would trip that and make the jump
@@ -771,7 +821,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // to the tail. Don't auto-scroll here; `landInitialIfNeeded` does the placement once
             // the rows and a height exist.
             tableView.reloadData()
-        } else if wasNearBottom {
+        } else if followsTail {
             tableView.reloadData()
             scrollToBottom()
         } else {
@@ -1303,8 +1353,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         jumpButton.setVisible(showLatest, animated: true)
         jumpButton.setNewCount(newWhileDetached)
         // Reaching the divider spends the banner for good — checked before the show below, so a
-        // divider that's on screen the moment the buffer opens never raises it at all.
-        if isDividerVisible { dividerSeen = true }
+        // divider that's on screen the moment the buffer opens never raises it at all. Not while
+        // a jump is converging, though: the screen is passing through the buffer under its own
+        // steam then, not being read, and a divider swept across the viewport on the way to a
+        // search hit or a notification's message hasn't been seen by anyone. The pass after the
+        // jump releases latches it if it really did land on screen.
+        if pendingJumpId == nil, isDividerVisible { dividerSeen = true }
         // The unread banner (#45): a first-unread row exists, it's above the reader, and they
         // haven't been to it yet. A non-nil `firstUnreadRow` already implies rows exist and a
         // divider is built. It yields the slot whenever the connection banner wants it — the wire
@@ -1431,11 +1485,42 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         dividerRow.flatMap { rows.indices.contains($0 + 1) ? $0 + 1 : nil }
     }
 
+    /// Where the divider sits in content coordinates, or nil if there's nothing to place.
+    ///
+    /// Read from the table's LAYOUT MODEL (`rectForRow`) rather than from its realized cells
+    /// (`indexPathsForVisibleRows`), because the two disagree at exactly the moment that
+    /// matters. `updateFloatingPills` runs from `scrollViewDidScroll`, and a scroll delegate
+    /// fires synchronously from inside the offset change, *before* the table re-lays out — so
+    /// the visible cells there are still the ones from the previous offset. The landing scroll
+    /// (`scrollToBottom`, from a top-pinned table) is the worst case: the offset is already at
+    /// the tail while the cells still say row 0, which read the divider as on screen (retiring
+    /// the banner for good via `dividerSeen`) and as not-above (so no banner that pass) — and
+    /// whether a correcting pass followed came down to whether `scrollToBottom`'s second
+    /// `scrollToRow` happened to move the offset at all. That was the rest of the hit-or-miss.
+    /// Row rects don't depend on the offset, and `bounds.origin` IS the new offset, so this is
+    /// accurate the instant the delegate fires.
+    ///
+    /// Nil while the table's row count hasn't caught up with `rows` (an apply rebuilds them
+    /// before the reload), where `rectForRow` would answer for a row set we're not asking about.
+    private var dividerFrame: CGRect? {
+        guard let row = dividerRow, tableView.bounds.height > 0,
+              row < tableView.numberOfRows(inSection: 0)
+        else { return nil }
+        let frame = tableView.rectForRow(at: IndexPath(row: row, section: 0))
+        return frame.isEmpty ? nil : frame
+    }
+
+    /// The content the reader can actually see — the table runs under the nav bar and the
+    /// composer, and the rows behind those aren't "on screen" for the purposes below.
+    private var visibleContentRect: CGRect {
+        tableView.bounds.inset(by: tableView.adjustedContentInset)
+    }
+
     /// Whether the unread divider is currently on screen — the reader has reached (or is at)
     /// their first unread, so the unread banner has done its job and should retire.
     private var isDividerVisible: Bool {
-        guard let row = dividerRow else { return false }
-        return tableView.indexPathsForVisibleRows?.contains(IndexPath(row: row, section: 0)) ?? false
+        guard let frame = dividerFrame else { return false }
+        return frame.intersects(visibleContentRect)
     }
 
     /// Whether the divider sits *above* the viewport — the unreads are up there, which is the
@@ -1444,11 +1529,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// "Off screen" isn't enough on its own. The divider is latched at the read boundary for this
     /// screen's whole life, so scrolling up past it into older history leaves it off screen
     /// *below* the viewport — and a banner promising unread above would then scroll you down.
-    /// `.min()` rather than `.first` because the visible index paths aren't documented as sorted.
     private var isDividerAboveViewport: Bool {
-        guard let row = dividerRow,
-              let topmost = tableView.indexPathsForVisibleRows?.map(\.row).min() else { return false }
-        return row < topmost
+        guard let frame = dividerFrame else { return false }
+        return frame.maxY <= visibleContentRect.minY
     }
 
     /// Latched once the divider has been on screen: the reader has seen where they left off, so

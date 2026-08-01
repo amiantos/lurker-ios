@@ -7,18 +7,19 @@ import UIKit
 /// Full-text search over everything the account has ever said or been told, across every
 /// buffer at once. Tapping a match jumps to it in its conversation.
 ///
-/// **With nothing typed, it shows your bookmarks.** iMessage's search opens the same way — not
-/// on a blank prompt but on a quick-jump surface (recent chats, pinned links) that happens to
-/// be *reachable* rather than *searched for*. Saved messages are this app's version of that:
-/// the lines you already decided were worth coming back to, which is exactly the set worth
-/// putting one tap from the search field. It also means the screen is never the empty box that
-/// prompted this — opening search always lands on something you can act on.
+/// **With nothing typed, it shows your recent highlights.** iMessage's search opens the same
+/// way — not on a blank prompt but on a quick-jump surface (recent chats, pinned links) that
+/// happens to be *reachable* rather than *searched for*. Highlights are this app's version of
+/// that: the lines that were addressed to you since you last looked, which is both the set most
+/// likely to be what you came to find and the set that goes stale if you don't. It also means
+/// the screen is never the empty box that prompted this — opening search always lands on
+/// something you can act on.
 ///
-/// Bookmarks are what that landing view holds *today*, not a definition of it — the surface is
-/// "what's worth jumping to before you've asked for anything", and other things may earn a
-/// place in it. It carries no heading for that reason: a list titled "Bookmarks" would be a
-/// claim about the whole view rather than about one thing in it, and would have to be unwound
-/// the first time something else appeared alongside them.
+/// Highlights are what that landing view holds *today*, not a definition of it — the surface is
+/// "what's worth jumping to before you've asked for anything", and it held bookmarks first.
+/// Hence `Showing.landing` rather than a case named after its contents, and hence no heading: a
+/// list titled "Highlights" would be a claim about the whole view rather than about one thing
+/// in it, and would have to be unwound the first time something else appeared alongside them.
 ///
 /// Swapping between the two costs nothing, because this screen is a
 /// `HistoryFeedViewController` and both are the same kind of thing to it: lines from
@@ -27,13 +28,12 @@ import UIKit
 /// next two that fit here"). Only where a page comes from differs, and both arrive as a
 /// `HighlightsPage`. What's left in this file is the query.
 ///
-/// Typing is deliberately NOT a filter over the bookmarks. Bookmarks are the landing surface,
-/// not the corpus — narrowing to them would make the most useful search in the app (everything
-/// you have ever seen) the one search you couldn't run from here.
+/// Typing is deliberately NOT a filter over the landing view. It is the landing surface, not
+/// the corpus — narrowing to it would make the most useful search in the app (everything you
+/// have ever seen) the one search you couldn't run from here.
 ///
-/// Rows are read-only, unlike the Bookmarks screen's swipe-to-remove. This is somewhere you
-/// pass *through* on the way to a conversation; unsaving is a deliberate act, and it belongs on
-/// the screen devoted to them.
+/// Rows are read-only. This is somewhere you pass *through* on the way to a conversation, so
+/// acting on a line belongs where the line is, or on the screen devoted to it.
 ///
 /// **Where the search field lives** is the one structural choice, and the reason this class has
 /// a `Presentation`:
@@ -63,8 +63,8 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// recomputed wherever it's needed: a page arriving from the wire has to be interpreted as
     /// an answer to whatever was asked for, not to whatever the field says by the time it lands.
     private enum Showing {
-        /// Nothing typed — the bookmarks landing view.
-        case saved
+        /// Nothing typed — the landing view (recent highlights).
+        case landing
         /// Something typed, but not yet enough to be worth asking the server. See
         /// `Showing.of(_:)`.
         case tooShort
@@ -75,13 +75,13 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         /// anything to search on" and "is it enough to be worth asking" — belong to the query
         /// itself and live on `SearchQuery`, so this is only the mapping to a view state.
         static func of(_ query: SearchQuery) -> Showing {
-            if query.isEmpty { return .saved }
+            if query.isEmpty { return .landing }
             if query.needsMoreText { return .tooShort }
             return .results
         }
     }
 
-    private var showing: Showing = .saved
+    private var showing: Showing = .landing
 
     /// The raw text the currently-shown list answers, for the "no matches for …" copy.
     private var query = ""
@@ -108,7 +108,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         super.init(viewModel: viewModel)
         // Adopt the seed as the query *before* the base's first load, so a scoped open fetches
         // its search directly. Committing it later would work — a reload supersedes — but it
-        // would spend a bookmarks round trip on a screen that was never going to show them.
+        // would spend a landing-view round trip on a screen that was never going to show it.
         query = seed
         parsed = SearchQuery.parse(seed)
         showing = Showing.of(parsed)
@@ -126,9 +126,9 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the user typed. See `HistoryFeedViewController.reloadSupersedes`.
     override var reloadSupersedes: Bool { true }
 
-    /// One page — of bookmarks while the field is empty, of matches once it holds a real query.
+    /// One page — of highlights while the field is empty, of matches once it holds a real query.
     ///
-    /// The two travel by different roads: bookmarks are a REST read with a real `nextBefore`
+    /// The two travel by different roads: highlights are a REST read with a real `nextBefore`
     /// cursor, search is a WS request/reply whose cursor is synthesized. Both arrive as a
     /// `HighlightsPage`, which is the whole reason this screen can switch between them without
     /// the list knowing.
@@ -138,7 +138,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// couldn't ask", which would put an error in front of someone who is simply mid-word.
     override func fetchPage(before: Int?) async -> HighlightsPage? {
         switch showing {
-        case .saved: await viewModel.fetchBookmarks(before: before)
+        case .landing: await viewModel.fetchHighlights(before: before)
         case .tooShort: HighlightsPage(items: [], nextBefore: nil)
         case .results: await viewModel.searchMessages(query, before: before)
         }
@@ -146,25 +146,26 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     override var loadingModel: StateView.Model {
         StateView.Model(
-            title: showing == .saved ? "Loading saved messages…" : "Searching…",
+            title: showing == .landing ? "Loading highlights…" : "Searching…",
             isLoading: true
         )
     }
 
     /// Three different empties, and telling them apart is most of this placeholder's job.
     ///
-    /// `.saved` is the one that matters most: a new account has no bookmarks, so the landing
-    /// surface is empty for exactly the people who most need telling what this screen does. So
-    /// it says both things — that you can search, and that saving a message puts it here —
-    /// rather than leaving the second to be discovered.
+    /// `.landing` is the one that matters most: a quiet account has no highlights, so the
+    /// landing surface is empty for exactly the people who most need telling what this screen
+    /// does. So it says both things — that you can search, and what the list would otherwise
+    /// have held — rather than leaving the second to be discovered.
     override var emptyModel: StateView.Model {
         switch showing {
-        case .saved:
+        case .landing:
             StateView.Model(
                 symbol: "magnifyingglass",
                 title: "Search your history",
                 subtitle: "Type to search every network — narrow it with from:nick, "
-                    + "in:#channel, or on:network. Messages you save show up here too."
+                    + "in:#channel, or on:network. Messages that match your highlight "
+                    + "rules show up here too."
             )
         case .tooShort:
             // Says the rule rather than just withholding results, so a field that has visibly
@@ -186,12 +187,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// The search half deliberately does not say "pull to try again" the way Highlights and
     /// Bookmarks do: search rides the socket, so offline means there is nothing to retry
     /// against, and the field is right there — the more natural thing to reach for anyway.
-    /// Browsing bookmarks is an ordinary REST read, so it gets the ordinary advice.
+    /// The landing view is an ordinary REST read, so it gets the ordinary advice.
     override var errorModel: StateView.Model {
-        showing == .saved
+        showing == .landing
             ? StateView.Model(
                 symbol: "exclamationmark.triangle",
-                title: "Couldn't load saved messages",
+                title: "Couldn't load highlights",
                 subtitle: "Pull to try again."
             )
             : StateView.Model(
@@ -330,13 +331,23 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the field still holds that query on reopen is UIKit's call, not ours — so rather than
     /// assume either way, adopt whatever it says.
     ///
-    /// Both outcomes are then right for free. If the text survived, it matches `query` and
-    /// nothing happens: the results stay, which is what you want for "search → read one →
-    /// come back for the next one" (the web client persists its query across opens for exactly
-    /// that flow). If UIKit cleared it, this snaps back to the bookmarks *now* rather than
-    /// after the debounce, which would have flashed the stale results on the way.
+    /// Both outcomes are then right for free. If the text survived, it matches `query` and the
+    /// results stay, which is what you want for "search → read one → come back for the next one"
+    /// (the web client persists its query across opens for exactly that flow). If UIKit cleared
+    /// it, this snaps back to the landing view *now* rather than after the debounce, which would
+    /// have flashed the stale results on the way.
+    ///
+    /// The landing view is the exception to "unchanged text changes nothing", because its answer
+    /// expires: highlights accumulate while you're elsewhere in the app, and since this screen is
+    /// built once and reused, an unchanged empty field would otherwise show whatever was fetched
+    /// the first time search was opened — for the rest of the session. Bookmarks tolerated that;
+    /// mentions are the set that goes stale if you don't look. A search's rows are left alone,
+    /// because a query's answer is a fact about history rather than a feed.
     func syncToField(_ text: String) {
-        guard text != query else { return }
+        guard text != query else {
+            if showing == .landing { reload() }
+            return
+        }
         debounce?.cancel()
         commit(text)
     }
@@ -347,7 +358,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// This is also where the screen changes mode, and it reads the *parsed* query rather than
     /// the raw string so that "empty" means the same thing here as it does to the server: a
     /// field holding only spaces is empty, and one holding only `in:#dev` is not. Deleting back
-    /// to nothing returns to the bookmarks, which is what makes the field feel like a filter
+    /// to nothing returns to the landing view, which is what makes the field feel like a filter
     /// you can back out of rather than a mode you entered.
     private func commit(_ text: String) {
         let next = SearchQuery.parse(text)

@@ -189,11 +189,29 @@ public final class ChatViewModel {
 
     /// Fetch a page of recent highlights (#13). `before` is the previous page's
     /// `nextBefore` cursor, nil for the first page. Returns nil on failure (a 401 also
-    /// bounces the session); the caller renders an error state. This is a REST read that
-    /// returns straight to the caller rather than folding into `state` — highlights span
-    /// every buffer and are shown in their own list, not merged into any one buffer's log.
+    /// bounces the session); the caller renders an error state. The page itself returns
+    /// straight to the caller rather than folding into `state` — highlights span every buffer
+    /// and are shown in their own list, not merged into any one buffer's log.
+    ///
+    /// The saved flags are the exception, for the same reason `fetchBookmarks` and
+    /// `searchMessages` fold theirs: a cross-buffer feed is one of the few places a saved line
+    /// the user has never opened can become known, and without it, jumping from the row to the
+    /// message offers "Save Message" for something already saved. Every feed that can surface a
+    /// bookmark now says so, rather than two of the three.
+    ///
+    /// Filtered to the saved rows and inserted rather than reconciled, which is the additive
+    /// `noteBookmarked(ids:)` path the other two feeds already take. The reconciling half
+    /// (`noteBookmarks(in:networkId:)`) isn't reachable from here and isn't wanted: it's a
+    /// `ChatState` mutation applied inside `reduce` while handling a frame, keyed to the one
+    /// `networkId` that frame belongs to — a cross-buffer page has no single network to hand
+    /// it. Additive is also all this cache is for: it answers "is the line the user is looking
+    /// at saved?", an unsave arrives as its own `bookmark-updated` frame, and a feed page was
+    /// never a mirror of what the account owns. One mutation, not one per row, because each
+    /// `store.apply` publishes a whole `ChatState`.
     public func fetchHighlights(before: Int? = nil) async -> HighlightsPage? {
-        await client.fetchHighlights(before: before)
+        let page = await client.fetchHighlights(before: before)
+        store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
+        return page
     }
 
     /// Fetch a page of bookmarks. Same cursor contract as `fetchHighlights`, and the

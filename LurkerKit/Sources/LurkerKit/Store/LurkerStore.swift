@@ -807,6 +807,18 @@ final class LurkerStore {
         var buffer = frameBuffer
         // Never un-hydrate: a later shell for an already-read buffer keeps its history.
         buffer.hydrated = hydrated || prior?.hydrated == true
+        // …and never un-know the read state, for the same reason: a frame that omits
+        // `lastReadId` hasn't retracted one we were already told.
+        buffer.readStateKnown = frameBuffer.readStateKnown || prior?.readStateKnown == true
+        // Which also means keeping the VALUES a pointer-less frame would otherwise overwrite
+        // with its defaults. `frameBuffer` replaces `prior` wholesale, and all three of these
+        // parse to 0 when absent — so a frame that says nothing about read state would
+        // otherwise say "read nothing, no unreads", which is a claim it never made.
+        if !frameBuffer.readStateKnown, let prior, prior.readStateKnown {
+            buffer.lastReadId = prior.lastReadId
+            buffer.unread = prior.unread
+            buffer.highlights = prior.highlights
+        }
         // The frame carries no topic — the server doesn't put one there — so assigning it
         // wholesale would blank whatever the connect `snapshot` had just set, and it ships
         // BEFORE the per-buffer backlogs it would be blanked by.
@@ -1033,6 +1045,9 @@ final class LurkerStore {
         buffer.lastReadId = lastReadId
         buffer.unread = unread
         buffer.highlights = highlights
+        // This frame carries the pointer by definition, so it's one of the two that can say
+        // the read state is known (see `Buffer.readStateKnown`).
+        buffer.readStateKnown = true
         next.buffers[key] = buffer
         return next
     }
