@@ -662,10 +662,11 @@ enum MessageRenderer {
     }
 
     /// The label on the back marker. The duration is what makes it worth a row at all — "back"
-    /// alone says nothing the reader can't see — so it's dropped only when the away instant is
-    /// missing and there's nothing to measure.
-    static func backLabel(awayAt: Date?, backAt: Date) -> String {
-        guard let awayAt, let gone = awayDuration(from: awayAt, to: backAt) else { return "You're back" }
+    /// alone says nothing the reader can't see — so it's dropped only when the two instants
+    /// can't be subtracted into one, which is a clock disagreeing with itself rather than a
+    /// span. (The away instant itself is always there: `AwayState.since` is non-optional.)
+    static func backLabel(awayAt: Date, backAt: Date) -> String {
+        guard let gone = awayDuration(from: awayAt, to: backAt) else { return "You're back" }
         return "You're back — away \(gone)"
     }
 

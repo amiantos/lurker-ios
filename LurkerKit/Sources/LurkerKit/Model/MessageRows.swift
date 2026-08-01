@@ -35,7 +35,7 @@ public enum MessageRow: Equatable, Sendable {
     case awayDivider(at: Date, message: String?)
     /// Where your own `/back` falls. Carries the away instant too, so the row can say how
     /// long you were gone without the renderer having to hold the away state as well.
-    case backDivider(awayAt: Date?, at: Date)
+    case backDivider(awayAt: Date, at: Date)
     /// The live composing line at the foot of the buffer (#61) — a keyboard glyph and the
     /// nicks, rendered by `MessageRenderer.renderTyping`. Not a message: it has no id,
     /// never anchors a scroll, and disappears without leaving a gap in the record.
@@ -269,7 +269,7 @@ public enum MessageRows {
                 rows.append(.awayDivider(at: awayAt, message: away?.message))
                 awayDividerPlaced = true
             }
-            if opensBack, let backAt {
+            if opensBack, let awayAt, let backAt {
                 rows.append(.backDivider(awayAt: awayAt, at: backAt))
                 backDividerPlaced = true
             }
@@ -304,7 +304,7 @@ public enum MessageRows {
             if !awayDividerPlaced, let awayAt {
                 rows.append(.awayDivider(at: awayAt, message: away?.message))
             }
-            if !backDividerPlaced, let backAt {
+            if !backDividerPlaced, let awayAt, let backAt {
                 rows.append(.backDivider(awayAt: awayAt, at: backAt))
             }
         }

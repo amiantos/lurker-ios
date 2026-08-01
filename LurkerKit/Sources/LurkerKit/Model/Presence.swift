@@ -21,7 +21,12 @@ public struct AwayState: Equatable, Sendable {
     /// The away reason, if one was given.
     public let message: String?
     /// When the current (or most recent) away began.
-    public let since: Date?
+    ///
+    /// Not optional, because an away with no beginning is not a state this client can do
+    /// anything with — both markers are placed from it — and the server treats it as the
+    /// existence test too, sending `away: null` outright when there's no `since`. `FrameParser`
+    /// refuses a blob it can't read one out of, so the two agree.
+    public let since: Date
     /// Whether the server set this from idle rather than the user typing `/away`.
     public let autoSet: Bool
     /// When the user came back, or nil while still away.
@@ -30,7 +35,7 @@ public struct AwayState: Equatable, Sendable {
     public init(
         active: Bool,
         message: String? = nil,
-        since: Date? = nil,
+        since: Date,
         autoSet: Bool = false,
         backAt: Date? = nil
     ) {

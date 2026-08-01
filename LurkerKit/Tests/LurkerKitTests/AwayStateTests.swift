@@ -38,6 +38,20 @@ final class AwayStateTests: XCTestCase {
         XCTAssertNil(networks.first?.away)
     }
 
+    func testABlobWithNoReadableSinceIsRefused() {
+        // `since` is what both markers are placed from, and the server treats it as the
+        // existence test too (`away = a.since ? {…} : null`). So a blob we can't read one out of
+        // is a blob no marker can be placed from — reading it as an away with no beginning would
+        // put a value in the store that nothing can use and nothing can retract.
+        for blob in [##"{"active":true}"##, ##"{"active":true,"since":null}"##, ##"{"since":"not a date"}"##] {
+            let frame = FrameParser.parseWs(
+                ##"{"kind":"irc","networkId":2,"target":":server:2","type":"away-state","away":"## + blob + "}"
+            )
+            guard case let .awayState(_, away) = frame else { return XCTFail("expected awayState, got \(frame)") }
+            XCTAssertNil(away, "\(blob) has no beginning to anchor from")
+        }
+    }
+
     func testAwayStateRidesIrcWithServerTarget() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":2,"target":":server:2","type":"away-state","away":{"active":true,"since":"2026-07-20T12:00:00Z","message":"brb","autoSet":false,"backAt":null}}"##

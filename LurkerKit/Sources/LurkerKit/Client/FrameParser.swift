@@ -222,13 +222,24 @@ enum FrameParser {
     /// A null (or missing, or mistyped) blob is nil, not a default-constructed state: the
     /// server sends `away: null` for an account with nothing on record, and inventing an
     /// `active: false` there would be a claim that the user *returned* rather than that we
-    /// were never told anything.
+    /// were never told anything. A blob carrying no readable `since` is nil for the same
+    /// reason — see below.
     private static func parseAwayState(_ raw: Any?) -> AwayState? {
         guard let obj = raw as? [String: Any] else { return nil }
+        // `since` is the field the whole feature hangs on — both markers are placed from it, and
+        // the server itself treats it as the existence test (`away = a.since ? {…} : null`, in
+        // both the snapshot and `publishAwayState`). So a blob we can't read one out of is a
+        // blob no marker can be placed from, and reading it as an away with no beginning would
+        // put a value in the store that nothing can use and nothing can retract.
+        //
+        // `active` and `autoSet` keep the file's ordinary `bool()` default. Nothing in the
+        // placement logic reads either — `MessageRows` works from `since` and `backAt` alone —
+        // so a defaulted `false` can't manufacture a marker: only a parsed `backAt` does that.
+        guard let since = ISOTime.parse(obj.stringOrNull("since")) else { return nil }
         return AwayState(
             active: obj.bool("active"),
             message: obj.stringOrNull("message"),
-            since: ISOTime.parse(obj.stringOrNull("since")),
+            since: since,
             autoSet: obj.bool("autoSet"),
             backAt: ISOTime.parse(obj.stringOrNull("backAt"))
         )
