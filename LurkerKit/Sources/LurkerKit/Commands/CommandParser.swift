@@ -317,10 +317,18 @@ public enum CommandParser {
         // (`findIdenticalStmt`/`addRule`). So `/ignore -time 1h bob` followed by `/ignore bob`
         // doesn't make a second rule — it makes the hour-long mute permanent, and vice versa.
         // Saying "added" for that is how someone loses a timed rule without being told.
-        let existing = (ignores?.listing(for: networkId) ?? []).contains {
-            $0.scope == scope && sameRule($0.rule, parsed.rule)
+        // Without the rules, an add and an upsert are indistinguishable — so the receipt
+        // claims neither rather than guessing "added" in the one window this command is
+        // careful about everywhere else. Authoring itself stays allowed here: the rule is
+        // fine, it's only our ability to describe what it did to the list that's missing.
+        let verb: String
+        if let listed = ignores?.listing(for: networkId) {
+            verb = listed.contains { $0.scope == scope && sameRule($0.rule, parsed.rule) }
+                ? "ignore updated"
+                : "ignore added"
+        } else {
+            verb = "ignore sent"
         }
-        let verb = existing ? "ignore updated" : "ignore added"
         return [.addIgnore(
             scope: scope,
             rule: parsed.rule,

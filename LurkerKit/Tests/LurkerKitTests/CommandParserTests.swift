@@ -479,12 +479,14 @@ final class CommandParserTests: XCTestCase {
             XCTAssertTrue(text.contains("haven't arrived yet"), text)
         }
         // Authoring doesn't need the listing, so it isn't gated — the send path reports
-        // whether it landed.
+        // whether it landed. But the receipt can't say whether the server will add or upsert
+        // without the rules, so it claims neither.
         guard case .command(let effects) = CommandParser.parse(
             "/ignore bob", networkId: 1, target: "#chan", ignores: nil
-        ), case .addIgnore = effects.first else {
+        ), case .addIgnore(_, _, let receipt) = effects.first else {
             return XCTFail("expected /ignore <nick> to still author a rule")
         }
+        XCTAssertTrue(receipt.hasPrefix("ignore sent:"), receipt)
     }
 
     func testUnignoreByIndexRemovesThatRuleByIdInItsOwnScope() {
