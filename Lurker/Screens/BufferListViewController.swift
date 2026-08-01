@@ -585,8 +585,9 @@ final class BufferListViewController: UICollectionViewController {
         // results controller "based on the contents of its text property" — so an empty field
         // presents nothing at all, and tapping search just raised the keyboard and slid this
         // list up behind it. That default is right for a results controller that would be blank
-        // until you type; ours opens on your bookmarks, so there is something to show from the
-        // first tap. Setting this flips `automaticallyShowsSearchResultsController` to false.
+        // until you type; ours opens on your recent highlights, so there is something to show
+        // from the first tap. Setting this flips `automaticallyShowsSearchResultsController` to
+        // false.
         controller.showsSearchResultsController = true
         controller.searchBar.placeholder = "Search messages"
         // The filter grammar is typed, not tapped: autocapitalization turns `from:` into
