@@ -17,8 +17,9 @@ import UIKit
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let viewModel: ChatViewModel
     /// Readable from outside so navigation can tell "open this buffer" from "you're already
-    /// in it" without rebuilding the screen to find out — see `showBuffer`.
-    let buffer: Buffer
+    /// in it" without rebuilding the screen to find out — see `showBuffer`. A `var` for one
+    /// writer only: `handleBufferDisappeared` swaps it to follow a rename.
+    private(set) var buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
 
     private let tableView = UITableView()
@@ -160,6 +161,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// clears — see `handleBufferDisappeared`, which uses it to tell "the row hasn't arrived
     /// yet" from "the row was taken away".
     private var sawBufferRow = false
+    /// Whether this buffer's row was hydrated the last time we looked, so `hydrateIfNeeded`
+    /// can see a hydrated row become UN-hydrated — the rename-merge reset (§9.7), where the
+    /// reduce wipes the slice because the survivor's history interleaved server-side. The
+    /// row never goes absent there, so the absence re-arm can't catch it.
+    private var sawHydrated = false
     /// Cleared once the buffer has been parked at its newest message.
     ///
     /// Opening a buffer has to land at the bottom, and neither obvious place to do it works
@@ -406,6 +412,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         observeAppearanceInvalidation()
         addEdgeSwipes()
 
+        subscribeToState()
+        apply(viewModel.state)
+    }
+
+    /// (Re)build the state subscription. A method rather than `viewDidLoad` inline because a
+    /// rename invalidates it: the predicate below captures this buffer's key BY VALUE, so after
+    /// the key changes every update for the renamed buffer compares old-key slots — nil on both
+    /// sides, equal, dropped — and the screen freezes. Following a rename means tearing this
+    /// down and capturing the new key (see `handleBufferDisappeared`).
+    private func subscribeToState() {
+        cancellables.removeAll()
         // Re-render when this buffer's messages or the error change — a frame for some
         // other channel shouldn't reload this screen. The title pill's light also depends
         // on the socket, the network path, and this buffer's network, so those count too.
@@ -494,7 +511,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
-        apply(viewModel.state)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -599,6 +615,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// doing the leaving.
     private func handleBufferDisappeared(_ state: ChatState) -> Bool {
         guard state.buffers[buffer.key.id] != nil else {
+            // Not gone — MOVED. A rename keeps the buffer's id and changes its key, and the
+            // id index still knows where it went. Follow it: swap the held copy, rebuild the
+            // subscription (its predicate captured the old key by value — left alone, every
+            // update for the renamed buffer would compare empty old-key slots and drop as a
+            // duplicate), and let this apply pass carry on under the new name. The title
+            // refreshes for free — `updateTitle` runs every apply and reads `buffer`.
+            //
+            // The other direction needs no code: a viewer sitting in the ABSORBED buffer of
+            // a merge holds the same lowercased key the survivor now occupies, so its row
+            // never disappears — the survivor's state simply arrives under it.
+            if let id = buffer.bufferId, let newKey = state.keysById[id],
+                let moved = state.buffers[newKey]
+            {
+                buffer = moved
+                sawBufferRow = true
+                subscribeToState()
+                return false
+            }
             // Two ways to know the buffer isn't coming:
             //
             //  - We held a row and it was taken away (a close, live or reconciled).
@@ -630,6 +664,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return true
         }
         sawBufferRow = true
+        // Learn the id the moment the row states one. The held copy is often born
+        // without it — launch restore and notification taps SYNTHESIZE a buffer
+        // from its key before any id-carrying frame has arrived — and the follow
+        // above can only chase an id it holds.
+        if buffer.bufferId == nil { buffer.bufferId = state.buffers[buffer.key.id]?.bufferId }
         return false
     }
 
@@ -1060,6 +1099,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The absence is reliably observed — the sink's dedupe compares `buffers[key]`,
         // so nil↔shell always gets delivered.
         if state.buffers[buffer.key.id] == nil { hydrateRequestedAtGeneration = nil }
+        // A row PRESENT but newly un-hydrated is the other void: a rename-merge wiped the
+        // slice (the survivor's history interleaved server-side, so the reduce de-hydrates
+        // rather than guess — see `bufferRenamed`). Keyed on the hydrated→unhydrated
+        // TRANSITION, not on the unhydrated state: unhydrated is also the normal window
+        // between sending the hydrate and its reply, and re-arming there would fire a fresh
+        // request on every state update until the reply landed. Catches both seats of a
+        // merge — the follower lands on the de-hydrated survivor, and a viewer sitting in
+        // the ABSORBED buffer watches the same key flip under them without any rekey.
+        if let known = state.buffers[buffer.key.id] {
+            if known.hydrated {
+                sawHydrated = true
+            } else if sawHydrated {
+                sawHydrated = false
+                hydrateRequestedAtGeneration = nil
+            }
+        }
         // A new burst voids a request made during the previous one.
         //
         // The socket can die and be replaced with `connection` never leaving `.connected`

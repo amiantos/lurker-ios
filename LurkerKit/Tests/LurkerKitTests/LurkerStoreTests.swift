@@ -871,6 +871,176 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages["1::#other"]?.map(\.text), ["elsewhere"])
     }
 
+    // MARK: - buffer-renamed (§9.7)
+
+    /// A hydrated DM with an id, the fixture every rename test starts from.
+    private func dmBuffer(
+        _ target: String, bufferId: Int?, hydrated: Bool = true, messages: [Message] = []
+    ) -> ServerFrame {
+        .backlog(
+            buffer: Buffer(
+                networkId: 1, target: target, kind: .dm, hydrated: hydrated, bufferId: bufferId
+            ),
+            messages: messages,
+            hydrated: hydrated,
+            append: false
+        )
+    }
+
+    func testBufferRenamedMovesEverythingToTheNewKeyAndKeepsTheId() {
+        let store = LurkerStore()
+        store.apply(dmBuffer("alice", bufferId: 7, messages: [msg(1, "hi")]))
+        store.apply(
+            .typing(
+                networkId: 1, target: "alice", nick: "alice",
+                activity: TypingActivity.from("active"), userhost: nil
+            )
+        )
+
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice2", bufferId: 7,
+                merged: false, mergedFromBufferId: nil
+            )
+        )
+
+        let state = store.state
+        XCTAssertNil(state.buffers["1::alice"], "the old key is gone")
+        let moved = state.buffers["1::alice2"]
+        XCTAssertEqual(moved?.target, "alice2")
+        XCTAssertEqual(moved?.bufferId, 7, "identity survives the rename — that's the point")
+        XCTAssertEqual(moved?.hydrated, true, "a plain rename moved history, it didn't change it")
+        XCTAssertEqual(state.messages["1::alice2"]?.map(\.text), ["hi"])
+        XCTAssertNil(state.messages["1::alice"])
+        XCTAssertNil(state.typing["1::alice"], "typing follows too — nothing stays under the dead key")
+        XCTAssertEqual(state.keysById[7], "1::alice2", "the id index follows the move")
+    }
+
+    func testBufferRenamedMergeDropsTheAbsorbedRowAndDehydratesTheSurvivor() {
+        let store = LurkerStore()
+        // The stale side already holds the new name; the live side is being renamed onto it.
+        store.apply(dmBuffer("alice_away", bufferId: 9, messages: [msg(1, "ancient")]))
+        store.apply(dmBuffer("alice", bufferId: 7, messages: [msg(5, "current")]))
+
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice_away", bufferId: 7,
+                merged: true, mergedFromBufferId: 9
+            )
+        )
+
+        let state = store.state
+        XCTAssertNil(state.buffers["1::alice"])
+        let survivor = state.buffers["1::alice_away"]
+        XCTAssertEqual(survivor?.bufferId, 7, "the SOURCE survives — the absorbed id is dead")
+        // The merged history interleaved server-side; guessing at it locally would show a
+        // wrong order until the next fetch corrected it. Wipe and let hydrate refetch.
+        XCTAssertEqual(survivor?.hydrated, false, "de-hydrated so the ordinary path refetches")
+        XCTAssertEqual(survivor?.hasMoreOlder, true)
+        XCTAssertEqual(state.messages["1::alice_away"], [], "local slice wiped, not guessed at")
+        XCTAssertNil(state.keysById[9], "the absorbed id un-indexes")
+        XCTAssertEqual(state.keysById[7], "1::alice_away")
+    }
+
+    func testBufferRenamedCasingOnlyAdoptsTheDisplayNameInPlace() {
+        // Same storage key (BufferKey folds case), so nothing moves — but the display
+        // name is the whole frame, and dropping it would leave the title stale.
+        let store = LurkerStore()
+        store.apply(dmBuffer("alice", bufferId: 7, messages: [msg(1, "hi")]))
+
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "Alice", bufferId: 7,
+                merged: false, mergedFromBufferId: nil
+            )
+        )
+
+        let state = store.state
+        XCTAssertEqual(state.buffers["1::alice"]?.target, "Alice")
+        XCTAssertEqual(state.buffers["1::alice"]?.hydrated, true, "nothing else changed")
+        XCTAssertEqual(state.messages["1::alice"]?.map(\.text), ["hi"], "history untouched")
+    }
+
+    func testBufferRenamedMergeWithoutTheSourceConvertsTheHeldRowInsteadOfDroppingIt() {
+        // The out-of-order window: a live rename can beat the source DM's backlog frame
+        // mid-burst, so this device holds only the row under the NEW name — the absorbed
+        // one. Dropping it would vanish the buffer under a reader; converting it into the
+        // survivor is what the absorbed-seat self-heal produces when both rows are held.
+        let store = LurkerStore()
+        store.apply(dmBuffer("alice_away", bufferId: 9, messages: [msg(1, "ancient")]))
+
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice_away", bufferId: 7,
+                merged: true, mergedFromBufferId: 9
+            )
+        )
+
+        let state = store.state
+        let survivor = state.buffers["1::alice_away"]
+        XCTAssertNotNil(survivor, "the held row converts — it must not vanish")
+        XCTAssertEqual(survivor?.bufferId, 7, "it adopts the survivor's id, not the dead one")
+        XCTAssertEqual(survivor?.hydrated, false, "merged history still means refetch")
+        XCTAssertEqual(state.messages["1::alice_away"], [])
+        XCTAssertNil(state.keysById[9], "the dead id un-indexes")
+        XCTAssertEqual(state.keysById[7], "1::alice_away")
+    }
+
+    func testBufferRenamedForAnUnknownSourceIsANoOp() {
+        let store = LurkerStore()
+        store.apply(dmBuffer("bob", bufferId: 3))
+
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "nobody", to: "somebody", bufferId: 99,
+                merged: false, mergedFromBufferId: nil
+            )
+        )
+
+        XCTAssertNil(store.state.buffers["1::somebody"], "nothing to rename, nothing minted")
+        XCTAssertNotNil(store.state.buffers["1::bob"], "bystanders untouched")
+    }
+
+    func testBufferRenamedMidBurstKeepsTheSurvivorThroughTheClosingPrune() {
+        // The burst named the OLD key; if the rename didn't swap the burst record, the
+        // terminal prune would read the new key as "unlisted" and delete the buffer the
+        // user is looking at.
+        let store = LurkerStore()
+        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(dmBuffer("alice", bufferId: 7, messages: [msg(1, "hi")]))
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice2", bufferId: 7,
+                merged: false, mergedFromBufferId: nil
+            )
+        )
+        store.apply(.backlogComplete)
+
+        XCTAssertNotNil(store.state.buffers["1::alice2"], "renamed mid-burst still stands")
+        XCTAssertEqual(store.state.messages["1::alice2"]?.map(\.text), ["hi"])
+    }
+
+    func testBacklogNeverUnlearnsABufferId() {
+        // A frame from a pre-id server (or a synthesized resync shell) carries no id;
+        // that's not a retraction of the id a real frame stated.
+        let store = LurkerStore()
+        store.apply(dmBuffer("alice", bufferId: 7))
+        store.apply(dmBuffer("alice", bufferId: nil, hydrated: false))
+
+        XCTAssertEqual(store.state.buffers["1::alice"]?.bufferId, 7)
+        XCTAssertEqual(store.state.keysById[7], "1::alice")
+    }
+
+    func testBufferClosedPrunesTheIdIndex() {
+        // A stale id→key entry would let a later rename "follow" a buffer to a key that
+        // no longer holds a row.
+        let store = LurkerStore()
+        store.apply(dmBuffer("alice", bufferId: 7))
+        store.apply(.bufferClosed(networkId: 1, target: "alice"))
+
+        XCTAssertNil(store.state.keysById[7])
+    }
+
     func testBacklogCompletePrunesABufferTheBurstNoLongerLists() {
         // The offline half of buffer-closed, and the common one on a phone: the close
         // happened while this device wasn't connected, so no `buffer-closed` ever arrived.

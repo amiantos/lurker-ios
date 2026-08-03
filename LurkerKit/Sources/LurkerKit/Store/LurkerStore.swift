@@ -146,6 +146,9 @@ public struct ChatState: Sendable {
     /// Buffer keys the server has named in the snapshot burst currently in flight, so
     /// `backlog-complete` can prune the ones it *didn't* — see `pruneToBurst`.
     var burstSeen: Set<String> = []
+    /// bufferId → storage key (`BufferKey.id`). Maintained by every path that
+    /// writes a `buffers` row with a known id; consumed by rename-following.
+    public internal(set) var keysById: [Int: String] = [:]
     /// Whether a snapshot burst is in flight (a `snapshot` frame arrived, its terminal
     /// `backlog-complete` hasn't). Guards the prune: a stray `backlog-complete` with no
     /// burst behind it must not be read as "the server listed nothing", which would wipe
@@ -184,11 +187,49 @@ public struct ChatState: Sendable {
     /// device closing a buffer (`removeBuffer`), the server saying another device did
     /// (`buffer-closed`), and reconciling a burst that no longer lists it (`pruneToBurst`).
     mutating func dropBuffer(_ key: String) {
+        if let id = buffers[key]?.bufferId, keysById[id] == key { keysById[id] = nil }
         buffers[key] = nil
         messages[key] = nil
         members[key] = nil
         typing[key] = nil
         heldLive[key] = nil
+    }
+
+    /// Move everything keyed by `from` onto `to` — the rename mirror of
+    /// `dropBuffer`'s map set, plus `burstSeen` (a rename landing mid-burst
+    /// must not let the closing prune delete the survivor) and the id index.
+    /// The `to` slots are overwritten: the only caller (the `bufferRenamed`
+    /// reduce) drops the absorbed side first on a merge, so a collision here
+    /// means stale local state losing to the surviving buffer, which is right.
+    mutating func rekeyBuffer(from: String, to: String, newTarget: String) {
+        guard let buf = buffers[from] else { return }
+        let renamed = buf.renamed(to: newTarget)
+        // Casing-only rename: same storage key (BufferKey folds case), so nothing
+        // moves — but the display name still changed, and it's the whole frame.
+        if from == to {
+            buffers[to] = renamed
+            return
+        }
+        buffers[from] = nil
+        buffers[to] = renamed
+        messages[to] = messages[from]
+        messages[from] = nil
+        members[to] = members[from]
+        members[from] = nil
+        typing[to] = typing[from]
+        typing[from] = nil
+        heldLive[to] = heldLive[from]
+        heldLive[from] = nil
+        if burstSeen.remove(from) != nil { burstSeen.insert(to) }
+        if let id = renamed.bufferId { keysById[id] = to }
+    }
+
+    /// Learn (or confirm) a buffer's stable id → storage-key mapping. The
+    /// index is what lets a rename be followed by a screen that only knows
+    /// the id it was opened with.
+    mutating func indexBufferId(_ buffer: Buffer, key: String) {
+        guard let id = buffer.bufferId else { return }
+        keysById[id] = key
     }
 
     /// Drop every buffer the just-finished snapshot burst didn't mention.
@@ -549,6 +590,52 @@ final class LurkerStore {
             var next = state
             next.dropBuffer(BufferKey(networkId: networkId, target: target).id)
             return next
+        case .bufferRenamed(
+            let networkId, let from, let to, let bufferId, let merged, _):
+            // Protocol §9.7: same buffer, new name. On a merge the ABSORBED
+            // buffer (the stale one that already held `to`) is dropped FIRST,
+            // so the rekey lands with no collision; its storage key equals the
+            // survivor's post-rename key (BufferKey folds case), which is why
+            // a viewer sitting in the absorbed DM self-heals — the key they
+            // watch simply becomes the survivor. The survivor's history
+            // interleaves two streams server-side, so its local slice is
+            // wiped and de-hydrated: the ordinary hydrate path refetches
+            // rather than guessing at the interleave.
+            var next = state
+            let fromKey = BufferKey(networkId: networkId, target: from).id
+            let toKey = BufferKey(networkId: networkId, target: to).id
+            if next.buffers[fromKey] != nil {
+                // `toKey != fromKey` is belt-and-braces: the server never merges a
+                // casing-only rename, but if a malformed frame said so, dropping
+                // `toKey` here would delete the very row being renamed.
+                if merged, toKey != fromKey { next.dropBuffer(toKey) }
+                next.rekeyBuffer(from: fromKey, to: toKey, newTarget: to)
+            } else if merged, var held = next.buffers[toKey] {
+                // We never held the source (a live rename can beat the source's
+                // backlog frame mid-burst, or a reconnect left a gap) — so the row
+                // we hold under the new name is the ABSORBED one, already swallowed
+                // server-side by a survivor this device hasn't seen. CONVERT it
+                // rather than drop it: dropping vanishes the buffer under a reader,
+                // and conversion is exactly what the absorbed-seat self-heal
+                // produces anyway. Its id is the dead one — un-index and clear it;
+                // the frame's id (stamped below) is the survivor's.
+                if let dead = held.bufferId, next.keysById[dead] == toKey {
+                    next.keysById[dead] = nil
+                }
+                held.bufferId = nil
+                next.buffers[toKey] = held.renamed(to: to)
+            }
+            if var survivor = next.buffers[toKey] {
+                if let bufferId { survivor.bufferId = bufferId }
+                if merged {
+                    survivor.hydrated = false
+                    survivor.hasMoreOlder = true
+                    next.messages[toKey] = []
+                }
+                next.buffers[toKey] = survivor
+                next.indexBufferId(survivor, key: toKey)
+            }
+            return next
         case .peerPresence(let networkId, let nick, let peerState):
             var next = state
             var map = next.peerPresence[networkId] ?? [:]
@@ -823,6 +910,9 @@ final class LurkerStore {
         // wholesale would blank whatever the connect `snapshot` had just set, and it ships
         // BEFORE the per-buffer backlogs it would be blanked by.
         buffer.topic = frameBuffer.topic ?? prior?.topic
+        // Never un-learn the id either: a frame from a pre-id server (or a
+        // synthesized row) hasn't retracted the id a real frame stated.
+        buffer.bufferId = frameBuffer.bufferId ?? prior?.bufferId
         // A resync shell (hasMoreOlder defaults true) must not reset the paging or detach
         // state of a buffer we've already paged into or jumped within (#42) — and neither may
         // a real backlog while we're detached, for the reasons above. Only a hydrated backlog
@@ -832,6 +922,7 @@ final class LurkerStore {
             buffer.hasMoreNewer = prior.hasMoreNewer
         }
         next.buffers[key] = buffer
+        next.indexBufferId(buffer, key: key)
 
         if detached {
             // The slice stands. See above.

@@ -46,6 +46,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
 
+        // A rename has to chase the buffer's key through the preferences that store it —
+        // favorites, recents, last-buffer — or a renamed favorite becomes exactly the
+        // forever-stale entry FavoriteOrder papers over. Owned here, not in LurkerKit:
+        // UserDefaults is the app's storage, and the view model just announces the move.
+        viewModel.onBufferRenamed = { from, to in
+            UserPreferences.standard.rewriteBuffer(from: from, to: to)
+        }
+
         // Session transitions drive navigation: sign-in and restore → the buffer list;
         // sign-out and a mid-session 401 → back to sign-in (with an explanation).
         viewModel.sessionPublisher
