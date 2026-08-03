@@ -961,6 +961,31 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(state.messages["1::alice"]?.map(\.text), ["hi"], "history untouched")
     }
 
+    func testBufferRenamedMergeWithoutTheSourceConvertsTheHeldRowInsteadOfDroppingIt() {
+        // The out-of-order window: a live rename can beat the source DM's backlog frame
+        // mid-burst, so this device holds only the row under the NEW name — the absorbed
+        // one. Dropping it would vanish the buffer under a reader; converting it into the
+        // survivor is what the absorbed-seat self-heal produces when both rows are held.
+        let store = LurkerStore()
+        store.apply(dmBuffer("alice_away", bufferId: 9, messages: [msg(1, "ancient")]))
+
+        store.apply(
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice_away", bufferId: 7,
+                merged: true, mergedFromBufferId: 9
+            )
+        )
+
+        let state = store.state
+        let survivor = state.buffers["1::alice_away"]
+        XCTAssertNotNil(survivor, "the held row converts — it must not vanish")
+        XCTAssertEqual(survivor?.bufferId, 7, "it adopts the survivor's id, not the dead one")
+        XCTAssertEqual(survivor?.hydrated, false, "merged history still means refetch")
+        XCTAssertEqual(state.messages["1::alice_away"], [])
+        XCTAssertNil(state.keysById[9], "the dead id un-indexes")
+        XCTAssertEqual(state.keysById[7], "1::alice_away")
+    }
+
     func testBufferRenamedForAnUnknownSourceIsANoOp() {
         let store = LurkerStore()
         store.apply(dmBuffer("bob", bufferId: 3))

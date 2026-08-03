@@ -604,8 +604,27 @@ final class LurkerStore {
             var next = state
             let fromKey = BufferKey(networkId: networkId, target: from).id
             let toKey = BufferKey(networkId: networkId, target: to).id
-            if merged { next.dropBuffer(toKey) }
-            next.rekeyBuffer(from: fromKey, to: toKey, newTarget: to)
+            if next.buffers[fromKey] != nil {
+                // `toKey != fromKey` is belt-and-braces: the server never merges a
+                // casing-only rename, but if a malformed frame said so, dropping
+                // `toKey` here would delete the very row being renamed.
+                if merged, toKey != fromKey { next.dropBuffer(toKey) }
+                next.rekeyBuffer(from: fromKey, to: toKey, newTarget: to)
+            } else if merged, var held = next.buffers[toKey] {
+                // We never held the source (a live rename can beat the source's
+                // backlog frame mid-burst, or a reconnect left a gap) — so the row
+                // we hold under the new name is the ABSORBED one, already swallowed
+                // server-side by a survivor this device hasn't seen. CONVERT it
+                // rather than drop it: dropping vanishes the buffer under a reader,
+                // and conversion is exactly what the absorbed-seat self-heal
+                // produces anyway. Its id is the dead one — un-index and clear it;
+                // the frame's id (stamped below) is the survivor's.
+                if let dead = held.bufferId, next.keysById[dead] == toKey {
+                    next.keysById[dead] = nil
+                }
+                held.bufferId = nil
+                next.buffers[toKey] = held.renamed(to: to)
+            }
             if var survivor = next.buffers[toKey] {
                 if let bufferId { survivor.bufferId = bufferId }
                 if merged {
