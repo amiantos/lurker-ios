@@ -86,6 +86,23 @@ enum FrameParser {
                 networkId: obj.intOrNull("networkId"),
                 rules: obj.objects("masks").map(parseIgnoreRule)
             )
+        case "buffer-renamed":
+            // Same trust posture as buffer-closed below: empty names can't
+            // identify anything, so refuse rather than rename an arbitrary
+            // buffer. networkId stays null-distinct for the same BufferKey
+            // reason.
+            let from = obj.string("from")
+            let to = obj.string("to")
+            return from.isEmpty || to.isEmpty
+                ? .ignored
+                : .bufferRenamed(
+                    networkId: obj.intOrNull("networkId"),
+                    from: from,
+                    to: to,
+                    bufferId: obj.intOrNull("bufferId"),
+                    merged: obj.bool("merged"),
+                    mergedFromBufferId: obj.intOrNull("mergedFromBufferId")
+                )
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
@@ -392,7 +409,10 @@ enum FrameParser {
             // actually carried the pointer may claim to have stated it — see
             // `Buffer.readStateKnown`.
             readStateKnown: obj.has("lastReadId"),
-            hasMoreOlder: hasMoreOlder
+            hasMoreOlder: hasMoreOlder,
+            // The connect burst doubles as the id directory (§5.2): every
+            // backlog frame carries the buffer's stable id.
+            bufferId: obj.intOrNull("bufferId")
         )
         return .backlog(buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append)
     }

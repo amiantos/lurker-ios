@@ -128,6 +128,23 @@ enum ServerFrame: Equatable, Sendable {
     /// worth preserving. `Buffer.state` has no `closed` case for the same reason.
     case bufferClosed(networkId: Int?, target: String)
 
+    /// A buffer kept its identity and changed names (protocol §9.7) — today, a
+    /// DM following its peer's /nick. Like `bufferClosed`, this travels alone:
+    /// nothing else re-materializes the buffer under its new name, so an
+    /// unhandled rename strands the old row AND phantoms a new one when the
+    /// next live event arrives. `bufferId` is the surviving buffer's stable id
+    /// (it did not change); `merged` means a stale buffer already held `to` and
+    /// was absorbed — `mergedFromBufferId` names it, and the survivor's history
+    /// interleaves server-side (wipe and re-hydrate, never guess).
+    case bufferRenamed(
+        networkId: Int?,
+        from: String,
+        to: String,
+        bufferId: Int?,
+        merged: Bool,
+        mergedFromBufferId: Int?
+    )
+
     /// WS `ignore-list-updated`: one scope's ignore rules, re-sent whole (lurker #301).
     ///
     /// `networkId` nil means the global bucket, a number means that network's own — the

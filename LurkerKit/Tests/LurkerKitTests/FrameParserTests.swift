@@ -26,6 +26,68 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(FrameParser.parseWs(##"{"kind":"buffer-closed","networkId":1}"##), .ignored)
     }
 
+    func testBufferRenamedParses() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"buffer-renamed","networkId":1,"bufferId":7,"from":"alice","to":"alice2","merged":false}"##
+        )
+        XCTAssertEqual(
+            frame,
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice2", bufferId: 7,
+                merged: false, mergedFromBufferId: nil
+            )
+        )
+    }
+
+    func testBufferRenamedMergeCarriesTheAbsorbedBufferId() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"buffer-renamed","networkId":1,"bufferId":7,"from":"alice","to":"alice_away","merged":true,"mergedFromBufferId":9}"##
+        )
+        XCTAssertEqual(
+            frame,
+            .bufferRenamed(
+                networkId: 1, from: "alice", to: "alice_away", bufferId: 7,
+                merged: true, mergedFromBufferId: 9
+            )
+        )
+    }
+
+    func testBufferRenamedWithoutBothNamesIsIgnored() {
+        // Same posture as buffer-closed: an empty name can't identify anything, and
+        // renaming an arbitrary buffer is worse than dropping the frame.
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"buffer-renamed","networkId":1,"to":"alice2"}"##),
+            .ignored
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"buffer-renamed","networkId":1,"from":"alice"}"##),
+            .ignored
+        )
+    }
+
+    func testBacklogCarriesTheBufferIdWhenTheServerStatesOne() {
+        // The connect burst doubles as the id⇄name directory (§5.2).
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","bufferId":12,"events":[],"hasMoreOlder":true}"##
+        )
+        guard case let .backlog(buffer, _, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertEqual(buffer.bufferId, 12)
+    }
+
+    func testBacklogWithoutABufferIdLeavesItNilNotZero() {
+        // A pre-id server sends no field; 0 would collide with nothing today and
+        // something eventually. Absent must parse as absent.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true}"##
+        )
+        guard case let .backlog(buffer, _, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertNil(buffer.bufferId)
+    }
+
     func testChannelBacklogShellParsesAsUnhydratedWithNoMessages() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"joined":true,"unread":3,"lastReadId":42}"##

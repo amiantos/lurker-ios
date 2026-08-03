@@ -196,4 +196,36 @@ extension UserDefaults {
         favoriteBufferKeys = keys
         return !wasFavorite
     }
+
+    // MARK: - Renames
+
+    /// Follow a buffer rename through every preference that stores its key, so a renamed
+    /// favorite doesn't quietly become the forever-stale entry `FavoriteOrder` papers over.
+    ///
+    /// Substitution IN PLACE: position is the user's answer in both lists — a renamed
+    /// favorite keeps its slot, a renamed recent keeps its recency. On a merge the new key
+    /// may already be present; the first occurrence keeps its position and the later
+    /// duplicate is dropped, because a list holding the same key twice would render the
+    /// buffer twice forever (dragging one chip of such a pair is `FavoriteOrder`'s known
+    /// hazard).
+    ///
+    /// A casing-only rename leaves the lists alone — their keys are lowercased ids, so
+    /// there is nothing to change — but still refreshes the last-buffer record, which is
+    /// the one store that keeps the display casing (it *synthesizes* a buffer at launch).
+    func rewriteBuffer(from: BufferKey, to: BufferKey) {
+        if from.id != to.id {
+            favoriteBufferKeys = Self.substitute(from.id, with: to.id, in: favoriteBufferKeys)
+            let recents = Self.substitute(from.id, with: to.id, in: recentBufferKeys)
+            set(recents, forKey: UserPreferences.Key.recentBufferKeys)
+        }
+        if lastBufferKey?.id == from.id {
+            recordLastBuffer(to)
+        }
+    }
+
+    private static func substitute(_ old: String, with new: String, in keys: [String]) -> [String] {
+        guard keys.contains(old) else { return keys }
+        var seen = Set<String>()
+        return keys.map { $0 == old ? new : $0 }.filter { seen.insert($0).inserted }
+    }
 }

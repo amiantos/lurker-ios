@@ -2,13 +2,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /// A conversation surface: a channel, a DM, a per-network server buffer, or the
-/// app-scoped system buffer. There is no buffer id on the wire — a buffer is
-/// identified by (networkId, target). `networkId` is nil ONLY for the system buffer.
+/// app-scoped system buffer. Identified on the wire by `bufferId` — the server's
+/// stable integer that survives renames (protocol §5.2) — with `(networkId,
+/// target)` as the always-present name-shaped address; `bufferId` is nil only
+/// until the first id-carrying frame lands (an optimistically-created buffer, or
+/// a pre-id server). `networkId` is nil ONLY for the system buffer.
 ///
 /// Per-buffer counts (`unread`/`highlights`/`lastReadId`) are server-authoritative:
 /// they ship in `backlog`/`read-state` frames and the client never derives them
 /// locally (full read-state handling is #7).
 public struct Buffer: Equatable, Sendable {
+    /// The server's stable buffer id (never changes, renames included). Var, not
+    /// let: a row created before the id was known learns it from a later frame.
+    public var bufferId: Int?
     public let networkId: Int?
     public let target: String
     public let kind: BufferKind
@@ -64,8 +70,10 @@ public struct Buffer: Equatable, Sendable {
         readStateKnown: Bool = false,
         hasMoreOlder: Bool = true,
         hasMoreNewer: Bool = false,
-        topic: String? = nil
+        topic: String? = nil,
+        bufferId: Int? = nil
     ) {
+        self.bufferId = bufferId
         self.networkId = networkId
         self.target = target
         self.kind = kind
@@ -81,6 +89,28 @@ public struct Buffer: Equatable, Sendable {
     }
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }
+
+    /// This buffer under a new name — the rename primitive's client half. Same
+    /// id (that's the point), same counts and read state; `kind` re-derives in
+    /// case the sigil changed, and paging state carries as-is (the caller wipes
+    /// it separately on a merge, where history actually changed).
+    func renamed(to newTarget: String) -> Buffer {
+        Buffer(
+            networkId: networkId,
+            target: newTarget,
+            kind: BufferKind.of(networkId: networkId, target: newTarget),
+            unread: unread,
+            highlights: highlights,
+            lastReadId: lastReadId,
+            joined: joined,
+            hydrated: hydrated,
+            readStateKnown: readStateKnown,
+            hasMoreOlder: hasMoreOlder,
+            hasMoreNewer: hasMoreNewer,
+            topic: topic,
+            bufferId: bufferId
+        )
+    }
 
     /// The server's sentinel target for the app-scoped system buffer.
     public static let systemTarget = ":system:"

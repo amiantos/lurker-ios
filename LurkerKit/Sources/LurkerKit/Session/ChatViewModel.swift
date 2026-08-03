@@ -43,6 +43,13 @@ public final class ChatViewModel {
     /// Highest message id we've already marked read per buffer, to dedupe mark-read spam.
     private var lastMarked: [String: Int] = [:]
 
+    /// Fired when a buffer changes names (protocol §9.7), AFTER this model's
+    /// own bookkeeping rekeys and BEFORE the store applies the frame. The app
+    /// layer uses it to rewrite persisted UserDefaults keys (favorites,
+    /// recents, last-buffer) in place — state LurkerKit has no business
+    /// touching directly.
+    public var onBufferRenamed: ((_ from: BufferKey, _ to: BufferKey) -> Void)?
+
     /// Last-known setting values, so behavior is right from the first frame rather than from
     /// whenever the bootstrap fetch lands — see `SettingsCache`.
     private let settingsCache: SettingsCache
@@ -674,6 +681,23 @@ public final class ChatViewModel {
             case .after: loadingNewer.remove(id)
             case .around, .latest: break
             }
+            store.apply(frame)
+        case .bufferRenamed(let networkId, let from, let to, _, let merged, _):
+            // Rekey this model's own per-buffer bookkeeping alongside the
+            // store's. An in-flight page flag left under the dead key would
+            // never clear (nothing but a socket drop resets it) and would
+            // block scroll-paging in the renamed buffer forever. On a merge
+            // the mark dedupe takes the max of both sides so a stale absorbed
+            // mark can't suppress a legitimate markRead.
+            let fromKey = BufferKey(networkId: networkId, target: from)
+            let toKey = BufferKey(networkId: networkId, target: to)
+            if loadingOlder.remove(fromKey.id) != nil { loadingOlder.insert(toKey.id) }
+            if loadingNewer.remove(fromKey.id) != nil { loadingNewer.insert(toKey.id) }
+            let fromMark = lastMarked.removeValue(forKey: fromKey.id)
+            if let fromMark {
+                lastMarked[toKey.id] = merged ? max(fromMark, lastMarked[toKey.id] ?? 0) : fromMark
+            }
+            onBufferRenamed?(fromKey, toKey)
             store.apply(frame)
         default:
             store.apply(frame)
