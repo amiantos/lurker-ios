@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-/// Applying a drag in the Favorites grid back onto the stored key list (#53).
+/// Applying a drag in the Favorites/Friends grids back onto the stored key list (#53).
 ///
-/// Its own type because the two lists aren't the same list. What's stored is every key the
-/// user has ever pinned, on this device, across networks; what's *shown* is the subset that
-/// currently resolves to a buffer — a favorite whose network is still connecting, or one whose
-/// DM has since become a friend (and moved to the Friends grid), has a stored slot and no
-/// chip. So a move from grid position 1 to position 0 is not a move from stored index 1 to
-/// stored index 0, and treating it as one silently rewrites the order of rows the user can't
-/// see — worse, it can drop them, which is a favorite lost to a gesture.
+/// Its own type because the two lists aren't the same list. What's stored is the server's
+/// ONE global favorites order across networks (lurker#721); what's *shown* is a
+/// kind-filtered subset of it — the dragged grid's kinds only, minus any favorite that
+/// doesn't currently resolve to a buffer. So a move from grid position 1 to position 0 is
+/// not a move from stored index 1 to stored index 0, and treating it as one silently
+/// rewrites the order of rows the user can't see — worse, it can drop them, which is a
+/// favorite lost to a gesture.
 ///
 /// The rule instead: the visible keys keep the *slots* they already occupy in the stored list
 /// and are dealt back into them in their new order. Nothing invisible moves, nothing is lost,
@@ -31,8 +31,8 @@ public enum FavoriteOrder {
     ///
     /// Returns `stored` untouched when the move can't be applied — indices out of range, or a
     /// visible key the stored list doesn't have. A gesture that can't be interpreted must be a
-    /// no-op rather than a guess: this list is the only record of what's pinned, and there is
-    /// no server copy to restore it from.
+    /// no-op rather than a guess: the unchanged list means nothing is sent, where a wrong
+    /// guess would be persisted server-side for every device.
     public static func moved(_ stored: [String], visible: [String], from: Int, to: Int) -> [String] {
         guard visible.indices.contains(from), visible.indices.contains(to), from != to else { return stored }
         // Containment, not a count. Every visible key must occupy exactly one slot to be dealt
@@ -43,8 +43,9 @@ public enum FavoriteOrder {
         // `stored` contributes two slots, which could make the counts agree while a visible key
         // had no slot at all. `["a","a","b"]` against a visible `["a","b","c"]` reached three
         // slots, passed, and dealt `"c"` into the list while destroying an `"a"`. Nothing can
-        // currently produce a duplicated `stored` — `toggleFavorite` appends only what isn't
-        // there — but this guard exists precisely for the input nothing is supposed to produce.
+        // currently produce a duplicated `stored` — the server's favorites list is keyed by
+        // buffer id — but this guard exists precisely for the input nothing is supposed to
+        // produce.
         let unique = Set(visible)
         guard unique.count == visible.count, unique.isSubset(of: stored) else { return stored }
         let slots = stored.indices.filter { unique.contains(stored[$0]) }

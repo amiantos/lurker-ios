@@ -4,47 +4,39 @@
 import XCTest
 @testable import LurkerKit
 
-/// The friends (contacts) + peer-presence path, end to end: the parser reads the real wire
-/// frames, and the store folds them — sorted contacts, disconnected-aware presence, null-state
-/// clearing. Presence derivation is the subtle part, so it's exercised in every branch.
+/// The favorites (Friends/Favorites) + peer-presence path, end to end: the parser reads the
+/// real wire frames, and the store folds them — the wholesale favorites list, disconnected-
+/// aware presence, null-state clearing. Presence derivation is the subtle part, so it's
+/// exercised in every branch.
 @MainActor
 final class ContactsAndPresenceTests: XCTestCase {
 
     // MARK: - Parser
 
-    func testContactsSnapshotParsesTargetsAndFlags() {
+    func testFavoritesChangedParsesEntriesInOrder() {
         let frame = FrameParser.parseWs(
-            ##"{"kind":"contacts-snapshot","contacts":[{"id":7,"displayName":"Darc","notifyOnline":true,"targets":[{"networkId":2,"nick":"darc","isPrimary":false},{"networkId":3,"nick":"darc_","isPrimary":true}]}]}"##
+            ##"{"kind":"favorites-changed","favorites":[{"networkId":2,"target":"darc","bufferId":41},{"networkId":3,"target":"#lurker","bufferId":7}]}"##
         )
-        guard case let .contactsSnapshot(contacts) = frame else {
-            return XCTFail("expected contactsSnapshot, got \(frame)")
+        guard case let .favoritesChanged(favorites) = frame else {
+            return XCTFail("expected favoritesChanged, got \(frame)")
         }
-        XCTAssertEqual(contacts.count, 1)
-        let contact = contacts[0]
-        XCTAssertEqual(contact.id, 7)
-        XCTAssertEqual(contact.displayName, "Darc")
-        XCTAssertTrue(contact.notifyOnline)
-        XCTAssertEqual(contact.targets.count, 2)
-        // The primary is the flagged one, not the first.
-        XCTAssertEqual(contact.primaryTarget?.nick, "darc_")
-        XCTAssertEqual(contact.primaryTarget?.networkId, 3)
+        XCTAssertEqual(
+            favorites,
+            [
+                FavoriteEntry(networkId: 2, target: "darc", bufferId: 41),
+                FavoriteEntry(networkId: 3, target: "#lurker", bufferId: 7),
+            ],
+            "one global list, order preserved verbatim — position IS the user's answer"
+        )
     }
 
-    func testContactUpdatedAndDeletedParse() {
-        let updated = FrameParser.parseWs(
-            ##"{"kind":"contact-updated","contact":{"id":4,"displayName":"Naia","notifyOnline":false,"targets":[{"networkId":1,"nick":"naia","isPrimary":true}]}}"##
-        )
-        guard case let .contactUpdated(contact) = updated else {
-            return XCTFail("expected contactUpdated, got \(updated)")
+    func testFavoritesChangedWithEmptyListParses() {
+        // Unfavoriting the last entry ships an empty list, not an absent field.
+        let frame = FrameParser.parseWs(##"{"kind":"favorites-changed","favorites":[]}"##)
+        guard case let .favoritesChanged(favorites) = frame else {
+            return XCTFail("expected favoritesChanged, got \(frame)")
         }
-        XCTAssertEqual(contact.id, 4)
-        XCTAssertEqual(contact.displayName, "Naia")
-
-        let deleted = FrameParser.parseWs(##"{"kind":"contact-deleted","contactId":4}"##)
-        guard case let .contactDeleted(id) = deleted else {
-            return XCTFail("expected contactDeleted, got \(deleted)")
-        }
-        XCTAssertEqual(id, 4)
+        XCTAssertEqual(favorites, [])
     }
 
     func testPeerPresenceRidesIrcWithServerTarget() {
@@ -102,35 +94,35 @@ final class ContactsAndPresenceTests: XCTestCase {
         XCTAssertEqual(networks.first?.peerPresence["darc"], .away)
     }
 
-    // MARK: - Store: contacts
+    // MARK: - Store: favorites
 
-    private func contact(_ id: Int, _ name: String, net: Int = 2, nick: String = "n", notify: Bool = false) -> Contact {
-        Contact(
-            id: id, displayName: name, notifyOnline: notify,
-            targets: [ContactTarget(networkId: net, nick: nick, isPrimary: true)]
-        )
+    private func entry(_ id: Int, _ target: String, net: Int = 2) -> FavoriteEntry {
+        FavoriteEntry(networkId: net, target: target, bufferId: id)
     }
 
-    func testContactsSnapshotIsSortedCaseInsensitively() {
+    func testFavoritesChangedReplacesWholesaleKeepingServerOrder() {
         let store = LurkerStore()
-        store.apply(.contactsSnapshot([contact(1, "bob"), contact(2, "Alice"), contact(3, "charlie")]))
-        XCTAssertEqual(store.state.contacts.map(\.displayName), ["Alice", "bob", "charlie"])
+        store.apply(.favoritesChanged([entry(1, "zed"), entry(2, "#alpha"), entry(3, "bob")]))
+        // NOT re-sorted: the server's global order is user-controlled.
+        XCTAssertEqual(store.state.favorites.map(\.target), ["zed", "#alpha", "bob"])
+        // A later frame replaces, never merges — removal and reorder are the same op.
+        store.apply(.favoritesChanged([entry(3, "bob")]))
+        XCTAssertEqual(store.state.favorites.map(\.target), ["bob"])
     }
 
-    func testContactUpdatedUpsertsAndResorts() {
+    func testFavoriteEntryFollowsAPlainBufferRename() {
+        // The server only republishes favorites after MERGES, so a plain
+        // nick-follow rename must rewrite the entry locally — by bufferId, the
+        // identity the frame proves — or the Friends chip ghosts under the dead
+        // nick while the renamed DM leaks back into its network roster.
         let store = LurkerStore()
-        store.apply(.contactsSnapshot([contact(1, "Alice"), contact(2, "Zed")]))
-        // Rename Zed → Bob: it upserts by id and re-sorts, landing between Alice and any others.
-        store.apply(.contactUpdated(contact(2, "Bob")))
-        XCTAssertEqual(store.state.contacts.map(\.displayName), ["Alice", "Bob"])
-        XCTAssertEqual(store.state.contacts.count, 2, "same id updates in place, not appends")
-    }
-
-    func testContactDeletedRemovesById() {
-        let store = LurkerStore()
-        store.apply(.contactsSnapshot([contact(1, "Alice"), contact(2, "Bob")]))
-        store.apply(.contactDeleted(1))
-        XCTAssertEqual(store.state.contacts.map(\.displayName), ["Bob"])
+        store.apply(.favoritesChanged([entry(41, "zed", net: 2), entry(7, "#alpha", net: 2)]))
+        store.apply(.bufferRenamed(
+            networkId: 2, from: "zed", to: "zed_", bufferId: 41, merged: false,
+            mergedFromBufferId: nil
+        ))
+        XCTAssertEqual(store.state.favorites.map(\.target), ["zed_", "#alpha"])
+        XCTAssertEqual(store.state.favorites.map(\.bufferId), [41, 7], "identity untouched")
     }
 
     // MARK: - Store: presence derivation
@@ -210,22 +202,16 @@ final class ContactsAndPresenceTests: XCTestCase {
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .unknown)
     }
 
-    func testPrimaryPresenceFollowsThePrimaryTarget() {
+    func testPresenceIsPerNetwork() {
         let store = connectedStore()
         store.apply(.snapshot([
-            NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], peerPresence: ["alt": .away]),
-            NetworkSnapshot(id: 3, state: .connected, nick: "me", channels: [], peerPresence: ["main": .online]),
+            NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], peerPresence: ["darc": .away]),
+            NetworkSnapshot(id: 3, state: .connected, nick: "me", channels: [], peerPresence: ["darc": .online]),
         ], globalIgnores: []))
-        // Primary is the flagged target (main on net 3), so the friend reads online even though
-        // the other nick is only away.
-        let friend = Contact(
-            id: 1, displayName: "Darc", notifyOnline: false,
-            targets: [
-                ContactTarget(networkId: 2, nick: "alt", isPrimary: false),
-                ContactTarget(networkId: 3, nick: "main", isPrimary: true),
-            ]
-        )
-        XCTAssertEqual(store.state.primaryPresence(friend), .online)
+        // A Friends chip reads the presence of ITS network's peer — the same nick elsewhere
+        // is a different person as far as the dot is concerned.
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .away)
+        XCTAssertEqual(store.state.presence(networkId: 3, nick: "darc"), .online)
     }
 
     func testSnapshotReplacesPeerPresenceWholesale() {

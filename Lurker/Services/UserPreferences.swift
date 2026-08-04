@@ -25,6 +25,7 @@ enum UserPreferences {
         static let lastBackend = "lastBackend"
         static let recentBufferKeys = "recentBufferKeys"
         static let favoriteBufferKeys = "favoriteBufferKeys"
+        static let migratedFavoritesToServer = "migratedFavoritesToServer"
         static let lastBufferTarget = "lastBufferTarget"
         static let lastBufferNetworkId = "lastBufferNetworkId"
         static let composerAutocapitalization = "composerAutocapitalization"
@@ -166,57 +167,48 @@ extension UserDefaults {
         forgetLastBuffer()
     }
 
-    /// `BufferKey.id`s the user pinned, in the order they want them.
-    ///
-    /// Append order until they say otherwise: a new pin goes on the end, and dragging a chip in
-    /// the Favorites grid rewrites the whole list (#53). So nothing may re-sort this — the
-    /// order *is* the user's answer.
-    ///
-    /// Settable so that pinning, unpinning and reordering all write through one place rather
-    /// than each reaching for the defaults key themselves.
-    var favoriteBufferKeys: [String] {
-        get { stringArray(forKey: UserPreferences.Key.favoriteBufferKeys) ?? [] }
-        set { set(newValue, forKey: UserPreferences.Key.favoriteBufferKeys) }
+    /// Favorites moved to the SERVER (lurker#721 — `favorite_buffers`, one global
+    /// per-user order shared with the web client). These accessors exist only for the
+    /// one-shot migration: the legacy device-local list is read once, pushed up as
+    /// `favorite-buffer` verbs in stored order, and cleared behind the flag.
+    var legacyFavoriteBufferKeys: [String] {
+        stringArray(forKey: UserPreferences.Key.favoriteBufferKeys) ?? []
     }
 
-    func isFavorite(_ key: String) -> Bool {
-        favoriteBufferKeys.contains(key)
+    var migratedFavoritesToServer: Bool {
+        get { bool(forKey: UserPreferences.Key.migratedFavoritesToServer) }
+        set { set(newValue, forKey: UserPreferences.Key.migratedFavoritesToServer) }
     }
 
-    /// Pin or unpin, returning the new state.
-    @discardableResult
-    func toggleFavorite(_ key: String) -> Bool {
-        var keys = favoriteBufferKeys
-        let wasFavorite = keys.contains(key)
-        if wasFavorite {
-            keys.removeAll { $0 == key }
-        } else {
-            keys.append(key)
-        }
-        favoriteBufferKeys = keys
-        return !wasFavorite
+    func clearLegacyFavorites() {
+        removeObject(forKey: UserPreferences.Key.favoriteBufferKeys)
     }
 
     // MARK: - Renames
 
-    /// Follow a buffer rename through every preference that stores its key, so a renamed
-    /// favorite doesn't quietly become the forever-stale entry `FavoriteOrder` papers over.
+    /// Follow a buffer rename through every preference that stores its key. Favorites no
+    /// longer live here (server-side, keyed by buffer id — renames are free), so only the
+    /// recents list and the last-buffer record need chasing.
     ///
-    /// Substitution IN PLACE: position is the user's answer in both lists — a renamed
-    /// favorite keeps its slot, a renamed recent keeps its recency. On a merge the new key
+    /// Substitution IN PLACE: a renamed recent keeps its recency. On a merge the new key
     /// may already be present; the first occurrence keeps its position and the later
-    /// duplicate is dropped, because a list holding the same key twice would render the
-    /// buffer twice forever (dragging one chip of such a pair is `FavoriteOrder`'s known
-    /// hazard).
+    /// duplicate is dropped.
     ///
-    /// A casing-only rename leaves the lists alone — their keys are lowercased ids, so
+    /// A casing-only rename leaves the list alone — its keys are lowercased ids, so
     /// there is nothing to change — but still refreshes the last-buffer record, which is
     /// the one store that keeps the display casing (it *synthesizes* a buffer at launch).
     func rewriteBuffer(from: BufferKey, to: BufferKey) {
         if from.id != to.id {
-            favoriteBufferKeys = Self.substitute(from.id, with: to.id, in: favoriteBufferKeys)
             let recents = Self.substitute(from.id, with: to.id, in: recentBufferKeys)
             set(recents, forKey: UserPreferences.Key.recentBufferKeys)
+            // The legacy favorites list still follows renames UNTIL the one-shot
+            // migration consumes it: connected to a pre-favorites server, renames
+            // can accumulate for weeks, and a stale name pushed up later resolves
+            // to nothing — the favorite silently dropped by its own migration.
+            if !migratedFavoritesToServer {
+                let legacy = Self.substitute(from.id, with: to.id, in: legacyFavoriteBufferKeys)
+                set(legacy, forKey: UserPreferences.Key.favoriteBufferKeys)
+            }
         }
         if lastBufferKey?.id == from.id {
             recordLastBuffer(to)

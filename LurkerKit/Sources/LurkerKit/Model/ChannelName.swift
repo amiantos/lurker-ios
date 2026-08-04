@@ -6,9 +6,9 @@
 /// sigil the user has typed yet). Kept in one place so the set of channel sigils isn't
 /// written twice and drift into disagreement.
 ///
-/// Distinct from `BufferKind.of`, which classifies an *existing* target as a channel using
-/// only `#`/`&` — the sigils a server actually opens buffers for. This covers the full
-/// RFC-1459 set for the *input* side, matching the web client's `ensureChannelPrefix`.
+/// `BufferKind.of` and `CommandParser.isChannelTarget` classify by this same set — the
+/// server counts all four (kindForTarget), and a target that's a channel to the screens
+/// must be a channel to the commands. One owner; nothing re-declares the sigils.
 public enum ChannelName {
     /// The RFC-1459 channel-name sigils.
     public static let sigils: Set<Character> = ["#", "&", "+", "!"]

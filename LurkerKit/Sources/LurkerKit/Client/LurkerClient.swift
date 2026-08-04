@@ -708,27 +708,25 @@ final class LurkerClient {
         send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
-    /// Create or edit a friend/contact and its per-network watch list (`set-contact`). Omit
-    /// `id` to create; pass it to edit. `targets` are the (networkId, nick) pairs to watch;
-    /// exactly one should be `isPrimary` (the DM that opens on tap) — the server promotes the
-    /// first if none is flagged. The server echoes a `contact-updated` to every device.
-    func setContact(id: Int?, displayName: String, notifyOnline: Bool, targets: [ContactTarget]) {
-        send([
-            "type": "set-contact",
-            // NSNull (not a dropped key) so "create" is explicit rather than an absent field.
-            "contactId": id.map { $0 as Any } ?? NSNull(),
-            "displayName": displayName,
-            "notifyOnline": notifyOnline,
-            "targets": targets.map {
-                ["networkId": $0.networkId, "nick": $0.nick, "isPrimary": $0.isPrimary] as [String: Any]
-            },
-        ])
+    /// Favorite a buffer (`favorite-buffer`). One flag, two UI surfaces: a channel lands
+    /// under Favorites, a DM under Friends. The server refuses pseudo-buffers and CLOSED
+    /// buffers, drops any pin the buffer held (one placement per buffer), and echoes the
+    /// full `favorites-changed` list to every device.
+    func favoriteBuffer(networkId: Int, target: String) {
+        send(["type": "favorite-buffer", "networkId": networkId, "target": target])
     }
 
-    /// Remove a friend/contact and stop watching all its nicks (`delete-contact`). The server
-    /// echoes a `contact-deleted`.
-    func deleteContact(id: Int) {
-        send(["type": "delete-contact", "contactId": id])
+    /// Remove a favorite (`unfavorite-buffer`). Echoes `favorites-changed`.
+    func unfavoriteBuffer(networkId: Int, target: String) {
+        send(["type": "unfavorite-buffer", "networkId": networkId, "target": target])
+    }
+
+    /// Rewrite the global favorites order (`reorder-favorites`, id-form only — favorites
+    /// span networks, so names can't address them). Send the FULL permuted list; a subset
+    /// floats to the front and would demote everything unmentioned. The server echoes the
+    /// authoritative `favorites-changed` either way (a stale set snaps this device back).
+    func reorderFavorites(bufferIds: [Int]) {
+        send(["type": "reorder-favorites", "bufferIds": bufferIds])
     }
 
     /// Report whether the user can actually SEE the app (#490).

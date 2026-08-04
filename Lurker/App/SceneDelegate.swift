@@ -47,11 +47,50 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
 
         // A rename has to chase the buffer's key through the preferences that store it —
-        // favorites, recents, last-buffer — or a renamed favorite becomes exactly the
-        // forever-stale entry FavoriteOrder papers over. Owned here, not in LurkerKit:
-        // UserDefaults is the app's storage, and the view model just announces the move.
+        // recents and last-buffer (favorites are server-side now, keyed by buffer id, so
+        // renames are free there). Owned here, not in LurkerKit: UserDefaults is the
+        // app's storage, and the view model just announces the move.
         viewModel.onBufferRenamed = { from, to in
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
+        }
+
+        // Local→server favorites migration (lurker#721 moved favorites into
+        // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
+        // trusts a send — `send` returns true over a dead socket — so the legacy list
+        // survives until a `favorites-changed` fold PROVES the server holds everything.
+        // Each fold diffs the legacy keys against the server's list (the frame is also
+        // proof the socket is live and the server speaks favorites); keys the server
+        // lacks are pushed up, at most one batch per app session — a key the server
+        // refuses (its buffer closed/gone since it was favorited) never echoes back and
+        // would otherwise resend on every fold. The persisted flag flips, and the
+        // legacy list clears, only on a fold that shows nothing left to migrate; a
+        // socket that died under the batch simply retries next session (favorite-buffer
+        // is idempotent server-side). Unparseable keys ('sys::' — the system buffer was
+        // never favoritable) don't count as pending, or they'd hold completion hostage.
+        var migrationBatchSent = false
+        viewModel.onFavoritesSynced = { [weak viewModel] in
+            guard let viewModel else { return }
+            let prefs = UserPreferences.standard
+            guard !prefs.migratedFavoritesToServer else { return }
+            let serverKeys = Set(viewModel.favorites.map(\.key.id))
+            let pending = prefs.legacyFavoriteBufferKeys.compactMap {
+                key -> (networkId: Int, target: String)? in
+                guard !serverKeys.contains(key),
+                      let sep = key.range(of: "::"),
+                      let networkId = Int(key[..<sep.lowerBound])
+                else { return nil }
+                return (networkId, String(key[sep.upperBound...]))
+            }
+            if pending.isEmpty {
+                prefs.migratedFavoritesToServer = true
+                prefs.clearLegacyFavorites()
+                return
+            }
+            guard !migrationBatchSent else { return }
+            migrationBatchSent = true
+            for item in pending {
+                viewModel.favoriteBuffer(networkId: item.networkId, target: item.target)
+            }
         }
 
         // Session transitions drive navigation: sign-in and restore → the buffer list;

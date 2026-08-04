@@ -53,9 +53,11 @@ public struct ChatState: Sendable {
     public var backlogComplete = false
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
-    /// The friends list, sorted case-insensitively by display name. Server-authoritative:
-    /// seeded by `contacts-snapshot` and kept in sync by `contact-updated`/`contact-deleted`.
-    public var contacts: [Contact] = []
+    /// Buffer favorites (the Friends/Contacts successor): one server-authoritative
+    /// global ordered list spanning networks, seeded and corrected wholesale by
+    /// `favorites-changed`. The UI splits it by kind — DMs → Friends, channels →
+    /// Favorites.
+    public var favorites: [FavoriteEntry] = []
     /// Saved-message ids — what the bookmark toggle reads. **Read through
     /// `isBookmarked(_:)`.**
     ///
@@ -280,11 +282,10 @@ public struct ChatState: Sendable {
     /// a push can beat its own backlog frame, a join's row arrives with `channel-joined` —
     /// and the screen's `hydrateIfNeeded` fills it in once it does.
     ///
-    /// It lives here because the four call sites had each written it out and one had already
-    /// drifted, hardcoding `.channel` where `BufferKind.of` would have said `.dm`: a `!foo`
-    /// target carries a channel sigil for *input* purposes (`ChannelName.sigils`) but is not
-    /// one of the sigils a buffer is classified by. That mismatch gives a screen a member
-    /// list and nick coloring for a buffer whose store row disagrees.
+    /// It lives here because the four call sites had each written the synthesis out and one
+    /// had already drifted from `BufferKind.of`'s classification. One classifier (the full
+    /// `ChannelName.sigils` set, matching the server) — a site that guesses a kind gives its
+    /// screen a member list and nick coloring the store row disagrees with.
     public func buffer(for key: BufferKey) -> Buffer {
         buffers[key.id]
             ?? Buffer(
@@ -320,6 +321,14 @@ public struct ChatState: Sendable {
     /// Whether this line is saved. See `bookmarkedIds` for why an unknown id reads as
     /// unsaved rather than unknown.
     public func isBookmarked(_ messageId: Int) -> Bool { bookmarkedIds.contains(messageId) }
+
+    /// Membership in the favorites list, fold-consistent with every other key comparison
+    /// (`BufferKey.id` lowercases both sides). The one owner of the predicate — screens
+    /// must not hand-roll `favorites.contains { ... lowercased() ... }` copies that a
+    /// future fold correction would have to chase individually.
+    public func isFavorite(_ key: BufferKey) -> Bool {
+        favorites.contains { $0.key.id == key.id }
+    }
 
     /// Reconcile `bookmarkedIds` against a page of rows.
     ///
@@ -426,12 +435,6 @@ public struct ChatState: Sendable {
         }
     }
 
-    /// A friend's status: the presence of its primary target — the DM that opens when the
-    /// friend is tapped — so the dot never claims online when the DM you'd open is offline.
-    public func primaryPresence(_ contact: Contact) -> FriendPresence {
-        guard let target = contact.primaryTarget else { return .unknown }
-        return presence(networkId: target.networkId, nick: target.nick)
-    }
 }
 
 /// Holds the domain state and folds `ServerFrame`s into it. The fold is a pure function
@@ -553,19 +556,9 @@ final class LurkerStore {
                 state, networkId: networkId, target: target,
                 lastReadId: lastReadId, unread: unread, highlights: highlights
             )
-        case .contactsSnapshot(let contacts):
+        case .favoritesChanged(let favorites):
             var next = state
-            next.contacts = sortedContacts(contacts)
-            return next
-        case .contactUpdated(let contact):
-            var next = state
-            var rest = next.contacts.filter { $0.id != contact.id }
-            rest.append(contact)
-            next.contacts = sortedContacts(rest)
-            return next
-        case .contactDeleted(let id):
-            var next = state
-            next.contacts.removeAll { $0.id == id }
+            next.favorites = favorites
             return next
         case .bookmarkUpdated(let messageId, let saved):
             var next = state
@@ -634,6 +627,21 @@ final class LurkerStore {
                 }
                 next.buffers[toKey] = survivor
                 next.indexBufferId(survivor, key: toKey)
+            }
+            // The favorites list carries target strings too, and the server only
+            // republishes favorites-changed after MERGES — a plain nick-follow
+            // rename would otherwise leave the entry pointing at the dead name
+            // until the next echo: a ghost Friends chip under the old nick, plus
+            // the renamed DM leaking back into its network roster (every section
+            // split keys off entry targets). Rewrite by bufferId — the identity
+            // the frame proves — and drop nothing: a merge's absorbed-favorite
+            // adoption arrives via its own favorites-changed follow-up.
+            if let bufferId {
+                next.favorites = next.favorites.map { entry in
+                    entry.bufferId == bufferId
+                        ? FavoriteEntry(networkId: entry.networkId, target: to, bufferId: bufferId)
+                        : entry
+                }
             }
             return next
         case .peerPresence(let networkId, let nick, let peerState):
@@ -844,17 +852,6 @@ final class LurkerStore {
         return next
     }
 
-    /// Case-insensitive alphabetical by display name, id-tiebroken for a stable order — the
-    /// same ordering the web friends store keeps, so a friend never jumps position on edit.
-    private static func sortedContacts(_ contacts: [Contact]) -> [Contact] {
-        contacts.sorted {
-            switch $0.displayName.localizedCaseInsensitiveCompare($1.displayName) {
-            case .orderedAscending: return true
-            case .orderedDescending: return false
-            case .orderedSame: return $0.id < $1.id
-            }
-        }
-    }
 
     private static func applyBacklog(
         _ state: ChatState,

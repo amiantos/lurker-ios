@@ -544,21 +544,30 @@ public final class ChatViewModel {
     /// The networks the user is on, for the join picker and buffer-list grouping.
     public var networks: [Network] { Array(store.state.networks.values) }
 
-    // MARK: - Friends (contacts)
+    // MARK: - Favorites (the Friends/Contacts successor)
 
-    /// The friends list, sorted by display name. The UI reads presence live off `state`
-    /// (`state.primaryPresence(contact)`), so this is just identity + targets.
-    public var contacts: [Contact] { store.state.contacts }
+    /// The global favorites list, in the user's order. The UI splits it by kind (DMs →
+    /// Friends, channels → Favorites) and reads presence live off `state`.
+    public var favorites: [FavoriteEntry] { store.state.favorites }
 
-    /// Create (nil `id`) or edit a friend. The optimistic UI comes from the server's
-    /// `contact-updated` echo, which folds in via the normal frame path — no local mutation.
-    public func saveContact(id: Int?, displayName: String, notifyOnline: Bool, targets: [ContactTarget]) {
-        client.setContact(id: id, displayName: displayName, notifyOnline: notifyOnline, targets: targets)
+    /// Fired after every `favorites-changed` fold — the connect-burst seed included, which
+    /// makes the first firing proof the socket is live AND the server speaks favorites.
+    /// The app hangs its one-shot local→server favorites migration off exactly that.
+    public var onFavoritesSynced: (() -> Void)?
+
+    /// Favorite/unfavorite a buffer. No local mutation — the UI updates when the server's
+    /// `favorites-changed` echo folds in, same as every other server-authoritative list.
+    public func favoriteBuffer(networkId: Int, target: String) {
+        client.favoriteBuffer(networkId: networkId, target: target)
     }
 
-    /// Remove a friend. The list updates when the `contact-deleted` echo lands.
-    public func deleteContact(id: Int) {
-        client.deleteContact(id: id)
+    public func unfavoriteBuffer(networkId: Int, target: String) {
+        client.unfavoriteBuffer(networkId: networkId, target: target)
+    }
+
+    /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
+    public func reorderFavorites(bufferIds: [Int]) {
+        client.reorderFavorites(bufferIds: bufferIds)
     }
 
     public func clearError() { store.clearError() }
@@ -699,6 +708,11 @@ public final class ChatViewModel {
             }
             onBufferRenamed?(fromKey, toKey)
             store.apply(frame)
+        case .favoritesChanged:
+            // Apply FIRST, announce after — a hook reading `favorites` must see
+            // the state this frame proved, not the one before it.
+            store.apply(frame)
+            onFavoritesSynced?()
         default:
             store.apply(frame)
         }

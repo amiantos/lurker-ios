@@ -78,17 +78,11 @@ enum ServerFrame: Equatable, Sendable {
     /// these onto the buffer — it never derives unread/highlight counts locally.
     case readState(networkId: Int?, target: String, lastReadId: Int, unread: Int, highlights: Int)
 
-    /// WS `contacts-snapshot`: the whole friends list, sent in the connect burst. Replaces
-    /// whatever the store held (a reconnect re-sends it wholesale).
-    case contactsSnapshot([Contact])
-
-    /// WS `contact-updated`: one friend created or edited, fanned out to every device so the
-    /// list stays identical whether the edit came from this phone, the browser, or an agent.
-    /// Upsert by id.
-    case contactUpdated(Contact)
-
-    /// WS `contact-deleted`: a friend removed. Drop it by id.
-    case contactDeleted(Int)
+    /// WS `favorites-changed`: the user's buffer favorites — the Friends/Contacts
+    /// successor — as ONE global ordered list spanning networks. Sent in the connect
+    /// burst and re-sent wholesale on every favorite/unfavorite/reorder/merge, so the
+    /// store simply replaces what it held.
+    case favoritesChanged([FavoriteEntry])
 
     /// WS `bookmark-updated`: a message was saved or unsaved, on any of the account's
     /// devices — including this one. The server echoes to every socket rather than
