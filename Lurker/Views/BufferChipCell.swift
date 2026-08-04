@@ -58,7 +58,7 @@ final class BufferBadgeLabel: UILabel {
     }
 }
 
-/// A buffer as a compact card, for the Favorites and Recent grids.
+/// A buffer as a compact card, for the Friends, Favorites and Recent grids.
 ///
 /// The grids are shortcuts, not the roster — a place to fit twice as many of the handful you
 /// keep coming back to into the same vertical space, two across. So this is denser than a list
@@ -66,11 +66,20 @@ final class BufferBadgeLabel: UILabel {
 /// target" at a glance, distinct from the grouped rows below it that carry swipe actions.
 ///
 /// Density is layout, not type size — one font size app-wide. The name is weight, the network
-/// is color, and the pill is the same one the rows use.
+/// hint is color, and the pill is the same one the rows use.
+///
+/// **One line, not two.** The card used to print the network name under every name, which
+/// spent the taller half of a chip restating something that is the same for every chip on a
+/// single-network instance and, on a multi-network one, is only ever *load-bearing* when two
+/// chips collide. So the network appears as a short `/li` hint after the name, on the rows
+/// that actually need it (`NetworkAbbreviation`), and the chip is a name and a badge
+/// otherwise. The accessibility label still names the network in full for every chip — the
+/// hint is a visual shorthand, and losing the network entirely to a screen reader would be a
+/// regression rather than a simplification.
 final class BufferChipCell: UICollectionViewCell {
     private let card = UIView()
     private let nameLabel = UILabel()
-    private let networkLabel = UILabel()
+    private let networkHintLabel = UILabel()
     private let badgeContainer = UIView()
     /// A small presence dot, shown only on friend chips (nil presence hides it and collapses
     /// its slot, so ordinary Favorites/Recent chips are unchanged).
@@ -101,15 +110,42 @@ final class BufferChipCell: UICollectionViewCell {
         nameLabel.textColor = .label
         nameLabel.lineBreakMode = .byTruncatingTail
 
-        networkLabel.font = .preferredFont(forTextStyle: .body)
-        networkLabel.adjustsFontForContentSizeCategory = true
-        networkLabel.textColor = .secondaryLabel
-        networkLabel.lineBreakMode = .byTruncatingTail
+        // Same size as the name — one font size app-wide, so the hint demotes itself with
+        // color and weight alone, exactly as the web's `.net-hint` does.
+        networkHintLabel.font = .preferredFont(forTextStyle: .body)
+        networkHintLabel.adjustsFontForContentSizeCategory = true
+        networkHintLabel.textColor = .secondaryLabel
 
-        let textStack = UIStackView(arrangedSubviews: [nameLabel, networkLabel])
-        textStack.axis = .vertical
-        textStack.spacing = 1
-        textStack.alignment = .leading
+        // The hint holds its size and the NAME truncates, which is the opposite of what a
+        // single attributed label would do (a tail ellipsis eats the trailing hint first).
+        // That would drop the disambiguator at exactly the width where two long names have
+        // truncated to the same pixels — the one case it exists for. The web accepts the
+        // ellipsis because a sidebar row is far wider than half a phone.
+        networkHintLabel.setContentHuggingPriority(.required, for: .horizontal)
+        networkHintLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // A trailing spacer, because a horizontal stack distributes its slack by hugging
+        // priority and *something* has to take it. Without this the name label — the lowest
+        // hugging priority of the three — stretches to fill the card and renders its text
+        // left-aligned inside that wider box, stranding the hint against the card's right
+        // edge with a gap where the name used to end. The hint has to sit against the name:
+        // it's a suffix to it, not a second column. (The vertical stack this replaced didn't
+        // need one — a vertical stack's `alignment` handles the cross axis, so `.leading`
+        // was enough.) Lowest hugging of all, so it and not a label yields the space.
+        let spacer = UIView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        // `.center`, not `.firstBaseline`, even though this is a row of text: both labels
+        // scale off the SAME body metric at the same point size (only their weight differs),
+        // so their boxes are identical heights and centering puts the baselines in exactly
+        // the same place — while `.firstBaseline` would also have to align the spacer, which
+        // has no text and therefore no baseline but its own top edge.
+        let textStack = UIStackView(arrangedSubviews: [nameLabel, networkHintLabel, spacer])
+        textStack.axis = .horizontal
+        textStack.spacing = 4
+        textStack.alignment = .center
 
         // The pill hugs its content and refuses to compress, so the name truncates before it.
         badgeContainer.setContentHuggingPriority(.required, for: .horizontal)
@@ -181,11 +217,22 @@ final class BufferChipCell: UICollectionViewCell {
     /// Favorites/Recent card (no dot). The dot color reads "is this friend reachable right
     /// now": green online, orange away, muted grey offline/unknown — deliberately understated
     /// for offline (the common case) rather than the web's red, which reads as an alert on iOS.
-    func configure(name: String, network: String?, unread: Int, highlights: Int, presence: FriendPresence? = nil) {
+    ///
+    /// `networkName` is the full name and is always passed — it's what the accessibility label
+    /// reads. `networkHint` is the short `/li` form and is set only where two chips would
+    /// otherwise be identical; nil hides the label and collapses its slot, which on a
+    /// single-network instance is every chip.
+    func configure(
+        name: String,
+        networkName: String?,
+        networkHint: String? = nil,
+        unread: Int,
+        highlights: Int,
+        presence: FriendPresence? = nil
+    ) {
         nameLabel.text = name
-        networkLabel.text = network
-        // Hidden rather than blank so the name centers in the card when there's no network.
-        networkLabel.isHidden = network == nil
+        networkHintLabel.text = networkHint
+        networkHintLabel.isHidden = networkHint == nil
 
         badgeContainer.subviews.forEach { $0.removeFromSuperview() }
         if let pill = makeUnreadBadge(unread: unread, highlights: highlights) {
@@ -206,7 +253,10 @@ final class BufferChipCell: UICollectionViewCell {
             if let presence { presenceDot.backgroundColor = Self.presenceColor(presence) }
         }
 
-        var summary = network.map { "\(name), \($0)" } ?? name
+        // The FULL network name, on every chip, hint or no hint: the hint is a visual
+        // shorthand for a collision you can see, and "which network is this" is a question a
+        // screen-reader user can't answer by glancing at the chip beside it.
+        var summary = networkName.map { "\(name), \($0)" } ?? name
         if let presence { summary += ", \(Self.presenceLabel(presence))" }
         if unread > 0 {
             summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"

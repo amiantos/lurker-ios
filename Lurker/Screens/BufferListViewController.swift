@@ -48,10 +48,14 @@ final class BufferListViewController: UICollectionViewController {
 
     private struct Row: Equatable {
         let buffer: Buffer
-        /// The network name, shown on grid chips where the buffer has been lifted out of its
-        /// section and would otherwise be ambiguous across networks. Nil on roster rows,
-        /// which already sit under their network's header.
-        let subtitle: String?
+        /// The full network name. Grid chips carry it for their accessibility label; roster
+        /// rows leave it nil, already sitting under their network's header.
+        let networkName: String?
+        /// The short `/li` disambiguator drawn after the name, set by `addNetworkHints` only
+        /// on chips whose name collides with another chip's. Separate from `networkName`
+        /// because the two answer different questions: this one is "would you otherwise
+        /// confuse this chip with the one beside it", and it's nil far more often.
+        var networkHint: String?
         /// Set only on Friends chips (favorited DMs): the peer's presence dot state.
         /// Equatable so a presence change reconfigures the one chip.
         var presence: FriendPresence?
@@ -76,13 +80,13 @@ final class BufferListViewController: UICollectionViewController {
 
         init(
             buffer: Buffer,
-            subtitle: String?,
+            networkName: String?,
             presence: FriendPresence? = nil,
             isFriendChip: Bool = false,
             muted: Bool = false
         ) {
             self.buffer = buffer
-            self.subtitle = subtitle
+            self.networkName = networkName
             self.presence = presence
             self.isFriendChip = isFriendChip
             self.muted = muted
@@ -521,7 +525,8 @@ final class BufferListViewController: UICollectionViewController {
         cell, _, row in
         cell.configure(
             name: row.buffer.displayName(),
-            network: row.subtitle,
+            networkName: row.networkName,
+            networkHint: row.networkHint,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence
@@ -783,9 +788,11 @@ final class BufferListViewController: UICollectionViewController {
         // different things — a card vs. a row, and only the row leaves the channel on a swipe —
         // so the duplication is a quick way in, not a buffer printed twice by accident.
         // (Friends are the exception, lifted out entirely — see friendDmKeys above.)
-        let favorites = favoriteRows(channelEntries, state)
-        let recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
-        let friends = friendRows(friendEntries, state)
+        var favorites = favoriteRows(channelEntries, state)
+        var recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
+        var friends = friendRows(friendEntries, state)
+        // After all three are built, because a collision is a fact about the three together.
+        Self.addNetworkHints(state, &friends, &favorites, &recents)
         // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
         // and the two are one list on the server, so the halves reading top-to-bottom
         // differently was a needless thing to have to re-learn per client. People also earn
@@ -857,7 +864,7 @@ final class BufferListViewController: UICollectionViewController {
             let buffer = state.buffer(for: entry.key)
             return Row(
                 buffer: buffer,
-                subtitle: state.networks[entry.networkId]?.name,
+                networkName: state.networks[entry.networkId]?.name,
                 presence: state.presence(networkId: entry.networkId, nick: entry.target),
                 isFriendChip: true,
                 muted: Self.isMuted(buffer, state)
@@ -906,13 +913,53 @@ final class BufferListViewController: UICollectionViewController {
     private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer,
-            subtitle: buffer.networkId.flatMap { state.networks[$0]?.name },
+            networkName: buffer.networkId.flatMap { state.networks[$0]?.name },
             muted: Self.isMuted(buffer, state)
         )
     }
 
     private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
-        Row(buffer: buffer, subtitle: nil, muted: Self.isMuted(buffer, state))
+        Row(buffer: buffer, networkName: nil, muted: Self.isMuted(buffer, state))
+    }
+
+    /// Tag the chips whose names collide with a short `/li` network hint.
+    ///
+    /// Pooled across all three grids rather than computed per section. A collision is a thing
+    /// you can *see* — two cards that read identically — and the section header between them
+    /// doesn't undo that; a favorite `#lurker` sitting a few rows above a recent `#lurker` is
+    /// exactly the mix-up this prevents. Per-section counting would also let one chip carry a
+    /// hint while its twin didn't, which reads as a property of the buffer rather than of the
+    /// pair. (The web pools its two grids for the same reason; Recent is the iOS third.)
+    ///
+    /// No collisions, no hints — so a single-network instance never shows one, since a buffer
+    /// appears in at most one grid (favorites are excluded from Recent, friends are lifted out
+    /// of both) and can't collide with itself.
+    private static func addNetworkHints(
+        _ state: ChatState,
+        _ friends: inout [Row],
+        _ favorites: inout [Row],
+        _ recents: inout [Row]
+    ) {
+        var counts: [String: Int] = [:]
+        for row in friends + favorites + recents {
+            counts[row.buffer.target.lowercased(), default: 0] += 1
+        }
+        let ambiguous = Set(counts.filter { $0.value > 1 }.keys)
+        guard !ambiguous.isEmpty else { return }
+
+        // Against every network the user has, not just the colliding ones — see
+        // `NetworkAbbreviation`, which is also what the web computes for the same rows.
+        let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
+        func hint(_ row: inout Row) {
+            guard ambiguous.contains(row.buffer.target.lowercased()),
+                  let networkId = row.buffer.networkId,
+                  let abbreviation = abbreviations[networkId]
+            else { return }
+            row.networkHint = "/\(abbreviation)"
+        }
+        for index in friends.indices { hint(&friends[index]) }
+        for index in favorites.indices { hint(&favorites[index]) }
+        for index in recents.indices { hint(&recents[index]) }
     }
 
     /// Whether this buffer's plain-unread signal is muted (lurker #359).
