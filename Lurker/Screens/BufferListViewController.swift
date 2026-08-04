@@ -14,8 +14,8 @@ import UIKit
 /// to summon it, an edge swipe wired by hand, and a chat screen that could never be left.
 ///
 /// Not a directory: the buffers you actually move between are a handful you keep returning
-/// to, so Favorites and Recent come first as a two-across grid of cards you can hit without
-/// looking, and the full grouped roster sits underneath. The grids are *shortcuts* — a
+/// to, so Friends, Favorites and Recent come first as two-across grids of cards you can hit
+/// without looking, and the full grouped roster sits underneath. The grids are *shortcuts* — a
 /// favorite or recent buffer also keeps its ordinary row in its network's section below, so
 /// the roster stays a complete list rather than one with holes punched in it. Only the roster
 /// rows carry swipe-to-leave, so the two never read as the same control.
@@ -429,8 +429,8 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Layout
 
     /// One scroll view, section by section: the per-network rosters lay out as grouped lists
-    /// (with swipe-to-leave, under a native list header), and Favorites/Recent lay out as a
-    /// two-column grid of cards (under a boundary header). Every section carries a title.
+    /// (with swipe-to-leave, under a native list header), and Friends/Favorites/Recent lay out
+    /// as a two-column grid of cards (under a boundary header). Every section carries a title.
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] index, environment in
             guard let self, index < self.sections.count else { return nil }
@@ -785,16 +785,24 @@ final class BufferListViewController: UICollectionViewController {
         let favorites = favoriteRows(channelEntries, state)
         let recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
         let friends = friendRows(friendEntries, state)
-        if !favorites.isEmpty {
-            sections.append(Section(title: "Favorites", layout: .grid, rows: favorites, reorderable: true))
-        }
-        if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
-        // Right under Recent, as its own two-up grid — the handful of people you keep coming
-        // back to, with a live presence dot on each. Reorderable since lurker#721: the order
-        // is the server's global favorites order, shared with the web client.
+        // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
+        // and the two are one list on the server, so the halves reading top-to-bottom
+        // differently was a needless thing to have to re-learn per client. People also earn
+        // the top slot on their own: a friend chip is the only row carrying live presence, so
+        // it's the one grid whose contents change while you look at it.
+        //
+        // Both are reorderable since lurker#721 — the order is the server's global favorites
+        // order, shared with the web client.
         if !friends.isEmpty {
             sections.append(Section(title: "Friends", layout: .grid, rows: friends, reorderable: true))
         }
+        if !favorites.isEmpty {
+            sections.append(Section(title: "Favorites", layout: .grid, rows: favorites, reorderable: true))
+        }
+        // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
+        // having no sidebar, so it sits below the two curated sections rather than pushing
+        // them down with buffers you merely passed through.
+        if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
 
         let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
         var seen = Set<Int>()

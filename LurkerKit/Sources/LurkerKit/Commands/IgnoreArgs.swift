@@ -261,7 +261,7 @@ public enum IgnoreArgs {
                 continue
             }
 
-            if ChannelName.isPrefixed(token) {
+            if ChannelName.isChannelTarget(token) {
                 channels.append(token.lowercased())
                 continue
             }

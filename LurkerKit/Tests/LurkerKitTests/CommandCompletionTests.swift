@@ -139,5 +139,20 @@ final class CommandCompletionTests: XCTestCase {
     func testChannelEnsurePrefix() {
         XCTAssertEqual(ChannelName.ensurePrefix("linux"), "#linux")
         XCTAssertEqual(ChannelName.ensurePrefix("&local"), "&local")
+        XCTAssertEqual(ChannelName.ensurePrefix("+nomodes"), "+nomodes")
+        XCTAssertEqual(ChannelName.ensurePrefix("!12345safe"), "!12345safe")
+    }
+
+    /// The one classification both tiers mirror (`shared/channels.ts:isChannelTarget`).
+    /// Asserted directly, not only through its callers, because a `#`-only twin of it is the
+    /// bug that keeps recurring (lurker#724, lurker-ios#98).
+    func testChannelTargetCountsAllFourSigils() {
+        for target in ["#chan", "&local", "+nomodes", "!12345safe"] {
+            XCTAssertTrue(ChannelName.isChannelTarget(target), target)
+            XCTAssertEqual(BufferKind.of(networkId: 1, target: target), .channel, target)
+        }
+        for target in ["", "alice", ":server:1", "chan#notleading"] {
+            XCTAssertFalse(ChannelName.isChannelTarget(target), target)
+        }
     }
 }

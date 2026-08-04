@@ -424,18 +424,28 @@ final class IgnoreScopeTests: XCTestCase {
         XCTAssertTrue(live.isIgnored(networkId: 1, nick: "bob", userhost: "bob!u@h"))
     }
 
-    /// `&`-prefixed targets are DMs to the matcher (the server's `isDmTarget` is "not `#`, not
-    /// `:server:`") even though the client renders them as channels. Reusing the rendering
-    /// classification here inverted PUBLIC and MSGS for them.
-    func testAmpersandChannelsAreDmsToTheMatcherAsTheyAreToTheServer() {
+    /// All four RFC 2811 sigils are channels to the matcher, exactly as they are to the
+    /// server's `isDmTarget` (lurker-ios#98). This test asserted the opposite while the twin
+    /// was `#`-only: a DMs-level rule hid an `&local` channel here and left it visible on the
+    /// web, off one rule on one account.
+    func testEveryChannelSigilIsPublicToTheMatcherAsItIsToTheServer() {
         let message = Message(id: 1, type: .message, nick: "bob", text: "hi", userhost: "bob!u@h")
         let publicRule = IgnoreSet(global: [rule(mask: "bob", levels: ["PUBLIC"])])
         let dmRule = IgnoreSet(global: [rule(mask: "bob", levels: ["MSGS"])])
 
-        XCTAssertTrue(publicRule.isMessageHidden(networkId: 1, message: message, target: "#chan"))
-        XCTAssertFalse(publicRule.isMessageHidden(networkId: 1, message: message, target: "&local"))
-        XCTAssertTrue(dmRule.isMessageHidden(networkId: 1, message: message, target: "&local"))
-        XCTAssertFalse(dmRule.isMessageHidden(networkId: 1, message: message, target: "#chan"))
+        for target in ["#chan", "&local", "+nomodes", "!12345safe"] {
+            XCTAssertTrue(
+                publicRule.isMessageHidden(networkId: 1, message: message, target: target),
+                "PUBLIC should cover \(target)"
+            )
+            XCTAssertFalse(
+                dmRule.isMessageHidden(networkId: 1, message: message, target: target),
+                "MSGS should not cover \(target)"
+            )
+        }
+        // The other half of the split: a real DM is still MSGS and not PUBLIC.
+        XCTAssertTrue(dmRule.isMessageHidden(networkId: 1, message: message, target: "alice"))
+        XCTAssertFalse(publicRule.isMessageHidden(networkId: 1, message: message, target: "alice"))
     }
 
     // MARK: - Completion

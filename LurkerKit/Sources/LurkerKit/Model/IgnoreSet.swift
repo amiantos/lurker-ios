@@ -165,12 +165,10 @@ public final class IgnoreSet: Sendable {
                 // Derived from the target rather than taken from a caller's buffer record, so
                 // two callers looking at the same line can't classify it differently.
                 //
-                // Deliberately NOT `BufferKind.of`, which is the client's *rendering*
-                // classification and counts a `&`-prefixed target as a channel. The server's
-                // `isDmTarget` (`wsHub.ts`, `ircConnection.ts:isDmTargetName`) is
-                // "not `#`, not `:server:`" — so `&local` is a DM to the matcher, and using
-                // the rendering answer here inverted PUBLIC and MSGS for those channels: the
-                // server stamped a line not-ignored while this client hid it.
+                // The matcher's own DM test, not `BufferKind.of` — see `isDmTarget`. The two
+                // agree on all four channel sigils now, but they answer different questions
+                // (`BufferKind` also has `.server`/`.system` cases the matcher folds into
+                // "not a DM"), so this stays the named answer rather than a kind comparison.
                 isDm: Self.isDmTarget(target)
             ),
             now: now
@@ -178,15 +176,17 @@ public final class IgnoreSet: Sendable {
     }
 
     /// Whether a target is a DM **as the matcher means it** — the client-side twin of the
-    /// server's `isDmTarget`.
+    /// server's `isDmTarget` (`wsHub.ts`, `ircConnection.ts:isDmTargetName`), which reads
+    /// `!isChannelTarget(target) && !target.startsWith(':server:')`.
     ///
     /// This is the one matcher input derived here rather than received on the wire, so it is
-    /// the one place a client can disagree with the server about what a rule covers. Kept as
-    /// its own named answer, next to the only thing that asks the question, rather than
-    /// reusing `BufferKind.of` — the two look interchangeable and are not, and the last time
-    /// they were conflated it cost the `&` channels their PUBLIC/MSGS split.
+    /// the one place a client can disagree with the server about what a rule covers. It was
+    /// exactly that, until lurker-ios#98: this test was `#`-only after the server widened to
+    /// all four sigils (lurker#724), so a DMs-level rule and an `&local` channel rendered two
+    /// ways on one account — hidden on iOS, visible on the web. The classification now comes
+    /// from `ChannelName.isChannelTarget`, the one definition both tiers mirror.
     static func isDmTarget(_ target: String) -> Bool {
-        !target.isEmpty && !target.hasPrefix("#") && !target.hasPrefix(":server:")
+        !target.isEmpty && !ChannelName.isChannelTarget(target) && !target.hasPrefix(":server:")
     }
 
     /// Whether a message row is hidden, for the surfaces that hold the message object — the
