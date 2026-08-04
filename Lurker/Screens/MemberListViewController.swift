@@ -108,9 +108,7 @@ final class MemberListViewController: UITableViewController {
     ) -> UIContextMenuConfiguration? {
         guard let networkId = buffer.networkId, indexPath.row < members.count else { return nil }
         let nick = members[indexPath.row].nick
-        let isFriend = viewModel.favorites.contains {
-            $0.networkId == networkId && $0.target.lowercased() == nick.lowercased()
-        }
+        let isFriend = viewModel.state.isFavorite(BufferKey(networkId: networkId, target: nick))
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(children: [
                 isFriend

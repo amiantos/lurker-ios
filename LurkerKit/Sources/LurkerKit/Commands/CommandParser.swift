@@ -521,8 +521,11 @@ public enum CommandParser {
     }
 
     private static func isChannelTarget(_ target: String) -> Bool {
+        // The full sigil set, same as BufferKind.of — the screens classify '+foo' as a
+        // channel (member list, Leave, Add to Favorites), so '/part' and friends must
+        // agree or the buffer is a channel to every surface except its own commands.
         guard let first = target.first else { return false }
-        return first == "#" || first == "&"
+        return ChannelName.sigils.contains(first)
     }
 
     /// A DM/user target: has a network, isn't a channel, isn't a `:server:`/`:system:` pseudo.

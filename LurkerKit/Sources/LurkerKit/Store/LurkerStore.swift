@@ -282,11 +282,10 @@ public struct ChatState: Sendable {
     /// a push can beat its own backlog frame, a join's row arrives with `channel-joined` —
     /// and the screen's `hydrateIfNeeded` fills it in once it does.
     ///
-    /// It lives here because the four call sites had each written it out and one had already
-    /// drifted, hardcoding `.channel` where `BufferKind.of` would have said `.dm`: a `!foo`
-    /// target carries a channel sigil for *input* purposes (`ChannelName.sigils`) but is not
-    /// one of the sigils a buffer is classified by. That mismatch gives a screen a member
-    /// list and nick coloring for a buffer whose store row disagrees.
+    /// It lives here because the four call sites had each written the synthesis out and one
+    /// had already drifted from `BufferKind.of`'s classification. One classifier (the full
+    /// `ChannelName.sigils` set, matching the server) — a site that guesses a kind gives its
+    /// screen a member list and nick coloring the store row disagrees with.
     public func buffer(for key: BufferKey) -> Buffer {
         buffers[key.id]
             ?? Buffer(
@@ -322,6 +321,14 @@ public struct ChatState: Sendable {
     /// Whether this line is saved. See `bookmarkedIds` for why an unknown id reads as
     /// unsaved rather than unknown.
     public func isBookmarked(_ messageId: Int) -> Bool { bookmarkedIds.contains(messageId) }
+
+    /// Membership in the favorites list, fold-consistent with every other key comparison
+    /// (`BufferKey.id` lowercases both sides). The one owner of the predicate — screens
+    /// must not hand-roll `favorites.contains { ... lowercased() ... }` copies that a
+    /// future fold correction would have to chase individually.
+    public func isFavorite(_ key: BufferKey) -> Bool {
+        favorites.contains { $0.key.id == key.id }
+    }
 
     /// Reconcile `bookmarkedIds` against a page of rows.
     ///

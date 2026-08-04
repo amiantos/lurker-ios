@@ -164,12 +164,12 @@ public enum BufferKind: Sendable {
     case system
 
     /// Classify a target the way the server does (kindForTarget): all FOUR IRC channel
-    /// prefixes count — '#', '&', '+', '!' — or a favorited `+foo` would masquerade as a
-    /// person under Friends, presence dot and all.
+    /// sigils count — `ChannelName.sigils`, the one owner of the set — or a favorited
+    /// `+foo` would masquerade as a person under Friends, presence dot and all.
     public static func of(networkId: Int?, target: String) -> BufferKind {
         if networkId == nil || target == Buffer.systemTarget { return .system }
         if target.hasPrefix(":server:") { return .server }
-        if ["#", "&", "+", "!"].contains(where: target.hasPrefix) { return .channel }
+        if let first = target.first, ChannelName.sigils.contains(first) { return .channel }
         return .dm
     }
 

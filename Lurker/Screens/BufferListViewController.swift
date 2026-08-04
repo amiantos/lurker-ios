@@ -55,6 +55,11 @@ final class BufferListViewController: UICollectionViewController {
         /// Set only on Friends chips (favorited DMs): the peer's presence dot state.
         /// Equatable so a presence change reconfigures the one chip.
         var presence: FriendPresence?
+        /// A Friends chip — the one row kind whose buffer may be SYNTHESIZED (a
+        /// favorite the store hasn't materialized), so a tap must open-buffer first.
+        /// An explicit flag, not "has presence": the moment any other chip kind grows
+        /// a presence dot, a proxy would quietly start firing a WRITE on its taps.
+        var isFriendChip: Bool = false
         /// Whether an ignore rule mutes this buffer's plain-unread signal (lurker #359).
         /// Carried on the row — and therefore compared by `Equatable` — so muting or unmuting
         /// from another device reconfigures the one cell it affects.
@@ -73,11 +78,13 @@ final class BufferListViewController: UICollectionViewController {
             buffer: Buffer,
             subtitle: String?,
             presence: FriendPresence? = nil,
+            isFriendChip: Bool = false,
             muted: Bool = false
         ) {
             self.buffer = buffer
             self.subtitle = subtitle
             self.presence = presence
+            self.isFriendChip = isFriendChip
             self.muted = muted
         }
     }
@@ -118,6 +125,14 @@ final class BufferListViewController: UICollectionViewController {
     /// Whether a state change arrived while a chip was being dragged and is still owed a
     /// rebuild (#53). See `rebuild()` for why it waits and `dragSessionDidEnd` for the release.
     private var rebuildDeferredByDrag = false
+    /// The section a live drag was lifted from — chips reorder only within their own
+    /// section, and this is the O(1) identity `dropSessionDidUpdate` checks per
+    /// touch-move (sections are frozen during a drag; rebuild defers).
+    private var dragSourceSection: Int?
+    /// The just-dropped favorites order (bufferIds) awaiting its server echo, plus the
+    /// store snapshot it permutes — see `orderedFavorites(_:)`.
+    private var optimisticFavoriteOrder: [Int]?
+    private var favoritesAtDrop: [FavoriteEntry]?
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -730,20 +745,26 @@ final class BufferListViewController: UICollectionViewController {
         guard !ChannelName.fold(typed).isEmpty else { return }
         let channel = ChannelName.ensurePrefix(typed)
         viewModel.joinChannel(networkId: network.id, channel: channel)
-        // `buffer(for:)` rather than a hand-built one: `ensurePrefix` accepts the full
-        // RFC-1459 sigil set, of which `BufferKind.of` classifies only `#` and `&` as
-        // channels — so hardcoding `.channel` here would hand the chat screen a member list
-        // its store row disagrees with.
+        // `buffer(for:)` rather than a hand-built one: the kind must come from the one
+        // classifier (`BufferKind.of`, the full sigil set) — hardcoding `.channel` here
+        // would hand the chat screen a row the store's own synthesis could disagree with.
         onSelect?(state.buffer(for: BufferKey(networkId: network.id, target: channel)))
     }
 
     // MARK: - Sections
 
     private func buildSections(_ state: ChatState) -> [Section] {
+        // Partition the favorites list ONCE — the sections, the roster exclusion, and the
+        // Recent dedupe all derive from the same two slices, so a future classification
+        // change can't update one walk and miss another (the double-printed-DM bug the
+        // split exists to prevent).
+        let orderedFavorites = orderedFavorites(state)
+        let friendEntries = orderedFavorites.filter(Self.isFriendEntry)
+        let channelEntries = orderedFavorites.filter { !Self.isFriendEntry($0) }
         // A friend (a favorited DM) is shown as its Friends chip, so it's hidden from its
         // network's roster (and from Recent) rather than printed twice — matching the web
         // client, whose FRIENDS section likewise lifts these DMs out of their network list.
-        let friendDmKeys = Self.friendDmKeys(state)
+        let friendDmKeys = Set(friendEntries.map(\.key.id))
 
         var byNetwork: [Int: [Buffer]] = [:]
         for buffer in state.buffers.values {
@@ -761,9 +782,9 @@ final class BufferListViewController: UICollectionViewController {
         // different things — a card vs. a row, and only the row leaves the channel on a swipe —
         // so the duplication is a quick way in, not a buffer printed twice by accident.
         // (Friends are the exception, lifted out entirely — see friendDmKeys above.)
-        let favorites = favoriteRows(state)
-        let recents = recentRows(state, friendDmKeys: friendDmKeys)
-        let friends = friendRows(state)
+        let favorites = favoriteRows(channelEntries, state)
+        let recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
+        let friends = friendRows(friendEntries, state)
         if !favorites.isEmpty {
             sections.append(Section(title: "Favorites", layout: .grid, rows: favorites, reorderable: true))
         }
@@ -802,13 +823,13 @@ final class BufferListViewController: UICollectionViewController {
     ///
     /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
     /// system buffer is excluded because it already has its own row above.
-    private func recentRows(_ state: ChatState, friendDmKeys: Set<String>) -> [Row] {
-        // Favorites claim a buffer before Recent does, so a favorite you just opened stays a
-        // single Favorites chip rather than printing a second, identical chip in the Recent
-        // grid right beside it. Friend DMs are likewise excluded — they have their own
-        // Friends chip. (Channels still keep their ordinary roster row below — this only
-        // dedups between the grids.)
-        let excluded = Set(state.favorites.map(\.key.id)).union(friendDmKeys)
+    private func recentRows(_ state: ChatState, favoriteKeys: Set<String>) -> [Row] {
+        // Favorites (both kinds — friend DMs have their own chip too) claim a buffer
+        // before Recent does, so a favorite you just opened stays a single chip rather
+        // than printing a second, identical one in the Recent grid right beside it.
+        // (Channels still keep their ordinary roster row below — this only dedups
+        // between the grids.)
+        let excluded = favoriteKeys
         return UserPreferences.standard.recentBufferKeys
             .filter { !excluded.contains($0) }
             .compactMap { state.buffers[$0] }
@@ -817,11 +838,10 @@ final class BufferListViewController: UICollectionViewController {
             .map { chipRow($0, state) }
     }
 
-    /// One chip per friend — the DMs in the server's favorites list, in the user's global
-    /// order (shared with the web client's FRIENDS section since lurker#721).
-    private func friendRows(_ state: ChatState) -> [Row] {
-        state.favorites.compactMap { entry -> Row? in
-            guard Self.isFriendEntry(entry) else { return nil }
+    /// One chip per friend — the DM slice of the server's favorites list, in the user's
+    /// global order (shared with the web client's FRIENDS section since lurker#721).
+    private func friendRows(_ entries: [FavoriteEntry], _ state: ChatState) -> [Row] {
+        entries.map { entry in
             // `buffer(for:)` resolves an existing DM (keeping its server-cased target and
             // unread count) or synthesizes an unhydrated one to open — the same handoff the
             // join flow uses, so tapping the chip hydrates on the chat screen.
@@ -830,6 +850,7 @@ final class BufferListViewController: UICollectionViewController {
                 buffer: buffer,
                 subtitle: state.networks[entry.networkId]?.name,
                 presence: state.presence(networkId: entry.networkId, nick: entry.target),
+                isFriendChip: true,
                 muted: Self.isMuted(buffer, state)
             )
         }
@@ -841,22 +862,36 @@ final class BufferListViewController: UICollectionViewController {
         BufferKind.of(networkId: entry.networkId, target: entry.target) == .dm
     }
 
-    /// `BufferKey.id`s of every friend DM — the DMs shown as Friends chips and therefore
-    /// hidden from their network roster and Recent.
-    private static func friendDmKeys(_ state: ChatState) -> Set<String> {
-        Set(state.favorites.filter(isFriendEntry).map(\.key.id))
-    }
-
-    /// Favorited channels, in the server's global favorites order (lurker#721 — shared
-    /// with the web client's FAVORITES section; the old device-local UserDefaults list
-    /// migrated up on first connect).
-    private func favoriteRows(_ state: ChatState) -> [Row] {
-        state.favorites.compactMap { entry -> Row? in
-            guard !Self.isFriendEntry(entry) else { return nil } // shown under Friends
+    /// Favorited channels — the channel slice of the server's global favorites order
+    /// (lurker#721, shared with the web client's FAVORITES section; the old device-local
+    /// UserDefaults list migrated up on first connect).
+    private func favoriteRows(_ entries: [FavoriteEntry], _ state: ChatState) -> [Row] {
+        entries.compactMap { entry -> Row? in
             let buffer = state.buffer(for: entry.key)
             guard buffer.kind != .system, buffer.kind != .server else { return nil }
             return chipRow(buffer, state)
         }
+    }
+
+    /// `state.favorites` with the just-dropped-but-not-yet-echoed order applied. A drop
+    /// permutes the local sections AND sends the reorder, but any frame that folded
+    /// mid-drag releases a deferred rebuild the instant the drag ends — rebuilding from
+    /// the store's PRE-drop order, which snapped the chip home for a round-trip and made
+    /// a quick second drag compute from the reverted base. The shadow order bridges the
+    /// gap; ANY favorites change (the echo, or another device's edit) is authoritative
+    /// and drops it.
+    private func orderedFavorites(_ state: ChatState) -> [FavoriteEntry] {
+        guard let order = optimisticFavoriteOrder else { return state.favorites }
+        guard state.favorites == favoritesAtDrop else {
+            optimisticFavoriteOrder = nil
+            favoritesAtDrop = nil
+            return state.favorites
+        }
+        let byId = Dictionary(state.favorites.map { ($0.bufferId, $0) }, uniquingKeysWith: { a, _ in a })
+        var out = order.compactMap { byId[$0] }
+        let placed = Set(order)
+        out.append(contentsOf: state.favorites.filter { !placed.contains($0.bufferId) })
+        return out
     }
 
     private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
@@ -959,9 +994,10 @@ final class BufferListViewController: UICollectionViewController {
         // re-hydrates — no longer true, and it was the premise the read/write split overturned.
         // `open-buffer` is a WRITE: it now announces to every other device the user owns, it's
         // refused outright for a paused account, and the chat screen's own hydrate would fetch
-        // the same backlog a second time. Presence marks the Friends chips — the rows whose
-        // buffer can be a synthesized, not-yet-opened DM.
-        if row.presence != nil, state.buffers[row.buffer.key.id] == nil {
+        // the same backlog a second time. Gated on the explicit Friends-chip flag, not a
+        // presence proxy — the moment any other chip kind grows a presence dot, a proxy
+        // would quietly start firing this write on its taps.
+        if row.isFriendChip, state.buffers[row.buffer.key.id] == nil {
             viewModel.openBuffer(row.buffer.key)
         }
         onSelect?(row.buffer)
@@ -1007,9 +1043,7 @@ final class BufferListViewController: UICollectionViewController {
         // the web client held on the buffer: one placement per buffer).
         let isDm = buffer.kind == .dm
         let target = buffer.target
-        let isFavorite = state.favorites.contains {
-            $0.networkId == networkId && $0.target.lowercased() == target.lowercased()
-        }
+        let isFavorite = state.isFavorite(buffer.key)
         let title = isFavorite
             ? (isDm ? "Remove from Friends" : "Remove from Favorites")
             : (isDm ? "Add to Friends" : "Add to Favorites")
@@ -1082,6 +1116,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // feature — a favorite dragged into Mail should do nothing rather than paste a key.
         let item = UIDragItem(itemProvider: NSItemProvider())
         item.localObject = sections[indexPath.section].rows[indexPath.item].buffer.key.id
+        dragSourceSection = indexPath.section
         return [item]
     }
 
@@ -1141,9 +1176,12 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // one — a channel isn't a person. A cross-section hover must say `.forbidden` HERE,
         // while the gesture is being made: `performDropWith` would refuse it anyway (the
         // key resolves against the destination's rows and misses), but only after the
-        // layout opened an insertion gap and the UI said yes.
-        if let key = session.items.first?.localObject as? String,
-           !sections[destinationIndexPath.section].rows.contains(where: { $0.buffer.key.id == key }) {
+        // layout opened an insertion gap and the UI said yes. Section identity, stashed
+        // when the chip lifted, not key membership: this runs per touch-move, and
+        // sections are frozen for the drag's duration (rebuild defers), so the index
+        // stays true — O(1) beats a per-event row scan and can't be fooled by a key that
+        // ever appeared in two sections.
+        if destinationIndexPath.section != dragSourceSection {
             return UICollectionViewDropProposal(operation: .forbidden)
         }
         // Deliberately not checking the drop *index*: a drop past the last chip is a real
@@ -1191,7 +1229,13 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         let reordered = FavoriteOrder.moved(stored, visible: visible, from: source.item, to: destination.item)
         guard reordered != stored else { return }
         let idByKey = Dictionary(entries.map { ($0.key.id, $0.bufferId) }, uniquingKeysWith: { a, _ in a })
-        viewModel.reorderFavorites(bufferIds: reordered.compactMap { idByKey[$0] })
+        let reorderedIds = reordered.compactMap { idByKey[$0] }
+        viewModel.reorderFavorites(bufferIds: reorderedIds)
+        // Shadow the new order until the echo folds — the deferred rebuild released at
+        // drag end would otherwise restore the store's pre-drop order (a visible snap
+        // home, and a corrupt base for a quick second drag). See orderedFavorites(_:).
+        favoritesAtDrop = entries
+        optimisticFavoriteOrder = reorderedIds
 
         // The model moves with the view rather than being rebuilt: the echo would reach the
         // same answer, but it reloads on a row-order change (`sameStructure` compares keys
@@ -1211,6 +1255,10 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
     /// place to release a rebuild `rebuild()` deferred — a drag abandoned over the roster would
     /// otherwise leave the list frozen on whatever it held when the chip was lifted.
     func collectionView(_ collectionView: UICollectionView, dragSessionDidEnd session: UIDragSession) {
+        // Cleared FIRST: the deferred rebuild below is exactly the path that rebuilds
+        // `sections`, after which a stashed section index would be a fact about a
+        // model that no longer exists.
+        dragSourceSection = nil
         guard rebuildDeferredByDrag else { return }
         rebuild()
     }

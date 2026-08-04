@@ -54,29 +54,43 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
         }
 
-        // One-shot local→server favorites migration (lurker#721 moved favorites into
-        // `favorite_buffers`). Hung off the first `favorites-changed` fold on purpose:
-        // that frame is proof the socket is LIVE and the server speaks favorites —
-        // `send` happily returns true over a dead socket, so "on connect" would be a
-        // guess. Re-entrancy (the echoes these sends trigger) is guarded in memory;
-        // the PERSISTED flag flips only after the work completes, so a kill mid-loop
-        // retries next launch instead of stranding the un-sent tail forever — safe
-        // because favorite-buffer is idempotent server-side (INSERT OR IGNORE). The
-        // server appends in arrival order, preserving the stored order. 'sys::' keys
-        // (the system buffer) can't be favorited and are skipped.
-        var migrationInFlight = false
+        // Local→server favorites migration (lurker#721 moved favorites into
+        // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
+        // trusts a send — `send` returns true over a dead socket — so the legacy list
+        // survives until a `favorites-changed` fold PROVES the server holds everything.
+        // Each fold diffs the legacy keys against the server's list (the frame is also
+        // proof the socket is live and the server speaks favorites); keys the server
+        // lacks are pushed up, at most one batch per app session — a key the server
+        // refuses (its buffer closed/gone since it was favorited) never echoes back and
+        // would otherwise resend on every fold. The persisted flag flips, and the
+        // legacy list clears, only on a fold that shows nothing left to migrate; a
+        // socket that died under the batch simply retries next session (favorite-buffer
+        // is idempotent server-side). Unparseable keys ('sys::' — the system buffer was
+        // never favoritable) don't count as pending, or they'd hold completion hostage.
+        var migrationBatchSent = false
         viewModel.onFavoritesSynced = { [weak viewModel] in
+            guard let viewModel else { return }
             let prefs = UserPreferences.standard
-            guard !prefs.migratedFavoritesToServer, !migrationInFlight else { return }
-            migrationInFlight = true
-            for key in prefs.legacyFavoriteBufferKeys {
-                guard let sep = key.range(of: "::"),
+            guard !prefs.migratedFavoritesToServer else { return }
+            let serverKeys = Set(viewModel.favorites.map(\.key.id))
+            let pending = prefs.legacyFavoriteBufferKeys.compactMap {
+                key -> (networkId: Int, target: String)? in
+                guard !serverKeys.contains(key),
+                      let sep = key.range(of: "::"),
                       let networkId = Int(key[..<sep.lowerBound])
-                else { continue }
-                viewModel?.favoriteBuffer(networkId: networkId, target: String(key[sep.upperBound...]))
+                else { return nil }
+                return (networkId, String(key[sep.upperBound...]))
             }
-            prefs.migratedFavoritesToServer = true
-            prefs.clearLegacyFavorites()
+            if pending.isEmpty {
+                prefs.migratedFavoritesToServer = true
+                prefs.clearLegacyFavorites()
+                return
+            }
+            guard !migrationBatchSent else { return }
+            migrationBatchSent = true
+            for item in pending {
+                viewModel.favoriteBuffer(networkId: item.networkId, target: item.target)
+            }
         }
 
         // Session transitions drive navigation: sign-in and restore → the buffer list;
