@@ -745,15 +745,18 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertTrue(found.hydrated, "the real row, not a fresh synthetic one")
     }
 
-    /// The divergence that motivated pulling this out of its four call sites: `!foo` carries
-    /// a channel sigil for *input* (`ChannelName.sigils`, which the join form prefixes with)
-    /// but is not one of the two sigils a buffer is classified by. A site that hardcoded
-    /// `.channel` gave its screen a member list the store row would never agree with.
+    /// One classification, shared with the server: all FOUR channel sigils (`#&+!`) count,
+    /// matching `kindForTarget` on the wire's other end. This used to pin `!foo` as `.dm`
+    /// (the two-sigil rule) — which meant a favorited `!foo` filed under Friends with a
+    /// presence dot while the server's buffer row said channel. Agreement is the contract
+    /// now; a site that diverges gives its screen a member list the store row (and the
+    /// server) would never agree with.
     func testBufferForKeySynthesizesWithTheSameKindClassificationTheStoreUses() {
         let state = ChatState()
         XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "#lurker")).kind, .channel)
         XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "&local")).kind, .channel)
-        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "!foo")).kind, .dm)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "+loose")).kind, .channel)
+        XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "!foo")).kind, .channel)
         XCTAssertEqual(state.buffer(for: BufferKey(networkId: 1, target: "bob")).kind, .dm)
         XCTAssertEqual(state.buffer(for: BufferKey(networkId: nil, target: Buffer.systemTarget)).kind, .system)
     }

@@ -709,8 +709,8 @@ public final class ChatViewModel {
             onBufferRenamed?(fromKey, toKey)
             store.apply(frame)
         case .favoritesChanged:
-            // Apply FIRST, announce after — the migration hook reads the folded
-            // state to decide what the server already has.
+            // Apply FIRST, announce after — a hook reading `favorites` must see
+            // the state this frame proved, not the one before it.
             store.apply(frame)
             onFavoritesSynced?()
         default:

@@ -1058,15 +1058,17 @@ extension BufferListViewController: PillPresenting {
 
 // MARK: - Reordering favorites (#53)
 
-/// Dragging a Favorites chip into a new position.
+/// Dragging a Favorites or Friends chip into a new position.
 ///
-/// Purely local: favorites live in `UserDefaults` (app-level and cross-network, unlike the web
-/// client's per-network server pins), so a reorder is a write to this device and nothing else.
+/// The order is the SERVER's one global favorites list (lurker#721), shared with the web
+/// client — a drop maps through `FavoriteOrder` onto the stored global order and sends the
+/// full permuted bufferId list; the `favorites-changed` echo is what makes it stick on every
+/// device.
 ///
-/// Confined to the Favorites section in both directions — a chip can't be lifted out of any
-/// other section, and can't be dropped into one. Recent is MRU-ordered and Friends is
-/// alphabetical, so a chip dropped there would snap back on the next rebuild, which is a worse
-/// answer than not accepting the drop.
+/// Confined to the chip's OWN section in both directions — the two grids are kind-filtered
+/// views of one list (a channel isn't a person), Recent is MRU-ordered, and a chip dropped
+/// anywhere foreign would snap back on the next rebuild, which is a worse answer than not
+/// accepting the drop.
 extension BufferListViewController: UICollectionViewDragDelegate, UICollectionViewDropDelegate {
 
     func collectionView(
@@ -1129,15 +1131,24 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
             return UICollectionViewDropProposal(operation: .cancel)
         }
         guard sections[destinationIndexPath.section].reorderable else {
-            // Over Recent, Friends, or a roster row. `.forbidden` is the one that draws the
+            // Over Recent or a roster row. `.forbidden` is the one that draws the
             // no-drop badge; `.cancel` is silent, which left the chip looking droppable
             // everywhere right up until it flew home. The rule is only discoverable if the
             // gesture says so while it's being made.
             return UICollectionViewDropProposal(operation: .forbidden)
         }
-        // Deliberately not checking the *item*: a drop past the last chip is a real gesture
-        // ("put it at the end") and UIKit can report it as an index one beyond the last row.
-        // `performDropWith` clamps it.
+        // TWO sections reorder now (Favorites and Friends), but a chip belongs to exactly
+        // one — a channel isn't a person. A cross-section hover must say `.forbidden` HERE,
+        // while the gesture is being made: `performDropWith` would refuse it anyway (the
+        // key resolves against the destination's rows and misses), but only after the
+        // layout opened an insertion gap and the UI said yes.
+        if let key = session.items.first?.localObject as? String,
+           !sections[destinationIndexPath.section].rows.contains(where: { $0.buffer.key.id == key }) {
+            return UICollectionViewDropProposal(operation: .forbidden)
+        }
+        // Deliberately not checking the drop *index*: a drop past the last chip is a real
+        // gesture ("put it at the end") and UIKit can report it as an index one beyond the
+        // last row. `performDropWith` clamps it.
         return UICollectionViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
     }
 
