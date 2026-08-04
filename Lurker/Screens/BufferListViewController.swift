@@ -791,10 +791,11 @@ final class BufferListViewController: UICollectionViewController {
         var favorites = favoriteRows(channelEntries, state)
         var recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
         var friends = friendRows(friendEntries, state)
-        // Each grid on its own — a collision is a fact about one section's rows.
+        // Each grid on its own — a collision is a fact about one section's rows. Recent hints
+        // every chip rather than just its collisions: it's the one grid you didn't curate.
         Self.addNetworkHints(state, &friends)
         Self.addNetworkHints(state, &favorites)
-        Self.addNetworkHints(state, &recents)
+        Self.addNetworkHints(state, &recents, everyRow: true)
         // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
         // and the two are one list on the server, so the halves reading top-to-bottom
         // differently was a needless thing to have to re-learn per client. People also earn
@@ -924,7 +925,8 @@ final class BufferListViewController: UICollectionViewController {
         Row(buffer: buffer, networkName: nil, muted: Self.isMuted(buffer, state))
     }
 
-    /// Tag the chips whose names collide **within this one grid** with a short `li` hint.
+    /// Tag chips with a short `li` network hint — the ones whose names collide **within this
+    /// one grid**, or every chip when `everyRow` is set.
     ///
     /// Per section, not pooled across all three, because Recent churns and Friends/Favorites
     /// don't. Pooling let a stable Favorites chip gain and lose its hint as unrelated buffers
@@ -935,20 +937,37 @@ final class BufferListViewController: UICollectionViewController {
     /// spending a label on; the same name under two different headers already reads as two
     /// different things.
     ///
-    /// No collisions, no hints — so a single-network instance never shows one, since a buffer
-    /// appears in at most one grid (favorites are excluded from Recent, friends are lifted out
-    /// of both) and can't collide with itself.
-    private static func addNetworkHints(_ state: ChatState, _ rows: inout [Row]) {
-        var counts: [String: Int] = [:]
-        for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
-        let ambiguous = Set(counts.filter { $0.value > 1 }.keys)
-        guard !ambiguous.isEmpty else { return }
+    /// `everyRow` is Recent's, and the asymmetry is the point. Friends and Favorites are
+    /// **curated** — you put each one there, so you know which network it's on and the hint is
+    /// only worth its space when two of them read alike. Recent is the grid you didn't choose:
+    /// it's wherever you happened to be, in whatever order you were there, so which network a
+    /// chip belongs to is context for *every* row rather than a tiebreaker between two.
+    ///
+    /// Both modes are gated on the rows actually spanning more than one network. A label
+    /// repeated identically down a whole grid is the second line this change removed, in a
+    /// smaller font — and "more than one network in these rows" rather than "more than one
+    /// network configured" because a second network with nothing in this grid can't be
+    /// confused with anything either. (The collision path is unaffected by the gate: two chips
+    /// sharing a name in one section are necessarily on different networks, since a buffer key
+    /// is network + target.)
+    private static func addNetworkHints(_ state: ChatState, _ rows: inout [Row], everyRow: Bool = false) {
+        guard Set(rows.compactMap(\.buffer.networkId)).count > 1 else { return }
 
-        // Against every network the user has, not just the colliding ones — see
+        let hinted: Set<String>
+        if everyRow {
+            hinted = Set(rows.map { $0.buffer.target.lowercased() })
+        } else {
+            var counts: [String: Int] = [:]
+            for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
+            hinted = Set(counts.filter { $0.value > 1 }.keys)
+        }
+        guard !hinted.isEmpty else { return }
+
+        // Against every network the user has, not just the ones on screen — see
         // `NetworkAbbreviation`, which is also what the web computes for the same rows.
         let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
         for index in rows.indices {
-            guard ambiguous.contains(rows[index].buffer.target.lowercased()),
+            guard hinted.contains(rows[index].buffer.target.lowercased()),
                   let networkId = rows[index].buffer.networkId,
                   let abbreviation = abbreviations[networkId]
             else { continue }
