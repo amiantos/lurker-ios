@@ -155,4 +155,20 @@ final class CommandCompletionTests: XCTestCase {
             XCTAssertFalse(ChannelName.isChannelTarget(target), target)
         }
     }
+
+    /// The sort/display strip, the web's `stripChannelPrefix`. The buffer list's sort key
+    /// hand-wrote half the set (`#&`), so `+`/`!` channels sorted under their sigil — above
+    /// every named channel — while the web sorted them by name (lurker-ios#98).
+    func testStripSigilsTakesEveryLeadingSigil() {
+        XCTAssertEqual(ChannelName.stripSigils("#linux"), "linux")
+        XCTAssertEqual(ChannelName.stripSigils("&local"), "local")
+        XCTAssertEqual(ChannelName.stripSigils("+nomodes"), "nomodes")
+        XCTAssertEqual(ChannelName.stripSigils("!12345safe"), "12345safe")
+        // Every LEADING one — `##anime` sorts as "anime", not "#anime".
+        XCTAssertEqual(ChannelName.stripSigils("##anime"), "anime")
+        // Interior sigils are part of the name; a bare nick is untouched.
+        XCTAssertEqual(ChannelName.stripSigils("chan#notleading"), "chan#notleading")
+        XCTAssertEqual(ChannelName.stripSigils("alice"), "alice")
+        XCTAssertEqual(ChannelName.stripSigils(""), "")
+    }
 }

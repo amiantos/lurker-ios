@@ -936,7 +936,9 @@ final class BufferListViewController: UICollectionViewController {
     ///
     /// Matches the web client's ordering: the alphabetical key strips leading channel sigils
     /// (`##anime` sorts as "anime", not before `#aardvark`), so the two clients list the same
-    /// network the same way.
+    /// network the same way. All four sigils, via `ChannelName.stripSigils` — this stripped a
+    /// hand-written `#&` until lurker-ios#98 and floated `+`/`!` channels above every named
+    /// one, which the web (`stripChannelPrefix`) never did.
     private nonisolated static func order(_ lhs: Buffer, _ rhs: Buffer) -> Bool {
         func rank(_ kind: BufferKind) -> Int {
             switch kind {
@@ -951,9 +953,7 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private nonisolated static func sortKey(_ target: String) -> String {
-        var name = Substring(target)
-        while let first = name.first, first == "#" || first == "&" { name = name.dropFirst() }
-        return String(name)
+        ChannelName.stripSigils(target)
     }
 
     // MARK: - Collection view data source

@@ -8,7 +8,12 @@
 public enum ChannelName {
     /// The four IRC channel prefixes (RFC 2811 §2.1): `#` global, `&` server-local, `+`
     /// no-modes, `!` safe/timestamped.
-    public static let sigils: Set<Character> = ["#", "&", "+", "!"]
+    ///
+    /// Private on purpose: every question about the set is answered by a function below, so
+    /// there is no way to re-ask one of them at a call site and get a different answer. Half
+    /// the set (`#&`, hand-written in a sort key) is how the ordering divergence in
+    /// lurker-ios#98 got in beside the classification one.
+    private static let sigils: Set<Character> = ["#", "&", "+", "!"]
 
     /// Whether `target` names a **channel** — the client-side twin of the server's
     /// `isChannelTarget` (`shared/channels.ts`).
@@ -36,6 +41,19 @@ public enum ChannelName {
     /// `ensureChannelPrefix`.
     public static func ensurePrefix(_ name: String) -> String {
         isChannelTarget(name) ? name : "#\(name)"
+    }
+
+    /// Strip **every** leading channel sigil — the web's `stripChannelPrefix`, and for the
+    /// same two uses: sort keys and display. Never for addressing.
+    ///
+    /// All of them, not one, because the question is "what is this channel called" and `##`
+    /// is a real convention (`##anime`). All FOUR, because a sort key that stripped `#&` and
+    /// left `+`/`!` floated those channels above every named one — the same network listed
+    /// two ways on two clients, off a hand-written half of the set.
+    public static func stripSigils(_ name: String) -> String {
+        var rest = Substring(name)
+        while let first = rest.first, sigils.contains(first) { rest = rest.dropFirst() }
+        return String(rest)
     }
 
     /// Fold for prefix-matching in autocomplete: lowercased, with one leading sigil dropped,
