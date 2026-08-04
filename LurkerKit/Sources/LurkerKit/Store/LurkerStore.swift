@@ -283,9 +283,9 @@ public struct ChatState: Sendable {
     /// and the screen's `hydrateIfNeeded` fills it in once it does.
     ///
     /// It lives here because the four call sites had each written the synthesis out and one
-    /// had already drifted from `BufferKind.of`'s classification. One classifier (the full
-    /// `ChannelName.sigils` set, matching the server) — a site that guesses a kind gives its
-    /// screen a member list and nick coloring the store row disagrees with.
+    /// had already drifted from `BufferKind.of`'s classification. One classifier
+    /// (`ChannelName.isChannelTarget`, matching the server) — a site that guesses a kind
+    /// gives its screen a member list and nick coloring the store row disagrees with.
     public func buffer(for key: BufferKey) -> Buffer {
         buffers[key.id]
             ?? Buffer(

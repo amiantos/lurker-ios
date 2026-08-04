@@ -149,11 +149,11 @@ public enum CommandParser {
             // `/part heading out` says goodbye here rather than parting a channel "heading".
             let partChannel: String?
             let partReason: String
-            if let first = rest.first, isChannelTarget(first) {
+            if let first = rest.first, ChannelName.isChannelTarget(first) {
                 partChannel = first
                 partReason = body(after: first, in: argLine)
             } else {
-                partChannel = isChannelTarget(target) ? target : nil
+                partChannel = ChannelName.isChannelTarget(target) ? target : nil
                 partReason = argLine
             }
             guard let partChannel else {
@@ -164,7 +164,7 @@ public enum CommandParser {
             // Part and rejoin the CURRENT channel; the whole arg line is an optional part
             // reason (not a channel). Both legs use the structured verbs so the persisted
             // `joined` flag flips false and back, keeping reconnect auto-join intact.
-            guard isChannelTarget(target) else {
+            guard ChannelName.isChannelTarget(target) else {
                 return [.info("usage: /cycle [reason] — run inside a channel")]
             }
             return [.part(channel: target, reason: argLine.isEmpty ? nil : argLine),
@@ -176,11 +176,11 @@ public enum CommandParser {
             // `#chan` retargets. Interior spacing of the body is preserved by slicing.
             let channel: String
             let bodyText: String
-            if let first = rest.first, isChannelTarget(first) {
+            if let first = rest.first, ChannelName.isChannelTarget(first) {
                 channel = first
                 bodyText = body(after: first, in: argLine)
             } else {
-                guard isChannelTarget(target) else {
+                guard ChannelName.isChannelTarget(target) else {
                     return [.info("usage: /topic [#chan] [text] — no channel context")]
                 }
                 channel = target
@@ -200,7 +200,7 @@ public enum CommandParser {
             guard let who = rest.first else { return [.info("usage: /invite <nick> [channel]")] }
             // The channel defaults to the current buffer, but only if that's a channel — an
             // /invite from a DM with no explicit channel would otherwise aim at the peer nick.
-            let channel = rest.count > 1 ? rest[1] : (isChannelTarget(target) ? target : nil)
+            let channel = rest.count > 1 ? rest[1] : (ChannelName.isChannelTarget(target) ? target : nil)
             guard let channel else {
                 return [.info("usage: /invite <nick> [channel] — no channel context")]
             }
@@ -212,12 +212,12 @@ public enum CommandParser {
             let channel: String?
             let who: String?
             let reason: String
-            if let first = rest.first, isChannelTarget(first) {
+            if let first = rest.first, ChannelName.isChannelTarget(first) {
                 channel = first
                 who = rest.count > 1 ? rest[1] : nil
                 reason = rest.dropFirst(2).joined(separator: " ")
             } else {
-                channel = isChannelTarget(target) ? target : nil
+                channel = ChannelName.isChannelTarget(target) ? target : nil
                 who = rest.first
                 reason = rest.dropFirst().joined(separator: " ")
             }
@@ -231,7 +231,7 @@ public enum CommandParser {
             // `/mode <flags>` applies to the current channel; `/mode <target> <flags…>` is
             // explicit. A leading `+`/`-` in a channel buffer is the flags-only form.
             guard let first = rest.first else { return [.info("usage: /mode [target] <flags> [args]")] }
-            if (first.hasPrefix("+") || first.hasPrefix("-")), isChannelTarget(target) {
+            if (first.hasPrefix("+") || first.hasPrefix("-")), ChannelName.isChannelTarget(target) {
                 return [.raw(line: "MODE \(target) \(rest.joined(separator: " "))")]
             }
             return [.raw(line: "MODE \(argLine)")]
@@ -497,9 +497,9 @@ public enum CommandParser {
         rest: [String],
         target: String
     ) -> [CommandEffect] {
-        var channel: String? = isChannelTarget(target) ? target : nil
+        var channel: String? = ChannelName.isChannelTarget(target) ? target : nil
         var args = rest
-        if let first = args.first, isChannelTarget(first) {
+        if let first = args.first, ChannelName.isChannelTarget(first) {
             channel = first
             args.removeFirst()
         }
@@ -520,16 +520,8 @@ public enum CommandParser {
         String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
     }
 
-    private static func isChannelTarget(_ target: String) -> Bool {
-        // The full sigil set, same as BufferKind.of — the screens classify '+foo' as a
-        // channel (member list, Leave, Add to Favorites), so '/part' and friends must
-        // agree or the buffer is a channel to every surface except its own commands.
-        guard let first = target.first else { return false }
-        return ChannelName.sigils.contains(first)
-    }
-
     /// A DM/user target: has a network, isn't a channel, isn't a `:server:`/`:system:` pseudo.
     private static func isNickTarget(_ target: String) -> Bool {
-        !isChannelTarget(target) && !target.hasPrefix(":")
+        !ChannelName.isChannelTarget(target) && !target.hasPrefix(":")
     }
 }
