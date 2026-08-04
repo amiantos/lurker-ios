@@ -110,6 +110,21 @@ final class ContactsAndPresenceTests: XCTestCase {
         XCTAssertEqual(store.state.favorites.map(\.target), ["bob"])
     }
 
+    func testFavoriteEntryFollowsAPlainBufferRename() {
+        // The server only republishes favorites after MERGES, so a plain
+        // nick-follow rename must rewrite the entry locally — by bufferId, the
+        // identity the frame proves — or the Friends chip ghosts under the dead
+        // nick while the renamed DM leaks back into its network roster.
+        let store = LurkerStore()
+        store.apply(.favoritesChanged([entry(41, "zed", net: 2), entry(7, "#alpha", net: 2)]))
+        store.apply(.bufferRenamed(
+            networkId: 2, from: "zed", to: "zed_", bufferId: 41, merged: false,
+            mergedFromBufferId: nil
+        ))
+        XCTAssertEqual(store.state.favorites.map(\.target), ["zed_", "#alpha"])
+        XCTAssertEqual(store.state.favorites.map(\.bufferId), [41, 7], "identity untouched")
+    }
+
     // MARK: - Store: presence derivation
 
     private func connectedNetwork(_ id: Int, presence: [String: PresenceState] = [:]) -> ServerFrame {

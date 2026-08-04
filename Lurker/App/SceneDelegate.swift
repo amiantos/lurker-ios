@@ -58,19 +58,24 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // `favorite_buffers`). Hung off the first `favorites-changed` fold on purpose:
         // that frame is proof the socket is LIVE and the server speaks favorites —
         // `send` happily returns true over a dead socket, so "on connect" would be a
-        // guess. The flag flips before the sends so the echoes this triggers can't
-        // re-enter; the server appends in arrival order, preserving the stored order.
-        // 'sys::' keys (the system buffer) can't be favorited and are skipped.
+        // guess. Re-entrancy (the echoes these sends trigger) is guarded in memory;
+        // the PERSISTED flag flips only after the work completes, so a kill mid-loop
+        // retries next launch instead of stranding the un-sent tail forever — safe
+        // because favorite-buffer is idempotent server-side (INSERT OR IGNORE). The
+        // server appends in arrival order, preserving the stored order. 'sys::' keys
+        // (the system buffer) can't be favorited and are skipped.
+        var migrationInFlight = false
         viewModel.onFavoritesSynced = { [weak viewModel] in
             let prefs = UserPreferences.standard
-            guard !prefs.migratedFavoritesToServer else { return }
-            prefs.migratedFavoritesToServer = true
+            guard !prefs.migratedFavoritesToServer, !migrationInFlight else { return }
+            migrationInFlight = true
             for key in prefs.legacyFavoriteBufferKeys {
                 guard let sep = key.range(of: "::"),
                       let networkId = Int(key[..<sep.lowerBound])
                 else { continue }
                 viewModel?.favoriteBuffer(networkId: networkId, target: String(key[sep.upperBound...]))
             }
+            prefs.migratedFavoritesToServer = true
             prefs.clearLegacyFavorites()
         }
 

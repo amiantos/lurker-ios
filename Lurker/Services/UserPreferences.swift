@@ -201,6 +201,14 @@ extension UserDefaults {
         if from.id != to.id {
             let recents = Self.substitute(from.id, with: to.id, in: recentBufferKeys)
             set(recents, forKey: UserPreferences.Key.recentBufferKeys)
+            // The legacy favorites list still follows renames UNTIL the one-shot
+            // migration consumes it: connected to a pre-favorites server, renames
+            // can accumulate for weeks, and a stale name pushed up later resolves
+            // to nothing — the favorite silently dropped by its own migration.
+            if !migratedFavoritesToServer {
+                let legacy = Self.substitute(from.id, with: to.id, in: legacyFavoriteBufferKeys)
+                set(legacy, forKey: UserPreferences.Key.favoriteBufferKeys)
+            }
         }
         if lastBufferKey?.id == from.id {
             recordLastBuffer(to)

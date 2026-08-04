@@ -621,6 +621,21 @@ final class LurkerStore {
                 next.buffers[toKey] = survivor
                 next.indexBufferId(survivor, key: toKey)
             }
+            // The favorites list carries target strings too, and the server only
+            // republishes favorites-changed after MERGES — a plain nick-follow
+            // rename would otherwise leave the entry pointing at the dead name
+            // until the next echo: a ghost Friends chip under the old nick, plus
+            // the renamed DM leaking back into its network roster (every section
+            // split keys off entry targets). Rewrite by bufferId — the identity
+            // the frame proves — and drop nothing: a merge's absorbed-favorite
+            // adoption arrives via its own favorites-changed follow-up.
+            if let bufferId {
+                next.favorites = next.favorites.map { entry in
+                    entry.bufferId == bufferId
+                        ? FavoriteEntry(networkId: entry.networkId, target: to, bufferId: bufferId)
+                        : entry
+                }
+            }
             return next
         case .peerPresence(let networkId, let nick, let peerState):
             var next = state
