@@ -524,7 +524,12 @@ final class BufferListViewController: UICollectionViewController {
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
         cell, _, row in
         cell.configure(
-            name: row.buffer.displayName(),
+            // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
+            // print, so `displayName` falls back to the literal "Server" without one. A roster
+            // row can afford that (its section header names the network); a chip is lifted out
+            // of its section, and it lost its network subtitle — so an unnamed one would read
+            // as just "Server" with nothing anywhere on the card saying which.
+            name: row.buffer.displayName(networkName: row.networkName),
             networkName: row.networkName,
             networkHint: row.networkHint,
             unread: row.displayUnread,
@@ -943,15 +948,20 @@ final class BufferListViewController: UICollectionViewController {
     /// it's wherever you happened to be, in whatever order you were there, so which network a
     /// chip belongs to is context for *every* row rather than a tiebreaker between two.
     ///
-    /// Both modes are gated on the rows actually spanning more than one network. A label
-    /// repeated identically down a whole grid is the second line this change removed, in a
-    /// smaller font — and "more than one network in these rows" rather than "more than one
-    /// network configured" because a second network with nothing in this grid can't be
-    /// confused with anything either. (The collision path is unaffected by the gate: two chips
-    /// sharing a name in one section are necessarily on different networks, since a buffer key
-    /// is network + target.)
+    /// Both modes are gated on the ACCOUNT having more than one network — not on the rows in
+    /// front of you spanning more than one, which is what this gate used to ask and which
+    /// broke the very rule the paragraph above states. With the row-based gate, a Recent grid
+    /// sitting entirely on one network showed no hints; opening a single buffer on a second
+    /// network pushed the grid's network count 1 → 2 and made three untouched chips *all*
+    /// sprout a label, then lose it again when that buffer aged out. Churn moving labels on
+    /// chips the user never touched, in the churniest grid — exactly what per-section counting
+    /// was meant to stop. The number of networks configured only changes when you add or
+    /// remove one, so gating on that is stable by construction.
+    ///
+    /// The gate is a no-op for the collision path either way: two chips sharing a name in one
+    /// section are necessarily on different networks, a buffer key being network + target.
     private static func addNetworkHints(_ state: ChatState, _ rows: inout [Row], everyRow: Bool = false) {
-        guard Set(rows.compactMap(\.buffer.networkId)).count > 1 else { return }
+        guard state.networks.count > 1 else { return }
 
         let hinted: Set<String>
         if everyRow {

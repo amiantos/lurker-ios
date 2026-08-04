@@ -127,8 +127,18 @@ final class BufferChipCell: UICollectionViewCell {
         // That would drop the disambiguator at exactly the width where two long names have
         // truncated to the same pixels — the one case it exists for. The web accepts the
         // ellipsis because a sidebar row is far wider than half a phone.
+        //
+        // 999, not `.required`: the hint must outrank the name, but it must still lose to the
+        // card's own edges. A hint is usually 1-2 characters, but `NetworkAbbreviation` falls
+        // back to the WHOLE network name when no prefix can separate two networks (two
+        // connections both named `Libera.Chat`, or `irc` beside `ircnet`) — and a required
+        // 88pt hint plus a required unread pill exceeds a chip's inner width on a small
+        // phone, as does an ordinary 2-character hint at AX4/AX5. At `.required` that's an
+        // unsatisfiable constraint set: Auto Layout breaks one of the card's edge pins and
+        // the label draws outside the card, over the chip beside it. At 999 the hint simply
+        // truncates last, which is the graceful version of the same priority.
         networkHintLabel.setContentHuggingPriority(.required, for: .horizontal)
-        networkHintLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        networkHintLabel.setContentCompressionResistancePriority(.init(999), for: .horizontal)
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         // A trailing spacer, because a horizontal stack distributes its slack by hugging
