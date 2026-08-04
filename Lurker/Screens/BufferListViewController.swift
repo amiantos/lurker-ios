@@ -52,12 +52,9 @@ final class BufferListViewController: UICollectionViewController {
         /// section and would otherwise be ambiguous across networks. Nil on roster rows,
         /// which already sit under their network's header.
         let subtitle: String?
-        /// Set only on friend chips: the friend's presence dot state, the contact's display
-        /// name (which may differ from the DM nick), and the contact id the row's edit/remove
-        /// menu acts on. Equatable so a presence change reconfigures the one chip.
+        /// Set only on Friends chips (favorited DMs): the peer's presence dot state.
+        /// Equatable so a presence change reconfigures the one chip.
         var presence: FriendPresence?
-        var displayName: String?
-        var contactId: Int?
         /// Whether an ignore rule mutes this buffer's plain-unread signal (lurker #359).
         /// Carried on the row — and therefore compared by `Equatable` — so muting or unmuting
         /// from another device reconfigures the one cell it affects.
@@ -76,15 +73,11 @@ final class BufferListViewController: UICollectionViewController {
             buffer: Buffer,
             subtitle: String?,
             presence: FriendPresence? = nil,
-            displayName: String? = nil,
-            contactId: Int? = nil,
             muted: Bool = false
         ) {
             self.buffer = buffer
             self.subtitle = subtitle
             self.presence = presence
-            self.displayName = displayName
-            self.contactId = contactId
             self.muted = muted
         }
     }
@@ -228,10 +221,11 @@ final class BufferListViewController: UICollectionViewController {
                     // drop the frame as a duplicate and spin "Loading buffers…" forever on
                     // exactly the account the empty state was written for.
                     && $0.backlogComplete == $1.backlogComplete
-                    // The Friends section renders off these two: the contact list and the
-                    // per-nick presence the dots read. A friend coming online is a presence
-                    // change with no buffer change, so without these the chip's dot never moves.
-                    && $0.contacts == $1.contacts
+                    // The Friends/Favorites sections render off these two: the favorites
+                    // list and the per-nick presence the dots read. A friend coming online
+                    // is a presence change with no buffer change, so without these the
+                    // chip's dot never moves.
+                    && $0.favorites == $1.favorites
                     && $0.peerPresence == $1.peerPresence
                     // Muting is an ignore rule (lurker #359), so a mute set on another device
                     // moves nothing else on this screen — without this, a badge stays loud
@@ -510,9 +504,7 @@ final class BufferListViewController: UICollectionViewController {
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
         cell, _, row in
         cell.configure(
-            // Friend chips carry the contact's display name (which may differ from the DM
-            // nick); every other chip falls back to the buffer's own name.
-            name: row.displayName ?? row.buffer.displayName(),
+            name: row.buffer.displayName(),
             network: row.subtitle,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
@@ -669,17 +661,9 @@ final class BufferListViewController: UICollectionViewController {
             menu: UIMenu(children: [
                 UIDeferredMenuElement.uncached { [weak self] completion in
                     guard let self else { return completion([]) }
-                    // Join lives in its own inline group so "Add Friend…" reads as a separate
-                    // kind of "add", not one more network to join.
-                    let join = UIMenu(title: "", options: .displayInline, children: self.joinElements())
-                    let addFriend = UIAction(
-                        title: "Add Friend…",
-                        image: UIImage(systemName: "person.badge.plus")
-                    ) { [weak self] _ in
-                        guard let self else { return }
-                        ConfigureFriendViewController.present(from: self, viewModel: self.viewModel, editing: nil)
-                    }
-                    completion([join, addFriend])
+                    // Friends are made from a DM or member row now ("Add to
+                    // Friends" — one favorites flag), so the + is joins alone.
+                    completion(self.joinElements())
                 },
             ])
         )
@@ -756,10 +740,10 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Sections
 
     private func buildSections(_ state: ChatState) -> [Section] {
-        // A friend's primary DM is shown as its friend chip, so it's hidden from its network's
-        // roster (and from Recent) rather than printed twice — matching the web client, whose
-        // FRIENDS group likewise lifts these DMs out of their network list.
-        let friendDmKeys = Self.friendPrimaryDmKeys(state)
+        // A friend (a favorited DM) is shown as its Friends chip, so it's hidden from its
+        // network's roster (and from Recent) rather than printed twice — matching the web
+        // client, whose FRIENDS section likewise lifts these DMs out of their network list.
+        let friendDmKeys = Self.friendDmKeys(state)
 
         var byNetwork: [Int: [Buffer]] = [:]
         for buffer in state.buffers.values {
@@ -776,7 +760,8 @@ final class BufferListViewController: UICollectionViewController {
         // ordinary row in its network section below. The grid chip and the roster row read as
         // different things — a card vs. a row, and only the row leaves the channel on a swipe —
         // so the duplication is a quick way in, not a buffer printed twice by accident.
-        let favorites = favoriteRows(state, friendDmKeys: friendDmKeys)
+        // (Friends are the exception, lifted out entirely — see friendDmKeys above.)
+        let favorites = favoriteRows(state)
         let recents = recentRows(state, friendDmKeys: friendDmKeys)
         let friends = friendRows(state)
         if !favorites.isEmpty {
@@ -784,8 +769,11 @@ final class BufferListViewController: UICollectionViewController {
         }
         if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
         // Right under Recent, as its own two-up grid — the handful of people you keep coming
-        // back to, with a live presence dot on each.
-        if !friends.isEmpty { sections.append(Section(title: "Friends", layout: .grid, rows: friends)) }
+        // back to, with a live presence dot on each. Reorderable since lurker#721: the order
+        // is the server's global favorites order, shared with the web client.
+        if !friends.isEmpty {
+            sections.append(Section(title: "Friends", layout: .grid, rows: friends, reorderable: true))
+        }
 
         let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
         var seen = Set<Int>()
@@ -817,10 +805,10 @@ final class BufferListViewController: UICollectionViewController {
     private func recentRows(_ state: ChatState, friendDmKeys: Set<String>) -> [Row] {
         // Favorites claim a buffer before Recent does, so a favorite you just opened stays a
         // single Favorites chip rather than printing a second, identical chip in the Recent
-        // grid right beside it. Friend primary DMs are likewise excluded — they have their own
-        // Friends chip. (All still keep their ordinary roster row below — this only dedups
-        // between the grids.)
-        let excluded = Set(UserPreferences.standard.favoriteBufferKeys).union(friendDmKeys)
+        // grid right beside it. Friend DMs are likewise excluded — they have their own
+        // Friends chip. (Channels still keep their ordinary roster row below — this only
+        // dedups between the grids.)
+        let excluded = Set(state.favorites.map(\.key.id)).union(friendDmKeys)
         return UserPreferences.standard.recentBufferKeys
             .filter { !excluded.contains($0) }
             .compactMap { state.buffers[$0] }
@@ -829,47 +817,46 @@ final class BufferListViewController: UICollectionViewController {
             .map { chipRow($0, state) }
     }
 
-    /// One chip per friend, in the store's alphabetical order, each opening its primary DM.
-    /// A target-less contact (which the server won't create) has no DM to open, so it's
-    /// skipped rather than shown as a dead chip.
+    /// One chip per friend — the DMs in the server's favorites list, in the user's global
+    /// order (shared with the web client's FRIENDS section since lurker#721).
     private func friendRows(_ state: ChatState) -> [Row] {
-        state.contacts.compactMap { contact -> Row? in
-            guard let target = contact.primaryTarget else { return nil }
-            let key = BufferKey(networkId: target.networkId, target: target.nick)
+        state.favorites.compactMap { entry -> Row? in
+            guard Self.isFriendEntry(entry) else { return nil }
             // `buffer(for:)` resolves an existing DM (keeping its server-cased target and
             // unread count) or synthesizes an unhydrated one to open — the same handoff the
             // join flow uses, so tapping the chip hydrates on the chat screen.
-            let buffer = state.buffer(for: key)
+            let buffer = state.buffer(for: entry.key)
             return Row(
                 buffer: buffer,
-                subtitle: state.networks[target.networkId]?.name,
-                presence: state.primaryPresence(contact),
-                displayName: contact.displayName,
-                contactId: contact.id,
+                subtitle: state.networks[entry.networkId]?.name,
+                presence: state.presence(networkId: entry.networkId, nick: entry.target),
                 muted: Self.isMuted(buffer, state)
             )
         }
     }
 
-    /// `BufferKey.id`s of every friend's primary DM — the DMs shown as friend chips and
-    /// therefore hidden from their network roster and Recent.
-    private static func friendPrimaryDmKeys(_ state: ChatState) -> Set<String> {
-        Set(state.contacts.compactMap { contact in
-            contact.primaryTarget.map { BufferKey(networkId: $0.networkId, target: $0.nick).id }
-        })
+    /// A favorites entry that belongs under Friends: a DM, classified the way the server
+    /// does (so '&'/'+'/'!' channels never masquerade as people).
+    private static func isFriendEntry(_ entry: FavoriteEntry) -> Bool {
+        BufferKind.of(networkId: entry.networkId, target: entry.target) == .dm
     }
 
-    /// Pinned buffers, in the order the user arranged them (#53). Local to the device (UserDefaults),
-    /// which is why they're app-level and span networks freely — unlike the web client's
-    /// server pins, which are per-network.
-    private func favoriteRows(_ state: ChatState, friendDmKeys: Set<String>) -> [Row] {
-        // A friend's primary DM belongs to the Friends grid, so a DM favorited before it became
-        // a friend isn't also printed as a Favorites chip beside its Friends chip.
-        UserPreferences.standard.favoriteBufferKeys
-            .filter { !friendDmKeys.contains($0) }
-            .compactMap { state.buffers[$0] }
-            .filter { $0.kind != .system }
-            .map { chipRow($0, state) }
+    /// `BufferKey.id`s of every friend DM — the DMs shown as Friends chips and therefore
+    /// hidden from their network roster and Recent.
+    private static func friendDmKeys(_ state: ChatState) -> Set<String> {
+        Set(state.favorites.filter(isFriendEntry).map(\.key.id))
+    }
+
+    /// Favorited channels, in the server's global favorites order (lurker#721 — shared
+    /// with the web client's FAVORITES section; the old device-local UserDefaults list
+    /// migrated up on first connect).
+    private func favoriteRows(_ state: ChatState) -> [Row] {
+        state.favorites.compactMap { entry -> Row? in
+            guard !Self.isFriendEntry(entry) else { return nil } // shown under Friends
+            let buffer = state.buffer(for: entry.key)
+            guard buffer.kind != .system, buffer.kind != .server else { return nil }
+            return chipRow(buffer, state)
+        }
     }
 
     private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
@@ -972,8 +959,9 @@ final class BufferListViewController: UICollectionViewController {
         // re-hydrates — no longer true, and it was the premise the read/write split overturned.
         // `open-buffer` is a WRITE: it now announces to every other device the user owns, it's
         // refused outright for a paused account, and the chat screen's own hydrate would fetch
-        // the same backlog a second time.
-        if row.contactId != nil, state.buffers[row.buffer.key.id] == nil {
+        // the same backlog a second time. Presence marks the Friends chips — the rows whose
+        // buffer can be a synthesized, not-yet-opened DM.
+        if row.presence != nil, state.buffers[row.buffer.key.id] == nil {
             viewModel.openBuffer(row.buffer.key)
         }
         onSelect?(row.buffer)
@@ -1009,100 +997,37 @@ final class BufferListViewController: UICollectionViewController {
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
         let row = sections[indexPath.section].rows[indexPath.row]
-
-        // A friend chip's menu edits or removes the friend — favoriting a DM that's already a
-        // friend chip would be redundant, and Remove is the friend equivalent of "leave".
-        if let contactId = row.contactId {
-            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                UIMenu(children: [
-                    UIAction(title: "Edit Friend…", image: UIImage(systemName: "person.crop.circle")) { _ in
-                        guard let self, let contact = self.state.contacts.first(where: { $0.id == contactId })
-                        else { return }
-                        ConfigureFriendViewController.present(from: self, viewModel: self.viewModel, editing: contact)
-                    },
-                    UIAction(
-                        title: "Remove Friend",
-                        image: UIImage(systemName: "person.badge.minus"),
-                        attributes: .destructive
-                    ) { _ in
-                        guard let self, let contact = self.state.contacts.first(where: { $0.id == contactId })
-                        else { return }
-                        self.confirmRemoveFriend(contact)
-                    },
-                ])
-            }
-        }
-
         let buffer = row.buffer
-        guard buffer.kind != .system else { return nil }
-        let key = buffer.key.id
+        guard buffer.kind != .system, buffer.kind != .server, let networkId = buffer.networkId
+        else { return nil }
 
-        // A DM gets friend actions where a channel gets Favorite: a friend is the "favorite
-        // person" concept, so a DM favorite would just be a weaker duplicate of it. Edit if a
-        // contact already watches this nick, else Add prefilled from it. A DM favorited before
-        // this change still offers Unfavorite so it can't get stuck pinned.
-        if buffer.kind == .dm, let networkId = buffer.networkId {
-            let nick = buffer.target
-            let existing = state.contacts.first { contact in
-                contact.targets.contains { $0.networkId == networkId && $0.nick.lowercased() == nick.lowercased() }
-            }
-            let isFavorite = UserPreferences.standard.isFavorite(key)
-            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-                var actions: [UIMenuElement] = [
-                    UIAction(
-                        title: existing == nil ? "Add Friend…" : "Edit Friend…",
-                        image: UIImage(systemName: "person.badge.plus")
-                    ) { _ in
-                        guard let self else { return }
-                        ConfigureFriendViewController.present(
-                            from: self,
-                            viewModel: self.viewModel,
-                            editing: existing,
-                            prefill: existing == nil ? (networkId, nick) : nil
-                        )
-                    },
-                ]
-                if isFavorite {
-                    actions.append(UIAction(title: "Unfavorite", image: UIImage(systemName: "star.slash")) { _ in
-                        guard let self else { return }
-                        UserPreferences.standard.toggleFavorite(key)
-                        self.apply(self.state)
-                    })
-                }
-                return UIMenu(children: actions)
-            }
+        // One favorites flag, two vocabularies (matching the web client): a DM is a
+        // "Friend", a channel a "Favorite". The server owns the list — no local mutation;
+        // the favorites-changed echo rebuilds this screen (favoriting also drops any pin
+        // the web client held on the buffer: one placement per buffer).
+        let isDm = buffer.kind == .dm
+        let target = buffer.target
+        let isFavorite = state.favorites.contains {
+            $0.networkId == networkId && $0.target.lowercased() == target.lowercased()
         }
-
-        let isFavorite = UserPreferences.standard.isFavorite(key)
+        let title = isFavorite
+            ? (isDm ? "Remove from Friends" : "Remove from Favorites")
+            : (isDm ? "Add to Friends" : "Add to Favorites")
+        let image = isFavorite
+            ? UIImage(systemName: isDm ? "person.badge.minus" : "star.slash")
+            : UIImage(systemName: isDm ? "person.badge.plus" : "star")
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(children: [
-                UIAction(
-                    title: isFavorite ? "Unfavorite" : "Favorite",
-                    image: UIImage(systemName: isFavorite ? "star.slash" : "star")
-                ) { _ in
-                    UserPreferences.standard.toggleFavorite(key)
+                UIAction(title: title, image: image, attributes: isFavorite && isDm ? .destructive : []) { _ in
                     guard let self else { return }
-                    self.apply(self.state)
+                    if isFavorite {
+                        self.viewModel.unfavoriteBuffer(networkId: networkId, target: target)
+                    } else {
+                        self.viewModel.favoriteBuffer(networkId: networkId, target: target)
+                    }
                 },
             ])
         }
-    }
-
-    /// Confirm before removing a friend from a long-press — a stray tap shouldn't silently
-    /// unfriend someone. (The editor's own Remove button, reached deliberately, doesn't.)
-    private func confirmRemoveFriend(_ contact: Contact) {
-        // An alert, not an action sheet: it needs no popover anchor, so it's safe on iPad from
-        // a context-menu action that doesn't hand us a source rect.
-        let alert = UIAlertController(
-            title: "Remove \(contact.displayName)?",
-            message: "This stops watching their nicks. Your DM history is kept.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Remove", style: .destructive) { [weak self] _ in
-            self?.viewModel.deleteContact(id: contact.id)
-        })
-        present(alert, animated: true)
     }
 }
 
@@ -1242,19 +1167,25 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         let source = IndexPath(item: from, section: proposed.section)
         let destination = IndexPath(item: min(proposed.item, rows.count - 1), section: proposed.section)
 
-        // The grid shows a subset of what's stored — a favorite whose network is still
-        // connecting has a slot and no chip — so the move is mapped rather than applied by
-        // index. `FavoriteOrder` owns that, and answers the stored list unchanged for anything
-        // it can't interpret.
-        let stored = UserPreferences.standard.favoriteBufferKeys
+        // The grid shows a kind-filtered SUBSET of the server's one global favorites list
+        // (this section's kinds only, and a favorite whose network is still connecting has
+        // a slot and no chip) — so the move is mapped onto the stored order rather than
+        // applied by index. `FavoriteOrder` owns that, and answers the stored list
+        // unchanged for anything it can't interpret. The FULL permuted list goes to the
+        // server (a subset would float to the front and demote everything unmentioned —
+        // the other section included); the favorites-changed echo is the authoritative
+        // rebuild, and the in-place move below keeps the drop animation honest meanwhile.
+        let entries = state.favorites
+        let stored = entries.map(\.key.id)
         let reordered = FavoriteOrder.moved(stored, visible: visible, from: source.item, to: destination.item)
         guard reordered != stored else { return }
-        UserPreferences.standard.favoriteBufferKeys = reordered
+        let idByKey = Dictionary(entries.map { ($0.key.id, $0.bufferId) }, uniquingKeysWith: { a, _ in a })
+        viewModel.reorderFavorites(bufferIds: reordered.compactMap { idByKey[$0] })
 
-        // The model moves with the view rather than being rebuilt: `rebuild()` would reach the
+        // The model moves with the view rather than being rebuilt: the echo would reach the
         // same answer, but it reloads on a row-order change (`sameStructure` compares keys
         // positionally), and a reload mid-drop drops the drag animation on the floor. A move
-        // inside Favorites can't change any other section — Recent excludes favorites by
+        // inside one section can't change any other — Recent excludes favorites by
         // membership, not by order — so the two are equivalent here.
         sections[source.section].rows.insert(
             sections[source.section].rows.remove(at: source.item), at: destination.item

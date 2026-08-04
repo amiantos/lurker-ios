@@ -47,11 +47,31 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         self.window = window
 
         // A rename has to chase the buffer's key through the preferences that store it —
-        // favorites, recents, last-buffer — or a renamed favorite becomes exactly the
-        // forever-stale entry FavoriteOrder papers over. Owned here, not in LurkerKit:
-        // UserDefaults is the app's storage, and the view model just announces the move.
+        // recents and last-buffer (favorites are server-side now, keyed by buffer id, so
+        // renames are free there). Owned here, not in LurkerKit: UserDefaults is the
+        // app's storage, and the view model just announces the move.
         viewModel.onBufferRenamed = { from, to in
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
+        }
+
+        // One-shot local→server favorites migration (lurker#721 moved favorites into
+        // `favorite_buffers`). Hung off the first `favorites-changed` fold on purpose:
+        // that frame is proof the socket is LIVE and the server speaks favorites —
+        // `send` happily returns true over a dead socket, so "on connect" would be a
+        // guess. The flag flips before the sends so the echoes this triggers can't
+        // re-enter; the server appends in arrival order, preserving the stored order.
+        // 'sys::' keys (the system buffer) can't be favorited and are skipped.
+        viewModel.onFavoritesSynced = { [weak viewModel] in
+            let prefs = UserPreferences.standard
+            guard !prefs.migratedFavoritesToServer else { return }
+            prefs.migratedFavoritesToServer = true
+            for key in prefs.legacyFavoriteBufferKeys {
+                guard let sep = key.range(of: "::"),
+                      let networkId = Int(key[..<sep.lowerBound])
+                else { continue }
+                viewModel?.favoriteBuffer(networkId: networkId, target: String(key[sep.upperBound...]))
+            }
+            prefs.clearLegacyFavorites()
         }
 
         // Session transitions drive navigation: sign-in and restore → the buffer list;

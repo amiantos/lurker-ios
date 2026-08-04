@@ -43,8 +43,9 @@ public enum FavoriteOrder {
         // `stored` contributes two slots, which could make the counts agree while a visible key
         // had no slot at all. `["a","a","b"]` against a visible `["a","b","c"]` reached three
         // slots, passed, and dealt `"c"` into the list while destroying an `"a"`. Nothing can
-        // currently produce a duplicated `stored` — `toggleFavorite` appends only what isn't
-        // there — but this guard exists precisely for the input nothing is supposed to produce.
+        // currently produce a duplicated `stored` — the server's favorites list is keyed by
+        // buffer id — but this guard exists precisely for the input nothing is supposed to
+        // produce.
         let unique = Set(visible)
         guard unique.count == visible.count, unique.isSubset(of: stored) else { return stored }
         let slots = stored.indices.filter { unique.contains(stored[$0]) }

@@ -53,9 +53,11 @@ public struct ChatState: Sendable {
     public var backlogComplete = false
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
-    /// The friends list, sorted case-insensitively by display name. Server-authoritative:
-    /// seeded by `contacts-snapshot` and kept in sync by `contact-updated`/`contact-deleted`.
-    public var contacts: [Contact] = []
+    /// Buffer favorites (the Friends/Contacts successor): one server-authoritative
+    /// global ordered list spanning networks, seeded and corrected wholesale by
+    /// `favorites-changed`. The UI splits it by kind — DMs → Friends, channels →
+    /// Favorites.
+    public var favorites: [FavoriteEntry] = []
     /// Saved-message ids — what the bookmark toggle reads. **Read through
     /// `isBookmarked(_:)`.**
     ///
@@ -426,12 +428,6 @@ public struct ChatState: Sendable {
         }
     }
 
-    /// A friend's status: the presence of its primary target — the DM that opens when the
-    /// friend is tapped — so the dot never claims online when the DM you'd open is offline.
-    public func primaryPresence(_ contact: Contact) -> FriendPresence {
-        guard let target = contact.primaryTarget else { return .unknown }
-        return presence(networkId: target.networkId, nick: target.nick)
-    }
 }
 
 /// Holds the domain state and folds `ServerFrame`s into it. The fold is a pure function
@@ -553,19 +549,9 @@ final class LurkerStore {
                 state, networkId: networkId, target: target,
                 lastReadId: lastReadId, unread: unread, highlights: highlights
             )
-        case .contactsSnapshot(let contacts):
+        case .favoritesChanged(let favorites):
             var next = state
-            next.contacts = sortedContacts(contacts)
-            return next
-        case .contactUpdated(let contact):
-            var next = state
-            var rest = next.contacts.filter { $0.id != contact.id }
-            rest.append(contact)
-            next.contacts = sortedContacts(rest)
-            return next
-        case .contactDeleted(let id):
-            var next = state
-            next.contacts.removeAll { $0.id == id }
+            next.favorites = favorites
             return next
         case .bookmarkUpdated(let messageId, let saved):
             var next = state
@@ -844,17 +830,6 @@ final class LurkerStore {
         return next
     }
 
-    /// Case-insensitive alphabetical by display name, id-tiebroken for a stable order — the
-    /// same ordering the web friends store keeps, so a friend never jumps position on edit.
-    private static func sortedContacts(_ contacts: [Contact]) -> [Contact] {
-        contacts.sorted {
-            switch $0.displayName.localizedCaseInsensitiveCompare($1.displayName) {
-            case .orderedAscending: return true
-            case .orderedDescending: return false
-            case .orderedSame: return $0.id < $1.id
-            }
-        }
-    }
 
     private static func applyBacklog(
         _ state: ChatState,

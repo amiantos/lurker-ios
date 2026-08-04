@@ -96,8 +96,11 @@ final class MemberListViewController: UITableViewController {
         return cell
     }
 
-    /// Long-press a member to add (or edit) them as a friend — the web client's primary way in,
-    /// straight off a nick you're looking at. Only channels have a network to watch on.
+    /// Long-press a member to add them to Friends — straight off a nick you're looking at
+    /// (the web client's member menu does the same). A friend is just a favorited DM now:
+    /// open-buffer first mints/reopens the DM row (the server refuses favoriting a buffer
+    /// that doesn't exist or is closed), and the same socket delivers it before the
+    /// favorite, so the pair can't race. No navigation — the DM appears under Friends.
     override func tableView(
         _ tableView: UITableView,
         contextMenuConfigurationForRowAt indexPath: IndexPath,
@@ -105,22 +108,24 @@ final class MemberListViewController: UITableViewController {
     ) -> UIContextMenuConfiguration? {
         guard let networkId = buffer.networkId, indexPath.row < members.count else { return nil }
         let nick = members[indexPath.row].nick
-        // Edit the contact already watching this (network, nick), else add a new one prefilled.
-        let existing = viewModel.contacts.first { contact in
-            contact.targets.contains { $0.networkId == networkId && $0.nick.lowercased() == nick.lowercased() }
+        let isFriend = viewModel.favorites.contains {
+            $0.networkId == networkId && $0.target.lowercased() == nick.lowercased()
         }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            let title = existing == nil ? "Add Friend…" : "Edit Friend…"
-            return UIMenu(children: [
-                UIAction(title: title, image: UIImage(systemName: "person.badge.plus")) { _ in
-                    guard let self else { return }
-                    ConfigureFriendViewController.present(
-                        from: self,
-                        viewModel: self.viewModel,
-                        editing: existing,
-                        prefill: existing == nil ? (networkId, nick) : nil
-                    )
-                },
+            UIMenu(children: [
+                isFriend
+                    ? UIAction(
+                        title: "Remove from Friends",
+                        image: UIImage(systemName: "person.badge.minus"),
+                        attributes: .destructive
+                    ) { _ in
+                        self?.viewModel.unfavoriteBuffer(networkId: networkId, target: nick)
+                    }
+                    : UIAction(title: "Add to Friends", image: UIImage(systemName: "person.badge.plus")) { _ in
+                        guard let self else { return }
+                        self.viewModel.openBuffer(BufferKey(networkId: networkId, target: nick))
+                        self.viewModel.favoriteBuffer(networkId: networkId, target: nick)
+                    },
             ])
         }
     }

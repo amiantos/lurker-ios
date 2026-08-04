@@ -40,13 +40,16 @@ enum FrameParser {
             return .settingsChanged(parseSettingValues(obj["changes"]))
         case "error":
             return .serverError(obj.string("text"))
-        case "contacts-snapshot":
-            return .contactsSnapshot(obj.objects("contacts").map(parseContact))
-        case "contact-updated":
-            guard let contact = obj["contact"] as? [String: Any] else { return .ignored }
-            return .contactUpdated(parseContact(contact))
-        case "contact-deleted":
-            return .contactDeleted(obj.int("contactId"))
+        case "favorites-changed":
+            // The FULL global order, replace wholesale — the same frame seeds the
+            // connect burst, so this one handler covers seed and every correction.
+            return .favoritesChanged(obj.objects("favorites").map { entry in
+                FavoriteEntry(
+                    networkId: entry.int("networkId"),
+                    target: entry.string("target"),
+                    bufferId: entry.int("bufferId")
+                )
+            })
         case "bookmark-updated":
             // The fan-out for a save/unsave made anywhere on the account, including this
             // device — the server echoes to every socket, so it's the one source of truth
@@ -259,24 +262,6 @@ enum FrameParser {
             since: since,
             autoSet: obj.bool("autoSet"),
             backAt: ISOTime.parse(obj.stringOrNull("backAt"))
-        )
-    }
-
-    /// A `ContactRecord` → domain `Contact`, shared by the snapshot list and the
-    /// `contact-updated` echo. Targets missing a nick are still carried through — the server
-    /// won't send one, and dropping fields silently would mask a contract drift.
-    private static func parseContact(_ obj: [String: Any]) -> Contact {
-        Contact(
-            id: obj.int("id"),
-            displayName: obj.string("displayName"),
-            notifyOnline: obj.bool("notifyOnline"),
-            targets: obj.objects("targets").map { target in
-                ContactTarget(
-                    networkId: target.int("networkId"),
-                    nick: target.string("nick"),
-                    isPrimary: target.bool("isPrimary")
-                )
-            }
         )
     }
 
