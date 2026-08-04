@@ -93,11 +93,12 @@ final class BufferListViewController: UICollectionViewController {
         let title: String?
         let layout: Layout
         var rows: [Row]
-        /// Whether these chips can be dragged into a new order (#53). Favorites only: Recent is
-        /// MRU-ordered and Friends is alphabetical, so a drag there would be undone by the next
-        /// rebuild — and the rosters below are the same, sorted list this screen has always
-        /// shown. Named for the capability rather than for the section, so the drag delegates
-        /// never have to recognize a section by its title.
+        /// Whether these chips can be dragged into a new order (#53). Friends and Favorites,
+        /// the two views of the server's one global favorites order (lurker#721) — not
+        /// Recent, which is MRU-ordered, and not the rosters below, which are the same sorted
+        /// list this screen has always shown; a drag in either would be undone by the next
+        /// rebuild. Named for the capability rather than for the section, so the drag
+        /// delegates never have to recognize a section by its title.
         var reorderable = false
     }
 

@@ -166,9 +166,13 @@ public final class IgnoreSet: Sendable {
                 // two callers looking at the same line can't classify it differently.
                 //
                 // The matcher's own DM test, not `BufferKind.of` — see `isDmTarget`. The two
-                // agree on all four channel sigils now, but they answer different questions
-                // (`BufferKind` also has `.server`/`.system` cases the matcher folds into
-                // "not a DM"), so this stays the named answer rather than a kind comparison.
+                // agree on all four channel sigils now, but they still answer different
+                // questions: `BufferKind` has a `.system` case this does NOT fold into
+                // "not a DM" (`:system:` carries no sigil and isn't `:server:`, so the
+                // matcher would call it one). Harmless only because the system buffer has no
+                // network and `evaluate` returns `.visible` before `isDm` is ever read — a
+                // guard one caller up, not a property of this test. Hence the named answer
+                // here rather than a kind comparison that would look equivalent and isn't.
                 isDm: Self.isDmTarget(target)
             ),
             now: now
