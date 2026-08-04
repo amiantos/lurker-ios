@@ -71,11 +71,17 @@ final class BufferBadgeLabel: UILabel {
 /// **One line, not two.** The card used to print the network name under every name, which
 /// spent the taller half of a chip restating something that is the same for every chip on a
 /// single-network instance and, on a multi-network one, is only ever *load-bearing* when two
-/// chips collide. So the network appears as a short `/li` hint after the name, on the rows
+/// chips collide. So the network appears as a short `li` hint after the name, on the rows
 /// that actually need it (`NetworkAbbreviation`), and the chip is a name and a badge
 /// otherwise. The accessibility label still names the network in full for every chip — the
 /// hint is a visual shorthand, and losing the network entirely to a screen reader would be a
 /// regression rather than a simplification.
+///
+/// The card lost a third of its height with the second line: it was 64 to fit two lines of
+/// body text, and a one-line card that kept that height is a card mostly made of padding.
+/// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
+/// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
+/// shave a touch target. It still grows past 44 at accessibility text sizes.
 final class BufferChipCell: UICollectionViewCell {
     private let card = UIView()
     private let nameLabel = UILabel()
@@ -169,13 +175,15 @@ final class BufferChipCell: UICollectionViewCell {
             row.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
             row.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             row.centerYAnchor.constraint(equalTo: card.centerYAnchor),
-            // Content stays clear of the card edges by at least 8, and the card floors at 64.
+            // Content stays clear of the card edges by at least 6, and the card floors at 44.
             // Together with the section's estimated group height this self-sizes: the card is
-            // 64 at normal text and grows past it when the stack needs more, instead of the
-            // text clipping inside a hard 64.
-            row.topAnchor.constraint(greaterThanOrEqualTo: card.topAnchor, constant: 8),
-            row.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -8),
-            card.heightAnchor.constraint(greaterThanOrEqualToConstant: 64),
+            // 44 at normal text and grows past it when the stack needs more, instead of the
+            // text clipping inside a hard 44. The inset came down with the height — 8 above
+            // and below one line of body text is what made a 44 card feel tight where it made
+            // a 64 one feel deliberate.
+            row.topAnchor.constraint(greaterThanOrEqualTo: card.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(lessThanOrEqualTo: card.bottomAnchor, constant: -6),
+            card.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
         ])
 
         // One element, not three: the whole card is a single button so VoiceOver reads

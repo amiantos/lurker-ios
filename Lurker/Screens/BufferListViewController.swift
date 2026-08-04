@@ -51,7 +51,7 @@ final class BufferListViewController: UICollectionViewController {
         /// The full network name. Grid chips carry it for their accessibility label; roster
         /// rows leave it nil, already sitting under their network's header.
         let networkName: String?
-        /// The short `/li` disambiguator drawn after the name, set by `addNetworkHints` only
+        /// The short `li` disambiguator drawn after the name, set by `addNetworkHints` only
         /// on chips whose name collides with another chip's. Separate from `networkName`
         /// because the two answer different questions: this one is "would you otherwise
         /// confuse this chip with the one beside it", and it's nil far more often.
@@ -467,10 +467,10 @@ final class BufferListViewController: UICollectionViewController {
                 let group = NSCollectionLayoutGroup.horizontal(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
-                        // Estimated, not absolute: the chip's `card` floors at 64 but grows
+                        // Estimated, not absolute: the chip's `card` floors at 44 but grows
                         // with its text, so at accessibility sizes the row expands to fit
-                        // rather than clipping the name/network stack.
-                        heightDimension: .estimated(64)
+                        // rather than clipping the name and its network hint.
+                        heightDimension: .estimated(44)
                     ),
                     repeatingSubitem: item,
                     count: 2
@@ -791,8 +791,10 @@ final class BufferListViewController: UICollectionViewController {
         var favorites = favoriteRows(channelEntries, state)
         var recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
         var friends = friendRows(friendEntries, state)
-        // After all three are built, because a collision is a fact about the three together.
-        Self.addNetworkHints(state, &friends, &favorites, &recents)
+        // Each grid on its own — a collision is a fact about one section's rows.
+        Self.addNetworkHints(state, &friends)
+        Self.addNetworkHints(state, &favorites)
+        Self.addNetworkHints(state, &recents)
         // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
         // and the two are one list on the server, so the halves reading top-to-bottom
         // differently was a needless thing to have to re-learn per client. People also earn
@@ -922,44 +924,36 @@ final class BufferListViewController: UICollectionViewController {
         Row(buffer: buffer, networkName: nil, muted: Self.isMuted(buffer, state))
     }
 
-    /// Tag the chips whose names collide with a short `/li` network hint.
+    /// Tag the chips whose names collide **within this one grid** with a short `li` hint.
     ///
-    /// Pooled across all three grids rather than computed per section. A collision is a thing
-    /// you can *see* — two cards that read identically — and the section header between them
-    /// doesn't undo that; a favorite `#lurker` sitting a few rows above a recent `#lurker` is
-    /// exactly the mix-up this prevents. Per-section counting would also let one chip carry a
-    /// hint while its twin didn't, which reads as a property of the buffer rather than of the
-    /// pair. (The web pools its two grids for the same reason; Recent is the iOS third.)
+    /// Per section, not pooled across all three, because Recent churns and Friends/Favorites
+    /// don't. Pooling let a stable Favorites chip gain and lose its hint as unrelated buffers
+    /// drifted in and out of Recent — a label changing under you with nothing you did to cause
+    /// it, which is the same failure `NetworkAbbreviation` avoids by measuring uniqueness
+    /// against every network rather than the visible ones. A section is also the set you
+    /// actually scan as a set: two identical names under one header are the confusion worth
+    /// spending a label on; the same name under two different headers already reads as two
+    /// different things.
     ///
     /// No collisions, no hints — so a single-network instance never shows one, since a buffer
     /// appears in at most one grid (favorites are excluded from Recent, friends are lifted out
     /// of both) and can't collide with itself.
-    private static func addNetworkHints(
-        _ state: ChatState,
-        _ friends: inout [Row],
-        _ favorites: inout [Row],
-        _ recents: inout [Row]
-    ) {
+    private static func addNetworkHints(_ state: ChatState, _ rows: inout [Row]) {
         var counts: [String: Int] = [:]
-        for row in friends + favorites + recents {
-            counts[row.buffer.target.lowercased(), default: 0] += 1
-        }
+        for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
         let ambiguous = Set(counts.filter { $0.value > 1 }.keys)
         guard !ambiguous.isEmpty else { return }
 
         // Against every network the user has, not just the colliding ones — see
         // `NetworkAbbreviation`, which is also what the web computes for the same rows.
         let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
-        func hint(_ row: inout Row) {
-            guard ambiguous.contains(row.buffer.target.lowercased()),
-                  let networkId = row.buffer.networkId,
+        for index in rows.indices {
+            guard ambiguous.contains(rows[index].buffer.target.lowercased()),
+                  let networkId = rows[index].buffer.networkId,
                   let abbreviation = abbreviations[networkId]
-            else { return }
-            row.networkHint = "/\(abbreviation)"
+            else { continue }
+            rows[index].networkHint = abbreviation
         }
-        for index in friends.indices { hint(&friends[index]) }
-        for index in favorites.indices { hint(&favorites[index]) }
-        for index in recents.indices { hint(&recents[index]) }
     }
 
     /// Whether this buffer's plain-unread signal is muted (lurker #359).
