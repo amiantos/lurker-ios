@@ -48,10 +48,14 @@ final class BufferListViewController: UICollectionViewController {
 
     private struct Row: Equatable {
         let buffer: Buffer
-        /// The network name, shown on grid chips where the buffer has been lifted out of its
-        /// section and would otherwise be ambiguous across networks. Nil on roster rows,
-        /// which already sit under their network's header.
-        let subtitle: String?
+        /// The full network name. Grid chips carry it for their accessibility label; roster
+        /// rows leave it nil, already sitting under their network's header.
+        let networkName: String?
+        /// The short `li` disambiguator drawn after the name, set by `addNetworkHints` only
+        /// on chips whose name collides with another chip's. Separate from `networkName`
+        /// because the two answer different questions: this one is "would you otherwise
+        /// confuse this chip with the one beside it", and it's nil far more often.
+        var networkHint: String?
         /// Set only on Friends chips (favorited DMs): the peer's presence dot state.
         /// Equatable so a presence change reconfigures the one chip.
         var presence: FriendPresence?
@@ -76,13 +80,13 @@ final class BufferListViewController: UICollectionViewController {
 
         init(
             buffer: Buffer,
-            subtitle: String?,
+            networkName: String?,
             presence: FriendPresence? = nil,
             isFriendChip: Bool = false,
             muted: Bool = false
         ) {
             self.buffer = buffer
-            self.subtitle = subtitle
+            self.networkName = networkName
             self.presence = presence
             self.isFriendChip = isFriendChip
             self.muted = muted
@@ -463,10 +467,10 @@ final class BufferListViewController: UICollectionViewController {
                 let group = NSCollectionLayoutGroup.horizontal(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
-                        // Estimated, not absolute: the chip's `card` floors at 64 but grows
+                        // Estimated, not absolute: the chip's `card` floors at 44 but grows
                         // with its text, so at accessibility sizes the row expands to fit
-                        // rather than clipping the name/network stack.
-                        heightDimension: .estimated(64)
+                        // rather than clipping the name and its network hint.
+                        heightDimension: .estimated(44)
                     ),
                     repeatingSubitem: item,
                     count: 2
@@ -520,8 +524,14 @@ final class BufferListViewController: UICollectionViewController {
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
         cell, _, row in
         cell.configure(
-            name: row.buffer.displayName(),
-            network: row.subtitle,
+            // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
+            // print, so `displayName` falls back to the literal "Server" without one. A roster
+            // row can afford that (its section header names the network); a chip is lifted out
+            // of its section, and it lost its network subtitle — so an unnamed one would read
+            // as just "Server" with nothing anywhere on the card saying which.
+            name: row.buffer.displayName(networkName: row.networkName),
+            networkName: row.networkName,
+            networkHint: row.networkHint,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence
@@ -783,9 +793,18 @@ final class BufferListViewController: UICollectionViewController {
         // different things — a card vs. a row, and only the row leaves the channel on a swipe —
         // so the duplication is a quick way in, not a buffer printed twice by accident.
         // (Friends are the exception, lifted out entirely — see friendDmKeys above.)
-        let favorites = favoriteRows(channelEntries, state)
-        let recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
-        let friends = friendRows(friendEntries, state)
+        var favorites = favoriteRows(channelEntries, state)
+        var recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
+        var friends = friendRows(friendEntries, state)
+        // Each grid on its own — a collision is a fact about one section's rows. Recent hints
+        // every chip rather than just its collisions: it's the one grid you didn't curate.
+        // Abbreviations are per-account, so they're computed once and shared by all three;
+        // they're measured against every network the user has, not the ones on screen, which
+        // is also what the web computes for the same rows (see `NetworkAbbreviation`).
+        let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
+        Self.addNetworkHints(abbreviations, &friends)
+        Self.addNetworkHints(abbreviations, &favorites)
+        Self.addNetworkHints(abbreviations, &recents, everyRow: true)
         // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
         // and the two are one list on the server, so the halves reading top-to-bottom
         // differently was a needless thing to have to re-learn per client. People also earn
@@ -857,7 +876,7 @@ final class BufferListViewController: UICollectionViewController {
             let buffer = state.buffer(for: entry.key)
             return Row(
                 buffer: buffer,
-                subtitle: state.networks[entry.networkId]?.name,
+                networkName: state.networks[entry.networkId]?.name,
                 presence: state.presence(networkId: entry.networkId, nick: entry.target),
                 isFriendChip: true,
                 muted: Self.isMuted(buffer, state)
@@ -906,13 +925,75 @@ final class BufferListViewController: UICollectionViewController {
     private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer,
-            subtitle: buffer.networkId.flatMap { state.networks[$0]?.name },
+            networkName: buffer.networkId.flatMap { state.networks[$0]?.name },
             muted: Self.isMuted(buffer, state)
         )
     }
 
     private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
-        Row(buffer: buffer, subtitle: nil, muted: Self.isMuted(buffer, state))
+        Row(buffer: buffer, networkName: nil, muted: Self.isMuted(buffer, state))
+    }
+
+    /// Tag chips with a short `li` network hint — the ones whose names collide **within this
+    /// one grid**, or every chip when `everyRow` is set.
+    ///
+    /// Per section, not pooled across all three, because Recent churns and Friends/Favorites
+    /// don't. Pooling let a stable Favorites chip gain and lose its hint as unrelated buffers
+    /// drifted in and out of Recent — a label changing under you with nothing you did to cause
+    /// it, which is the same failure `NetworkAbbreviation` avoids by measuring uniqueness
+    /// against every network rather than the visible ones. A section is also the set you
+    /// actually scan as a set: two identical names under one header are the confusion worth
+    /// spending a label on; the same name under two different headers already reads as two
+    /// different things.
+    ///
+    /// `everyRow` is Recent's, and the asymmetry is the point. Friends and Favorites are
+    /// **curated** — you put each one there, so you know which network it's on and the hint is
+    /// only worth its space when two of them read alike. Recent is the grid you didn't choose:
+    /// it's wherever you happened to be, in whatever order you were there, so which network a
+    /// chip belongs to is context for *every* row rather than a tiebreaker between two.
+    ///
+    /// Both modes are gated on the ACCOUNT having more than one network — not on the rows in
+    /// front of you spanning more than one, which is what this gate used to ask and which
+    /// broke the very rule the paragraph above states. With the row-based gate, a Recent grid
+    /// sitting entirely on one network showed no hints; opening a single buffer on a second
+    /// network pushed the grid's network count 1 → 2 and made three untouched chips *all*
+    /// sprout a label, then lose it again when that buffer aged out. Churn moving labels on
+    /// chips the user never touched, in the churniest grid — exactly what per-section counting
+    /// was meant to stop. The number of networks configured only changes when you add or
+    /// remove one, so gating on that is stable by construction.
+    ///
+    /// The gate is a no-op for the collision path either way: two chips sharing a name in one
+    /// section are necessarily on different networks, a buffer key being network + target.
+    ///
+    /// `abbreviations` is computed once by the caller and passed to all three grids: it
+    /// depends only on the account's networks, so deriving it here would recompute the same
+    /// answer up to three times per rebuild — and a rebuild runs on every state change.
+    /// It carries exactly one entry per network (see `NetworkAbbreviation`), which is what
+    /// makes its count the network-count gate above.
+    private static func addNetworkHints(
+        _ abbreviations: [Int: String],
+        _ rows: inout [Row],
+        everyRow: Bool = false
+    ) {
+        guard abbreviations.count > 1 else { return }
+
+        let hinted: Set<String>
+        if everyRow {
+            hinted = Set(rows.map { $0.buffer.target.lowercased() })
+        } else {
+            var counts: [String: Int] = [:]
+            for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
+            hinted = Set(counts.filter { $0.value > 1 }.keys)
+        }
+        guard !hinted.isEmpty else { return }
+
+        for index in rows.indices {
+            guard hinted.contains(rows[index].buffer.target.lowercased()),
+                  let networkId = rows[index].buffer.networkId,
+                  let abbreviation = abbreviations[networkId]
+            else { continue }
+            rows[index].networkHint = abbreviation
+        }
     }
 
     /// Whether this buffer's plain-unread signal is muted (lurker #359).
