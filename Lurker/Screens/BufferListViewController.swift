@@ -886,7 +886,14 @@ final class BufferListViewController: UICollectionViewController {
 
     /// A favorites entry that belongs under Friends: a DM, classified the way the server
     /// does (so '&'/'+'/'!' channels never masquerade as people).
-    private static func isFriendEntry(_ entry: FavoriteEntry) -> Bool {
+    ///
+    /// `nonisolated` like `order`/`sortKey`, and for the same reason: it's a pure function of
+    /// its argument, touching no view state. Without it, passing it to `filter` **by name**
+    /// converts a main-actor-isolated function to a non-isolated function type, which Swift
+    /// concurrency warns about — the `{ !Self.isFriendEntry($0) }` form beside it doesn't
+    /// warn only because a non-escaping closure inherits the caller's isolation. Marking the
+    /// function is the honest fix; wrapping it in a closure just hides the question.
+    private nonisolated static func isFriendEntry(_ entry: FavoriteEntry) -> Bool {
         BufferKind.of(networkId: entry.networkId, target: entry.target) == .dm
     }
 
