@@ -236,10 +236,14 @@ final class BufferChipCell: UICollectionViewCell {
     /// now": green online, orange away, muted grey offline/unknown — deliberately understated
     /// for offline (the common case) rather than the web's red, which reads as an alert on iOS.
     ///
-    /// `networkName` is the full name and is always passed — it's what the accessibility label
-    /// reads. `networkHint` is the short `/li` form and is set only where two chips would
-    /// otherwise be identical; nil hides the label and collapses its slot, which on a
-    /// single-network instance is every chip.
+    /// `networkName` is the full name, and it's what the accessibility label reads. Optional
+    /// because a chip can be built before its network resolves — a favorite can outrun
+    /// hydration, and the roster rows pass nil deliberately — in which case the label simply
+    /// omits it rather than inventing a placeholder.
+    ///
+    /// `networkHint` is the short `li` form, set only where the section's rows need telling
+    /// apart; nil hides the label and collapses its slot, which on a single-network instance
+    /// is every chip.
     func configure(
         name: String,
         networkName: String?,

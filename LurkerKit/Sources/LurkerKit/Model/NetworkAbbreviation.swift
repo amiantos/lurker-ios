@@ -32,6 +32,8 @@ public enum NetworkAbbreviation {
             var length = 1
             while length < name.count {
                 let candidate = String(name.prefix(length))
+                // Against EVERY other name, not just the ones already visited — the latter
+                // would make the answer depend on dictionary iteration order.
                 let shared = lowered.contains { $0.key != id && $0.value.hasPrefix(candidate) }
                 if !shared { break }
                 length += 1

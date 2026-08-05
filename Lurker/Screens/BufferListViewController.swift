@@ -798,9 +798,13 @@ final class BufferListViewController: UICollectionViewController {
         var friends = friendRows(friendEntries, state)
         // Each grid on its own — a collision is a fact about one section's rows. Recent hints
         // every chip rather than just its collisions: it's the one grid you didn't curate.
-        Self.addNetworkHints(state, &friends)
-        Self.addNetworkHints(state, &favorites)
-        Self.addNetworkHints(state, &recents, everyRow: true)
+        // Abbreviations are per-account, so they're computed once and shared by all three;
+        // they're measured against every network the user has, not the ones on screen, which
+        // is also what the web computes for the same rows (see `NetworkAbbreviation`).
+        let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
+        Self.addNetworkHints(abbreviations, &friends)
+        Self.addNetworkHints(abbreviations, &favorites)
+        Self.addNetworkHints(abbreviations, &recents, everyRow: true)
         // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
         // and the two are one list on the server, so the halves reading top-to-bottom
         // differently was a needless thing to have to re-learn per client. People also earn
@@ -960,8 +964,18 @@ final class BufferListViewController: UICollectionViewController {
     ///
     /// The gate is a no-op for the collision path either way: two chips sharing a name in one
     /// section are necessarily on different networks, a buffer key being network + target.
-    private static func addNetworkHints(_ state: ChatState, _ rows: inout [Row], everyRow: Bool = false) {
-        guard state.networks.count > 1 else { return }
+    ///
+    /// `abbreviations` is computed once by the caller and passed to all three grids: it
+    /// depends only on the account's networks, so deriving it here would recompute the same
+    /// answer up to three times per rebuild — and a rebuild runs on every state change.
+    /// It carries exactly one entry per network (see `NetworkAbbreviation`), which is what
+    /// makes its count the network-count gate above.
+    private static func addNetworkHints(
+        _ abbreviations: [Int: String],
+        _ rows: inout [Row],
+        everyRow: Bool = false
+    ) {
+        guard abbreviations.count > 1 else { return }
 
         let hinted: Set<String>
         if everyRow {
@@ -973,9 +987,6 @@ final class BufferListViewController: UICollectionViewController {
         }
         guard !hinted.isEmpty else { return }
 
-        // Against every network the user has, not just the ones on screen — see
-        // `NetworkAbbreviation`, which is also what the web computes for the same rows.
-        let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
         for index in rows.indices {
             guard hinted.contains(rows[index].buffer.target.lowercased()),
                   let networkId = rows[index].buffer.networkId,

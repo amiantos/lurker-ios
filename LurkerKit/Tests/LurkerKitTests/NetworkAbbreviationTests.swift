@@ -56,10 +56,17 @@ final class NetworkAbbreviationTests: XCTestCase {
 
     /// The result must depend only on the set of names, never on dictionary iteration order —
     /// otherwise a chip's label could change across a rebuild with nothing else moving.
+    ///
+    /// A fresh dictionary built from SHUFFLED pairs each pass, not one instance called
+    /// repeatedly: a given `Dictionary` enumerates the same way every time you ask it, so
+    /// re-reading one instance in a loop would pass against an implementation that only
+    /// compared each name to the ones it had already visited.
     func testIsIndependentOfInsertionOrder() {
-        let names = [3: "lurkernet", 1: "libera", 2: "mansionNET"]
+        let pairs = [(1, "libera"), (2, "mansionNET"), (3, "lurkernet")]
         let expected = [1: "li", 2: "m", 3: "lu"]
-        for _ in 0 ..< 20 {
+        for _ in 0 ..< 50 {
+            var names: [Int: String] = [:]
+            for (id, name) in pairs.shuffled() { names[id] = name }
             XCTAssertEqual(NetworkAbbreviation.shortestUniquePrefixes(names), expected)
         }
     }
