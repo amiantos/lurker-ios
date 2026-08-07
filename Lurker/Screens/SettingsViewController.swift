@@ -258,7 +258,7 @@ final class SettingsViewController: UITableViewController {
             // the control that failed.
             if let error = writeError, error.key == row.option.key {
                 content.secondaryText = error.message
-                content.secondaryTextProperties.color = .systemRed
+                content.secondaryTextProperties.color = Palette.bad
                 content.secondaryTextProperties.numberOfLines = 0
             }
             configure(cell, for: row.option)

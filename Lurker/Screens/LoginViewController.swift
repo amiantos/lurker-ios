@@ -79,7 +79,7 @@ final class LoginViewController: UIViewController {
         signInButton.addTarget(self, action: #selector(signIn), for: .touchUpInside)
 
         statusLabel.font = .preferredFont(forTextStyle: .footnote)
-        statusLabel.textColor = .systemRed
+        statusLabel.textColor = Palette.bad
         statusLabel.numberOfLines = 0
 
         let stack = UIStackView(arrangedSubviews: [

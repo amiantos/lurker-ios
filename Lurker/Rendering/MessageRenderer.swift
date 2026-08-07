@@ -51,8 +51,8 @@ enum MessageRenderer {
         // A network-tied system line hashes its network name through the same palette as
         // nicks, so each network gets a stable, distinguishable color — matching the web.
         // The app speaking in its own voice ("System", no network) stays muted.
-        case .system: networkName.map { hashedColor($0) } ?? .secondaryLabel
-        case .motd, .other: .secondaryLabel
+        case .system: networkName.map { hashedColor($0) } ?? Palette.fgMuted
+        case .motd, .other: Palette.fgMuted
         default: nickColor(message)
         }
     }
@@ -225,7 +225,7 @@ enum MessageRenderer {
             systemName: "keyboard",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: base.pointSize)
         )?.withTintColor(
-            UIColor.secondaryLabel.resolvedColor(with: traits), renderingMode: .alwaysOriginal
+            Palette.fgMuted.resolvedColor(with: traits), renderingMode: .alwaysOriginal
         ) {
             attachment.image = image
             attachment.bounds = CGRect(
@@ -489,7 +489,7 @@ enum MessageRenderer {
     }
 
     private static func muted(_ text: String, base: UIFont) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: UIColor.secondaryLabel])
+        NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: Palette.fgMuted])
     }
 
     /// A part/quit reason in parentheses, or nothing when there isn't one.
@@ -707,19 +707,19 @@ enum MessageRenderer {
     /// (The in-body pass agrees by omission: `NickHighlighter` is built without your own nick, so
     /// a self-mention keeps the body's color rather than taking a palette one.)
     static func nickColor(_ nick: String?, isSelf: Bool) -> UIColor {
-        isSelf ? .label : hashedColor(nick ?? "")
+        isSelf ? Palette.fg : hashedColor(nick ?? "")
     }
 
     /// The nick palette as trait-keyed colors, built once and indexed by the djb2 hash. A
     /// fixed set (dark hex + light variant per slot), so there's no reason to re-parse the
     /// hex and allocate a dynamic UIColor on every lookup.
     private nonisolated static let nickColors: [UIColor] =
-        zip(IRCPalette.nick, IRCPalette.nickLight).map { dynamicHex(dark: $0, light: $1) }
+        zip(IRCPalette.nick, IRCPalette.nickLight).map { Palette.dynamicHex(dark: $0, light: $1) }
 
-    /// The mIRC palette's chromatic slots as trait-keyed colors, built once; `nil` is a theme
-    /// slot that resolves to a system color instead (see `mircColor`).
+    /// The mIRC palette's literal slots as trait-keyed colors, built once; `nil` is a theme
+    /// slot that resolves against the palette instead (see `mircColor`).
     private nonisolated static let mircColors: [UIColor?] = IRCPalette.mirc.indices.map { index in
-        IRCPalette.mirc[index].map { dynamicHex(dark: $0, light: IRCPalette.mircLight[index] ?? $0) }
+        IRCPalette.mirc[index].map { Palette.dynamicHex(dark: $0, light: IRCPalette.mircLight[index] ?? $0) }
     }
 
     /// A stable color for a name, from the shared nick palette. Nicks and network names
@@ -729,27 +729,23 @@ enum MessageRenderer {
         nickColors[NickColor.index(for: name)]
     }
 
-    /// A `UIColor` that resolves `dark` in dark mode and `light` in light mode. The nick and
-    /// mIRC palettes are fixed hex, but each needs a different variant per theme, and a
-    /// trait-keyed color adapts everywhere it's drawn (captions, tokens, in-body mentions)
-    /// with no work at the call site.
-    nonisolated static func dynamicHex(dark: String, light: String) -> UIColor {
-        guard let darkColor = UIColor(hex: dark), let lightColor = UIColor(hex: light) else {
-            return .secondaryLabel
-        }
-        return UIColor { $0.userInterfaceStyle == .dark ? darkColor : lightColor }
-    }
-
-    /// mIRC index → color. The theme slots (0/1/14/15) map to system colors; 16+ don't
-    /// render. Chromatic slots are dynamic, like nick colors.
+    /// mIRC index → color. The theme slots (0/14/15) resolve against the palette; 16+ don't
+    /// render. Every other slot is a literal, dynamic like the nick colors.
+    ///
+    /// The three theme slots are what the web's defaults say they are — `var(--fg)`,
+    /// `var(--fg-muted)`, and 70% of the foreground — rather than the nearest UIKit label tier.
+    /// Slot 15 in particular: `.tertiaryLabel` is 30% and reads as disabled text, where the web
+    /// means "a lighter grey you can still read".
+    ///
+    /// ⚠ Slot 1 is deliberately absent from this switch. It is a literal `#000000` in both
+    /// tables, not a theme slot — see the warning on `IRCPalette.mirc`.
     private nonisolated static func mircColor(_ index: Int) -> UIColor? {
         guard index >= 0, index < IRCPalette.mirc.count else { return nil }
         if let color = mircColors[index] { return color }
         switch index {
-        case 0: return .label
-        case 1: return .systemBackground
-        case 14: return .secondaryLabel
-        case 15: return .tertiaryLabel
+        case 0: return Palette.fg
+        case 14: return Palette.fgMuted
+        case 15: return Palette.fgFaint
         default: return nil
         }
     }

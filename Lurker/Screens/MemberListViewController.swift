@@ -38,6 +38,14 @@ final class MemberListViewController: UITableViewController {
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "member")
 
+        // A row with a colored mode glyph bakes its font into an attributed string, which puts
+        // it outside `textProperties.adjustsFontForContentSizeCategory` — the flag can only
+        // rescale a font the configuration owns. Rebuilding the rows is what carries a text-size
+        // change through instead, since `cellForRowAt` re-reads the font every time.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (list: Self, _) in
+            list.tableView.reloadData()
+        }
+
         let key = buffer.key.id
         viewModel.statePublisher
             // The ignore set decides who's *listed*, not just who's in the room, so a rule
@@ -87,10 +95,39 @@ final class MemberListViewController: UITableViewController {
         let member = members[indexPath.row]
         var content = UIListContentConfiguration.cell()
         let prefix = MemberPrefix.of(member.modes)
-        content.text = prefix + member.nick
         // Away members stay in place rather than sorting to the bottom — you look for a
         // nick where you last saw it — and are dimmed instead.
-        content.textProperties.color = member.away ? .tertiaryLabel : .label
+        let base: UIColor = member.away ? .tertiaryLabel : .label
+        content.text = prefix + member.nick
+        content.textProperties.color = base
+
+        // The mode glyph wears its rank's color (`look.color.member.*`), the nick does not —
+        // the same split the web client makes, and the reason ranks are scannable without
+        // reading: five fixed colors in a fixed order down the leading edge.
+        //
+        // Not for an away member, though. There the whole row goes flat, glyph included, so it
+        // reads as inert — a bright `@` beside a greyed-out nick says the wrong thing about who
+        // is actually around to use it. (The web's `li.away` rule overrides its prefix color for
+        // exactly this.)
+        if !member.away, let rank = Palette.memberPrefix(prefix) {
+            // ⚠ `attributedText` "supersedes the text and some properties of the textProperties"
+            // (UIListContentConfiguration.h) — which properties is not spelled out, so nothing is
+            // left to `textProperties` here: the font and the base color are both written onto
+            // the string, and only then is the glyph's range recolored. The font is taken from
+            // the configuration rather than named, so this row is the same face and size as the
+            // unprivileged rows beside it by construction rather than by matching a literal.
+            let attributed = NSMutableAttributedString(
+                string: content.text ?? "",
+                attributes: [
+                    .foregroundColor: base,
+                    .font: content.textProperties.font,
+                ]
+            )
+            attributed.addAttribute(
+                .foregroundColor, value: rank, range: NSRange(location: 0, length: prefix.utf16.count)
+            )
+            content.attributedText = attributed
+        }
         cell.contentConfiguration = content
         cell.selectionStyle = .none
         return cell

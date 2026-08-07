@@ -37,6 +37,19 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let color: UIColor
         /// Nil unless the minute changed — the whole point of the format.
         let time: String?
+        /// The speaker's channel-mode glyph, when `nick` opens with one. Carried separately from
+        /// the name it's already part of, because it doesn't wear the name's color: a rank is a
+        /// property of the room, not of the person, so the web gives it `look.color.member.*`
+        /// and iOS follows. Empty for every header that isn't a channel member's — a network,
+        /// a notice's `-mark-`, or the highlights feed, which doesn't resolve the nicklist.
+        let modePrefix: String
+
+        init(nick: String, color: UIColor, time: String?, modePrefix: String = "") {
+            self.nick = nick
+            self.color = color
+            self.time = time
+            self.modePrefix = modePrefix
+        }
     }
 
     private let column = UIStackView()
@@ -80,7 +93,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // Spoken as part of the body's label instead; addressable here it would be said twice.
         nickLabel.isAccessibilityElement = false
 
-        timeLabel.textColor = .secondaryLabel
+        timeLabel.textColor = Palette.fgMuted
         timeLabel.isAccessibilityElement = false
         // The nick truncates before the clock does: a long nick is recoverable from context, a
         // half-rendered time is just wrong.
@@ -95,7 +108,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
         messageText.isScrollEnabled = false
         messageText.backgroundColor = .clear
-        messageText.textColor = .label
+        // The palette's foreground, not `.label`: the cell sits on `Palette.bg`, and the theme
+        // pairs a slightly-off white with its charcoal (and a warm near-black with its cream)
+        // for exactly the reason the background isn't pure black — a monospaced log at maximum
+        // contrast is tiring to read. Runs that carry their own color override this anyway.
+        messageText.textColor = Palette.fg
         messageText.textContainer.lineFragmentPadding = 0
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
 
@@ -152,9 +169,26 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let font = MessageRenderer.compactFont(compatibleWith: traits)
         headerRow.isHidden = header == nil
         if let header {
-            nickLabel.font = font.semibold
-            nickLabel.text = header.nick
-            nickLabel.textColor = header.color
+            let nickFont = font.semibold
+            // The mode glyph in its rank's color, the name in the speaker's — the split the web's
+            // `NickRef` makes. Both branches set every property they depend on, in full: cells
+            // are reused, and a header that took the attributed branch last time leaves a string
+            // behind that a bare `text` assignment is the only thing that clears.
+            if let rank = Palette.memberPrefix(header.modePrefix), header.nick.hasPrefix(header.modePrefix) {
+                let attributed = NSMutableAttributedString(
+                    string: header.nick,
+                    attributes: [.font: nickFont, .foregroundColor: header.color]
+                )
+                attributed.addAttribute(
+                    .foregroundColor, value: rank,
+                    range: NSRange(location: 0, length: header.modePrefix.utf16.count)
+                )
+                nickLabel.attributedText = attributed
+            } else {
+                nickLabel.text = header.nick
+                nickLabel.font = nickFont
+                nickLabel.textColor = header.color
+            }
             timeLabel.font = font
             timeLabel.text = header.time
             // Hidden rather than left empty, so the spacer doesn't hold a gap open for a stamp

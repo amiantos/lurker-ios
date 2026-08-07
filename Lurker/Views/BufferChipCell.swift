@@ -17,7 +17,6 @@ func makeUnreadBadge(unread: Int, highlights: Int) -> UILabel? {
     label.text = "\(unread)"
     label.font = .preferredFont(forTextStyle: .caption1)
     label.adjustsFontForContentSizeCategory = true
-    label.textColor = .white
     // A highlight is the loud red; an ordinary unread is a neutral gray. `.systemGray` reads
     // too light under white text, and it's already the darkest of the systemGray family, so
     // this is a purpose-built gray: dark enough for white either way, a shade lighter in dark
@@ -27,7 +26,14 @@ func makeUnreadBadge(unread: Int, highlights: Int) -> UILabel? {
             ? UIColor(white: 0.42, alpha: 1)
             : UIColor(white: 0.36, alpha: 1)
     }
-    label.backgroundColor = highlights > 0 ? .systemRed : neutral
+    label.backgroundColor = highlights > 0 ? Palette.bad : neutral
+    // The two pills don't take the same text color, because their fills aren't the same *kind*
+    // of color. The neutral gray is a dark fill built for white text. The theme's `bad` is a
+    // pastel in dark mode — a foreground hue, not a fill — and white on it is 3.0:1; the canvas
+    // color punched out of it is 5.5:1, and is how the palette means the hue to be used.
+    // In light mode `bad` is a saturated red and `Palette.bg` is a warm off-white, so that
+    // branch resolves to what it always was.
+    label.textColor = highlights > 0 ? Palette.bg : .white
     label.textAlignment = .center
     return label
 }
@@ -288,8 +294,12 @@ final class BufferChipCell: UICollectionViewCell {
 
     private static func presenceColor(_ presence: FriendPresence) -> UIColor {
         switch presence {
-        case .online: return .systemGreen
-        case .away: return .systemOrange
+        // Present/away take the theme's own signal colors, the same two the connection banner
+        // and the title-bar status light use, so "online" is one color across the whole app and
+        // both clients. Absent/unknown stay on the system greys: they aren't signals, they're
+        // the lack of one, and the palette has no token for that.
+        case .online: return Palette.good
+        case .away: return Palette.warn
         case .offline: return .tertiaryLabel
         case .unknown: return .quaternaryLabel
         }
