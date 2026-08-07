@@ -52,6 +52,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         }
     }
 
+    /// A spoiler in this cell's message was tapped, by its ordinal within the message. Set per
+    /// configure and cleared in `prepareForReuse`, because it closes over that message.
+    var onToggleSpoiler: ((Int) -> Void)?
+
     private let column = UIStackView()
     private let headerRow = UIStackView()
     private let nickLabel = UILabel()
@@ -115,6 +119,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.textColor = Palette.fg
         messageText.textContainer.lineFragmentPadding = 0
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
+        messageText.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
 
         column.axis = .vertical
         column.isLayoutMarginsRelativeArrangement = true
@@ -243,5 +248,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // An in-flight jump flash (#42) would otherwise pulse on an unrelated line.
         contentView.layer.removeAllAnimations()
         fill.layer.removeAllAnimations()
+        // The closure captures the message it was built for. Left in place, a tap on a recycled
+        // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
+        onToggleSpoiler = nil
     }
 }

@@ -31,6 +31,10 @@ final class MessageTextView: UITextView {
     /// on its own.
     var onOpenURL: ((URL) -> Void)?
 
+    /// A spoiler run was tapped, identified by its ordinal within the message. Toggling is the
+    /// owner's business: the revealed set outlives this view, which is recycled with its cell.
+    var onToggleSpoiler: ((Int) -> Void)?
+
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         isEditable = false
@@ -42,7 +46,15 @@ final class MessageTextView: UITextView {
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
     @objc private func tapped(_ recognizer: UITapGestureRecognizer) {
-        guard let url = url(at: recognizer.location(in: self)) else { return }
+        let point = recognizer.location(in: self)
+        // Spoiler first. A hidden run must swallow the tap rather than let anything under it
+        // act — and `MessageRenderer` doesn't linkify inside a spoiler anyway, so the two can't
+        // both be present. Checking in this order says which wins if that ever changes.
+        if let spoiler = spoilerIndex(at: point) {
+            onToggleSpoiler?(spoiler)
+            return
+        }
+        guard let url = url(at: point) else { return }
         onOpenURL?(url)
     }
 
@@ -50,12 +62,22 @@ final class MessageTextView: UITextView {
     ///
     /// Internal rather than private so it can be checked by asking it about a point whose answer is
     /// known, instead of only by tapping the screen.
+    func url(at point: CGPoint) -> URL? {
+        attribute(.messageLink, at: point) as? URL
+    }
+
+    /// The ordinal of the spoiler run under `point`, or nil. Identifies which spoiler in the
+    /// message was hit, since one line can hold several.
+    func spoilerIndex(at point: CGPoint) -> Int? {
+        attribute(.spoiler, at: point) as? Int
+    }
+
+    /// The value of `key` on the character under `point` (in this view's coordinates), or nil.
     ///
     /// Two things have to be true for a hit: the point must land *inside* a laid-out line — not
     /// merely nearest to one, or the empty space beside a short line would "hit" its last character
-    /// — and the character there must carry a `.messageLink` (see `MessageRenderer`, which stamps
-    /// it in place of `.link`).
-    func url(at point: CGPoint) -> URL? {
+    /// — and the character there must carry the attribute.
+    private func attribute(_ key: NSAttributedString.Key, at point: CGPoint) -> Any? {
         guard let layoutManager = textLayoutManager,
               let contentManager = layoutManager.textContentManager,
               let text = attributedText, text.length > 0
@@ -82,7 +104,7 @@ final class MessageTextView: UITextView {
             let inLine = CGPoint(x: inFragment.x - bounds.minX, y: inFragment.y - bounds.minY)
             let index = fragmentStart + line.characterIndex(for: inLine)
             guard index >= 0, index < text.length else { return nil }
-            return text.attribute(.messageLink, at: index, effectiveRange: nil) as? URL
+            return text.attribute(key, at: index, effectiveRange: nil)
         }
         return nil
     }

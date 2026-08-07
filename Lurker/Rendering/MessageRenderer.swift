@@ -19,6 +19,16 @@ extension NSAttributedString.Key {
     /// Deliberately not `.link`: that one is UIKit's, and UIKit insists on restyling it. See the
     /// note where links are marked.
     static let messageLink = NSAttributedString.Key("chat.lurker.messageLink")
+
+    /// Marks a spoiler run, valued with its ordinal within the message so a tap can say *which*
+    /// one it hit — a line can hold several. Present whether the run is hidden or revealed: it's
+    /// what makes the tap target exist in both states, so a reveal can be taken back.
+    static let spoiler = NSAttributedString.Key("chat.lurker.spoiler")
+
+    /// Present only while a spoiler run is still hidden. Separate from `.spoiler`, which stays
+    /// on the run in both states so the tap target survives a reveal — this is the one that says
+    /// the text underneath must not be spoken. See `MessageRenderer.spoken(_:)`.
+    static let spoilerHidden = NSAttributedString.Key("chat.lurker.spoilerHidden")
 }
 
 enum MessageRenderer {
@@ -248,24 +258,39 @@ enum MessageRenderer {
     /// out of it. Anything without a label of its own drops out rather than leaving the
     /// placeholder in the sentence.
     ///
-    /// The scan for U+FFFC comes first because this runs for every row in `cellForRowAt` while
-    /// at most one row in a buffer — the typing line — can ever hold an attachment. Without it
-    /// every message pays for a deep copy and an attribute walk to discover it had nothing to
-    /// substitute. It also leaves those rows' labels byte-identical to the plain string, so the
-    /// trim below can't turn a whitespace-only body into an empty label.
+    /// ⚠⚠ A still-hidden spoiler is substituted too, and that one is not cosmetic: without it a
+    /// screen reader announces the secret while the screen shows a blank box. The web stops this
+    /// with `aria-hidden`; here the label is built out of the string, so the string is where it
+    /// has to be stopped. The words name the affordance rather than describing a redaction,
+    /// because to VoiceOver this is a thing you can activate.
+    ///
+    /// One attribute walk, always — the previous U+FFFC fast path can't cover spoilers, which
+    /// have no marker character to scan for. The walk is over a single message's runs and is
+    /// cheap; what it still guards is the DEEP COPY below, which only happens once something is
+    /// actually found. A row with nothing to substitute also returns the plain string untouched,
+    /// so the trim can't turn a whitespace-only body into an empty label.
     static func spoken(_ attributed: NSAttributedString) -> String {
         let plain = attributed.string
-        guard plain.utf16.contains(0xFFFC) else { return plain }
+        let whole = NSRange(location: 0, length: attributed.length)
+
+        var ranges: [(NSRange, String)] = []
+        if plain.utf16.contains(0xFFFC) {
+            attributed.enumerateAttribute(.attachment, in: whole) { value, range, _ in
+                guard let attachment = value as? NSTextAttachment else { return }
+                ranges.append((range, attachment.accessibilityLabel ?? ""))
+            }
+        }
+        attributed.enumerateAttribute(.spoilerHidden, in: whole) { value, range, _ in
+            guard value != nil else { return }
+            ranges.append((range, "hidden spoiler, double tap to reveal"))
+        }
+        guard !ranges.isEmpty else { return plain }
 
         let text = NSMutableAttributedString(attributedString: attributed)
-        // Backwards, so replacing one attachment doesn't shift the ranges of the ones before it.
-        var ranges: [(NSRange, String)] = []
-        text.enumerateAttribute(.attachment, in: NSRange(location: 0, length: text.length)) {
-            value, range, _ in
-            guard let attachment = value as? NSTextAttachment else { return }
-            ranges.append((range, attachment.accessibilityLabel ?? ""))
-        }
-        for (range, label) in ranges.reversed() {
+        // Backwards, so replacing one range doesn't shift the ranges of the ones before it.
+        // Sorted first: the two passes above collect independently, so they don't arrive in
+        // document order and a raw reverse would corrupt an interleaved pair.
+        for (range, label) in ranges.sorted(by: { $0.0.location < $1.0.location }).reversed() {
             text.replaceCharacters(in: range, with: label)
         }
         return text.string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -363,7 +388,8 @@ enum MessageRenderer {
         _ message: Message,
         traits: UITraitCollection = .current,
         settings: Settings = Settings(),
-        highlighter: NickHighlighter? = nil
+        highlighter: NickHighlighter? = nil,
+        revealed: Set<Int> = []
     ) -> NSAttributedString {
         let base = compactFont(compatibleWith: traits)
 
@@ -374,7 +400,7 @@ enum MessageRenderer {
             line.append(NSAttributedString(
                 string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
-            line.append(body(message, base: base, fallback: color, highlighter: highlighter))
+            line.append(body(message, base: base, fallback: color, highlighter: highlighter, revealed: revealed))
             // Two, to clear the `* ` this line opens with.
             return spaced(line, flushFirstLine: true, indentCharacters: 2, traits: traits)
         }
@@ -395,7 +421,10 @@ enum MessageRenderer {
                 // `body` stamps an explicit foreground on every run (see the note there), so a
                 // colour set on the label never reaches a single character of message text. This
                 // fallback IS the log's primary text colour.
-                attributedString: body(message, base: base, fallback: Palette.fg, highlighter: highlighter)
+                attributedString: body(
+                    message, base: base, fallback: Palette.fg,
+                    highlighter: highlighter, revealed: revealed
+                )
             ),
             flushFirstLine: false, traits: traits
         )
@@ -560,12 +589,16 @@ enum MessageRenderer {
     // MARK: - Body
 
     private static func body(
-        _ message: Message, base: UIFont, fallback: UIColor, highlighter: NickHighlighter? = nil
+        _ message: Message, base: UIFont, fallback: UIColor,
+        highlighter: NickHighlighter? = nil, revealed: Set<Int> = []
     ) -> NSAttributedString {
         let attributed = NSMutableAttributedString()
         // The spans the sender colored themselves with mIRC codes — an explicit color wins
         // over nick coloring, so these are off-limits to the mention pass below.
         var mircColored: [NSRange] = []
+        // Spoilers are off-limits to BOTH later passes, revealed or not — see `spoilered`.
+        var spoilered: [NSRange] = []
+        var spoilerOrdinal = 0
         for run in IRCFormatting.parse(message.text ?? "") {
             // Always set an explicit color: unlike a label, a UITextView's attributed runs
             // without a foreground color fall back to a static black, not the dynamic
@@ -578,9 +611,35 @@ enum MessageRenderer {
             if let bg = run.bg, let color = mircColor(bg) { attributes[.backgroundColor] = color }
             if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             if run.strike { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+
+            // A run whose foreground and background match is the IRC spoiler convention: text
+            // the sender deliberately made invisible. Hidden, it already renders as a solid box
+            // because that is literally what was sent — nothing here has to hide it. Revealed,
+            // the text takes the ordinary message colour over a faint wash of the sender's,
+            // which is the web's treatment and for its reason: the two commonest spoiler colours
+            // are black and white, and either as *text* on a tint of itself is unreadable in the
+            // scheme that matches it. A reveal that reveals nothing is the one failure here.
+            let isSpoiler = run.fg != nil && run.fg == run.bg
+            var ordinal: Int?
+            if isSpoiler {
+                ordinal = spoilerOrdinal
+                spoilerOrdinal += 1
+                attributes[.spoiler] = ordinal
+                if revealed.contains(ordinal!) {
+                    attributes[.foregroundColor] = fallback
+                    if let fill = explicitFg {
+                        attributes[.backgroundColor] = Palette.translucent(fill, alpha: 0.22)
+                    }
+                } else {
+                    attributes[.spoilerHidden] = true
+                }
+            }
+
             let start = attributed.length
             attributed.append(NSAttributedString(string: run.text, attributes: attributes))
-            if explicitFg != nil { mircColored.append(NSRange(location: start, length: attributed.length - start)) }
+            let range = NSRange(location: start, length: attributed.length - start)
+            if explicitFg != nil { mircColored.append(range) }
+            if isSpoiler { spoilered.append(range) }
         }
         // Auto-link URLs over the assembled plain text (control codes already stripped).
         //
@@ -597,6 +656,12 @@ enum MessageRenderer {
         var links: [NSRange] = []
         for match in URLMatcher.matches(in: attributed.string) {
             guard let url = URL(string: match.href) else { continue }
+            // ⚠ Never inside a spoiler, and not only while it's hidden. A link there would be
+            // tappable through the box — opening the secret without revealing it — and it would
+            // also underline the run, drawing the shape of hidden text. The web skips URL and
+            // nick splitting inside a spoiler for exactly this. The cost is that a URL in a
+            // spoiler isn't tappable even once revealed; it's readable, and both clients agree.
+            if spoilered.contains(where: { NSIntersectionRange($0, match.range).length > 0 }) { continue }
             attributed.addAttribute(.messageLink, value: url, range: match.range)
             // Per color run, not once for the range: a URL can straddle a color change if the
             // sender put one mid-link, and the underline should follow the text above it.
@@ -619,6 +684,9 @@ enum MessageRenderer {
             for range in highlighter.matches(in: attributed.string) {
                 let taken = mircColored.contains { NSIntersectionRange($0, range).length > 0 }
                     || links.contains { NSIntersectionRange($0, range).length > 0 }
+                    // A nick coloured inside a hidden spoiler would be a visible word in a box
+                    // of invisible ones — the shape of the secret, and possibly the secret.
+                    || spoilered.contains { NSIntersectionRange($0, range).length > 0 }
                 if taken { continue }
                 attributed.addAttribute(.foregroundColor, value: hashedColor(text.substring(with: range)), range: range)
             }

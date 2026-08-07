@@ -2383,8 +2383,41 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             row: { [weak self] index in
                 guard let self, rows.indices.contains(index) else { return nil }
                 return rows[index]
+            },
+            revealedSpoilers: { [weak self] message in self?.revealedSpoilers[message.id] ?? [] },
+            onToggleSpoiler: { [weak self] message, ordinal in
+                self?.toggleSpoiler(message, ordinal: ordinal)
             }
         )
+    }
+
+    /// Which spoilers the reader has opened, by message id and then by the spoiler's ordinal
+    /// within that message.
+    ///
+    /// Lives here rather than on the cell because cells are recycled: a reveal stored on one
+    /// would reappear on whatever message scrolled into its place. Keyed by message id rather
+    /// than row index for the same reason in the other direction — backlog loading above shifts
+    /// every index, and a reveal would slide onto a different line.
+    ///
+    /// Session-scoped and never pruned. A revealed spoiler is a few bytes against a buffer's
+    /// worth of messages, and forgetting one because the reader scrolled away would re-hide
+    /// something they had deliberately opened.
+    private var revealedSpoilers: [Int: Set<Int>] = [:]
+
+    /// Toggle, not just reveal: a second tap puts the box back. The web reveals one-way, on the
+    /// reasoning that nobody expects to re-hide — but that's a consequence of its state living
+    /// in a component instance, and having to store this explicitly makes taking it back free.
+    private func toggleSpoiler(_ message: Message, ordinal: Int) {
+        var opened = revealedSpoilers[message.id] ?? []
+        if opened.contains(ordinal) { opened.remove(ordinal) } else { opened.insert(ordinal) }
+        revealedSpoilers[message.id] = opened.isEmpty ? nil : opened
+
+        // Redraw just this row. `reconfigureRows` re-runs `cellForRowAt` on the existing cell
+        // without the fade `reloadRows` animates, and without releasing the cell — which on a
+        // live buffer is what keeps the tap from shifting the content under the reader's thumb.
+        // The height can't change: hidden and revealed are the same glyphs, only recoloured.
+        guard let index = rows.firstIndex(where: { $0.message?.id == message.id }) else { return }
+        tableView.reconfigureRows(at: [IndexPath(row: index, section: 0)])
     }
 
     /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range
