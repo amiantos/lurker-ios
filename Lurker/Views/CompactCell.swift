@@ -108,10 +108,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
         messageText.isScrollEnabled = false
         messageText.backgroundColor = .clear
-        // The palette's foreground, not `.label`: the cell sits on `Palette.bg`, and the theme
-        // pairs a slightly-off white with its charcoal (and a warm near-black with its cream)
-        // for exactly the reason the background isn't pure black — a monospaced log at maximum
-        // contrast is tiring to read. Runs that carry their own color override this anyway.
+        // The view's default only — `MessageRenderer.body` stamps an explicit foreground on
+        // every run it produces, so nothing this cell is handed actually falls back to it. What
+        // colors the log is that renderer's `fallback:` argument, which is the same token. Kept
+        // in step with it so an unstyled string dropped in here doesn't arrive a different color.
         messageText.textColor = Palette.fg
         messageText.textContainer.lineFragmentPadding = 0
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
@@ -179,8 +179,13 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
                     string: header.nick,
                     attributes: [.font: nickFont, .foregroundColor: header.color]
                 )
-                attributed.addAttribute(
-                    .foregroundColor, value: rank,
+                // Bold via `withTrait`, which is the only thing that takes on this face —
+                // `semibold` adds a weight attribute that a monospaced font's concrete name beats
+                // in matching, so `nickFont` above is not in fact heavier than the body. The
+                // glyph needs the weight for contrast: the rank hues are ~3.5-4:1 on the light
+                // canvas, which clears the bar for large text and not the one for regular.
+                attributed.addAttributes(
+                    [.foregroundColor: rank, .font: nickFont.bold],
                     range: NSRange(location: 0, length: header.modePrefix.utf16.count)
                 )
                 nickLabel.attributedText = attributed

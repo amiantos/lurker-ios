@@ -113,18 +113,28 @@ final class MemberListViewController: UITableViewController {
             // ⚠ `attributedText` "supersedes the text and some properties of the textProperties"
             // (UIListContentConfiguration.h) — which properties is not spelled out, so nothing is
             // left to `textProperties` here: the font and the base color are both written onto
-            // the string, and only then is the glyph's range recolored. The font is taken from
-            // the configuration rather than named, so this row is the same face and size as the
-            // unprivileged rows beside it by construction rather than by matching a literal.
+            // the string, and only then is the glyph's range restyled.
+            //
+            // ⚠ The font is built from this controller's traits, NOT read off
+            // `content.textProperties.font`. That property is still the configuration's
+            // *unresolved* default at this point — UIKit resolves it in `updated(for:)`, after
+            // assignment — so a row taking this branch could end up a size away from the plain
+            // rows beside it. Passing traits explicitly is the same rule `MessageRenderer`
+            // follows for every font it builds, and for the same reason.
+            let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
             let attributed = NSMutableAttributedString(
                 string: content.text ?? "",
-                attributes: [
-                    .foregroundColor: base,
-                    .font: content.textProperties.font,
-                ]
+                attributes: [.foregroundColor: base, .font: font]
             )
-            attributed.addAttribute(
-                .foregroundColor, value: rank, range: NSRange(location: 0, length: prefix.utf16.count)
+            // Bold, and not only for emphasis. These five hues are specified against the message
+            // list's `Palette.bg`; an inset-grouped cell is `.secondarySystemGroupedBackground`,
+            // which is pure white in light mode, and four of the five land between 3.4:1 and
+            // 4.0:1 there — under the 4.5:1 that regular-weight body text is held to. Bold at
+            // this size is WCAG "large text", whose bar is 3:1 and which all five clear, and a
+            // heavier glyph is genuinely easier to pick out at one character wide besides.
+            attributed.addAttributes(
+                [.foregroundColor: rank, .font: font.bold],
+                range: NSRange(location: 0, length: prefix.utf16.count)
             )
             content.attributedText = attributed
         }

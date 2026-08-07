@@ -27,13 +27,16 @@ func makeUnreadBadge(unread: Int, highlights: Int) -> UILabel? {
             : UIColor(white: 0.36, alpha: 1)
     }
     label.backgroundColor = highlights > 0 ? Palette.bad : neutral
-    // The two pills don't take the same text color, because their fills aren't the same *kind*
-    // of color. The neutral gray is a dark fill built for white text. The theme's `bad` is a
-    // pastel in dark mode — a foreground hue, not a fill — and white on it is 3.0:1; the canvas
-    // color punched out of it is 5.5:1, and is how the palette means the hue to be used.
-    // In light mode `bad` is a saturated red and `Palette.bg` is a warm off-white, so that
-    // branch resolves to what it always was.
-    label.textColor = highlights > 0 ? Palette.bg : .white
+    // Whatever reads on the fill, which is not the same answer in both schemes. Light `bad`
+    // (#e14775) is a saturated mid-red and takes white, at 3.9:1. Dark `bad` (#ed6c89) is a
+    // *pastel* — a foreground hue, not a fill — and white on it is 3.0:1, where the charcoal is
+    // 5.5:1. So the highlight pill flips, and the neutral gray (a dark fill in both, built for
+    // white) doesn't. Digits at caption size are the smallest text in the app; don't let a
+    // tidier-looking single value cost either scheme its legibility.
+    let highlightInk = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(hex: "#212022")! : .white
+    }
+    label.textColor = highlights > 0 ? highlightInk : .white
     label.textAlignment = .center
     return label
 }

@@ -108,7 +108,9 @@ enum MessageRenderer {
             line.append(muted(" set the topic", base: base))
             if let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 line.append(muted(": ", base: base))
-                line.append(body(message, base: base, fallback: .secondaryLabel))
+                // The same muted as the ": " immediately before it — two greys mid-sentence read
+                // as a seam, and the topic text is a continuation of the narration, not a quote.
+                line.append(body(message, base: base, fallback: Palette.fgMuted))
             }
         case .invite:
             line.append(actor)
@@ -389,7 +391,11 @@ enum MessageRenderer {
         }
         return spaced(
             NSMutableAttributedString(
-                attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
+                // `Palette.fg`, not `.label`, and not left to the text view's `textColor` either:
+                // `body` stamps an explicit foreground on every run (see the note there), so a
+                // colour set on the label never reaches a single character of message text. This
+                // fallback IS the log's primary text colour.
+                attributedString: body(message, base: base, fallback: Palette.fg, highlighter: highlighter)
             ),
             flushFirstLine: false, traits: traits
         )
@@ -739,6 +745,16 @@ enum MessageRenderer {
     ///
     /// ⚠ Slot 1 is deliberately absent from this switch. It is a literal `#000000` in both
     /// tables, not a theme slot — see the warning on `IRCPalette.mirc`.
+    ///
+    /// ⚠ KNOWN, and inherited on purpose: `^C0,1` — white-on-black, the commonest explicit pair —
+    /// is unreadable in light mode, because slot 0 resolves to the theme's dark foreground and
+    /// slot 1 is literally black (1.4:1). This is not an iOS bug to patch locally; the web's Light
+    /// preset renders the identical pair, and the tradeoff behind it is real: no single value for
+    /// slot 0 can be both "white" against slot 1's black *and* legible as a bare `^C00` on a light
+    /// canvas. The web chose the bare case, which is far commoner. If that call is ever revisited
+    /// it belongs in `shared/themePresets.ts`, so both clients move together — changing it here
+    /// alone would make the same wire bytes render differently in the two clients, which is the
+    /// one thing this palette exists to prevent.
     private nonisolated static func mircColor(_ index: Int) -> UIColor? {
         guard index >= 0, index < IRCPalette.mirc.count else { return nil }
         if let color = mircColors[index] { return color }
