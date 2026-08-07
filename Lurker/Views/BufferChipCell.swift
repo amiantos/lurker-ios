@@ -33,8 +33,12 @@ func makeUnreadBadge(unread: Int, highlights: Int) -> UILabel? {
     // 5.5:1. So the highlight pill flips, and the neutral gray (a dark fill in both, built for
     // white) doesn't. Digits at caption size are the smallest text in the app; don't let a
     // tidier-looking single value cost either scheme its legibility.
+    // The dark branch asks `Palette.bg` rather than repeating its hex, so the digit keeps
+    // reading as the canvas punched out of the pill if that canvas is ever retuned. It can't be
+    // `Palette.bg` outright: light `bg` is a warm off-white that drops the digit to 3.6:1 on
+    // this fill, where plain white is 3.9:1.
     let highlightInk = UIColor { traits in
-        traits.userInterfaceStyle == .dark ? UIColor(hex: "#212022")! : .white
+        traits.userInterfaceStyle == .dark ? Palette.bg.resolvedColor(with: traits) : .white
     }
     label.textColor = highlights > 0 ? highlightInk : .white
     label.textAlignment = .center

@@ -111,8 +111,15 @@ enum Palette {
     /// trait-keyed color then adapts everywhere it's drawn — captions, tokens, in-body mentions,
     /// a table's backdrop — with no work at the call site. (A *tinted image* does not get this
     /// for free: see `MessageRenderer.typingGlyph`.)
+    /// ⚠ A malformed hex trips an assertion rather than failing quietly. Every string reaching
+    /// here is a literal written a few lines up, so a bad one is a typo, not a runtime condition
+    /// — and it would otherwise ship as one plausible-looking wrong colour with nothing to catch
+    /// it: the app target has no test bundle, so `Palette`'s own literals are unverified by
+    /// anything but the compiler (which is happy with `"#gggggg"`). Debug builds stop; release
+    /// keeps the muted fallback, because a wrong colour is not worth a crash in someone's chat.
     nonisolated static func dynamicHex(dark: String, light: String) -> UIColor {
         guard let darkColor = UIColor(hex: dark), let lightColor = UIColor(hex: light) else {
+            assertionFailure("Palette: malformed hex — dark \"\(dark)\", light \"\(light)\"")
             return .secondaryLabel
         }
         return UIColor { $0.userInterfaceStyle == .dark ? darkColor : lightColor }
