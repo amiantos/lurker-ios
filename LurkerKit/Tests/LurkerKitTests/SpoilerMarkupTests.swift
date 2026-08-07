@@ -186,4 +186,44 @@ final class SpoilerRoundTripTests: XCTestCase {
         XCTAssertEqual(parsed.first?.fg, 1)
         XCTAssertEqual(parsed.first?.bg, 1)
     }
+
+    /// ⚠⚠ The close is the dangerous end. A bare `\u{3}` followed by a digit is a COLOUR CODE,
+    /// so the digit is eaten: `||spoiler||5 stars` used to reach the channel as " stars" in
+    /// colour 5, the "5" simply deleted, and `||code||1234` lost two characters. Silent, on the
+    /// wire, unrecoverable.
+    ///
+    /// These assert the round trip rather than the bytes: what matters is that every character
+    /// the user typed after the spoiler survives to the other side, and that the spoiler's
+    /// background doesn't bleed onto it.
+    func testTextAfterASpoilerSurvivesEvenWhenItStartsWithADigit() {
+        for (input, hidden, after) in [
+            ("||spoiler||5 stars", "spoiler", "5 stars"),
+            ("||secret||42 is the code", "secret", "42 is the code"),
+            ("||a||0", "a", "0"),
+            ("the code is ||1234||5678", "1234", "5678"),
+        ] {
+            let parsed = runs(SpoilerMarkup.apply(to: input))
+            let spoiler = parsed.first { $0.fg == 14 && $0.bg == 14 }
+            XCTAssertEqual(spoiler?.text, hidden, "hidden half of \(input)")
+
+            // Everything after the hidden run, concatenated, must equal what was typed after it.
+            guard let index = parsed.firstIndex(where: { $0.fg == 14 && $0.bg == 14 }) else {
+                XCTFail("no spoiler run in \(input)"); continue
+            }
+            let tail = parsed[(index + 1)...]
+            XCTAssertEqual(tail.map(\.text).joined(), after, "text after \(input)")
+            // …and it must not still be sitting on the spoiler's grey box.
+            for run in tail {
+                XCTAssertNotEqual(run.bg, 14, "background leaked past the spoiler in \(input)")
+            }
+        }
+    }
+
+    /// The common cases keep the cheap one-byte close; only the collision pays for the long one.
+    func testKeepsTheBareCloseWhenNothingCollides() {
+        XCTAssertTrue(SpoilerMarkup.apply(to: "||a|| ok").hasSuffix("\u{3} ok"))
+        XCTAssertTrue(SpoilerMarkup.apply(to: "||a||").hasSuffix("a\u{3}"))
+        // A comma is safe: `\u{3},` is not a colour code, only a digit can start one.
+        XCTAssertTrue(SpoilerMarkup.apply(to: "||a||,b").hasSuffix("\u{3},b"))
+    }
 }

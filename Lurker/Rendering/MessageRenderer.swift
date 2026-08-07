@@ -25,9 +25,13 @@ extension NSAttributedString.Key {
     /// what makes the tap target exist in both states, so a reveal can be taken back.
     static let spoiler = NSAttributedString.Key("chat.lurker.spoiler")
 
-    /// Present only while a spoiler run is still hidden. Separate from `.spoiler`, which stays
-    /// on the run in both states so the tap target survives a reveal — this is the one that says
-    /// the text underneath must not be spoken. See `MessageRenderer.spoken(_:)`.
+    /// Present only while a spoiler run is still hidden, valued with **what to say instead** of
+    /// the text underneath. Separate from `.spoiler`, which stays on the run in both states so
+    /// the tap target survives a reveal — this is the one that says the text must not be spoken.
+    ///
+    /// The wording rides along rather than living in `spoken(_:)` because it isn't always the
+    /// same: a run the reader can't open (see `.spoiler`) must not be announced as though they
+    /// could. See `MessageRenderer.spoken(_:)`.
     static let spoilerHidden = NSAttributedString.Key("chat.lurker.spoilerHidden")
 }
 
@@ -281,8 +285,8 @@ enum MessageRenderer {
             }
         }
         attributed.enumerateAttribute(.spoilerHidden, in: whole) { value, range, _ in
-            guard value != nil else { return }
-            ranges.append((range, "hidden spoiler, double tap to reveal"))
+            guard let announcement = value as? String else { return }
+            ranges.append((range, announcement))
         }
         guard !ranges.isEmpty else { return plain }
 
@@ -598,7 +602,10 @@ enum MessageRenderer {
         var mircColored: [NSRange] = []
         // Spoilers are off-limits to BOTH later passes, revealed or not — see `spoilered`.
         var spoilered: [NSRange] = []
-        var spoilerOrdinal = 0
+        // -1 so the first box becomes 0; see the coalescing note where it's bumped.
+        var spoilerOrdinal = -1
+        var previousRunWasSpoiler = false
+        var previousSpoilerColor: Int?
         for run in IRCFormatting.parse(message.text ?? "") {
             // Always set an explicit color: unlike a label, a UITextView's attributed runs
             // without a foreground color fall back to a static black, not the dynamic
@@ -619,21 +626,40 @@ enum MessageRenderer {
             // which is the web's treatment and for its reason: the two commonest spoiler colours
             // are black and white, and either as *text* on a tint of itself is unreadable in the
             // scheme that matches it. A reveal that reveals nothing is the one failure here.
-            let isSpoiler = run.fg != nil && run.fg == run.bg
-            var ordinal: Int?
+            // ⚠ `explicitFg != nil`, not just `fg == bg`. The palette has 16 entries, so slots
+            // 16–98 and mIRC's 99 ("default") resolve to nil — and `\u{3}99,99text\u{3}` satisfies
+            // fg == bg while drawing no fill at all. Marking that as a spoiler announced "hidden
+            // spoiler" to VoiceOver over text rendered in the clear, and a tap revealed nothing,
+            // which is precisely the failure the comment below calls the one we can't have.
+            let isSpoiler = explicitFg != nil && run.fg == run.bg
             if isSpoiler {
-                ordinal = spoilerOrdinal
-                spoilerOrdinal += 1
-                attributes[.spoiler] = ordinal
-                if revealed.contains(ordinal!) {
+                // ⚠ `id` is 0 for every ephemeral event (see `Message`), so a reveal keyed by it
+                // would be shared by all of them in a buffer, and the redraw — which finds the
+                // FIRST row with that id — would flip a different line than the one tapped. An
+                // id-less line therefore gets no tap target: still hidden, still kept out of the
+                // spoken label, just not openable. Rare (notices, MOTD), and the alternative is
+                // a control that acts on the wrong message.
+                let revealable = message.id != 0
+                // ⚠ Ordinals count spoiler BOXES, not formatting runs. A bold or italic inside a
+                // spoiler splits it into several runs, and numbering those would make one visual
+                // box take three taps to open — each revealing only the fragment under the
+                // finger. Consecutive spoiler runs sharing a colour are one box and one ordinal.
+                if !previousRunWasSpoiler || previousSpoilerColor != run.fg {
+                    spoilerOrdinal += 1
+                }
+                let ordinal = spoilerOrdinal
+                if revealable { attributes[.spoiler] = ordinal }
+                if revealable, revealed.contains(ordinal) {
                     attributes[.foregroundColor] = fallback
-                    if let fill = explicitFg {
-                        attributes[.backgroundColor] = Palette.translucent(fill, alpha: 0.22)
-                    }
+                    attributes[.backgroundColor] = Palette.translucent(explicitFg!, alpha: 0.22)
                 } else {
-                    attributes[.spoilerHidden] = true
+                    attributes[.spoilerHidden] = revealable
+                        ? "hidden spoiler, double tap to reveal"
+                        : "hidden spoiler"
                 }
             }
+            previousRunWasSpoiler = isSpoiler
+            previousSpoilerColor = isSpoiler ? run.fg : nil
 
             let start = attributed.length
             attributed.append(NSAttributedString(string: run.text, attributes: attributes))

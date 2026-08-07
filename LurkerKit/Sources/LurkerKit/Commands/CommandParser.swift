@@ -9,23 +9,6 @@ import Foundation
 /// the same wire verbs.
 public enum CommandParser {
 
-    /// Classify `input` typed in the buffer identified by (`networkId`, `target`).
-    ///
-    /// The rules, in order (matching the web's `submit`):
-    ///  - `//…` is an escape: send the rest literally, one slash stripped, so you *can* say a
-    ///    line that starts with a slash.
-    ///  - `/…` is a command.
-    ///  - anything else is a plain message — except in the system buffer, which has no
-    ///    network to send to, where it's `notCommand`.
-    ///
-    /// `ignores` is the account's rules, passed in rather than reached for so this stays pure:
-    /// `/ignore` with no arguments prints them and `/unignore <n>` addresses one by its
-    /// position. The whole set goes in rather than a materialized listing so that the two
-    /// verbs that need one build it and the other fifty don't — every plain message comes
-    /// through here too. It defaults to empty, the honest answer for a caller that has none.
-    ///
-    /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
-
     /// A user-authored chat body, on its way to a channel or DM: `||spoiler||` becomes IRC
     /// spoiler codes here and nowhere else.
     ///
@@ -48,6 +31,22 @@ public enum CommandParser {
         SpoilerMarkup.apply(to: text)
     }
 
+    /// Classify `input` typed in the buffer identified by (`networkId`, `target`).
+    ///
+    /// The rules, in order (matching the web's `submit`):
+    ///  - `//…` is an escape: send the rest literally, one slash stripped, so you *can* say a
+    ///    line that starts with a slash.
+    ///  - `/…` is a command.
+    ///  - anything else is a plain message — except in the system buffer, which has no
+    ///    network to send to, where it's `notCommand`.
+    ///
+    /// `ignores` is the account's rules, passed in rather than reached for so this stays pure:
+    /// `/ignore` with no arguments prints them and `/unignore <n>` addresses one by its
+    /// position. The whole set goes in rather than a materialized listing so that the two
+    /// verbs that need one build it and the other fifty don't — every plain message comes
+    /// through here too. It defaults to empty, the honest answer for a caller that has none.
+    ///
+    /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
     public static func parse(
         _ input: String,
         networkId: Int?,

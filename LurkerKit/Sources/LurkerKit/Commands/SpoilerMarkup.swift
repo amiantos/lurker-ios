@@ -19,6 +19,32 @@ public enum SpoilerMarkup {
     static let open = "\u{3}14,14"
     static let close = "\u{3}"
 
+    /// The close to use when the very next character is a digit.
+    ///
+    /// ⚠⚠ A bare `\u{3}` is a colour RESET only when nothing parseable follows it. `\u{3}` then
+    /// `5` is colour 5, not a reset and a "5" — so `||spoiler||5 stars` put `…spoiler\u{3}5 stars`
+    /// on the wire and every client, ours included, read the digit as the code and DELETED it:
+    /// the channel saw " stars" in colour 5, still on the spoiler's background. `||code||1234`
+    /// lost two whole characters. Silent, on the wire, unrecoverable.
+    ///
+    /// `99` is IRC's "default colour", and being two digits it consumes the parser's whole
+    /// appetite — the following digit is then plain text. Both halves are specified so the
+    /// spoiler's background is cleared too; a bare `\u{3}99` sets only the foreground and would
+    /// leave the rest of the line sitting on the grey box.
+    ///
+    /// Not used unconditionally: it's six bytes heavier, and 99 is less universally understood
+    /// than a bare reset. Only the collision needs it.
+    ///
+    /// ⚠ Not `\u{f}` (reset-all), which would work but also drops any bold or italic still in
+    /// effect around the spoiler — the one thing the bare `\u{3}` close was chosen to preserve.
+    static let closeBeforeDigit = "\u{3}99,99"
+
+    /// The close that survives whatever comes next.
+    static func close(before next: Character?) -> String {
+        guard let next, next.isNumber else { return close }
+        return closeBeforeDigit
+    }
+
     private enum Token {
         case text(String)
         case delimiter
@@ -88,7 +114,14 @@ public enum SpoilerMarkup {
                 if case .text(let value) = tokens[j] { content += value }
             }
             if closeIndex != -1, !content.isEmpty {
-                out += open + content + close
+                // What follows the spoiler decides how it has to be closed — see `close(before:)`.
+                // The next character is the first of the next text token, if there is one; a
+                // delimiter or the end of the message can't be a digit.
+                var next: Character?
+                if closeIndex + 1 < tokens.count, case .text(let following) = tokens[closeIndex + 1] {
+                    next = following.first
+                }
+                out += open + content + close(before: next)
                 i = closeIndex + 1
             } else {
                 // Unmatched, or an empty `||||` — the opening `||` is just literal text.
