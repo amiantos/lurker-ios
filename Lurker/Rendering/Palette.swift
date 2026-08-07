@@ -37,11 +37,6 @@ enum Palette {
     /// `look.color.fg_muted` — timestamps, system events, secondary labels on `bg`.
     nonisolated static let fgMuted = dynamicHex(dark: "#939293", light: "#706b6e")
 
-    /// 70% of `fg` — mIRC slot 15 ("light grey"), which the web defines as
-    /// `color-mix(in srgb, var(--fg) 70%, transparent)`. Built through a provider (see
-    /// `highlightBubble`) so the alpha lands on the scheme's own foreground.
-    nonisolated static let fgFaint = translucent(fg, alpha: 0.7)
-
     // The rest of the web palette — `bg_soft` (#2c2a2e / #ede7e5) and `border`
     // (#38353b / #e0dad9) — is deliberately absent. Their roles are raised surfaces and region
     // separators, both of which are native chrome here, and a token nothing draws is a token

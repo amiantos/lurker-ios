@@ -722,11 +722,9 @@ enum MessageRenderer {
     private nonisolated static let nickColors: [UIColor] =
         zip(IRCPalette.nick, IRCPalette.nickLight).map { Palette.dynamicHex(dark: $0, light: $1) }
 
-    /// The mIRC palette's literal slots as trait-keyed colors, built once; `nil` is a theme
-    /// slot that resolves against the palette instead (see `mircColor`).
-    private nonisolated static let mircColors: [UIColor?] = IRCPalette.mirc.indices.map { index in
-        IRCPalette.mirc[index].map { Palette.dynamicHex(dark: $0, light: IRCPalette.mircLight[index] ?? $0) }
-    }
+    /// The mIRC palette as trait-keyed colors, built once. Sixteen entries, no gaps.
+    private nonisolated static let mircColors: [UIColor] = zip(IRCPalette.mirc, IRCPalette.mircLight)
+        .map { Palette.dynamicHex(dark: $0, light: $1) }
 
     /// A stable color for a name, from the shared nick palette. Nicks and network names
     /// both run through it, so the same name is always the same color and different ones
@@ -735,35 +733,14 @@ enum MessageRenderer {
         nickColors[NickColor.index(for: name)]
     }
 
-    /// mIRC index → color. The theme slots (0/14/15) resolve against the palette; 16+ don't
-    /// render. Every other slot is a literal, dynamic like the nick colors.
+    /// mIRC index → color. Every slot in range is a literal from the palette; 16+ don't render.
     ///
-    /// The three theme slots are what the web's defaults say they are — `var(--fg)`,
-    /// `var(--fg-muted)`, and 70% of the foreground — rather than the nearest UIKit label tier.
-    /// Slot 15 in particular: `.tertiaryLabel` is 30% and reads as disabled text, where the web
-    /// means "a lighter grey you can still read".
-    ///
-    /// ⚠ Slot 1 is deliberately absent from this switch. It is a literal `#000000` in both
-    /// tables, not a theme slot — see the warning on `IRCPalette.mirc`.
-    ///
-    /// ⚠ KNOWN, and inherited on purpose: `^C0,1` — white-on-black, the commonest explicit pair —
-    /// is unreadable in light mode, because slot 0 resolves to the theme's dark foreground and
-    /// slot 1 is literally black (1.4:1). This is not an iOS bug to patch locally; the web's Light
-    /// preset renders the identical pair, and the tradeoff behind it is real: no single value for
-    /// slot 0 can be both "white" against slot 1's black *and* legible as a bare `^C00` on a light
-    /// canvas. The web chose the bare case, which is far commoner. If that call is ever revisited
-    /// it belongs in `shared/themePresets.ts`, so both clients move together — changing it here
-    /// alone would make the same wire bytes render differently in the two clients, which is the
-    /// one thing this palette exists to prevent.
+    /// There is no theme-slot branch any more, and there must not be one again — see the ⚠ on
+    /// `IRCPalette.mirc`. A run can carry its own background, so a slot that resolved against the
+    /// theme was being resolved against the wrong surface.
     private nonisolated static func mircColor(_ index: Int) -> UIColor? {
-        guard index >= 0, index < IRCPalette.mirc.count else { return nil }
-        if let color = mircColors[index] { return color }
-        switch index {
-        case 0: return Palette.fg
-        case 14: return Palette.fgMuted
-        case 15: return Palette.fgFaint
-        default: return nil
-        }
+        guard index >= 0, index < mircColors.count else { return nil }
+        return mircColors[index]
     }
 
     private static func font(_ base: UIFont, bold: Bool, italic: Bool) -> UIFont {

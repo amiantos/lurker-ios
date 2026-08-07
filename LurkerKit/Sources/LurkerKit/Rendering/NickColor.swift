@@ -8,29 +8,37 @@
 /// `shared/themePresets.ts`. Both tables here are byte-identical to those. When one moves,
 /// this moves.
 public enum IRCPalette {
-    /// mIRC colors 0–15. `nil` marks a theme slot the UI fills from its own palette
-    /// (0 = foreground, 14 = muted, 15 = 70% foreground). Indices 16+ are intentionally not
-    /// rendered.
+    /// mIRC colors 0–15. Indices 16+ are intentionally not rendered.
     ///
-    /// ⚠ Slot 1 ("black") is a **literal**, in both tables, and must stay one. It is the only
-    /// slot whose natural reading is "the background", and a slot that resolves to the surface
-    /// it's drawn on is invisible text. The web registry carries the same warning; iOS had this
-    /// bug in light mode, where slot 1 mapped to `.systemBackground` and rendered white on white.
-    public static let mirc: [String?] = [
-        nil, "#000000", "#6799f3", "#a9dc76", "#ff6188", "#ed6c89", "#ab9df2", "#fc9867",
-        "#ffd866", "#b3db82", "#78dce8", "#a0f1ff", "#7ba4ff", "#ff7494", nil, nil,
+    /// ⚠ **Every slot is a literal, and no slot may become a theme reference.** A colour code
+    /// names a colour — `^C00` means white, not "whatever this theme calls text" — and a run can
+    /// carry its own background, so a slot that defers to the theme is being resolved against a
+    /// surface it doesn't know about. Both clients had this: slot 1 mapped to
+    /// `.systemBackground` and drew white-on-white, then slots 0/14/15 tracked the foreground
+    /// and broke every `^CFG,BG` pair that touched them — including `^C01,00`, where slot 0 is
+    /// the *background* and a foreground reference painted the box.
+    ///
+    /// The cost is the sender's and is accepted: white is invisible on the light canvas, as
+    /// black already was on the dark one.
+    /// `[String]`, not `[String?]`. The optional existed only to mark a theme slot, and the type
+    /// is now the enforcement: there is no way to spell "resolve this one against the theme".
+    public static let mirc: [String] = [
+        "#ffffff", "#000000", "#6799f3", "#a9dc76", "#ff6188", "#ed6c89", "#ab9df2", "#fc9867",
+        "#ffd866", "#b3db82", "#78dce8", "#a0f1ff", "#7ba4ff", "#ff7494", "#7f7f7f", "#d2d2d2",
     ]
 
     /// Light-mode variants of `mirc`, same indices. Each chromatic slot is the light variant
     /// of the same hex it maps to in `mirc` (all of which are drawn from `nick`), so a color
-    /// code and a nick that resolve to the same hue stay consistent. Theme slots stay `nil`.
+    /// code and a nick that resolve to the same hue stay consistent.
     ///
     /// The six slots whose dark value is an official Monokai Pro accent take the official Pro
     /// Light accent (3, 4, 6, 7, 8, 10); the rest keep the OKLCH derivation described on
-    /// `nickLight`.
-    public static let mircLight: [String?] = [
-        nil, "#000000", "#3163c0", "#269d69", "#e14775", "#b52d55", "#7058be", "#e16032",
-        "#cc7a0a", "#688f2d", "#1c8ca8", "#409ba9", "#4268c5", "#c12d5b", nil, nil,
+    /// `nickLight`. The four mono slots are the SAME in both tables — see the ⚠ above; those are
+    /// the ones a sender pairs with a background, and re-tinting them per scheme is exactly what
+    /// broke the pairs.
+    public static let mircLight: [String] = [
+        "#ffffff", "#000000", "#3163c0", "#269d69", "#e14775", "#b52d55", "#7058be", "#e16032",
+        "#cc7a0a", "#688f2d", "#1c8ca8", "#409ba9", "#4268c5", "#c12d5b", "#7f7f7f", "#d2d2d2",
     ]
 
     /// Per-nick colors (19), indexed by the weechat djb2 hash. All fixed hex. These are the
