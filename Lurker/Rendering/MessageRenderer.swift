@@ -51,8 +51,8 @@ enum MessageRenderer {
         // A network-tied system line hashes its network name through the same palette as
         // nicks, so each network gets a stable, distinguishable color — matching the web.
         // The app speaking in its own voice ("System", no network) stays muted.
-        case .system: networkName.map { hashedColor($0) } ?? .secondaryLabel
-        case .motd, .other: .secondaryLabel
+        case .system: networkName.map { hashedColor($0) } ?? Palette.fgMuted
+        case .motd, .other: Palette.fgMuted
         default: nickColor(message)
         }
     }
@@ -108,7 +108,9 @@ enum MessageRenderer {
             line.append(muted(" set the topic", base: base))
             if let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 line.append(muted(": ", base: base))
-                line.append(body(message, base: base, fallback: .secondaryLabel))
+                // The same muted as the ": " immediately before it — two greys mid-sentence read
+                // as a seam, and the topic text is a continuation of the narration, not a quote.
+                line.append(body(message, base: base, fallback: Palette.fgMuted))
             }
         case .invite:
             line.append(actor)
@@ -225,7 +227,7 @@ enum MessageRenderer {
             systemName: "keyboard",
             withConfiguration: UIImage.SymbolConfiguration(pointSize: base.pointSize)
         )?.withTintColor(
-            UIColor.secondaryLabel.resolvedColor(with: traits), renderingMode: .alwaysOriginal
+            Palette.fgMuted.resolvedColor(with: traits), renderingMode: .alwaysOriginal
         ) {
             attachment.image = image
             attachment.bounds = CGRect(
@@ -389,7 +391,11 @@ enum MessageRenderer {
         }
         return spaced(
             NSMutableAttributedString(
-                attributedString: body(message, base: base, fallback: .label, highlighter: highlighter)
+                // `Palette.fg`, not `.label`, and not left to the text view's `textColor` either:
+                // `body` stamps an explicit foreground on every run (see the note there), so a
+                // colour set on the label never reaches a single character of message text. This
+                // fallback IS the log's primary text colour.
+                attributedString: body(message, base: base, fallback: Palette.fg, highlighter: highlighter)
             ),
             flushFirstLine: false, traits: traits
         )
@@ -489,7 +495,7 @@ enum MessageRenderer {
     }
 
     private static func muted(_ text: String, base: UIFont) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: UIColor.secondaryLabel])
+        NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: Palette.fgMuted])
     }
 
     /// A part/quit reason in parentheses, or nothing when there isn't one.
@@ -707,20 +713,18 @@ enum MessageRenderer {
     /// (The in-body pass agrees by omission: `NickHighlighter` is built without your own nick, so
     /// a self-mention keeps the body's color rather than taking a palette one.)
     static func nickColor(_ nick: String?, isSelf: Bool) -> UIColor {
-        isSelf ? .label : hashedColor(nick ?? "")
+        isSelf ? Palette.fg : hashedColor(nick ?? "")
     }
 
     /// The nick palette as trait-keyed colors, built once and indexed by the djb2 hash. A
     /// fixed set (dark hex + light variant per slot), so there's no reason to re-parse the
     /// hex and allocate a dynamic UIColor on every lookup.
     private nonisolated static let nickColors: [UIColor] =
-        zip(IRCPalette.nick, IRCPalette.nickLight).map { dynamicHex(dark: $0, light: $1) }
+        zip(IRCPalette.nick, IRCPalette.nickLight).map { Palette.dynamicHex(dark: $0, light: $1) }
 
-    /// The mIRC palette's chromatic slots as trait-keyed colors, built once; `nil` is a theme
-    /// slot that resolves to a system color instead (see `mircColor`).
-    private nonisolated static let mircColors: [UIColor?] = IRCPalette.mirc.indices.map { index in
-        IRCPalette.mirc[index].map { dynamicHex(dark: $0, light: IRCPalette.mircLight[index] ?? $0) }
-    }
+    /// The mIRC palette as trait-keyed colors, built once. Sixteen entries, no gaps.
+    private nonisolated static let mircColors: [UIColor] = zip(IRCPalette.mirc, IRCPalette.mircLight)
+        .map { Palette.dynamicHex(dark: $0, light: $1) }
 
     /// A stable color for a name, from the shared nick palette. Nicks and network names
     /// both run through it, so the same name is always the same color and different ones
@@ -729,29 +733,14 @@ enum MessageRenderer {
         nickColors[NickColor.index(for: name)]
     }
 
-    /// A `UIColor` that resolves `dark` in dark mode and `light` in light mode. The nick and
-    /// mIRC palettes are fixed hex, but each needs a different variant per theme, and a
-    /// trait-keyed color adapts everywhere it's drawn (captions, tokens, in-body mentions)
-    /// with no work at the call site.
-    nonisolated static func dynamicHex(dark: String, light: String) -> UIColor {
-        guard let darkColor = UIColor(hex: dark), let lightColor = UIColor(hex: light) else {
-            return .secondaryLabel
-        }
-        return UIColor { $0.userInterfaceStyle == .dark ? darkColor : lightColor }
-    }
-
-    /// mIRC index → color. The theme slots (0/1/14/15) map to system colors; 16+ don't
-    /// render. Chromatic slots are dynamic, like nick colors.
+    /// mIRC index → color. Every slot in range is a literal from the palette; 16+ don't render.
+    ///
+    /// There is no theme-slot branch any more, and there must not be one again — see the ⚠ on
+    /// `IRCPalette.mirc`. A run can carry its own background, so a slot that resolved against the
+    /// theme was being resolved against the wrong surface.
     private nonisolated static func mircColor(_ index: Int) -> UIColor? {
-        guard index >= 0, index < IRCPalette.mirc.count else { return nil }
-        if let color = mircColors[index] { return color }
-        switch index {
-        case 0: return .label
-        case 1: return .systemBackground
-        case 14: return .secondaryLabel
-        case 15: return .tertiaryLabel
-        default: return nil
-        }
+        guard index >= 0, index < mircColors.count else { return nil }
+        return mircColors[index]
     }
 
     private static func font(_ base: UIFont, bold: Bool, italic: Bool) -> UIFont {

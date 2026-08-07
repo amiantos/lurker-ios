@@ -49,9 +49,10 @@ struct MessageListContext {
 /// style is a smaller change than keeping it warm was.
 struct MessageListRenderer {
 
-    /// What the list sits on: the web client's `look.color.bg` in dark mode rather than the
-    /// system's near-black. See `Palette.compactListBackground`.
-    var listBackground: UIColor { Palette.compactListBackground }
+    /// What the list sits on: the web client's `look.color.bg` in both schemes — its charcoal
+    /// rather than the system's near-black, its warm off-white rather than pure white. The log
+    /// is the one surface that is Lurker's rather than the system's; see `Palette`.
+    var listBackground: UIColor { Palette.bg }
 
     func register(in tableView: UITableView) {
         tableView.register(CompactCell.self, forCellReuseIdentifier: CompactCell.reuseID)
@@ -147,7 +148,10 @@ struct MessageListRenderer {
             // Called rather than passed as a function value: an unapplied reference to a
             // main-actor method crosses isolation on its own, which the compiler warns about even
             // though every caller here is already on the main actor.
-            time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil
+            time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
+            // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
+            // notice or a network line gets the glyph resolved and then discarded.
+            modePrefix: name.hasPrefix(prefix) ? prefix : ""
         )
     }
 
@@ -205,6 +209,13 @@ struct MessageListRenderer {
 enum MessageListMarker {
     static let reuseID = "divider"
 
+    /// One tier below `Palette.fgMuted`, for the start-of-history rule.
+    ///
+    /// The web has no token for this — it's a marker the mobile list has and the web doesn't —
+    /// so it's derived from the muted color rather than reaching for `.tertiaryLabel`, which is
+    /// a different palette on a surface that is now entirely Lurker's.
+    private static let faint = Palette.translucent(Palette.fgMuted, alpha: 0.7)
+
     static func cell(_ text: String, color: UIColor, bold: Bool, in tableView: UITableView) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: reuseID)!
         var content = cell.defaultContentConfiguration()
@@ -229,17 +240,17 @@ enum MessageListMarker {
     static func cell(for row: MessageRow, in tableView: UITableView) -> UITableViewCell? {
         switch row {
         case .unreadDivider:
-            cell("New messages", color: .systemRed, bold: true, in: tableView)
+            cell("New messages", color: Palette.bad, bold: true, in: tableView)
         case .dateDivider(let day):
-            cell(MessageRenderer.dayLabel(day), color: .secondaryLabel, bold: false, in: tableView)
+            cell(MessageRenderer.dayLabel(day), color: Palette.fgMuted, bold: false, in: tableView)
         case .startOfHistory:
-            cell("— start of history —", color: .tertiaryLabel, bold: false, in: tableView)
+            cell("— start of history —", color: faint, bold: false, in: tableView)
         case .awayDivider(_, let message):
-            cell(MessageRenderer.awayLabel(message: message), color: .secondaryLabel, bold: false, in: tableView)
+            cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)
         case .backDivider(let awayAt, let backAt):
             cell(
                 MessageRenderer.backLabel(awayAt: awayAt, backAt: backAt),
-                color: .secondaryLabel, bold: false, in: tableView
+                color: Palette.fgMuted, bold: false, in: tableView
             )
         default:
             nil

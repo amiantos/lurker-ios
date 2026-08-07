@@ -540,13 +540,15 @@ private final class HistoryFeedSectionHeader: UITableViewHeaderFooterView {
         super.init(reuseIdentifier: reuseIdentifier)
 
         locationLabel.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
-        locationLabel.textColor = .label
+        locationLabel.textColor = Palette.fg
         locationLabel.adjustsFontForContentSizeCategory = true
         locationLabel.lineBreakMode = .byTruncatingTail
         locationLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         dayLabel.font = .preferredFont(forTextStyle: .subheadline)
-        dayLabel.textColor = .secondaryLabel
+        // The palette's, not the system's: this header sits on the feed's themed canvas
+        // (`MessageListRenderer.listBackground`), same as the rows it groups.
+        dayLabel.textColor = Palette.fgMuted
         dayLabel.adjustsFontForContentSizeCategory = true
         dayLabel.textAlignment = .right
         dayLabel.setContentHuggingPriority(.required, for: .horizontal)

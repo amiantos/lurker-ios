@@ -17,7 +17,6 @@ func makeUnreadBadge(unread: Int, highlights: Int) -> UILabel? {
     label.text = "\(unread)"
     label.font = .preferredFont(forTextStyle: .caption1)
     label.adjustsFontForContentSizeCategory = true
-    label.textColor = .white
     // A highlight is the loud red; an ordinary unread is a neutral gray. `.systemGray` reads
     // too light under white text, and it's already the darkest of the systemGray family, so
     // this is a purpose-built gray: dark enough for white either way, a shade lighter in dark
@@ -27,7 +26,21 @@ func makeUnreadBadge(unread: Int, highlights: Int) -> UILabel? {
             ? UIColor(white: 0.42, alpha: 1)
             : UIColor(white: 0.36, alpha: 1)
     }
-    label.backgroundColor = highlights > 0 ? .systemRed : neutral
+    label.backgroundColor = highlights > 0 ? Palette.bad : neutral
+    // Whatever reads on the fill, which is not the same answer in both schemes. Light `bad`
+    // (#e14775) is a saturated mid-red and takes white, at 3.9:1. Dark `bad` (#ed6c89) is a
+    // *pastel* — a foreground hue, not a fill — and white on it is 3.0:1, where the charcoal is
+    // 5.5:1. So the highlight pill flips, and the neutral gray (a dark fill in both, built for
+    // white) doesn't. Digits at caption size are the smallest text in the app; don't let a
+    // tidier-looking single value cost either scheme its legibility.
+    // The dark branch asks `Palette.bg` rather than repeating its hex, so the digit keeps
+    // reading as the canvas punched out of the pill if that canvas is ever retuned. It can't be
+    // `Palette.bg` outright: light `bg` is a warm off-white that drops the digit to 3.6:1 on
+    // this fill, where plain white is 3.9:1.
+    let highlightInk = UIColor { traits in
+        traits.userInterfaceStyle == .dark ? Palette.bg.resolvedColor(with: traits) : .white
+    }
+    label.textColor = highlights > 0 ? highlightInk : .white
     label.textAlignment = .center
     return label
 }
@@ -288,8 +301,12 @@ final class BufferChipCell: UICollectionViewCell {
 
     private static func presenceColor(_ presence: FriendPresence) -> UIColor {
         switch presence {
-        case .online: return .systemGreen
-        case .away: return .systemOrange
+        // Present/away take the theme's own signal colors, the same two the connection banner
+        // and the title-bar status light use, so "online" is one color across the whole app and
+        // both clients. Absent/unknown stay on the system greys: they aren't signals, they're
+        // the lack of one, and the palette has no token for that.
+        case .online: return Palette.good
+        case .away: return Palette.warn
         case .offline: return .tertiaryLabel
         case .unknown: return .quaternaryLabel
         }
