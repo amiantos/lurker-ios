@@ -25,6 +25,29 @@ public enum CommandParser {
     /// through here too. It defaults to empty, the honest answer for a caller that has none.
     ///
     /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
+
+    /// A user-authored chat body, on its way to a channel or DM: `||spoiler||` becomes IRC
+    /// spoiler codes here and nowhere else.
+    ///
+    /// ⚠⚠ Opt-in PER CALL SITE, deliberately — never fold this into `ChatViewModel.send` or
+    /// `LurkerClient.sendMessage`. `/ns` and `/cs` build a raw `PRIVMSG NickServ :…` whose body
+    /// is usually `identify <password>`, and rewriting bytes headed for an auth handshake is a
+    /// bug, not a feature. Routing each chat verb through this is what keeps those untouched by
+    /// construction rather than by a guard someone has to remember. (They emit `.raw` rather
+    /// than `.send`, so on this client they're separated by shape too — but the rule is the
+    /// rule, and the web learned it the hard way.)
+    ///
+    /// Applied to: plain text, `//`-escaped text, `/me`, `/msg`, `/query`, `/notice`. Not to
+    /// `/slap` (its body is generated, not typed), nor `/raw`, `/quote`, `/ctcp`, `/ns`, `/cs`.
+    /// That set matches the web's `chatBody` callers; keep them in step.
+    ///
+    /// ⚠ Only the PAYLOAD is rewritten. Anything showing the user their own line back — a
+    /// failed-send notice, input history — must keep the TYPED text, so what they see and recall
+    /// is `||…||` rather than raw control codes.
+    private static func chatBody(_ text: String) -> String {
+        SpoilerMarkup.apply(to: text)
+    }
+
     public static func parse(
         _ input: String,
         networkId: Int?,
@@ -38,10 +61,10 @@ public enum CommandParser {
         if raw.hasPrefix("//") {
             // A `//`-escaped literal only has somewhere to go in a real buffer; in the system
             // buffer it's non-command input like any other, so nudge rather than swallow it.
-            return networkId == nil ? .notCommand : .message(String(raw.dropFirst()))
+            return networkId == nil ? .notCommand : .message(chatBody(String(raw.dropFirst())))
         }
         guard raw.hasPrefix("/") else {
-            return networkId == nil ? .notCommand : .message(raw)
+            return networkId == nil ? .notCommand : .message(chatBody(raw))
         }
 
         // Split the verb off the rest. `rest` is the whitespace-collapsed token list (the
@@ -108,7 +131,7 @@ public enum CommandParser {
         switch verb {
         // Messaging
         case "me":
-            return argLine.isEmpty ? [] : [.action(target: target, text: argLine)]
+            return argLine.isEmpty ? [] : [.action(target: target, text: chatBody(argLine))]
         case "slap":
             guard let who = rest.first else { return [.info("usage: /slap <nick>")] }
             return [.action(target: target, text: "slaps \(who) around a bit with a large trout")]
@@ -116,7 +139,7 @@ public enum CommandParser {
             guard let who = rest.first else { return [.info("usage: /msg <nick> [message]")] }
             let bodyText = rest.dropFirst().joined(separator: " ")
             var effects: [CommandEffect] = []
-            if !bodyText.isEmpty { effects.append(.send(target: who, text: bodyText)) }
+            if !bodyText.isEmpty { effects.append(.send(target: who, text: chatBody(bodyText))) }
             effects.append(.activate(target: who))
             return effects
         case "notice":
@@ -125,7 +148,7 @@ public enum CommandParser {
             // rather than re-joining the whitespace-split tokens.
             let bodyText = body(after: who, in: argLine)
             guard !bodyText.isEmpty else { return [.info("usage: /notice <target> <text>")] }
-            return [.notice(target: who, text: bodyText)]
+            return [.notice(target: who, text: chatBody(bodyText))]
         case "ctcp":
             guard rest.count >= 2 else { return [.info("usage: /ctcp <target> <type> [args]")] }
             let ctcpArgs = rest.dropFirst(2).joined(separator: " ")
