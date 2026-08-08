@@ -40,8 +40,15 @@ public enum SpoilerMarkup {
     static let closeBeforeDigit = "\u{3}99,99"
 
     /// The close that survives whatever comes next.
+    ///
+    /// ⚠ ASCII `0`–`9` only, matching `IRCFormatting.isDigit` (`0x30...0x39`) exactly — this
+    /// predicate has to agree with the parser it's defending against, not with a general notion
+    /// of numeral. `Character.isNumber` is true of `٣`, `²`, `②` and `Ⅷ`, none of which any IRC
+    /// colour parser will touch, so using it would spend the heavier close (and 99's
+    /// less-universal semantics) on text that never needed it — most often Arabic, Persian or
+    /// Devanagari, which is a poor place to be needlessly clever.
     static func close(before next: Character?) -> String {
-        guard let next, next.isNumber else { return close }
+        guard let next, next.isASCII, next.isNumber else { return close }
         return closeBeforeDigit
     }
 

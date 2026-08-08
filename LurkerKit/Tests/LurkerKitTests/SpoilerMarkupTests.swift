@@ -226,4 +226,23 @@ final class SpoilerRoundTripTests: XCTestCase {
         // A comma is safe: `\u{3},` is not a colour code, only a digit can start one.
         XCTAssertTrue(SpoilerMarkup.apply(to: "||a||,b").hasSuffix("\u{3},b"))
     }
+
+    /// ⚠ The trigger is ASCII `0`–`9`, because that is exactly what `IRCFormatting` reads after a
+    /// `\u{3}`. `Character.isNumber` is true of all of these and none of them can start a colour
+    /// code, so treating them as collisions would spend the heavier close — and 99's
+    /// less-universal semantics — on text that never needed it, disproportionately non-Latin.
+    func testANonASCIINumeralIsNotACollision() {
+        for numeral in ["٣", "²", "②", "Ⅷ", "½", "一"] {
+            let wire = SpoilerMarkup.apply(to: "||a||\(numeral)")
+            XCTAssertTrue(
+                wire.hasSuffix("a\u{3}\(numeral)"),
+                "\(numeral) should take the bare close, got \(wire.debugDescription)"
+            )
+            // And it must still survive the round trip, which is the point of the whole exercise.
+            let parsed = runsFor(wire)
+            XCTAssertEqual(parsed.last?.text, numeral, "\(numeral) survives")
+        }
+    }
+
+    private func runsFor(_ text: String) -> [FormattingRun] { IRCFormatting.parse(text) }
 }
