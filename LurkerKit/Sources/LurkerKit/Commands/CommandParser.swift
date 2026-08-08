@@ -533,6 +533,22 @@ public enum CommandParser {
             }
             return [.info(relayListing(relayBots.listing(for: networkId)))]
         case .add(let nick, let pattern):
+            // ⚠ A custom pattern that won't compile has to be refused HERE, at the only moment
+            // anyone is looking. `RelayEnvelope.templates(for:)` deliberately doesn't fall back to
+            // the built-ins for one — the user asked for a specific shape and inventing a speaker
+            // by some other rule would be worse — so the mark would be stored, listed by
+            // `/relay list`, and silently re-attribute nothing, forever, with a receipt that said
+            // it worked. The server won't catch it either: it stores the string without reading it.
+            //
+            // Forgetting the braces is the whole of how this happens (`/relay add bot [Discord]
+            // <nick> message`), so the refusal names them.
+            if !pattern.isEmpty, RelayEnvelope.compile(pattern) == nil {
+                return [.info(
+                    "/relay: that pattern can't be used. It needs {nick} and {message} — {source} "
+                        + "is optional — e.g. /relay add \(nick) [{source}] <{nick}> {message}. "
+                        + "Leave it off entirely to use the built-in formats."
+                )]
+            }
             // "marked" either way, not "updated": unlike `add-ignore` — whose upsert can silently
             // convert a timed rule into a permanent one, which is why that receipt is careful —
             // re-marking a bot with a new pattern has exactly one outcome, and it's this one.

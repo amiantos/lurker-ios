@@ -270,6 +270,24 @@ final class RelayBotsTests: XCTestCase {
         XCTAssertEqual(effects("/relay add bridge", relayBots: nil).count, 1)
     }
 
+    /// ⚠ A pattern that can't compile marks the bot and then re-attributes nothing, forever —
+    /// `templates(for:)` deliberately won't fall back to the built-ins for one. Nothing downstream
+    /// reports that, and `/relay list` shows the mark as if it were working, so the refusal has to
+    /// happen at the only moment anyone is looking.
+    func testAPatternThatCannotCompileIsRefusedRatherThanMarked() {
+        // The realistic way to get one: forgetting the braces.
+        guard case let .info(text) = effects("/relay add bot [Discord] <nick> message").first else {
+            return XCTFail("expected a refusal")
+        }
+        XCTAssertTrue(text.contains("{nick} and {message}"), text)
+        XCTAssertEqual(effects("/relay add bot [Discord] <nick> message").count, 1, "nothing may reach the wire")
+        // A pattern that DOES compile still goes through, and so does no pattern at all.
+        XCTAssertEqual(effects(#"/relay add bot <{nick}> {message}"#).count, 1)
+        if case .info = effects(#"/relay add bot <{nick}> {message}"#).first {
+            XCTFail("a valid pattern must not be refused")
+        }
+    }
+
     func testUnusableRelayInputNeverReachesTheWire() {
         for input in ["/relay add", "/relay remove", "/relay wat"] {
             guard case let .info(text) = effects(input).first else {
@@ -277,6 +295,49 @@ final class RelayBotsTests: XCTestCase {
             }
             XCTAssertTrue(text.hasPrefix("/relay:"), text)
         }
+    }
+
+    /// One surrounding pair of quotes is peeled; a pair that isn't one is left alone. Peeling it
+    /// would produce a template that still compiles — so it would be stored and marked with a
+    /// confident receipt — while matching something the user never wrote.
+    func testUnquoteOnlyPeelsAnActualQuotedRun() {
+        func pattern(_ input: String) -> String? {
+            guard case let .setRelayBot(_, _, _, pattern, _) = effects(input).first else { return nil }
+            return pattern
+        }
+        XCTAssertEqual(pattern(#"/relay add b "{nick}: {message}""#), "{nick}: {message}")
+        XCTAssertEqual(
+            pattern(##"/relay add b "{nick}" said "{message}""##),
+            ##""{nick}" said "{message}""##
+        )
+    }
+
+    // MARK: - A bridged speaker is not the local one with the same name
+
+    /// ⚠ Anyone on a bridged platform can pick a nick that matches an IRC regular. Grouping on
+    /// nick alone folded the bridged line into the local speaker's run, which renders it headerless
+    /// under their name and drops the very tag that would have said otherwise.
+    func testARelayedSpeakerDoesNotJoinALocalNamesakesRun() {
+        let local = message(1, nick: "alice", text: "from the channel")
+        let bridged = message(2, nick: "bridge", text: "[Discord] <alice> from discord")
+        let rows = RelayBotSet(byNetwork: [1: [RelayBot(nick: "bridge")]])
+            .reattributing([local, bridged], networkId: 1)
+        XCTAssertEqual(rows[1].nick, "alice", "precondition: both rows read as alice")
+        XCTAssertFalse(MessageGrouping.continuesRun(rows[1], after: rows[0]))
+    }
+
+    func testTwoLinesFromTheSameBridgedSpeakerDoGroup() {
+        let rows = RelayBotSet(byNetwork: [1: [RelayBot(nick: "bridge")]]).reattributing(
+            [
+                message(1, nick: "bridge", text: "[Discord] <alice> one"),
+                message(2, nick: "bridge", text: "[Discord] <alice> two"),
+                // Same name, same bot, DIFFERENT platform — a different person.
+                message(3, nick: "bridge", text: "[Telegram] <alice> three"),
+            ],
+            networkId: 1
+        )
+        XCTAssertTrue(MessageGrouping.continuesRun(rows[1], after: rows[0]))
+        XCTAssertFalse(MessageGrouping.continuesRun(rows[2], after: rows[1]))
     }
 
     /// A mark is per-(network, nick), so there is no answer to `/relay` in the system buffer — and

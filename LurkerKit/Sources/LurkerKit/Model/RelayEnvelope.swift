@@ -65,6 +65,15 @@ public struct RelayTemplate {
 
     let regex: NSRegularExpression
     let slots: [Slot]
+    /// Whether `{message}` is the last thing in the template — the last placeholder **and**
+    /// nothing after it.
+    ///
+    /// Not the same question as `slots.last == .message`, and the difference is a bug if they're
+    /// conflated: `<{nick}> {message} (via bridge)` ends with a placeholder that isn't the end of
+    /// the template, so recovering the message by slicing the raw body to its end would hand back
+    /// the trailing literal as part of what was said. Both built-ins are true here; only a custom
+    /// template can be false.
+    let endsWithMessage: Bool
 }
 
 public enum RelayEnvelope {
@@ -122,10 +131,16 @@ public enum RelayEnvelope {
                 index = template.index(after: index)
             }
         }
+        // `literal` now holds whatever followed the final placeholder — empty when the template
+        // ends with one, which is what `endsWithMessage` needs to know.
+        let trailing = literal
         pattern += NSRegularExpression.escapedPattern(for: literal)
         guard slots.contains(.nick), slots.contains(.message) else { return nil }
         guard let regex = try? NSRegularExpression(pattern: #"\A"# + pattern + #"\z"#) else { return nil }
-        return RelayTemplate(regex: regex, slots: slots)
+        return RelayTemplate(
+            regex: regex, slots: slots,
+            endsWithMessage: slots.last == .message && trailing.isEmpty
+        )
     }
 
     /// The placeholder starting at `index`, and where it ends — or nil when the text there is
@@ -161,7 +176,7 @@ public enum RelayEnvelope {
             var source: String?
             var nick = ""
             var text = ""
-            var textStart: Int?
+            var textRange: NSRange?
             for (position, slot) in template.slots.enumerated() {
                 let range = match.range(at: position + 1)
                 let value = range.location == NSNotFound ? "" : ns.substring(with: range)
@@ -170,21 +185,41 @@ public enum RelayEnvelope {
                 case .nick: nick = value
                 case .message:
                     text = value
-                    textStart = range.location == NSNotFound ? nil : range.location
+                    textRange = range.location == NSNotFound ? nil : range
                 }
             }
             // Drop any channel-membership prefix the bot carried into the nick, so the speaker
             // reads as `FAST`, not `+FAST` — and so Reply and Copy target the real nick.
             nick = String(nick.drop { memberPrefixes.contains($0) })
             if nick.isEmpty { continue }
-            // Recover the message's original formatting. `{message}` is the trailing group in
-            // every sane template, so map where its stripped form begins back into the raw body
-            // and slice from there. (A custom template that puts `{message}` elsewhere falls back
-            // to the plain text — there's no single raw slice that would answer.)
+            // Recover the message's original formatting: map where its stripped form begins back
+            // into the raw body and slice from there. (A custom template that puts `{message}`
+            // somewhere other than last falls back to the plain text — the raw body doesn't hold
+            // one contiguous slice that answers.)
+            //
+            // Where the slice *ends* is the part that has to be careful. When the template ends
+            // with `{message}` — both built-ins do — everything to the end of the body belongs to
+            // it, trailing format codes included, so taking the whole tail keeps a closing `\x02`
+            // attached to the bold it closes. When a literal follows the placeholder
+            // (`<{nick}> {message} (via bridge)`), it does NOT: slicing to the end would put that
+            // literal back into what the person said, so the end is mapped through the same index
+            // walk. `rawIndex` is a forward scan, so a larger visible offset can only answer a
+            // later raw index — the slice can't invert.
+            //
+            // In that bounded case a control code sitting exactly on the end boundary falls to the
+            // envelope's side, since `rawIndex` answers where the next *visible* character begins.
+            // Left alone: a toggle at the end of a string closes nothing (each message is parsed
+            // on its own, so nothing leaks to the next row), and recovering it would mean a third
+            // walk over these same codes.
             var displayText = text
-            if template.slots.last == .message, let textStart {
-                let rawStart = IRCFormatting.rawIndex(in: body, visibleOffset: textStart)
-                displayText = (body as NSString).substring(from: rawStart)
+            if template.slots.last == .message, let textRange {
+                let rawStart = IRCFormatting.rawIndex(in: body, visibleOffset: textRange.location)
+                let rawEnd = template.endsWithMessage
+                    ? (body as NSString).length
+                    : IRCFormatting.rawIndex(in: body, visibleOffset: NSMaxRange(textRange))
+                displayText = (body as NSString).substring(
+                    with: NSRange(location: rawStart, length: rawEnd - rawStart)
+                )
             }
             return RelayParse(source: source, nick: nick, text: displayText)
         }

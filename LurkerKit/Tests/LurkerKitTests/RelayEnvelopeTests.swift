@@ -202,6 +202,41 @@ final class RelayEnvelopeTests: XCTestCase {
         )
     }
 
+    /// ⚠ `{message}` being the last *placeholder* is not the same as it being the end of the
+    /// template. Slicing the raw body to its end on a template with a trailing literal put that
+    /// literal back into what the person said.
+    func testATrailingLiteralIsNotPartOfTheMessage() {
+        XCTAssertEqual(
+            RelayEnvelope.parse("<alice> hi there (via bridge)", pattern: "<{nick}> {message} (via bridge)"),
+            RelayParse(source: nil, nick: "alice", text: "hi there")
+        )
+        // The message's own formatting still survives the bounded slice — but a control code
+        // sitting exactly ON the end boundary falls to the envelope's side, because `rawIndex`
+        // answers where the next VISIBLE character begins and a code contributes none. So the
+        // closing `\u{02}` here is dropped and the run is left open.
+        //
+        // Deliberately not chased. A toggle at the end of a string closes nothing: the renderer
+        // parses each message on its own, so `\u{02}bold` and `\u{02}bold\u{02}` draw identically,
+        // and no formatting can leak past a row. Buying the byte back would mean a third scanner
+        // over the same control codes — the thing `testRawIndexAgreesWithStrip` exists to keep
+        // this file from accumulating.
+        XCTAssertEqual(
+            RelayEnvelope.parse(
+                "<alice> \u{02}bold\u{02} -- end", pattern: "<{nick}> {message} -- end"
+            ),
+            RelayParse(source: nil, nick: "alice", text: "\u{02}bold")
+        )
+    }
+
+    /// The counterpart: with nothing after `{message}`, the slice runs to the end of the body so a
+    /// closing code stays attached to the run it closes. (Covered above too, but stated here as
+    /// the invariant `endsWithMessage` exists to keep.)
+    func testATemplateEndingInMessageKeepsTrailingFormatCodes() {
+        XCTAssertEqual(RelayEnvelope.parse("<alice> \u{02}bold\u{02}")?.text, "\u{02}bold\u{02}")
+        XCTAssertTrue(RelayEnvelope.compile("<{nick}> {message}")?.endsWithMessage == true)
+        XCTAssertTrue(RelayEnvelope.compile("<{nick}> {message} x")?.endsWithMessage == false)
+    }
+
     func testRejectsATemplateMissingNickOrMessage() {
         XCTAssertNil(RelayEnvelope.compile("<{nick}> static"))
         XCTAssertNil(RelayEnvelope.compile("{message} only"))

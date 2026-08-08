@@ -73,9 +73,17 @@ public enum RelayArgs {
 
     /// Drop one matching pair of surrounding quotes, if present — a convenience so
     /// `/relay add bot "[{s}] <{n}> {m}"` works even though quoting isn't required here.
+    ///
+    /// ⚠ "Starts and ends with the same quote" is not the same test as "is one quoted run", and
+    /// taking the first for the second peels a pair that was never a pair: `"{nick}" said
+    /// "{message}"` would become `{nick}" said "{message}`, which still compiles — both required
+    /// placeholders survive — so it would be stored and marked with a cheerful receipt while
+    /// matching something the user never wrote. Requiring the interior to be quote-free is what
+    /// makes the convenience refuse to guess: the template is then left exactly as typed, quotes
+    /// and all, which is at least visible in `/relay list`.
     private static func unquote(_ s: String) -> String {
-        guard s.count >= 2, let first = s.first, let last = s.last, first == last,
-              first == "\"" || first == "'"
+        guard s.count >= 2, let quote = s.first, quote == "\"" || quote == "'",
+              s.last == quote, !s.dropFirst().dropLast().contains(quote)
         else { return s }
         return String(s.dropFirst().dropLast())
     }
