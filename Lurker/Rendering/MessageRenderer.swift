@@ -388,12 +388,18 @@ enum MessageRenderer {
     /// from one person stack under a single nick. What comes back is the same text the bubble
     /// style would render, in the monospaced face: same mIRC colours, same auto-linking, same
     /// nick colouring inside the body.
+    ///
+    /// `showsRelayTag` is whether this row draws the `[source]` tag of a re-attributed relay line
+    /// (#277). The caller decides because the answer is about the row's *neighbours*: the tag rides
+    /// the author header, so it appears once per block rather than on every line of a run. See the
+    /// note where it's drawn.
     static func renderCompactBody(
         _ message: Message,
         traits: UITraitCollection = .current,
         settings: Settings = Settings(),
         highlighter: NickHighlighter? = nil,
-        revealed: Set<Int> = []
+        revealed: Set<Int> = [],
+        showsRelayTag: Bool = true
     ) -> NSAttributedString {
         let base = compactFont(compatibleWith: traits)
 
@@ -419,19 +425,35 @@ enum MessageRenderer {
                 flushFirstLine: true, traits: traits
             )
         }
-        return spaced(
-            NSMutableAttributedString(
-                // `Palette.fg`, not `.label`, and not left to the text view's `textColor` either:
-                // `body` stamps an explicit foreground on every run (see the note there), so a
-                // colour set on the label never reaches a single character of message text. This
-                // fallback IS the log's primary text colour.
-                attributedString: body(
-                    message, base: base, fallback: Palette.fg,
-                    highlighter: highlighter, revealed: revealed
-                )
-            ),
-            flushFirstLine: false, traits: traits
+        let line = NSMutableAttributedString()
+        // The `[source]` tag on a re-attributed relay line (#277) — "Discord", "Telegram", the
+        // bridged network. It goes at the head of the *body* rather than into the author header
+        // because it's provenance for the words, not part of the speaker's name: the header says
+        // who, this says where they were. Muted, no glyph, and the same size as everything else,
+        // per house style.
+        //
+        // Drawn only where a header is (`showsRelayTag`), so a run of consecutive lines from one
+        // bridged speaker is tagged once instead of on every row — the web's
+        // `!row.continuationAuthor`, which is the same rule. On this side that also means a
+        // minute change re-shows it, since that's what starts a new block here: wherever the
+        // speaker is introduced again, so is where they were speaking from.
+        //
+        // And only when the envelope actually carried a source. A bare `<nick> message` relay
+        // shows no tag and simply reads as the speaker — same call the web makes.
+        if showsRelayTag, let source = message.relaySource, !source.isEmpty {
+            line.append(muted("[\(source)] ", base: base))
+        }
+        line.append(
+            // `Palette.fg`, not `.label`, and not left to the text view's `textColor` either:
+            // `body` stamps an explicit foreground on every run (see the note there), so a
+            // colour set on the label never reaches a single character of message text. This
+            // fallback IS the log's primary text colour.
+            body(
+                message, base: base, fallback: Palette.fg,
+                highlighter: highlighter, revealed: revealed
+            )
         )
+        return spaced(line, flushFirstLine: false, traits: traits)
     }
 
     /// A collapsed run in the compact style — header-less, like the activity lines it stands for.

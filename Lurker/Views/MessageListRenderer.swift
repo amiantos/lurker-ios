@@ -96,7 +96,10 @@ struct MessageListRenderer {
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
-                    revealed: context.revealedSpoilers(message)
+                    revealed: context.revealedSpoilers(message),
+                    // The relay `[source]` tag belongs to the block, not to every line in it —
+                    // and this is the only place that knows which rows open one.
+                    showsRelayTag: blockHeader != nil
                 ),
                 header: blockHeader,
                 startsBlock: blockHeader != nil,
@@ -152,7 +155,13 @@ struct MessageListRenderer {
         let minuteChanged = changedMinute(message.date, previous?.date)
         guard position.isFirst || minuteChanged else { return nil }
 
-        let prefix = message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
+        // No rank glyph on a re-attributed relay line (#277). The name in that header belongs to
+        // someone speaking through a bridge, not to a member of this channel — so a hit in the
+        // nicklist would be a coincidence of spelling, and it would decorate the visitor with a
+        // local user's `@`. The bot's own rank isn't shown either: it isn't the one talking.
+        let prefix = message.relayBot == nil
+            ? message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
+            : ""
         // Nil means there's nothing to call this line: server text whose network hasn't resolved
         // yet, most often. An empty header is a blank line above the text with a stray
         // right-aligned timestamp beside it, so there just isn't one.

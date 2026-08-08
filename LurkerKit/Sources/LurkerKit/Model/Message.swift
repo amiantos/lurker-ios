@@ -8,8 +8,11 @@ import Foundation
 public struct Message: Equatable, Sendable {
     public let id: Int
     public let type: EventType
-    public let nick: String?
-    public let text: String?
+    /// Who said it. **`var` only so `relayed(...)` can swap it for the speaker a relay bot was
+    /// quoting** — like `matched`, it is writable from this file and nowhere else.
+    public private(set) var nick: String?
+    /// What they said. `var` for the same one reason `nick` is.
+    public private(set) var text: String?
     public let isSelf: Bool
     public let time: String?
     /// `time` parsed once, at the wire boundary. Rendering formats it and grouping
@@ -68,6 +71,18 @@ public struct Message: Equatable, Sendable {
     /// actually loads. The Bookmarks feed itself is the other source: its rows carry no flag
     /// (they're all saved) and seed the set through `noteBookmarked(ids:)`.
     public let bookmarked: Bool
+    /// The relay bot this line actually came from, once it has been re-attributed (#277) — the
+    /// only real IRC entity on the row, since `nick` now names someone with no presence here.
+    ///
+    /// Nil on every line that isn't a re-attributed one, which is nearly all of them. Absent from
+    /// `init` on purpose: re-attribution is a *display* transform with exactly one producer
+    /// (`relayed(...)`, below), so there is no path by which a line arrives from the wire already
+    /// claiming to be relayed.
+    public private(set) var relayBot: String?
+    /// The `[source]` tag the envelope carried — "Discord", "Telegram", the bridged network's
+    /// name. Nil when it carried none (a bare `<nick> message` relay), which is a real and common
+    /// case, not a missing value: those envelopes simply don't say where the speaker was.
+    public private(set) var relaySource: String?
 
     public init(
         id: Int,
@@ -122,6 +137,26 @@ public struct Message: Equatable, Sendable {
         guard matched else { return self }
         var copy = self
         copy.matched = false
+        return copy
+    }
+
+    /// This line as spoken by the person a relay bot was quoting (#277): `nick` and `text` become
+    /// the embedded speaker and their words, and the bot moves to `relayBot`.
+    ///
+    /// Everything else is carried over deliberately, `id` included — this is the same log line,
+    /// shown differently, so a bookmark, a jump and a mark-read all still address it. `isSelf`
+    /// comes along too and is always false, because `RelayBotSet.reattributing` won't touch a line
+    /// you sent.
+    ///
+    /// The one producer of a relayed `Message`, which is why the two fields it sets are writable
+    /// from this file alone. It takes a non-optional `speaker` because a parse that produced no
+    /// nick isn't a re-attribution at all — see the empty-nick check in `RelayEnvelope.parse`.
+    public func relayed(to speaker: String, text relayedText: String, via bot: String, source: String?) -> Message {
+        var copy = self
+        copy.nick = speaker
+        copy.text = relayedText
+        copy.relayBot = bot
+        copy.relaySource = source
         return copy
     }
 

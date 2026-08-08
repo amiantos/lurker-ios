@@ -89,6 +89,81 @@ public enum IRCFormatting {
         return runs
     }
 
+    /// Where the `visibleOffset`-th *visible* character of `text` begins inside `text` itself —
+    /// the inverse of `strip`, for when you matched against the stripped form and now have to
+    /// slice the original.
+    ///
+    /// The web's `rawIndexForVisibleOffset` (`shared/textMatch.ts`), ported for its one caller:
+    /// relay re-attribution (#277) matches a bot's envelope against stripped text and then has to
+    /// hand back the relayed message with its OWN colours and bold intact.
+    ///
+    /// Offsets in and out are UTF-16 units — `NSRange`'s currency, and JavaScript's, so a capture
+    /// range from `NSRegularExpression` can be handed straight in and the answer handed straight
+    /// to `NSString.substring(from:)`. An offset past the end answers the end.
+    ///
+    /// ⚠ This is a SECOND scanner over the control codes `parse` consumes. Should the two ever
+    /// disagree about what counts as formatting, a slice lands mid-code and the recovered text
+    /// opens with stray colour digits. `RelayEnvelopeTests.testRawIndexAgreesWithStrip` pins them
+    /// to each other over a corpus rather than leaving it to inspection.
+    public static func rawIndex(in text: String, visibleOffset: Int) -> Int {
+        guard visibleOffset > 0 else { return 0 }
+        let units = Array(text.utf16)
+        var visible = 0
+        var i = 0
+        while i < units.count {
+            if visible >= visibleOffset { return i }
+            if let length = controlLength(units, at: i) {
+                i += length
+            } else {
+                visible += 1
+                i += 1
+            }
+        }
+        return units.count
+    }
+
+    /// The length, in UTF-16 units, of the mIRC control sequence starting at `i` — or nil when
+    /// `units[i]` doesn't start one.
+    ///
+    /// Every code is ASCII, so walking UTF-16 units lands on exactly the same positions `parse`'s
+    /// scalar walk does; only the *content* between codes is counted differently, and that's the
+    /// caller's business rather than this function's.
+    private static func controlLength(_ units: [UInt16], at i: Int) -> Int? {
+        switch units[i] {
+        // The toggles, the reset, and the two `parse` consumes without rendering.
+        case 0x02, 0x0F, 0x11, 0x16, 0x1D, 0x1E, 0x1F: return 1
+        case 0x03:
+            // \x03[FG[,BG]]. A bare \x03 is a reset and consumes nothing more; the background half
+            // needs a digit after the comma, or the comma is text (`\x0304,not-a-bg`).
+            var j = skip(units, from: i + 1, limit: 2, member: isDigit)
+            guard j > i + 1 else { return 1 }
+            if j + 1 < units.count, units[j] == 0x2C, isDigit(units[j + 1]) {
+                j = skip(units, from: j + 1, limit: 2, member: isDigit)
+            }
+            return j - i
+        case 0x04:
+            // \x04RRGGBB[,RRGGBB] — truecolor, consumed and dropped. The comma goes whether or not
+            // hex follows it, exactly as `parse` does.
+            var j = skip(units, from: i + 1, limit: 6, member: isHex)
+            if j < units.count, units[j] == 0x2C { j = skip(units, from: j + 1, limit: 6, member: isHex) }
+            return j - i
+        default: return nil
+        }
+    }
+
+    /// Advance past up to `limit` units satisfying `member`, returning the index just past them.
+    private static func skip(
+        _ units: [UInt16], from start: Int, limit: Int, member: (UInt16) -> Bool
+    ) -> Int {
+        var i = start
+        var count = 0
+        while i < units.count, count < limit, member(units[i]) {
+            i += 1
+            count += 1
+        }
+        return i
+    }
+
     /// Read up to two ASCII digits from `start`; returns the value (nil if none) and the
     /// index just past them.
     private static func readDigits(_ scalars: [Unicode.Scalar], from start: Int) -> (Int?, Int) {
@@ -116,5 +191,12 @@ public enum IRCFormatting {
 
     private static func isHex(_ s: Unicode.Scalar) -> Bool {
         isDigit(s) || (s.value >= 0x41 && s.value <= 0x46) || (s.value >= 0x61 && s.value <= 0x66)
+    }
+
+    // The UTF-16 halves of the same two tests, for `controlLength`'s walk.
+    private static func isDigit(_ u: UInt16) -> Bool { u >= 0x30 && u <= 0x39 }
+
+    private static func isHex(_ u: UInt16) -> Bool {
+        isDigit(u) || (u >= 0x41 && u <= 0x46) || (u >= 0x61 && u <= 0x66)
     }
 }
