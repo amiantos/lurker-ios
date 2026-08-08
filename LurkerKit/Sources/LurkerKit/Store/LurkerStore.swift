@@ -167,6 +167,13 @@ public struct ChatState: Sendable {
     /// this store, so a rule arriving mid-session re-filters the backlog already held — and
     /// a rule going away brings those lines straight back with no refetch.
     public var ignores: IgnoreSet = .empty
+    /// The account's relay-bot marks (#277). Seeded by the connect `snapshot` — one list per
+    /// network blob — and patched a nick at a time by `relay-bot-updated`.
+    ///
+    /// Server-authoritative and fanned to every device, like `ignores` above, and applied at the
+    /// same place for the same reason: `ChatViewController.apply` re-attributes at *render* time,
+    /// so marking a bot re-labels the backlog already held and unmarking hands it straight back.
+    public var relayBots: RelayBotSet = .empty
     /// The user's server-side settings (#65). Seeded by `/api/settings/bootstrap` and patched
     /// by live `settings` frames, so a change made on the web takes effect here without a
     /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
@@ -577,6 +584,14 @@ final class LurkerStore {
             var next = state
             next.ignores = state.ignores.replacing(networkId: networkId, with: rules)
             return next
+        case .relayBotUpdated(let networkId, let nick, let marked, let pattern):
+            // One nick at a time, so this patches where the ignore arm above replaces — the
+            // difference is in the frames, not in the two features (see `RelayBotSet.applying`).
+            var next = state
+            next.relayBots = state.relayBots.applying(
+                networkId: networkId, nick: nick, marked: marked, pattern: pattern
+            )
+            return next
         case .bufferClosed(let networkId, let target):
             // The live half: a close on another device while this one is connected. The
             // offline half — a close we were never told about — is `pruneToBurst`.
@@ -812,6 +827,14 @@ final class LurkerStore {
             ignoresByNetwork[snapshot.id] = snapshot.ignoredMasks
         }
         next.ignores = IgnoreSet(global: globalIgnores, byNetwork: ignoresByNetwork)
+        // Relay marks replace wholesale for exactly the reason the rules above do: the snapshot IS
+        // the account's set, so a bot unmarked while this device was away has to disappear here
+        // rather than survive as a leftover that keeps rewriting its lines' authors.
+        var relayBotsByNetwork: [Int: [RelayBot]] = [:]
+        for snapshot in networks where !snapshot.relayBots.isEmpty {
+            relayBotsByNetwork[snapshot.id] = snapshot.relayBots
+        }
+        next.relayBots = RelayBotSet(byNetwork: relayBotsByNetwork)
         for snapshot in networks {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state

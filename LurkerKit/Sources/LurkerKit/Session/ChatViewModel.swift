@@ -360,7 +360,10 @@ public final class ChatViewModel {
             // ignore with mask bob") for an account with a dozen of them. `backlogComplete` is
             // the latch that says the burst is done, and it isn't cleared by a drop, so a
             // reconnect doesn't take the answer away again.
-            ignores: store.state.backlogComplete ? store.state.ignores : nil
+            ignores: store.state.backlogComplete ? store.state.ignores : nil,
+            // Same latch, same reason: `/relay` with no arguments is a claim about which bots are
+            // marked, and an empty set mid-burst would answer "none" for a network that has some.
+            relayBots: store.state.backlogComplete ? store.state.relayBots : nil
         ) {
         case .message(let body):
             client.sendMessage(networkId: key.networkId, target: key.target, text: body)
@@ -421,6 +424,18 @@ public final class ChatViewModel {
                 report(client.addIgnore(networkId: scope, rule: rule), receipt, in: key)
             case .removeIgnore(let scope, let id, let mask, let receipt):
                 report(client.removeIgnore(networkId: scope, id: id, mask: mask), receipt, in: key)
+            case .setRelayBot(let relayNetworkId, let nick, let marked, let pattern, let receipt):
+                // The effect's own network, not the buffer's — they're the same today (the parser
+                // takes it from this buffer), but a mark is *about* a connection rather than sent
+                // on one, and reading it off `key` here would quietly make that untrue the first
+                // time anything issues one from somewhere else.
+                report(
+                    client.setRelayBot(
+                        networkId: relayNetworkId, nick: nick, marked: marked, pattern: pattern
+                    ),
+                    receipt,
+                    in: key
+                )
             case .info(let text):
                 store.appendLocal(key, text: text)
             }

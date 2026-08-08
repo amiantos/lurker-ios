@@ -507,6 +507,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // arrive, and the `/unignore` that should bring lines back does nothing
                     // visible at all. (`===` is the right test — see `IgnoreSet`.)
                     && old.ignores === new.ignores
+                    // Relay marks decide who a bot's lines are attributed to, and they arrive
+                    // from another device on their own — same trap, same shape. Without this,
+                    // marking a bridge in a browser leaves the phone showing the bot's nick and
+                    // its raw envelope until the next line happens to land. (`===` is the right
+                    // test — see `RelayBotSet`.)
+                    && old.relayBots === new.relayBots
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -715,12 +721,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // render rather than on the way into the store, which is what makes a rule retroactive
         // both ways — one made in a browser hides backlog the server had already sent, and
         // removing it brings those lines straight back with no refetch.
-        let updated = state.ignores.visible(
-            (state.messages[buffer.key.id] ?? [])
-                .filter { buffer.kind.renders($0.type) && $0.isRenderable },
-            networkId: buffer.networkId,
-            target: buffer.target,
-            keeping: jumpExemptId
+        // Relay re-attribution (#277) sits on top of both, and last: it rewrites the author and
+        // body of lines from a marked bridge bot, and it has to see what the ignore filter left
+        // rather than the other way round. Order matters in the other direction too — the rules
+        // above match the bot's real nick and its full envelope, which is what keeps an ignore on
+        // the bot working and lets a highlight fire on a word inside a relayed message.
+        let updated = state.relayBots.reattributing(
+            state.ignores.visible(
+                (state.messages[buffer.key.id] ?? [])
+                    .filter { buffer.kind.renders($0.type) && $0.isRenderable },
+                networkId: buffer.networkId,
+                target: buffer.target,
+                keeping: jumpExemptId
+            ),
+            networkId: buffer.networkId
         )
         let oldFirstId = messages.first?.id
         let newFirstId = updated.first?.id

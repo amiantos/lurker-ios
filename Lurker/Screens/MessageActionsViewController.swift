@@ -124,7 +124,14 @@ final class MessageActionsViewController: UITableViewController {
             // "04ALERT disk full" here — the one case where the header would show a different line
             // from the one pressed. Copy keeps the codes because the pasteboard is about fidelity
             // to what was sent, which is also what the web does.
-            title.text = (message.nick?.isEmpty == false) ? message.nick : "Message"
+            //
+            // A re-attributed relay line (#277) names its bridge here: "alice via relaybot". This
+            // sheet is the whole of that provenance on iOS — the web puts it in a `title=` tooltip
+            // on the `[source]` tag, and a phone has no hover to put it behind. It belongs on the
+            // title rather than in a row of its own because it qualifies *who you are acting on*:
+            // Reply and Copy target alice, and the only thing here with an IRC presence is the bot.
+            let speaker = (message.nick?.isEmpty == false) ? message.nick! : "Message"
+            title.text = message.relayBot.map { "\(speaker) via \($0)" } ?? speaker
             detail.text = message.text.map { IRCFormatting.strip($0) }
         case .link(let url):
             // Host as the title: "which site is this" is the question a link menu has to answer

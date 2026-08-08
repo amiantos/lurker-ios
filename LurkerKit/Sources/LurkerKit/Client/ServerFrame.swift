@@ -152,6 +152,20 @@ enum ServerFrame: Equatable, Sendable {
     /// sweeper's deletions, so a `-time` rule stops applying here without a reconnect.
     case ignoreListUpdated(networkId: Int?, rules: [IgnoreRule])
 
+    /// WS `relay-bot-updated`: one nick was marked or unmarked as a relay/bridge bot (#277).
+    ///
+    /// One nick per frame, not a network's whole list — so the store patches rather than replaces
+    /// (see `RelayBotSet.applying`). `marked` false is the clear, and `pattern` is the custom
+    /// envelope template, empty for the built-in formats.
+    ///
+    /// Fanned to every one of the account's devices, including the one that asked, which is why
+    /// nothing here is applied optimistically: this frame is the mark, and a mark made in a
+    /// browser reaches the phone by exactly this route.
+    ///
+    /// Unlike `ignoreListUpdated`, `networkId` is a plain number: a relay mark is always about one
+    /// connection, so there is no global bucket for a nil to mean.
+    case relayBotUpdated(networkId: Int, nick: String, marked: Bool, pattern: String)
+
     /// A `peer-presence` ephemeral (rides `irc`, `type:"peer-presence"`, network-scoped via a
     /// `:server:<id>` target): a watched nick changed state. `state` is nil when the server
     /// reports no known state, which the store reads as `unknown`.
@@ -240,6 +254,10 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// that `ignore-list-updated` then replaces. Rules with no network scope ride the
     /// snapshot frame itself (`globalIgnores`), not this.
     var ignoredMasks: [IgnoreRule] = []
+    /// The nicks marked as relay/bridge bots on this network (#277) — the connect-time seed that
+    /// live `relay-bot-updated` frames then patch. Defaulted, like the fields above it, so the
+    /// snapshot call sites that predate the feature don't have to name it.
+    var relayBots: [RelayBot] = []
     /// Your own away state on this network (#68) — the connect-time seed for what live
     /// `away-state` events then replace. Nil when the server reports none, which is the
     /// normal case for a user who has never been away.

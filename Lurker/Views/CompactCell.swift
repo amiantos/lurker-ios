@@ -43,12 +43,20 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         /// and iOS follows. Empty for every header that isn't a channel member's — a network,
         /// a notice's `-mark-`, or the highlights feed, which doesn't resolve the nicklist.
         let modePrefix: String
+        /// Where a re-attributed relay line was bridged from (#277) — "Discord", "github", the
+        /// source network. Nil on every header that isn't one, which is nearly all of them.
+        ///
+        /// It rides the header rather than the body because it qualifies the *name*: the header
+        /// says who spoke, and this says where. Living here also means it's drawn exactly once per
+        /// author block, which is where a run of one speaker's lines wants it.
+        let relaySource: String?
 
-        init(nick: String, color: UIColor, time: String?, modePrefix: String = "") {
+        init(nick: String, color: UIColor, time: String?, modePrefix: String = "", relaySource: String? = nil) {
             self.nick = nick
             self.color = color
             self.time = time
             self.modePrefix = modePrefix
+            self.relaySource = relaySource
         }
     }
 
@@ -175,30 +183,43 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         headerRow.isHidden = header == nil
         if let header {
             let nickFont = font.semibold
+            let name = NSMutableAttributedString(
+                string: header.nick,
+                attributes: [.font: nickFont, .foregroundColor: header.color]
+            )
             // The mode glyph in its rank's color, the name in the speaker's — the split the web's
-            // `NickRef` makes. Both branches set every property they depend on, in full: cells
-            // are reused, and a header that took the attributed branch last time leaves a string
-            // behind that a bare `text` assignment is the only thing that clears.
+            // `NickRef` makes.
+            //
+            // Bold via `withTrait`, which is the only thing that takes on this face — `semibold`
+            // adds a weight attribute that a monospaced font's concrete name beats in matching, so
+            // `nickFont` above is not in fact heavier than the body. The glyph needs the weight for
+            // contrast: the rank hues are ~3.5-4:1 on the light canvas, which clears the bar for
+            // large text and not the one for regular.
             if let rank = Palette.memberPrefix(header.modePrefix), header.nick.hasPrefix(header.modePrefix) {
-                let attributed = NSMutableAttributedString(
-                    string: header.nick,
-                    attributes: [.font: nickFont, .foregroundColor: header.color]
-                )
-                // Bold via `withTrait`, which is the only thing that takes on this face —
-                // `semibold` adds a weight attribute that a monospaced font's concrete name beats
-                // in matching, so `nickFont` above is not in fact heavier than the body. The
-                // glyph needs the weight for contrast: the rank hues are ~3.5-4:1 on the light
-                // canvas, which clears the bar for large text and not the one for regular.
-                attributed.addAttributes(
+                name.addAttributes(
                     [.foregroundColor: rank, .font: nickFont.bold],
                     range: NSRange(location: 0, length: header.modePrefix.utf16.count)
                 )
-                nickLabel.attributedText = attributed
-            } else {
-                nickLabel.text = header.nick
-                nickLabel.font = nickFont
-                nickLabel.textColor = header.color
             }
+            // Relay provenance (#277), trailing the name it qualifies: `alice github`.
+            // Unbracketed, and `fgFaint` — a tier below the timestamp at the other end of this
+            // row, not level with it. It's a hint, not a field: you read it when you wonder where
+            // someone is speaking from, and the rest of the time it shouldn't be pulling at a name
+            // that's already carrying a colour of its own.
+            //
+            // Last on the line on purpose: the label truncates from the tail, so under width
+            // pressure the provenance goes before the speaker's name does.
+            if let source = header.relaySource, !source.isEmpty {
+                name.append(NSAttributedString(
+                    string: " \(source)",
+                    attributes: [.font: font, .foregroundColor: Palette.fgFaint]
+                ))
+            }
+            // Always attributed, never `text`. Cells are reused, and a header that took an
+            // attributed path last time leaves a string behind that only a `text` assignment
+            // clears — a hazard that existed while this was two branches and doesn't now that
+            // it's one.
+            nickLabel.attributedText = name
             timeLabel.font = font
             timeLabel.text = header.time
             // Hidden rather than left empty, so the spacer doesn't hold a gap open for a stamp
@@ -233,7 +254,14 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
         // Empties dropped as well as nils: a header can carry a time with no nick (a `/me` in the
         // highlights feed), and an unfiltered join would open the spoken label with a comma.
-        messageText.accessibilityLabel = [header?.nick, MessageRenderer.spoken(attributed), header?.time]
+        //
+        // Relay provenance needs a connective it doesn't need in print, where colour separates the
+        // two words: read out bare, "alice github" is two names. It says "from" rather than the
+        // action sheet's "via", because the two name different things — a source and the bot.
+        let spokenNick = header.map { head in
+            head.relaySource.flatMap { $0.isEmpty ? nil : "\(head.nick) from \($0)" } ?? head.nick
+        }
+        messageText.accessibilityLabel = [spokenNick, MessageRenderer.spoken(attributed), header?.time]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")

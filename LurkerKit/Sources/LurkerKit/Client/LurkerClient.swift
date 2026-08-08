@@ -441,6 +441,31 @@ final class LurkerClient {
         return send(verb, surfacesFailure: true)
     }
 
+    /// Mark or unmark a nick as a relay/bridge bot on a network (#277) — what `/relay add` and
+    /// `/relay remove` send. `pattern` is the custom envelope template; empty means the built-in
+    /// formats, which is what a bare mark stores.
+    ///
+    /// Fire-and-ask, like the ignore verbs above: the server validates, stores, and fans a
+    /// `relay-bot-updated` back to every device, and the mark exists only once that lands. Nothing
+    /// is written locally, so a mark the server refuses never appears — and one made in a browser
+    /// arrives here by the identical route.
+    ///
+    /// **Returns false when it went nowhere**, and the caller must check, for the same reason
+    /// `addIgnore` does: `/relay` prints a receipt and nothing else would contradict it.
+    @discardableResult
+    func setRelayBot(networkId: Int, nick: String, marked: Bool, pattern: String) -> Bool {
+        send(
+            [
+                "type": "set-relay-bot",
+                "networkId": networkId,
+                "nick": nick,
+                "marked": marked,
+                "pattern": pattern,
+            ],
+            surfacesFailure: true
+        )
+    }
+
     /// A rule as `add-ignore` carries it. Unset dimensions are *omitted* rather than sent as
     /// null: the server reads an absent field as "unconstrained", which is the same thing and
     /// keeps the frame to what the rule actually says.

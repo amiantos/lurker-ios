@@ -40,8 +40,21 @@ public enum MessageGrouping {
     /// IRC nicks are case-insensitive and servers send them inconsistently cased, so a
     /// run must not break just because `Brad` said something after `brad`. House style is
     /// an ASCII lowercase fold, matching `BufferKey`.
+    ///
+    /// ⚠ A nick alone is not an identity once relay re-attribution is in play (#277). The `alice`
+    /// on a Discord bridge and the `alice` in the channel are different people who happen to share
+    /// a name — anyone on the bridged platform can pick a nick that matches an IRC regular — and
+    /// folding them into one run renders the bridged line headerless under the real alice's name,
+    /// dropping the very tag that says otherwise. So the bridge is part of the author: the bot it
+    /// came through, and which platform it came from, since one bot can carry several.
+    ///
+    /// A local speaker has neither, which is exactly what tells them apart from their namesake.
+    /// The source is compared as sent — it's a platform tag a bot writes the same way every time,
+    /// not a nick — so a bot that did vary its casing costs a run break and nothing worse.
     private static func sameAuthor(_ lhs: Message, _ rhs: Message) -> Bool {
         (lhs.nick ?? "").lowercased() == (rhs.nick ?? "").lowercased()
+            && (lhs.relayBot ?? "").lowercased() == (rhs.relayBot ?? "").lowercased()
+            && lhs.relaySource == rhs.relaySource
     }
 }
 

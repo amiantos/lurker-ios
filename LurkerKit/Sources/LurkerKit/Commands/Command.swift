@@ -14,7 +14,7 @@ import Foundation
 ///  - `/set` `/get` — web-only settings console; iOS settings are a native screen (#20).
 ///  - `/network` `/net` — network CRUD is REST-heavy and owns its own issue (#11).
 ///  - `/highlight` `/unhighlight` — highlight-rule management, still unported (#13).
-///  - `/relay` `/dcc` `/e2e` `/list` `/jitsi` `/clear` — web-specific or unbuilt features.
+///  - `/dcc` `/e2e` `/list` `/jitsi` `/clear` — web-specific or unbuilt features.
 ///  - `/quit` `/reconnect` — network lifecycle (#11); intercepted with a note rather than
 ///    left to the raw fallback, where a bare `/quit` would fire a real IRC `QUIT`.
 
@@ -73,6 +73,16 @@ public enum CommandEffect: Equatable, Sendable {
     /// a by-mask removal on a network scope clears matching globals too, which is the server's
     /// rule and why the receipt counts what the client can see rather than claiming a total.
     case removeIgnore(scope: Int?, id: Int?, mask: String?, receipt: String)
+    /// Ask the server to mark or unmark a nick as a relay/bridge bot (#277).
+    ///
+    /// `networkId` is carried rather than supplied by the executor because a mark is *about* a
+    /// connection rather than sent *on* one — it's per-(network, nick) view state, like a nick
+    /// note, and it's stored whether or not that network is currently up.
+    ///
+    /// `pattern` is the custom envelope template; empty means the built-in formats. `receipt`
+    /// rides along and is withheld when the verb never reached a socket, exactly as it does for
+    /// the two ignore effects above.
+    case setRelayBot(networkId: Int, nick: String, marked: Bool, pattern: String, receipt: String)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -293,6 +303,13 @@ public enum CommandRegistry {
         CommandSpec(["away"], .status, "Set yourself away on every network",
                     args: [ArgSpec("message", .text, optional: true, rest: true)], networkAgnostic: true),
         CommandSpec(["back"], .status, "Clear your away status", networkAgnostic: true),
+        // Files under App rather than Moderation, where `/ignore` sits: a relay mark hides
+        // nothing and silences nobody, it tells this client how to *read* a bot's lines. The
+        // thing it changes is the log, not the room.
+        CommandSpec(["relay"], .app, "Mark a bridge bot so its lines show the real speaker",
+                    args: [ArgSpec("list|add|remove", .word, optional: true),
+                           ArgSpec("nick", .nick, optional: true),
+                           ArgSpec("pattern", .text, optional: true, rest: true)]),
         CommandSpec(["commands"], .app, "List the commands you can run", networkAgnostic: true),
     ]
 

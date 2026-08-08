@@ -46,12 +46,17 @@ public enum CommandParser {
     /// verbs that need one build it and the other fifty don't — every plain message comes
     /// through here too. It defaults to empty, the honest answer for a caller that has none.
     ///
+    /// `relayBots` rides along for the same reason and with the same nil convention: `/relay` with
+    /// no arguments prints the marks on this network, and nil means "they haven't arrived yet", so
+    /// the listing says so rather than claiming there are none.
+    ///
     /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
     public static func parse(
         _ input: String,
         networkId: Int?,
         target: String,
         ignores: IgnoreSet? = .empty,
+        relayBots: RelayBotSet? = .empty,
         now: Date = Date()
     ) -> ParsedInput {
         // The composer trims before it hands text over, but be total about it anyway.
@@ -78,7 +83,7 @@ public enum CommandParser {
 
         return .command(resolve(
             verb: verb, fullBody: body, argLine: argLine, rest: rest,
-            networkId: networkId, target: target, ignores: ignores, now: now
+            networkId: networkId, target: target, ignores: ignores, relayBots: relayBots, now: now
         ))
     }
 
@@ -92,6 +97,7 @@ public enum CommandParser {
         networkId: Int?,
         target: String,
         ignores: IgnoreSet?,
+        relayBots: RelayBotSet?,
         now: Date
     ) -> [CommandEffect] {
         // A lone `/` (or `/ `) has no verb — nudge rather than fall through to the raw
@@ -123,7 +129,12 @@ public enum CommandParser {
 
         // Network gate: everything below needs a channel or DM. In the system buffer, say so
         // rather than dropping the line.
-        guard networkId != nil else {
+        //
+        // Bound rather than merely tested, so the one case below that needs the id — `/relay`,
+        // whose marks are per-(network, nick) — takes it from the gate instead of restating it or
+        // force-unwrapping. Nothing else past this point reads it: the wire effects carry a target
+        // and let the executor supply the network.
+        guard let networkId else {
             return [.info("/\(verb) needs an active network — switch to a channel or DM first.")]
         }
 
@@ -286,6 +297,12 @@ public enum CommandParser {
              "names", "who", "whowas", "stats", "userhost", "ison", "help":
             let line = argLine.isEmpty ? verb.uppercased() : "\(verb.uppercased()) \(argLine)"
             return [.raw(line: line)]
+
+        // App
+        case "relay":
+            // Below the network gate above: a mark is per-(network, nick), so there is no
+            // sensible answer to `/relay` in the system buffer.
+            return resolveRelay(argLine: argLine, networkId: networkId, relayBots: relayBots)
 
         // Network lifecycle — deferred to network management (#11). Intercepted rather than
         // left to the raw fallback, where `/quit` would send a real IRC QUIT.
@@ -491,6 +508,75 @@ public enum CommandParser {
     /// is what an empty set would otherwise be read as.
     private static let unsynced =
         "Your ignore rules haven't arrived yet — try again once you're connected."
+
+    // MARK: - Relay bots (#277)
+
+    /// `/relay` — with no arguments, the marks on this network; otherwise a mark to set or clear.
+    ///
+    /// Nothing is written locally, exactly as with `/ignore`: the effect asks, and the mark
+    /// appears when the server's `relay-bot-updated` lands. The receipt rides on the effect so
+    /// it's withheld if the verb never reached a socket.
+    private static func resolveRelay(
+        argLine: String,
+        networkId: Int,
+        relayBots: RelayBotSet?
+    ) -> [CommandEffect] {
+        switch RelayArgs.parse(argLine) {
+        case .failure(let message):
+            return [.info("/relay: \(message)")]
+        case .list:
+            // Only the listing needs the marks to have arrived — it's a claim about what exists,
+            // and made against a set still in flight it's a confident "you have none" for an
+            // account that may have several. Marking below doesn't need them and isn't gated.
+            guard let relayBots else {
+                return [.info("Your relay bots haven't arrived yet — try again once you're connected.")]
+            }
+            return [.info(relayListing(relayBots.listing(for: networkId)))]
+        case .add(let nick, let pattern):
+            // ⚠ A custom pattern that won't compile has to be refused HERE, at the only moment
+            // anyone is looking. `RelayEnvelope.templates(for:)` deliberately doesn't fall back to
+            // the built-ins for one — the user asked for a specific shape and inventing a speaker
+            // by some other rule would be worse — so the mark would be stored, listed by
+            // `/relay list`, and silently re-attribute nothing, forever, with a receipt that said
+            // it worked. The server won't catch it either: it stores the string without reading it.
+            //
+            // Forgetting the braces is the whole of how this happens (`/relay add bot [Discord]
+            // <nick> message`), so the refusal names them.
+            if !pattern.isEmpty, RelayEnvelope.compile(pattern) == nil {
+                return [.info(
+                    "/relay: that pattern can't be used. It needs {nick} and {message} — {source} "
+                        + "is optional — e.g. /relay add \(nick) [{source}] <{nick}> {message}. "
+                        + "Leave it off entirely to use the built-in formats."
+                )]
+            }
+            // "marked" either way, not "updated": unlike `add-ignore` — whose upsert can silently
+            // convert a timed rule into a permanent one, which is why that receipt is careful —
+            // re-marking a bot with a new pattern has exactly one outcome, and it's this one.
+            let suffix = pattern.isEmpty ? "" : " (pattern: \(pattern))"
+            return [.setRelayBot(
+                networkId: networkId, nick: nick, marked: true, pattern: pattern,
+                receipt: "marked \(nick) as a relay bot\(suffix)."
+            )]
+        case .remove(let nick):
+            return [.setRelayBot(
+                networkId: networkId, nick: nick, marked: false, pattern: "",
+                receipt: "unmarked \(nick) as a relay bot."
+            )]
+        }
+    }
+
+    /// The `/relay` listing as one block, like `/ignore`'s — one message row rather than N.
+    ///
+    /// The empty case carries the way *out* of it. A user typing `/relay` into a channel where a
+    /// bridge is talking is asking "how do I fix this", and "none" alone answers a different
+    /// question than the one they have.
+    private static func relayListing(_ bots: [RelayBot]) -> String {
+        guard !bots.isEmpty else {
+            return "No relay bots marked on this network. /relay add <nick>"
+        }
+        let rows = bots.map { "  \($0.nick)\($0.pattern.isEmpty ? "" : "  — \($0.pattern)")" }
+        return (["relay bots (\(bots.count)):"] + rows).joined(separator: "\n")
+    }
 
     /// The flag and level vocabulary, printed under every listing.
     ///

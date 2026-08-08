@@ -89,6 +89,19 @@ enum FrameParser {
                 networkId: obj.intOrNull("networkId"),
                 rules: obj.objects("masks").map(parseIgnoreRule)
             )
+        case "relay-bot-updated":
+            // A mark is about one connection and one nick; neither can be inferred, and a frame
+            // missing either would key a mark on nothing (network 0, or the empty nick — which
+            // would then "match" every nick-less line). Refused rather than folded, the same
+            // posture the siblings above take toward a payload they can't trust.
+            let nick = obj.string("nick")
+            guard let networkId = obj.intOrNull("networkId"), !nick.isEmpty else { return .ignored }
+            return .relayBotUpdated(
+                networkId: networkId,
+                nick: nick,
+                marked: obj.bool("marked"),
+                pattern: obj.string("pattern")
+            )
         case "buffer-renamed":
             // Same trust posture as buffer-closed below: empty names can't
             // identify anything, so refuse rather than rename an arbitrary
@@ -190,6 +203,7 @@ enum FrameParser {
                 channels: network.objects("channels").map(parseChannel),
                 peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any]),
                 ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule),
+                relayBots: network.objects("relayBots").compactMap(parseRelayBot),
                 away: parseAwayState(network["away"])
             )
         }
@@ -217,6 +231,17 @@ enum FrameParser {
             // the most expensive thing in the filter.
             expiresAt: ISOTime.parse(obj.stringOrNull("expiresAt"))
         )
+    }
+
+    /// One relay-bot mark (#277) — the same `{nick, pattern}` row in the snapshot's per-network
+    /// `relayBots` and in a `relay-bot-updated` frame.
+    ///
+    /// A row with no nick addresses nobody, so it's dropped rather than becoming a mark keyed on
+    /// the empty string — which would match every nick-less line the client ever renders. An
+    /// absent `pattern` is the built-in formats, which is what the server stores for a bare mark.
+    private static func parseRelayBot(_ obj: [String: Any]) -> RelayBot? {
+        let nick = obj.string("nick")
+        return nick.isEmpty ? nil : RelayBot(nick: nick, pattern: obj.string("pattern"))
     }
 
     /// The snapshot's `peerPresence` blob — `lowercased nick → {nick, state, stateAt,

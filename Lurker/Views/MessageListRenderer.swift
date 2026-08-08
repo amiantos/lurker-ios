@@ -152,7 +152,13 @@ struct MessageListRenderer {
         let minuteChanged = changedMinute(message.date, previous?.date)
         guard position.isFirst || minuteChanged else { return nil }
 
-        let prefix = message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
+        // No rank glyph on a re-attributed relay line (#277). The name in that header belongs to
+        // someone speaking through a bridge, not to a member of this channel — so a hit in the
+        // nicklist would be a coincidence of spelling, and it would decorate the visitor with a
+        // local user's `@`. The bot's own rank isn't shown either: it isn't the one talking.
+        let prefix = message.relayBot == nil
+            ? message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
+            : ""
         // Nil means there's nothing to call this line: server text whose network hasn't resolved
         // yet, most often. An empty header is a blank line above the text with a stray
         // right-aligned timestamp beside it, so there just isn't one.
@@ -168,7 +174,11 @@ struct MessageListRenderer {
             time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
             // notice or a network line gets the glyph resolved and then discarded.
-            modePrefix: name.hasPrefix(prefix) ? prefix : ""
+            modePrefix: name.hasPrefix(prefix) ? prefix : "",
+            // Where a re-attributed relay line came from (#277). Nil on everything else, and nil
+            // for a bare `<nick> message` relay too, whose envelope names no source — that line
+            // simply reads as the speaker, which is the call the web makes as well.
+            relaySource: message.relaySource
         )
     }
 
@@ -226,13 +236,6 @@ struct MessageListRenderer {
 enum MessageListMarker {
     static let reuseID = "divider"
 
-    /// One tier below `Palette.fgMuted`, for the start-of-history rule.
-    ///
-    /// The web has no token for this — it's a marker the mobile list has and the web doesn't —
-    /// so it's derived from the muted color rather than reaching for `.tertiaryLabel`, which is
-    /// a different palette on a surface that is now entirely Lurker's.
-    private static let faint = Palette.translucent(Palette.fgMuted, alpha: 0.7)
-
     static func cell(_ text: String, color: UIColor, bold: Bool, in tableView: UITableView) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: reuseID)!
         var content = cell.defaultContentConfiguration()
@@ -261,7 +264,7 @@ enum MessageListMarker {
         case .dateDivider(let day):
             cell(MessageRenderer.dayLabel(day), color: Palette.fgMuted, bold: false, in: tableView)
         case .startOfHistory:
-            cell("— start of history —", color: faint, bold: false, in: tableView)
+            cell("— start of history —", color: Palette.fgFaint, bold: false, in: tableView)
         case .awayDivider(_, let message):
             cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)
         case .backDivider(let awayAt, let backAt):
