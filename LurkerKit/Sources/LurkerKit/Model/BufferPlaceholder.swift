@@ -49,7 +49,21 @@ public enum BufferPlaceholder: Equatable, Sendable {
         bufferExists: Bool
     ) -> BufferPlaceholder {
         if hasMessages { return .none }
-        let historyLanded = hydratesOnDemand ? hydrated : bufferExists
-        return historyLanded ? .empty : .loading
+        return historyLanded(
+            hydrated: hydrated, hydratesOnDemand: hydratesOnDemand, bufferExists: bufferExists
+        ) ? .empty : .loading
+    }
+
+    /// Whether the server has told us this buffer's history — the rule spelled out above, split
+    /// out because the placeholder isn't the only decision that rests on it. The unread banner's
+    /// `dividerSeen` latch asks the same question (has the reader been shown the buffer's real
+    /// history, or a stub that outran it?), and asking it as a bare `hydrated` strands the
+    /// off-demand kinds on the wrong answer forever in both places.
+    public static func historyLanded(
+        hydrated: Bool,
+        hydratesOnDemand: Bool,
+        bufferExists: Bool
+    ) -> Bool {
+        hydratesOnDemand ? hydrated : bufferExists
     }
 }
