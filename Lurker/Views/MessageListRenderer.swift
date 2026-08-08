@@ -236,13 +236,6 @@ struct MessageListRenderer {
 enum MessageListMarker {
     static let reuseID = "divider"
 
-    /// One tier below `Palette.fgMuted`, for the start-of-history rule.
-    ///
-    /// The web has no token for this — it's a marker the mobile list has and the web doesn't —
-    /// so it's derived from the muted color rather than reaching for `.tertiaryLabel`, which is
-    /// a different palette on a surface that is now entirely Lurker's.
-    private static let faint = Palette.translucent(Palette.fgMuted, alpha: 0.7)
-
     static func cell(_ text: String, color: UIColor, bold: Bool, in tableView: UITableView) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: reuseID)!
         var content = cell.defaultContentConfiguration()
@@ -271,7 +264,7 @@ enum MessageListMarker {
         case .dateDivider(let day):
             cell(MessageRenderer.dayLabel(day), color: Palette.fgMuted, bold: false, in: tableView)
         case .startOfHistory:
-            cell("— start of history —", color: faint, bold: false, in: tableView)
+            cell("— start of history —", color: Palette.fgFaint, bold: false, in: tableView)
         case .awayDivider(_, let message):
             cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)
         case .backDivider(let awayAt, let backAt):

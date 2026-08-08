@@ -42,6 +42,21 @@ enum Palette {
     // separators, both of which are native chrome here, and a token nothing draws is a token
     // nobody keeps in sync.
 
+    /// One tier below `fgMuted`: text that is a *hint* rather than information — the
+    /// start-of-history rule, a relay line's source tag. Present enough to read when looked for,
+    /// quiet enough not to compete with the timestamp beside it.
+    ///
+    /// The web has no token for this — these are markers and asides the mobile list has and the
+    /// web doesn't — so it's **derived** from `fgMuted` rather than being a third hex pair. That
+    /// keeps it moving with the themeable token above it instead of drifting into a colour the
+    /// theme never chose, and it's why this isn't reaching for `.tertiaryLabel`: the log's surface
+    /// is entirely Lurker's, and the system greys are mixed for the system's.
+    ///
+    /// One tier, not one per feature. It started as a `private` constant inside
+    /// `MessageListMarker`; a second caller is exactly when a local constant becomes a token,
+    /// because two hand-picked alphas is how a palette stops being one.
+    nonisolated static let fgFaint = translucent(fgMuted, alpha: 0.7)
+
     // MARK: - Signal colors
 
     /// `look.color.good` / `warn` / `bad`. `.systemGreen` / `.systemRed` are close but not these,

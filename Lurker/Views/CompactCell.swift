@@ -201,17 +201,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
                     range: NSRange(location: 0, length: header.modePrefix.utf16.count)
                 )
             }
-            // Relay provenance (#277), trailing the name it qualifies: `alice github`. Muted and
-            // unbracketed — it's the same tier of information as the timestamp at the other end of
-            // this row, and it wears the same colour, so the header reads as one name flanked by
-            // two pieces of metadata rather than as two names.
+            // Relay provenance (#277), trailing the name it qualifies: `alice github`.
+            // Unbracketed, and `fgFaint` — a tier below the timestamp at the other end of this
+            // row, not level with it. It's a hint, not a field: you read it when you wonder where
+            // someone is speaking from, and the rest of the time it shouldn't be pulling at a name
+            // that's already carrying a colour of its own.
             //
             // Last on the line on purpose: the label truncates from the tail, so under width
             // pressure the provenance goes before the speaker's name does.
             if let source = header.relaySource, !source.isEmpty {
                 name.append(NSAttributedString(
                     string: " \(source)",
-                    attributes: [.font: font, .foregroundColor: Palette.fgMuted]
+                    attributes: [.font: font, .foregroundColor: Palette.fgFaint]
                 ))
             }
             // Always attributed, never `text`. Cells are reused, and a header that took an
