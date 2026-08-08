@@ -71,4 +71,29 @@ final class BufferPlaceholderTests: XCTestCase {
             .empty
         )
     }
+
+    // MARK: - historyLanded, shared with the unread banner's `dividerSeen` latch
+
+    func testOnDemandHistoryLandsOnlyWhenHydrated() {
+        // The stub an unread banner must not be judged against: the row is there, but what it
+        // holds is the live events that outran the backlog, not the buffer.
+        XCTAssertFalse(
+            BufferPlaceholder.historyLanded(hydrated: false, hydratesOnDemand: true, bufferExists: true)
+        )
+        XCTAssertTrue(
+            BufferPlaceholder.historyLanded(hydrated: true, hydratesOnDemand: true, bufferExists: true)
+        )
+    }
+
+    func testOffDemandHistoryLandsWithTheRow() {
+        // The other half of the regression guard above, and why the latch can't key off
+        // `hydrated` raw: a `:server:` log can stay un-hydrated for its whole life, and a gate
+        // that waited for it would hold the banner's retire-latch open all session.
+        XCTAssertTrue(
+            BufferPlaceholder.historyLanded(hydrated: false, hydratesOnDemand: false, bufferExists: true)
+        )
+        XCTAssertFalse(
+            BufferPlaceholder.historyLanded(hydrated: false, hydratesOnDemand: false, bufferExists: false)
+        )
+    }
 }

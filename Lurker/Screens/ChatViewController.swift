@@ -97,7 +97,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// Read by the `dividerSeen` latch, which is a judgement about what the reader has *seen* and
     /// so can only be made against a slice that's actually the buffer. See `updateFloatingPills`.
-    private var isHydrated = false
+    ///
+    /// Not a bare `hydrated`: the off-demand kinds (`:server:`, the system buffer) are created
+    /// *by* their connect backlog and never hydrate on their own, so `hydrated` can stay false
+    /// for their whole life and a `hydrated`-keyed gate would hold the latch open forever — which
+    /// is the banner-returns-all-session bug `dividerSeen` exists to prevent. Same rule, same
+    /// reason, same place as the empty/loading placeholder: `BufferPlaceholder.historyLanded`.
+    private var historyLanded = false
     /// The settings in force as of the last apply.
     ///
     /// Snapshotted alongside `typists` rather than read live inside `buildRows`, so every path
@@ -811,7 +817,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // so a buffer whose only change is exhausting its history still reaches us.
         hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
         hasMoreNewer = nowDetached
-        isHydrated = state.buffers[buffer.key.id]?.hydrated == true
+        historyLanded = BufferPlaceholder.historyLanded(
+            hydrated: state.buffers[buffer.key.id]?.hydrated == true,
+            hydratesOnDemand: buffer.kind.hydratesOnDemand,
+            bufferExists: state.buffers[buffer.key.id] != nil
+        )
         modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
         rebuildRows()
         updateTypingTicker()
@@ -1435,17 +1445,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // search hit or a notification's message hasn't been seen by anyone. The pass after the
         // jump releases latches it if it really did land on screen.
         //
-        // ⚠ And not before the buffer is HYDRATED, because until then what's on screen isn't its
-        // history. Opening a buffer whose backlog hasn't landed shows the handful of live events
-        // that outran it — all of them newer than the read boundary, so the divider pins to the
-        // top of that stub, and a four-row buffer is a hundred points tall inside a six-hundred-
-        // point viewport. The divider is "on screen" by arithmetic, nobody has seen anything, and
-        // the latch is spent by the time the real backlog replaces the slice a moment later —
-        // which then parks the reader at the tail, thousands of points below their first unread,
-        // with no banner. That was the hit-or-miss: it needs the buffer to be un-hydrated at the
-        // instant you open it, so it misses any buffer already visited this session and catches
-        // cold launches, post-reconnect opens, and first visits.
-        if pendingJumpId == nil, isHydrated, isDividerVisible { dividerSeen = true }
+        // ⚠ And not before the buffer's HISTORY HAS LANDED, because until then what's on screen
+        // isn't its history. Opening a buffer whose backlog hasn't arrived shows the handful of
+        // live events that outran it — all of them newer than the read boundary, so the divider
+        // pins to the top of that stub, and a four-row buffer is a hundred points tall inside a
+        // six-hundred-point viewport. The divider is "on screen" by arithmetic, nobody has seen
+        // anything, and the latch is spent by the time the real backlog replaces the slice a
+        // moment later — which then parks the reader at the tail, thousands of points below their
+        // first unread, with no banner.
+        //
+        // That's what made it hit-or-miss rather than simply broken: it needs the row to still be
+        // a shell at the instant you open it. A buffer already filled this session stays filled
+        // (`applyBacklog` never un-hydrates, and a reconnect's `snapshot` reuses the row), so what
+        // this catches is a cold launch and anything opened during the connect burst, ahead of its
+        // own backlog.
+        if pendingJumpId == nil, historyLanded, isDividerVisible { dividerSeen = true }
         // The unread banner (#45): a first-unread row exists, it's above the reader, and they
         // haven't been to it yet. A non-nil `firstUnreadRow` already implies rows exist and a
         // divider is built. It yields the slot whenever the connection banner wants it — the wire
