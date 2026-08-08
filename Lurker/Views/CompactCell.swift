@@ -52,6 +52,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         }
     }
 
+    /// A spoiler in this cell's message was tapped, by its ordinal within the message. Set per
+    /// configure and cleared in `prepareForReuse`, because it closes over that message.
+    var onToggleSpoiler: ((Int) -> Void)?
+
     private let column = UIStackView()
     private let headerRow = UIStackView()
     private let nickLabel = UILabel()
@@ -115,6 +119,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.textColor = Palette.fg
         messageText.textContainer.lineFragmentPadding = 0
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
+        messageText.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
 
         column.axis = .vertical
         column.isLayoutMarginsRelativeArrangement = true
@@ -232,6 +237,50 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: ", ")
+        // The label may be only half of it. A non-editable UITextView is documented to derive
+        // its `accessibilityValue` from its own text, and VoiceOver reads label THEN value — if
+        // that holds here, the substituted label above would be followed by the raw hidden text,
+        // announcing the very secret it just declined to.
+        //
+        // ⚠ UNVERIFIED. Blanking the value costs nothing and closes that hole *if* it's the
+        // hole; nobody has yet put VoiceOver on a message with a hidden spoiler and listened.
+        // Until someone has, treat the spoiler's screen-reader story as untested rather than
+        // solved — this line is a precaution, not a proof.
+        messageText.accessibilityValue = ""
+        applySpoilerActions(for: attributed)
+    }
+
+    /// One VoiceOver action per hidden spoiler, because the tap that opens one is hit-tested
+    /// against a screen point and VoiceOver has no point to give.
+    ///
+    /// ⚠ Without these the label's "double tap to reveal" is a promise nothing keeps: a
+    /// VoiceOver double tap activates the element, not a coordinate, so it could only ever hit a
+    /// spoiler by coincidence — and never choose between two in one line. The actions are named
+    /// by position ("reveal spoiler 2 of 3") since the whole point is that their contents can't
+    /// be read out to tell them apart.
+    private func applySpoilerActions(for attributed: NSAttributedString) {
+        var ordinals: [Int] = []
+        attributed.enumerateAttribute(
+            .spoiler, in: NSRange(location: 0, length: attributed.length)
+        ) { value, range, _ in
+            guard let ordinal = value as? Int,
+                  attributed.attribute(.spoilerHidden, at: range.location, effectiveRange: nil) != nil,
+                  !ordinals.contains(ordinal)
+            else { return }
+            ordinals.append(ordinal)
+        }
+        guard !ordinals.isEmpty else {
+            messageText.accessibilityCustomActions = nil
+            return
+        }
+        let total = ordinals.count
+        messageText.accessibilityCustomActions = ordinals.enumerated().map { position, ordinal in
+            let name = total == 1 ? "Reveal spoiler" : "Reveal spoiler \(position + 1) of \(total)"
+            return UIAccessibilityCustomAction(name: name) { [weak self] _ in
+                self?.onToggleSpoiler?(ordinal)
+                return true
+            }
+        }
     }
 
     func linkURL(at point: CGPoint) -> URL? {
@@ -243,5 +292,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // An in-flight jump flash (#42) would otherwise pulse on an unrelated line.
         contentView.layer.removeAllAnimations()
         fill.layer.removeAllAnimations()
+        // The closure captures the message it was built for. Left in place, a tap on a recycled
+        // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
+        onToggleSpoiler = nil
     }
 }

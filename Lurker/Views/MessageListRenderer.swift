@@ -35,6 +35,15 @@ struct MessageListContext {
     /// The row at an index, or nil out of range — the renderer looks at a row's neighbours to
     /// decide whether it opens an author block.
     let row: (Int) -> MessageRow?
+    /// Which spoilers in a message the reader has opened, by their ordinal within it.
+    ///
+    /// Held by the screen, not the cell: cells are recycled, so a reveal stored on one would
+    /// reappear on whatever message scrolled into its place. Keyed by message id for the same
+    /// reason — an index into the row stream shifts every time backlog loads above.
+    let revealedSpoilers: (Message) -> Set<Int>
+    /// A spoiler in `Message` was tapped, identified by its ordinal within that message. The
+    /// screen owns the toggle and the redraw.
+    let onToggleSpoiler: (Message, Int) -> Void
 }
 
 /// Turns a `MessageRow` into a cell.
@@ -80,10 +89,14 @@ struct MessageListRenderer {
             // Once, not three times: it walks the neighbouring rows, builds a caption and hits
             // `Calendar`, and this runs for every visible cell on every reload.
             let blockHeader = header(for: message, position: position, at: index, context: context)
+            cell.onToggleSpoiler = { [onToggleSpoiler = context.onToggleSpoiler] ordinal in
+                onToggleSpoiler(message, ordinal)
+            }
             cell.configure(
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
-                    highlighter: context.highlighter
+                    highlighter: context.highlighter,
+                    revealed: context.revealedSpoilers(message)
                 ),
                 header: blockHeader,
                 startsBlock: blockHeader != nil,
@@ -92,10 +105,14 @@ struct MessageListRenderer {
                 traits: context.traits
             )
         case .line(let message):
+            cell.onToggleSpoiler = { [onToggleSpoiler = context.onToggleSpoiler] ordinal in
+                onToggleSpoiler(message, ordinal)
+            }
             cell.configure(
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
-                    highlighter: context.highlighter
+                    highlighter: context.highlighter,
+                    revealed: context.revealedSpoilers(message)
                 ),
                 header: nil, startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
