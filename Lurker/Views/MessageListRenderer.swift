@@ -96,10 +96,7 @@ struct MessageListRenderer {
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
-                    revealed: context.revealedSpoilers(message),
-                    // The relay `[source]` tag belongs to the block, not to every line in it —
-                    // and this is the only place that knows which rows open one.
-                    showsRelayTag: blockHeader != nil
+                    revealed: context.revealedSpoilers(message)
                 ),
                 header: blockHeader,
                 startsBlock: blockHeader != nil,
@@ -177,7 +174,11 @@ struct MessageListRenderer {
             time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
             // notice or a network line gets the glyph resolved and then discarded.
-            modePrefix: name.hasPrefix(prefix) ? prefix : ""
+            modePrefix: name.hasPrefix(prefix) ? prefix : "",
+            // Where a re-attributed relay line came from (#277). Nil on everything else, and nil
+            // for a bare `<nick> message` relay too, whose envelope names no source — that line
+            // simply reads as the speaker, which is the call the web makes as well.
+            relaySource: message.relaySource
         )
     }
 
