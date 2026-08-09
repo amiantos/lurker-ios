@@ -254,6 +254,100 @@ struct PreviewSelectionTests {
     }
 }
 
+/// The PRIMING policy — which events the server may be asked to fetch on the reader's behalf.
+///
+/// Mirrors `vue_client/src/utils/previewEvents.test.ts`. Both filters exist to stop an outbound
+/// request being made for something nobody will ever see, and both were missing on the iOS
+/// reference branch.
+@Suite("PreviewSelection — priming policy")
+struct PreviewPrimingTests {
+
+    private func message(
+        _ text: String, type: EventType = .message, nick: String = "alice"
+    ) -> Message {
+        Message(id: 1, type: type, nick: nick, text: text, isSelf: false, userhost: "\(nick)!u@h")
+    }
+
+    private func urls(
+        _ messages: [Message],
+        networkId: Int? = 1,
+        target: String = "#chan",
+        ignores: IgnoreSet = .empty
+    ) -> [String] {
+        PreviewSelection.urls(
+            in: messages, networkId: networkId, target: target, ignores: ignores,
+            inlineMedia: true, linkPreviews: true
+        )
+    }
+
+    @Test("primes the kinds that can actually draw an attachment")
+    func onlySpeech() {
+        #expect(urls([message("https://e.test/a")]) == ["https://e.test/a"])
+        #expect(urls([message("https://e.test/a", type: .action)]) == ["https://e.test/a"])
+    }
+
+    @Test("never fetches a quit reason, a topic, or any other narration")
+    func noNarration() {
+        // ⚠ Part and quit publish their reason as `text`, and topic publishes the topic — so
+        // joining a channel whose topic is a URL, or scrolling past
+        // `Quit: HexChat https://hexchat.github.io`, made the server fetch a page no render path
+        // can display. A history page ships the whole contiguous range with the noise included,
+        // which is what made this fire in bulk rather than occasionally.
+        for type: EventType in [.quit, .part, .join, .topic, .notice, .system, .motd, .kick] {
+            #expect(
+                urls([message("https://e.test/a", type: type)]).isEmpty,
+                "\(type.rawValue) can't render an attachment, so it must not prime one")
+        }
+    }
+
+    @Test("ignoring somebody is a veto on the FETCH, not just on the row")
+    func ignoredSenderIsNotPrimed() {
+        // ⚠⚠ Ignores are applied when the store hands rows to the list, long after priming — so
+        // this fetched every link posted by someone the user had explicitly silenced, and the
+        // row was then dropped, which is precisely what kept it invisible.
+        let ignores = IgnoreSet(global: [IgnoreRule(mask: "spammer", levels: ["ALL"])])
+        #expect(urls([message("https://e.test/a", nick: "spammer")], ignores: ignores).isEmpty)
+        #expect(
+            urls([message("https://e.test/a", nick: "alice")], ignores: ignores)
+                == ["https://e.test/a"])
+    }
+
+    @Test("honours a rule scoped to one network, and leaves the others alone")
+    func ignoreScopeIsRespected() {
+        let ignores = IgnoreSet(byNetwork: [1: [IgnoreRule(mask: "bob", levels: ["ALL"])]])
+        let line = [message("https://e.test/a", nick: "bob")]
+        #expect(urls(line, networkId: 1, ignores: ignores).isEmpty)
+        #expect(urls(line, networkId: 2, ignores: ignores) == ["https://e.test/a"])
+    }
+
+    @Test("classifies a DM target by all four channel sigils, not just #")
+    func dmDerivationUsesEverySigil() {
+        // ⚠⚠ The one matcher input derived on the client rather than received on the wire, and
+        // therefore the one place iOS can disagree with the server about what a rule covers —
+        // which it did, until lurker-ios#98. A PUBLIC-level rule covers `&local` because `&` is
+        // a channel; reading it as a DM would leave the fetch un-vetoed here while the row
+        // stayed hidden.
+        let ignores = IgnoreSet(global: [IgnoreRule(mask: "bob", levels: ["PUBLIC"])])
+        let line = [message("https://e.test/a", nick: "bob")]
+        for channel in ["#chan", "&local", "+modeless", "!12345chan"] {
+            #expect(
+                urls(line, target: channel, ignores: ignores).isEmpty,
+                "\(channel) is a channel, so a PUBLIC rule vetoes the fetch")
+        }
+        // ...and a real DM is MSGS, which that rule does not cover.
+        #expect(urls(line, target: "bob", ignores: ignores) == ["https://e.test/a"])
+    }
+
+    @Test("asks for nothing when both settings are off, whatever the events say")
+    func bothOffPrimesNothing() {
+        #expect(
+            PreviewSelection.urls(
+                in: [message("https://e.test/a.png")], networkId: 1, target: "#chan",
+                ignores: .empty, inlineMedia: false, linkPreviews: false
+            ).isEmpty)
+    }
+}
+
 @Suite("LinkPreview gating")
 struct LinkPreviewGatingTests {
 

@@ -34,6 +34,23 @@ public enum PreviewSelection {
     /// lowering this is the only lever if a message ever does take over the screen.
     public static let maxMediaPerMessage = 20
 
+    /// Whether an event is a kind that can carry a preview at all.
+    ///
+    /// ⚠⚠ Read by BOTH the priming path and the render path, and that is the point of it being
+    /// here rather than expressed twice. Priming used to run over every event a frame carried
+    /// while only some rows could ever draw an attachment — and part/quit publish their reason
+    /// as `text`, topic publishes the topic, and a history page ships the whole contiguous range
+    /// with the noise included. So joining a channel whose topic is a URL, or scrolling past
+    /// `Quit: HexChat https://hexchat.github.io`, made the server fetch a page on the reader's
+    /// behalf that nothing would ever display.
+    ///
+    /// Speech minus `notice`: a notice is usually a service or a bot announcing something, and
+    /// unfurling ChanServ is not a feature anybody asked for. Matches the web client, which
+    /// mounts its attachments for `message` and `action` only.
+    public static func isPreviewable(_ type: EventType) -> Bool {
+        type == .message || type == .action
+    }
+
     /// Extensions that mean "this URL IS a file", governing which setting applies.
     ///
     /// ⚠ A HINT, not a verdict. The server answers authoritatively from `Content-Type`, and
@@ -62,6 +79,52 @@ public enum PreviewSelection {
     static func isSpoilerRun(_ run: FormattingRun) -> Bool {
         guard let fg = run.fg, let bg = run.bg else { return false }
         return fg == bg && fg <= 15
+    }
+
+    /// The URLs to resolve for a buffer's worth of events — the whole priming policy, in one
+    /// testable call.
+    ///
+    /// Its own function rather than a loop inside `ChatViewModel.primePreviews`, and for the
+    /// same reason the web keeps `previewEvents.ts` separate from its socket layer: this is pure
+    /// policy about what the server may be asked to fetch on the reader's behalf, and nothing in
+    /// the frame-routing layer is reachable from a test. What is left at the call site is a
+    /// `switch` that names the frames priming listens to, which is plumbing.
+    ///
+    /// Two filters, and both of them stop the SERVER making an outbound request for something
+    /// nobody will ever see — see `isPreviewable` for the type half, and the ignore half below.
+    public static func urls(
+        in messages: [Message],
+        networkId: Int?,
+        target: String,
+        ignores: IgnoreSet,
+        inlineMedia: Bool,
+        linkPreviews: Bool
+    ) -> [String] {
+        guard inlineMedia || linkPreviews else { return [] }
+        var out: [String] = []
+        for message in messages {
+            guard isPreviewable(message.type) else { continue }
+
+            // ⚠⚠ Ignoring somebody is a veto on the FETCH, not just on the row. Ignores are
+            // client-side and applied when the store hands rows to the list, which is long after
+            // priming runs — so this happily asked the server to go and fetch every link posted
+            // by someone the user had explicitly silenced. The row was then dropped and the
+            // preview never seen, which is exactly what kept it invisible.
+            //
+            // `isMessageHidden` rather than a hand-built matcher input: it already derives
+            // DM-ness through `ChannelName.isChannelTarget` (all four sigils), and re-deriving
+            // that is how the two tiers drifted apart the last time.
+            if ignores.isMessageHidden(networkId: networkId, message: message, target: target) {
+                continue
+            }
+
+            out.append(
+                contentsOf: urls(
+                    in: message.text, inlineMedia: inlineMedia, linkPreviews: linkPreviews
+                )
+            )
+        }
+        return out
     }
 
     /// The URLs to resolve for one message body.

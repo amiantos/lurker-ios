@@ -748,26 +748,39 @@ public final class ChatViewModel {
         let wantPages = store.state.settings.bool("chat.link_previews.enabled", default: false)
         guard wantMedia || wantPages else { return }
 
-        let texts: [String?]
+        // Carried as (networkId, target, messages) rather than as bare text, because both
+        // filters below need to know which buffer a line came from — an ignore rule can be
+        // scoped to a network, and whether a target is a DM is part of what a rule matches.
+        let groups: [(networkId: Int?, target: String, messages: [Message])]
         switch frame {
-        case .backlog(_, let messages, _, _): texts = messages.map(\.text)
-        case .history(_, _, let events, _, _, _): texts = events.map(\.text)
-        case .live(_, _, let message): texts = [message.text]
+        case .backlog(let buffer, let messages, _, _):
+            groups = [(buffer.networkId, buffer.target, messages)]
+        case .history(let networkId, let target, let events, _, _, _):
+            groups = [(networkId, target, events)]
+        case .live(let networkId, let target, let message):
+            groups = [(networkId, target, [message])]
         // ⚠ A settings change has to re-prime what's ALREADY loaded. Priming is ingest-driven,
         // and turning a toggle on doesn't re-ingest anything — so without this the fix shows
         // previews only for messages that arrive afterwards, which reads as the setting being
         // broken. Exactly the "I turned it on and nothing happened" report.
+        //
+        // Walked by BUFFER rather than over `messages.values`, because that dictionary is keyed
+        // by an id string that has thrown the network away — and the ignore check needs it back.
         case .settingsBootstrap, .settingsChanged, .settingsValues:
-            texts = store.state.messages.values.flatMap { $0.map(\.text) }
+            groups = store.state.buffers.values.map {
+                ($0.networkId, $0.target, store.state.messages[$0.key.id] ?? [])
+            }
         default: return
         }
 
-        var urls: [String] = []
-        for text in texts {
-            urls.append(
-                contentsOf: PreviewSelection.urls(
-                    in: text, inlineMedia: wantMedia, linkPreviews: wantPages
-                )
+        // The type filter and the ignore veto both live in `PreviewSelection`, not here — see
+        // its `urls(in:networkId:target:ignores:…)`. What is left in this function is the list
+        // of frames priming listens to, which is the part that genuinely belongs to routing.
+        let ignores = store.state.ignores
+        let urls = groups.flatMap {
+            PreviewSelection.urls(
+                in: $0.messages, networkId: $0.networkId, target: $0.target, ignores: ignores,
+                inlineMedia: wantMedia, linkPreviews: wantPages
             )
         }
         linkPreviews.request(urls)
