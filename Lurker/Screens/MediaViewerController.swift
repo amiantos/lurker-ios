@@ -80,13 +80,24 @@ final class MediaViewerController: UIViewController {
         counter.textAlignment = .center
         counter.isAccessibilityElement = false
 
+        // ⚠ Both buttons carry their own scrim. A white glyph over an unknown picture is
+        // invisible against a white one — and this viewer exists precisely to show pictures we
+        // know nothing about. The system does the same thing over photo content, for the same
+        // reason.
+        for button in [closeButton, shareButton] {
+            button.tintColor = .white
+            var configuration = UIButton.Configuration.plain()
+            configuration.background.backgroundColor = UIColor.black.withAlphaComponent(0.4)
+            configuration.background.cornerRadius = 16
+            configuration.contentInsets = NSDirectionalEdgeInsets(
+                top: 8, leading: 8, bottom: 8, trailing: 8)
+            button.configuration = configuration
+        }
         closeButton.setImage(UIImage(systemName: "xmark"), for: .normal)
-        closeButton.tintColor = .white
         closeButton.accessibilityLabel = "Close"
         closeButton.addTarget(self, action: #selector(close), for: .touchUpInside)
 
         shareButton.setImage(UIImage(systemName: "square.and.arrow.up"), for: .normal)
-        shareButton.tintColor = .white
         // ⚠ The ORIGIN address, not our proxy path. A proxy URL is authenticated and signed for
         // this session, so sharing one hands over something nobody else can open — and it leaks
         // a bearer-gated path. What a person means by "share this picture" is the address it
@@ -123,7 +134,7 @@ final class MediaViewerController: UIViewController {
         swipe.delegate = self
         view.addGestureRecognizer(swipe)
 
-        updateCounter()
+        updateChrome()
     }
 
     override func viewDidLayoutSubviews() {
@@ -144,8 +155,26 @@ final class MediaViewerController: UIViewController {
         return placeholder
     }
 
-    private func updateCounter() {
+    /// Keep our own chrome out of the player's way.
+    ///
+    /// ⚠⚠ `AVPlayerViewController` draws its own controls, and its top-right corner is where it
+    /// puts Picture-in-Picture and AirPlay — exactly where our share button sits. Two overlays
+    /// stacked in the same corner, one of which auto-hides and one of which does not, and the
+    /// reader can reach neither reliably.
+    ///
+    /// So on a player page ours gets out of the way rather than trying to coexist: the counter
+    /// and share step aside and the player's chrome is the interface, which is the one people
+    /// already know how to use. The close button STAYS — it is top-left, clear of everything the
+    /// player draws, and it is the only way out of a video page since the swipe stands down
+    /// there too (its scrubber is a horizontal drag inside a vertically-dismissing view).
+    ///
+    /// ⚠ The cost is that a video can't be shared from in here. The address is still in the
+    /// message, and losing a button beats losing the player's own controls.
+    private func updateChrome() {
+        let isPlayer = previews.indices.contains(index) && previews[index].kind != .image
         counter.text = previews.count > 1 ? "\(index + 1) of \(previews.count)" : nil
+        counter.isHidden = isPlayer
+        shareButton.isHidden = isPlayer
     }
 
     @objc private func close() { dismiss(animated: true) }
@@ -230,7 +259,7 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
         let page = Int((scrollView.contentOffset.x / pages.bounds.width).rounded())
         guard page != index, previews.indices.contains(page) else { return }
         index = page
-        updateCounter()
+        updateChrome()
     }
 }
 
