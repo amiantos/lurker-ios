@@ -30,11 +30,33 @@ struct PreviewSelectionTests {
                 .isEmpty)
     }
 
-    @Test("inline media selects file links and ignores pages")
-    func mediaOnly() {
+    @Test("gates the two classes asymmetrically, because only one of them is knowable")
+    func asymmetricGating() {
+        // `looksLikeMedia` recognises MEDIA extensions and is false for everything else — a
+        // page, a bare host, an extensionless image alike. So "this is media" is a verdict the
+        // client can act on, and "this is not media" never is. Link-previews-off therefore drops
+        // a .png outright, while inline-media-off cannot drop an unknown without breaking the
+        // extensionless image case below.
+        #expect(urls("https://e.test/a.png", media: false, pages: true).isEmpty)
+        #expect(urls("https://e.test/a.png", media: true, pages: false) == ["https://e.test/a.png"])
+    }
+
+    @Test("inline media still asks about an EXTENSIONLESS link, because it cannot tell")
+    func extensionlessUnderMediaOnly() {
+        // ⚠ The deliberate trade, and it costs a fetch: with only inline media on, an
+        // extensionless URL is asked about even though most turn out to be pages. The
+        // alternative is worse — imgur, twimg and every CDN serve images from extensionless
+        // paths, so treating "no extension" as "definitely a page" made inline media
+        // permanently unable to render the majority of real image links, and permanently is the
+        // right word: priming is ingest-driven and never revisits a message. Bounded by the CARD
+        // cap (3), not the media cap, so a link-heavy message can't become twenty speculative
+        // fetches. A page that comes back is still not RENDERED — `isAllowed` re-checks the
+        // server's answer.
         #expect(
-            urls("https://e.test/a.png https://e.test/article", media: true, pages: false)
-                == ["https://e.test/a.png"])
+            urls("https://i.imgur.com/aBcDeF", media: true, pages: false)
+                == ["https://i.imgur.com/aBcDeF"])
+        let many = (0..<9).map { "https://e.test/p\($0)" }.joined(separator: " ")
+        #expect(urls(many, media: true, pages: false).count == PreviewSelection.maxCardsPerMessage)
     }
 
     @Test("link previews selects pages and ignores file links")
@@ -86,6 +108,90 @@ struct PreviewSelectionTests {
         #expect(urls("https://e.test/a.b.c/d") == ["https://e.test/a.b.c/d"])
     }
 
+    @Test("ends a URL where the LINKIFIER ends it, brackets and all")
+    func agreesWithTheLinkifier() {
+        // ⚠ Two parsers disagreeing about where a URL stops is the bug. The tappable link is
+        // built by `URLMatcher`'s balance-aware trimmer, so stripping ')' unconditionally here
+        // resolved a DIFFERENT address than the one in the message: the real page 200s, the
+        // clipped one 404s, and that 404 is cached for an hour under a string that appears
+        // nowhere in the text. Same helper for both, so they cannot drift.
+        let wiki = "https://en.wikipedia.org/wiki/Rust_(programming_language)"
+        #expect(urls("see \(wiki)") == [wiki])
+        // ...while a URL merely wrapped in brackets still loses them.
+        #expect(urls("(https://e.test/y)") == ["https://e.test/y"])
+    }
+
+    @Test("never resolves a link hidden behind a spoiler")
+    func spoileredLinkIsNeverResolved() {
+        // ⚠⚠ The renderer declines to linkify inside a spoiler run precisely so a link cannot
+        // leak the hidden content. Resolving one anyway renders the target full-size as a
+        // SIBLING of the click-to-reveal box — the spoiler is defeated by the preview, and for
+        // an image the payload is on screen before anyone chooses to reveal it. Only inline
+        // media need be on.
+        let hidden = "\u{3}01,01https://secret.example/leak.png\u{3}"
+        #expect(urls(hidden).isEmpty)
+        #expect(urls(hidden, media: true, pages: false).isEmpty)
+        // A visible link in the same message is unaffected.
+        #expect(urls("ok https://e.test/fine.png \(hidden)") == ["https://e.test/fine.png"])
+    }
+
+    @Test("still resolves a link in an unrenderable matched pair, which is not a spoiler")
+    func unrenderableColourPairIsNotASpoiler() {
+        // The other side of the same test: a run whose matched pair is a slot the palette can't
+        // paint is NOT hidden, so its links are ordinary links.
+        //
+        // ⚠ Load-bearing rather than academic. `SpoilerMarkup` closes a spoiler with `\u{3}99,99`
+        // when a digit follows it, so the tail of those messages IS a 99,99 run — and skipping it
+        // here would silently drop the preview for any URL after such a spoiler. A missing
+        // preview traced back to a colour code is not a debugging session anyone should have.
+        #expect(urls("\u{3}99,99https://e.test/fine.png") == ["https://e.test/fine.png"])
+        #expect(
+            urls(SpoilerMarkup.apply(to: "||x||5 then https://e.test/fine.png"))
+                == ["https://e.test/fine.png"])
+    }
+
+    @Test("strips formatting codes out of the URL rather than resolving them")
+    func formattingCodesAreNotPartOfTheAddress() {
+        // A colour reset immediately after a link put \u{3} INSIDE the matched token, so the
+        // resolver was handed an address with a control character on the end.
+        #expect(urls("\u{3}04https://e.test/red.png\u{3} done") == ["https://e.test/red.png"])
+    }
+
+    // MARK: - <angle brackets> suppress a preview
+
+    @Test("refuses to resolve a URL the author wrapped in brackets")
+    func bracketsSuppress() {
+        // RFC 3986 Appendix C's delimiter convention, borrowed from Discord as "link, but no
+        // unfurl". It is the only per-link control there is — the two settings are
+        // all-or-nothing — so a person sharing a URL they don't want unfolded has exactly this
+        // and nothing else.
+        #expect(urls("<https://e.test/a.png>").isEmpty)
+        #expect(urls("see <https://e.test/article> for more").isEmpty)
+    }
+
+    @Test("leaves an unbracketed URL in the same message alone")
+    func bracketsArePerOccurrence() {
+        #expect(
+            urls("<https://e.test/a.png> https://e.test/b.png") == ["https://e.test/b.png"])
+    }
+
+    @Test("needs BOTH brackets, so a stray one is not a suppression")
+    func halfOpenBracketIsNotTheConvention() {
+        // A `<` in prose is ordinary. Treating a half-open bracket as the convention would
+        // silently eat previews in messages that never asked for it.
+        #expect(urls("<https://e.test/a.png") == ["https://e.test/a.png"])
+        #expect(urls("https://e.test/a.png>") == ["https://e.test/a.png"])
+    }
+
+    @Test("recognises the brackets even when the URL ends in punctuation")
+    func bracketsMeasureTheUntrimmedMatch() {
+        // ⚠⚠ The end test measures from the UNTRIMMED match. `trimTrailingPunctuation` eats the
+        // `.` here, so a check against the trimmed length lands on `.` instead of `>` and the
+        // brackets stop working on exactly the URLs whose ends are ambiguous — which is the case
+        // the convention exists for.
+        #expect(urls("<https://e.test/wiki/Foo.>").isEmpty)
+    }
+
     @Test("keeps a query string intact")
     func keepsQuery() {
         #expect(urls("https://e.test/s?q=1&r=2") == ["https://e.test/s?q=1&r=2"])
@@ -115,10 +221,10 @@ struct PreviewSelectionTests {
         #expect(urls(text).count == PreviewSelection.maxCardsPerMessage)
     }
 
-    @Test("lets many images through, because a strip costs the same at 2 or at 12")
+    @Test("lets many images through, because a grid cell costs less than a card")
     func manyImages() {
-        // Media renders as one horizontally-scrolling strip of fixed height, so the tenth
-        // image costs no more screen than the second.
+        // Media renders as a two-column grid, so a fifth image adds half a row rather than a
+        // whole picture — nothing like the vertical space a fourth card would want.
         let text = (0..<12).map { "https://e.test/\($0).png" }.joined(separator: " ")
         #expect(urls(text).count == 12)
     }

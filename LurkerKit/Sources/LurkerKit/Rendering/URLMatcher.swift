@@ -13,17 +13,60 @@ public enum URLMatcher {
 
     private static let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
 
+    /// Every URL-ish span in `text`, UNTRIMMED and in order.
+    ///
+    /// The one place the pattern is run, so that everything asking "where are the URLs in this
+    /// message" gets the same answer. ⚠⚠ `PreviewSelection` used to carry its own copy of the
+    /// pattern AND its own trimmer, and the trimmer differed: it dropped a closing bracket
+    /// unconditionally where `trimTrailingPunctuation` counts them. So
+    /// `…/wiki/Rust_(programming_language)` was resolved one character short of the URL the
+    /// reader actually taps — the card silently never appeared, and the 404 was cached for an
+    /// hour under a string appearing nowhere in the message. Two parsers disagreeing about where
+    /// a URL ends is the bug; one parser is the fix.
+    ///
+    /// Untrimmed because the trim is not always wanted: inside angle brackets the author has
+    /// stated where the address ends, and `isBracketedUrl` has to measure against what was
+    /// actually matched.
+    static func rawRanges(in text: String) -> [NSRange] {
+        guard let regex else { return [] }
+        let whole = NSRange(location: 0, length: (text as NSString).length)
+        return regex.matches(in: text, range: whole).map(\.range)
+    }
+
+    /// Whether a match is wrapped in angle brackets — `<https://example.com>`.
+    ///
+    /// RFC 3986 Appendix C's convention: brackets delimit a URL so a reader (and a parser)
+    /// doesn't have to guess where it ends inside prose. Discord borrowed it as "link, but no
+    /// unfurl", and that is the meaning here — `PreviewSelection` refuses to resolve what they
+    /// wrap. It is the only per-link control a poster has over an unfurl, which is why there is
+    /// no other one.
+    ///
+    /// ⚠⚠ Measured against the UNTRIMMED match, and this is the whole subtlety.
+    /// `trimTrailingPunctuation` eats the `.` off `<https://example.com/a.>`, so measuring from
+    /// the trimmed length looks one character short of the `>` — and the brackets stop being
+    /// recognised on exactly the URLs whose ends are ambiguous, which is the case the convention
+    /// exists for.
+    ///
+    /// ⚠ No scheme test, deliberately: `<www.example.com>` is the same convention, and callers
+    /// apply their own scheme rules afterwards.
+    static func isBracketedUrl(_ text: String, at range: NSRange) -> Bool {
+        let ns = text as NSString
+        guard range.location > 0, range.location + range.length < ns.length else { return false }
+        return ns.character(at: range.location - 1) == UInt16(UnicodeScalar("<").value)
+            && ns.character(at: range.location + range.length) == UInt16(UnicodeScalar(">").value)
+    }
+
     /// URL ranges (into `text`) paired with their resolved hrefs.
     public static func matches(in text: String) -> [(range: NSRange, href: String)] {
-        guard let regex else { return [] }
         let ns = text as NSString
-        let whole = NSRange(location: 0, length: ns.length)
-        return regex.matches(in: text, range: whole).compactMap { match in
-            let raw = ns.substring(with: match.range)
+        return rawRanges(in: text).compactMap { range in
+            let raw = ns.substring(with: range)
             let trimmed = trimTrailingPunctuation(raw)
             guard !trimmed.isEmpty else { return nil }
-            let range = NSRange(location: match.range.location, length: (trimmed as NSString).length)
-            return (range, href(for: trimmed))
+            return (
+                NSRange(location: range.location, length: (trimmed as NSString).length),
+                href(for: trimmed)
+            )
         }
     }
 
