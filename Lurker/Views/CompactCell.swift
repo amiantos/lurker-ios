@@ -263,6 +263,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             : 0
 
         messageText.attributedText = attributed
+        // ⚠⚠ Collapsed when the body has no text left, which happens exactly when every URL in
+        // the message was hidden because its picture is standing in for it — the common shape
+        // for "someone posted a screenshot and nothing else". An empty `UITextView` still claims
+        // a full line box, so without this the picture sits under a blank line and reads as
+        // belonging to the message above it.
+        //
+        // This is iOS's answer to the case the web solved differently: there an attachments-only
+        // body has no line box at all, so `align-items: baseline` fell through to whatever the
+        // attachment exposed and the nick appeared level with an image's bottom edge, or a
+        // card's title, seemingly at random. A stack view collapses a hidden arranged subview
+        // outright, so the nick and timestamp keep their place with nothing to fall through to.
+        messageText.isHidden = attributed.length == 0
         // Torn down, not merely hidden. Hiding left the previous message's image views — and
         // their strong references to decoded UIImages, plus a strip's width constraints — alive
         // for the cell's whole lifetime, quietly defeating the NSCache eviction the loader
