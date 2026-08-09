@@ -23,6 +23,8 @@ final class LurkerClient {
 
     private let onFrame: (ServerFrame) -> Void
     private let session: URLSession
+    /// Preview bytes only, so its cache can be purged on sign-out without touching API state.
+    private let mediaSession: URLSession
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
@@ -49,18 +51,35 @@ final class LurkerClient {
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
-        let configuration = URLSessionConfiguration.default
-        // ⚠ A dedicated, larger URLCache, not the shared default. `URLCache` refuses to store
-        // any single response bigger than ~5% of its capacity, so against the shared 10 MB disk
-        // budget the ceiling is ~512 KB — under the size of a typical full-width preview image.
-        // On the default, preview bytes were re-downloaded on every launch and after every
-        // in-memory eviction, and the proxy's `max-age=86400, immutable` bought nothing.
-        // 200 MB puts the per-response ceiling around 10 MB, above the proxy's own 8 MB cap.
-        configuration.urlCache = URLCache(
+        self.session = URLSession(configuration: .default)
+
+        // ⚠⚠ Preview BYTES get their own session, and the separation is not tidiness.
+        //
+        // The cache has to be big: `URLCache` refuses to store any single response over ~5% of
+        // its capacity, so against the shared 10 MB disk budget the ceiling is ~512 KB — under a
+        // typical full-width preview image, which meant the proxy's `max-age=86400, immutable`
+        // bought nothing and every image was re-fetched on every launch. 200 MB puts the
+        // per-response ceiling around 10 MB, above the proxy's own 8 MB cap.
+        //
+        // But that cache was installed on the ONE session behind every authenticated endpoint —
+        // login, settings, highlights, bookmarks, push, uploads, the socket upgrade — and
+        // nothing purged it on sign-out. So while sign-out carefully cleared the preview
+        // METADATA on the grounds that it is "the previous account's reading history", the
+        // largest and most identifying artefact of that history, the pictures themselves, stayed
+        // in Library/Caches for whoever signed in next. On its own session the purge is a
+        // one-liner (`clearMediaCache`), and a 200 MB byte budget stops competing with API JSON
+        // for the same eviction.
+        let mediaConfiguration = URLSessionConfiguration.default
+        mediaConfiguration.urlCache = URLCache(
             memoryCapacity: 16 * 1024 * 1024,
             diskCapacity: 200 * 1024 * 1024
         )
-        self.session = URLSession(configuration: configuration)
+        self.mediaSession = URLSession(configuration: mediaConfiguration)
+    }
+
+    /// Drop every cached preview image. Sign-out only — see the session's own note.
+    func clearMediaCache() {
+        mediaSession.configuration.urlCache?.removeAllCachedResponses()
     }
 
     // MARK: - Auth
@@ -965,18 +984,44 @@ final class LurkerClient {
     ///
     /// Unauthenticated by design on the server, but called after sign-in here because that's when
     /// `baseURL` is known. Returns the all-off default on any failure — see `InstanceFeatures`.
-    func fetchFeatures() async -> InstanceFeatures {
-        guard let url = URL(string: baseURL + "/api/config") else { return InstanceFeatures() }
+    /// The instance's feature flags, or **nil if we didn't get an answer**.
+    ///
+    /// ⚠⚠ Optional deliberately. This used to collapse a transport error, a non-2xx, an
+    /// unparseable body and a genuinely-off flag into the same all-off value — so one 502 or DNS
+    /// hiccup on the single call at cold launch silently disabled link previews for the whole
+    /// app session on an instance that has them on, with nothing to notice and no retry. A
+    /// default is not a statement: the caller needs to tell "the server says no" from "the
+    /// server didn't say", because only one of those is worth latching.
+    ///
+    /// ⚠ Short timeout, against the session's 60s default. Nothing waits on this to render, and
+    /// a flag that decides whether to DECORATE messages must never be in a position to delay
+    /// getting them.
+    func fetchFeatures() async -> InstanceFeatures? {
+        guard let url = URL(string: baseURL + "/api/config") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
         do {
-            let (data, response) = try await session.data(for: URLRequest(url: url))
-            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
-                let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            else { return InstanceFeatures() }
-            let features = body["features"] as? [String: Any]
-            return InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true)
+            let (data, response) = try await session.data(for: request)
+            return Self.parseFeatures(data, code: (response as? HTTPURLResponse)?.statusCode ?? 0)
         } catch {
-            return InstanceFeatures()
+            return nil
         }
+    }
+
+    /// `/api/config` → flags, or **nil for "that wasn't an answer"**.
+    ///
+    /// ⚠ An absent `features` object IS an answer: an older instance that doesn't have the
+    /// feature. Only a failure to obtain a well-formed response is unknown — and the difference
+    /// decides whether the caller latches the result or retries it on the next reconnect.
+    ///
+    /// `nonisolated static` per `mediaRequest`'s note: this is the half worth asserting and it
+    /// is unreachable through the awaiting method without a live server.
+    nonisolated static func parseFeatures(_ data: Data, code: Int) -> InstanceFeatures? {
+        guard (200..<300).contains(code),
+            let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let features = body["features"] as? [String: Any]
+        return InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true)
     }
 
     // MARK: - Link previews
@@ -1003,11 +1048,36 @@ final class LurkerClient {
                 return []
             }
             guard (200..<300).contains(code) else { return [] }
-            struct Envelope: Decodable { let previews: [LinkPreview] }
-            return (try? JSONDecoder().decode(Envelope.self, from: data))?.previews ?? []
+            return Self.decodePreviews(data)
         } catch {
             return []
         }
+    }
+
+    /// The resolve response's descriptors, skipping any this build cannot understand.
+    ///
+    /// ⚠⚠ Decoded ELEMENT BY ELEMENT, not as `[LinkPreview]` in one go. `kind` and `status` are
+    /// non-optional raw-value enums with no unknown case, so a single descriptor carrying a
+    /// value this build doesn't know would throw inside the array decode and take the whole
+    /// batch of twenty with it — indistinguishable, one layer up, from a transport failure. The
+    /// store would then arm all twenty for retry, and because a decode failure is deterministic
+    /// every retry fails identically: nineteen perfectly good previews never rendering, and all
+    /// twenty polling to the 300s ceiling forever.
+    ///
+    /// It cannot fire against today's server, whose union matches the Swift enum exactly. It is
+    /// pinned because this is a self-hosted product where operators upgrade on their own
+    /// schedule and App Store builds lag, and the repo treats that skew as normal elsewhere.
+    ///
+    /// ⚠ `nonisolated static` for the same reason as `mediaRequest`: the behaviour worth
+    /// asserting is invisible through `resolveLinkPreviews`, which only answers `[LinkPreview]`
+    /// and cannot be reached without a live session. A test that rebuilt this envelope itself
+    /// would assert a fact about `FailableDecodable` rather than about what this client does
+    /// with it — which is exactly what the first version of its test did, and the revert drill
+    /// said so.
+    nonisolated static func decodePreviews(_ data: Data) -> [LinkPreview] {
+        struct Envelope: Decodable { let previews: [FailableDecodable<LinkPreview>] }
+        return (try? JSONDecoder().decode(Envelope.self, from: data))?
+            .previews.compactMap(\.value) ?? []
     }
 
     /// Resolve a `LinkPreview`'s `src`/`thumb` into a request.
@@ -1045,6 +1115,13 @@ final class LurkerClient {
             guard absolute.scheme == "https" || absolute.scheme == "http" else { return nil }
             return URLRequest(url: absolute)
         }
+        // ⚠⚠ The relative branch must be genuinely relative TO THE ROOT, or the concatenation
+        // moves the host. `baseURL + "api/media/x"` is `https://chat.exampleapi/media/x`, whose
+        // host is `chat.exampleapi` — a domain someone else can register — and this is the
+        // branch that attaches the Bearer token. Nothing the current server mints looks like
+        // that, which is exactly why it needs stating: it is the one path where a change at the
+        // other end of the wire turns a cosmetic bug into handing out the session token.
+        guard path.hasPrefix("/") else { return nil }
         guard let token, let url = URL(string: baseURL + path) else { return nil }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -1070,7 +1147,7 @@ final class LurkerClient {
             return nil
         }
         do {
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await mediaSession.data(for: request)
             guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
                 return nil
             }
