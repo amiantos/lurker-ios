@@ -114,3 +114,19 @@ public struct LinkPreview: Codable, Equatable, Sendable {
         return kind.isDirectMedia ? inlineMedia : linkPreviews
     }
 }
+
+
+/// What came back from the byte proxy — and crucially, whether it is worth asking again.
+///
+/// ⚠⚠ Three cases rather than `Data?`, because a caller that caches "this failed" has to know
+/// which failures are verdicts. The proxy maps a transient origin refusal to 503 + `Retry-After`
+/// and keeps 404 for a refused content type, precisely so a client can tell them apart; folding
+/// them together turns a minute of upstream throttling into images that stay blank for the rest
+/// of the session with no way to repair them.
+public enum MediaFetch: Sendable {
+    case success(Data)
+    /// Worth another go later — a throttled origin, a 5xx, a dropped connection.
+    case retryable
+    /// A real answer: gone, refused, or something we will never be able to draw.
+    case permanent
+}

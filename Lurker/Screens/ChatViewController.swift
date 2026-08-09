@@ -2491,6 +2491,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Nil rather than a context reporting `isEnabled == false`, so the default case — both
     /// settings off — can't reach any of the preview machinery at all, not even to be told no.
     private var previewContext: PreviewContext? {
+        // ⚠⚠ ANDed with the instance feature flag, exactly as priming is. These settings are
+        // server-side and NOT device-split, so a `true` stored against an instance that has
+        // `LURKER_LINK_PREVIEWS` on travels to one that doesn't — where the routes aren't even
+        // mounted and the settings rows are hidden. Priming already refuses that case; without
+        // the same test here the render path and the fetch path disagree about whether the
+        // feature exists, which is the defect class this feature keeps producing.
+        guard viewModel.features.linkPreviews else { return nil }
         let inlineMedia = settings.bool("chat.inline_media.enabled", default: false)
         let linkPreviews = settings.bool("chat.link_previews.enabled", default: false)
         guard inlineMedia || linkPreviews else { return nil }

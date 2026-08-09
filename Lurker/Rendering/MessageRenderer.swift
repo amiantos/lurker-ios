@@ -722,36 +722,58 @@ enum MessageRenderer {
                 attributed.addAttribute(.foregroundColor, value: hashedColor(text.substring(with: range)), range: range)
             }
         }
-        // ⚠⚠ Take out the addresses whose picture is about to stand in for them, LAST — after
-        // every pass that works in the assembled string's coordinates. Deleting earlier would
-        // invalidate every range `mircColored`, `spoilered` and `links` are holding, and the
-        // nick pass below still needs them.
+        // ⚠⚠ Both deletions happen HERE, last, after every pass that holds ranges into the
+        // assembled string — `mircColored`, `spoilered` and `links` are plain arrays and do not
+        // move when characters do, so deleting earlier silently mis-styles whatever follows.
+        // (The attributed string's OWN attributes survive a deletion; the bookkeeping beside it
+        // does not, and that is the trap.) One pass, back to front, so each deletion leaves the
+        // earlier offsets untouched.
         //
-        // Back to front, so each deletion leaves the earlier offsets untouched. Then trim the
-        // ends, which is what makes the result read as a sentence rather than as one with a hole
-        // in it: dropping the URL from "look at this: <url>" leaves a colon and a trailing
-        // space, and dropping it from a message that WAS only a link leaves pure whitespace,
-        // which still paints a blank line above the picture.
+        // Two jobs:
+        //
+        // 1. `<https://example.com>` renders WITHOUT its brackets — RFC 3986 Appendix C's
+        //    delimiter convention, which Discord borrowed as "link, but no unfurl".
+        //    `PreviewSelection` already declines to resolve one; this is the other half, and
+        //    without it the convention is visible punctuation that appears to do nothing.
+        //    ⚠ This changes rendering for EVERY message, not only previewed ones — the two
+        //    settings are off by default and this is the app-wide linkifier. Deliberate, and it
+        //    matches the web: the convention is about how a person writes a link.
+        //
+        // 2. Addresses whose picture is about to stand in for them come out entirely.
+        for match in URLMatcher.matches(in: attributed.string).reversed() {
+            if hiddenUrls.contains(match.href) {
+                let whole = match.delimiters ?? match.range
+                attributed.deleteCharacters(in: whole)
+                continue
+            }
+            guard let delimiters = match.delimiters,
+                !spoilered.contains(where: { NSIntersectionRange($0, match.range).length > 0 })
+            else { continue }
+            attributed.deleteCharacters(
+                in: NSRange(location: delimiters.location + delimiters.length - 1, length: 1))
+            attributed.deleteCharacters(in: NSRange(location: delimiters.location, length: 1))
+        }
+        // Trim the ends, which is what makes a body that lost a URL read as a sentence rather
+        // than as one with a hole in it: dropping the address from "look at this: <url>" leaves
+        // a colon and a trailing space, and dropping it from a message that WAS only a link
+        // leaves pure whitespace, which still paints a blank line above the picture.
         if !hiddenUrls.isEmpty {
-            for match in URLMatcher.matches(in: attributed.string).reversed()
-            where hiddenUrls.contains(match.href) {
-                attributed.deleteCharacters(in: match.range)
-            }
-            let full = attributed.string as NSString
-            let trailing = full.length - (full.rangeOfCharacter(
-                from: CharacterSet.whitespacesAndNewlines.inverted,
-                options: .backwards
-            ).location + 1)
-            if trailing > 0, trailing <= full.length {
-                attributed.deleteCharacters(
-                    in: NSRange(location: full.length - trailing, length: trailing))
-            }
-            let leading = (attributed.string as NSString).rangeOfCharacter(
-                from: CharacterSet.whitespacesAndNewlines.inverted)
-            if leading.location != NSNotFound, leading.location > 0 {
-                attributed.deleteCharacters(in: NSRange(location: 0, length: leading.location))
-            } else if leading.location == NSNotFound {
+            let text = attributed.string as NSString
+            let firstInk = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
+            if firstInk.location == NSNotFound {
                 attributed.deleteCharacters(in: NSRange(location: 0, length: attributed.length))
+            } else {
+                let lastInk = text.rangeOfCharacter(
+                    from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards)
+                let tail = lastInk.location + lastInk.length
+                if tail < text.length {
+                    attributed.deleteCharacters(
+                        in: NSRange(location: tail, length: text.length - tail))
+                }
+                if firstInk.location > 0 {
+                    attributed.deleteCharacters(
+                        in: NSRange(location: 0, length: firstInk.location))
+                }
             }
         }
         return attributed

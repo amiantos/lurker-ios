@@ -289,7 +289,7 @@ public final class ChatViewModel {
     ///
     /// Goes through the client because the proxy is authenticated and native auth is a Bearer
     /// header — there's no cookie for a bare `UIImage(contentsOf:)` to ride on.
-    public func proxiedMedia(path: String) async -> Data? {
+    public func proxiedMedia(path: String) async -> MediaFetch {
         await client.fetchProxiedMedia(path: path)
     }
 

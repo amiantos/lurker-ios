@@ -72,12 +72,26 @@ final class PreviewImageLoader {
             // Decoding off the main actor: a full-width JPEG is a few milliseconds, and a few
             // milliseconds during a scroll is a dropped frame.
             var image: UIImage?
-            if let data = await model.proxiedMedia(path: path) {
+            var isVerdict = true
+            switch await model.proxiedMedia(path: path) {
+            case .success(let data):
                 image = await Self.decode(data)
+                // Bytes we cannot decode are a verdict: asking again gets the same bytes.
+            case .retryable:
+                isVerdict = false
+            case .permanent:
+                break
             }
             let pending = waiters.removeValue(forKey: path) ?? []
             guard let image else {
-                failed.insert(path)
+                // ⚠⚠ Only a VERDICT is latched. The proxy answers a throttled origin with 503 —
+                // and one origin in particular matters: every GitHub link's og:image comes from
+                // opengraph.githubassets.com, which advertises a budget of 100, so a channel
+                // with a run of GitHub links spends it in a single burst from the instance's one
+                // IP. Latching those meant a minute of upstream throttling blanked those images
+                // for the rest of the session, with no way to repair it short of relaunching.
+                // A retryable failure simply isn't remembered, so the next dequeue tries again.
+                if isVerdict { failed.insert(path) }
                 return
             }
             cache.setObject(image, forKey: path as NSString, cost: Self.cost(of: image))

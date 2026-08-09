@@ -114,4 +114,30 @@ final class RenderingTests: XCTestCase {
     func testBareEmailGetsMailto() {
         XCTAssertEqual(URLMatcher.matches(in: "ping me@example.com").first?.href, "mailto:me@example.com")
     }
+
+    /// `<https://example.com>` is RFC 3986 Appendix C's delimiter convention, which Discord
+    /// borrowed as "link, but no unfurl". `PreviewSelection` declines to resolve one; the
+    /// renderer deletes the brackets, so the report is the range they occupy.
+    func testAngleBracketsAreReportedSoTheRendererCanDropThem() {
+        let matches = URLMatcher.matches(in: "see <https://example.com> now")
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches[0].href, "https://example.com")
+        // The `<` through the `>`, so deleting it takes both delimiters and nothing else.
+        XCTAssertEqual(matches[0].delimiters, NSRange(location: 4, length: 21))
+    }
+
+    /// ⚠⚠ Inside brackets the URL is NOT trailing-punctuation trimmed — the author has stated
+    /// where the address ends, which is the whole reason the convention exists. Trimming here
+    /// would also mean the closing `>` no longer sits where the bracket test looks for it, so
+    /// the convention would stop being recognised on exactly the ambiguous URLs it is for.
+    func testABracketedUrlKeepsItsTrailingPunctuation() {
+        let matches = URLMatcher.matches(in: "<https://en.wikipedia.org/wiki/Foo.>")
+        XCTAssertEqual(matches.first?.href, "https://en.wikipedia.org/wiki/Foo.")
+    }
+
+    func testAnOrdinaryUrlReportsNoDelimiters() {
+        XCTAssertNil(URLMatcher.matches(in: "see https://example.com now").first?.delimiters)
+        // A half-open bracket is ordinary prose, not the convention.
+        XCTAssertNil(URLMatcher.matches(in: "<https://example.com").first?.delimiters)
+    }
 }

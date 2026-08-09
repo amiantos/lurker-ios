@@ -57,15 +57,34 @@ public enum URLMatcher {
     }
 
     /// URL ranges (into `text`) paired with their resolved hrefs.
-    public static func matches(in text: String) -> [(range: NSRange, href: String)] {
+    ///
+    /// `delimiters` is the range of the `<…>` wrapping the URL, when it has them — the caller
+    /// deletes it so the brackets don't render, exactly as the web client does. Nil otherwise.
+    ///
+    /// ⚠⚠ Inside brackets the whole match is the URL, with NO trailing-punctuation trim. That is
+    /// the entire point of the convention: the author has stated where the address ends, so
+    /// `<https://en.wikipedia.org/wiki/Foo.>` keeps its full stop instead of having it guessed
+    /// away. Trimming there would also break `isBracketedUrl`, which measures the untrimmed
+    /// match — see its note.
+    public static func matches(in text: String)
+        -> [(range: NSRange, href: String, delimiters: NSRange?)]
+    {
         let ns = text as NSString
         return rawRanges(in: text).compactMap { range in
+            if isBracketedUrl(text, at: range) {
+                let raw = ns.substring(with: range)
+                return (
+                    range, href(for: raw),
+                    NSRange(location: range.location - 1, length: range.length + 2)
+                )
+            }
             let raw = ns.substring(with: range)
             let trimmed = trimTrailingPunctuation(raw)
             guard !trimmed.isEmpty else { return nil }
             return (
                 NSRange(location: range.location, length: (trimmed as NSString).length),
-                href(for: trimmed)
+                href(for: trimmed),
+                nil
             )
         }
     }

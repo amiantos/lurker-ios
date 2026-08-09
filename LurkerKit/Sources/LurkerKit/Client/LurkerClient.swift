@@ -1142,18 +1142,25 @@ final class LurkerClient {
     /// 10 MB disk budget is roughly 512 KB — under the size of a typical full-width preview
     /// image. Left on the default, these were silently re-downloaded on every launch and after
     /// every NSCache eviction, and the `max-age` bought nothing at all.
-    func fetchProxiedMedia(path: String) async -> Data? {
+    func fetchProxiedMedia(path: String) async -> MediaFetch {
         guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
-            return nil
+            return .permanent
         }
         do {
             let (data, response) = try await mediaSession.data(for: request)
-            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
-                return nil
-            }
-            return data
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if (200..<300).contains(code) { return .success(data) }
+            // ⚠⚠ 503 means COME BACK. The byte proxy maps a transient origin refusal — a 429,
+            // a 5xx, and in particular opengraph.githubassets.com's 100-request budget, which a
+            // channel with a run of GitHub links spends in one burst — to 503 + Retry-After, and
+            // keeps 404 for a refused content type. Treating every non-2xx alike is the bug the
+            // web had in the other direction: an <img> takes 404 as final and never re-asks, so
+            // a minute of throttling became permanently blank images no reload could repair.
+            return code == 503 || code == 429 || (500..<600).contains(code)
+                ? .retryable : .permanent
         } catch {
-            return nil
+            // A dropped connection says nothing about the file.
+            return .retryable
         }
     }
 
