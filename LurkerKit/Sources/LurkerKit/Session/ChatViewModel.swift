@@ -293,6 +293,12 @@ public final class ChatViewModel {
         await client.fetchProxiedMedia(path: path)
     }
 
+    /// A URL `AVPlayer` can open for a preview's `src` — see the client's note for why this is
+    /// two cases rather than one.
+    public func playableMediaURL(path: String, mime: String?) async -> URL? {
+        await client.playableMediaURL(path: path, mime: mime)
+    }
+
     /// Fetch a page of bookmarks. Same cursor contract as `fetchHighlights`, and the
     /// same row shape — hence the shared `HighlightsPage`.
     ///

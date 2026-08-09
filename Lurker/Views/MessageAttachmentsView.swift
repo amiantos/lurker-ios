@@ -74,7 +74,13 @@ final class MessageAttachmentsView: UIStackView {
     /// where a tap falls back to opening the address.
     var onOpenGallery: (([LinkPreview], Int) -> Void)?
 
-    /// Set per configure, so a tap knows which pictures it belongs among.
+    /// Set per configure, so a tap knows what it belongs among.
+    ///
+    /// ⚠ Every DIRECT MEDIA item in the message, in the order it was posted — pictures, video
+    /// and audio alike, not just the images the mosaic drew. They share a viewer because they
+    /// share a question ("show me this properly"), and a message that mixes a screenshot and a
+    /// clip should let the reader swipe between them rather than making the clip a different
+    /// kind of thing. Items with no `src` are excluded: there is nothing for a page to show.
     private var galleryImages: [LinkPreview] = []
 
     override init(frame: CGRect) {
@@ -111,7 +117,7 @@ final class MessageAttachmentsView: UIStackView {
         // the part that gets cut — so video and audio stack full width, where their transport
         // has room. That is what audio has always done here.
         let images = previews.filter { $0.kind == .image }
-        galleryImages = images
+        galleryImages = previews.filter { $0.kind.isDirectMedia && $0.src != nil }
         if images.count > 1 {
             addArrangedSubview(mosaic(images, model: model))
         }
@@ -318,7 +324,10 @@ final class MessageAttachmentsView: UIStackView {
                 to: container, imageView: imageView, path: animatablePath, url: preview.url,
                 model: model)
         } else {
-            attachTap(to: container, opening: preview.url)
+            // Video and audio: the viewer plays them. This is the case that was a hand-off to
+            // Safari, and the objection to inline playback never applied to it — one AVPlayer in
+            // a screen the reader deliberately opened is not one per row.
+            attachGalleryTap(to: container, url: preview.url)
         }
         return container
     }

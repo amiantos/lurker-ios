@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import AVKit
 import LurkerKit
 import UIKit
 
@@ -44,6 +45,8 @@ final class MediaViewerController: UIViewController {
         view.dataSource = self
         view.delegate = self
         view.register(MediaPageCell.self, forCellWithReuseIdentifier: MediaPageCell.reuseID)
+        view.register(
+            MediaPlayerPageCell.self, forCellWithReuseIdentifier: MediaPlayerPageCell.reuseID)
         return view
     }()
 
@@ -190,10 +193,36 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
     func collectionView(
         _ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath
     ) -> UICollectionViewCell {
+        let preview = previews[indexPath.item]
+        if preview.kind == .image {
+            let cell = collectionView.dequeueReusableCell(
+                withReuseIdentifier: MediaPageCell.reuseID, for: indexPath) as! MediaPageCell
+            cell.configure(preview, model: model)
+            return cell
+        }
         let cell = collectionView.dequeueReusableCell(
-            withReuseIdentifier: MediaPageCell.reuseID, for: indexPath) as! MediaPageCell
-        cell.configure(previews[indexPath.item], model: model)
+            withReuseIdentifier: MediaPlayerPageCell.reuseID, for: indexPath)
+            as! MediaPlayerPageCell
+        cell.configure(preview, model: model, host: self) { [weak self] url in
+            self?.dismiss(animated: true) { UIApplication.shared.open(url) }
+        }
         return cell
+    }
+
+    /// ⚠ A page leaving the screen stops playing, and this is not politeness. Without it,
+    /// swiping to the next picture leaves the previous video's audio running underneath it —
+    /// and dismissing the viewer entirely leaves it playing over the message list, with no
+    /// visible control anywhere to stop it.
+    func collectionView(
+        _ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell,
+        forItemAt indexPath: IndexPath
+    ) {
+        (cell as? MediaPlayerPageCell)?.stop()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        for cell in pages.visibleCells { (cell as? MediaPlayerPageCell)?.stop() }
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -216,6 +245,10 @@ extension MediaViewerController: UIGestureRecognizerDelegate {
     /// down for a mostly-horizontal drag, which is the reader paging between pictures.
     func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
         guard let pan = gesture as? UIPanGestureRecognizer else { return true }
+        // ⚠ Not over a player. Its scrubber is a horizontal drag inside a vertically-dismissing
+        // view, and a reader nudging the playhead would throw the viewer away instead. The close
+        // button is the way out of a video page; every other page keeps the swipe.
+        if pages.visibleCells.contains(where: { $0 is MediaPlayerPageCell }) { return false }
         let visible = pages.visibleCells.compactMap { $0 as? MediaPageCell }.first
         if let visible, visible.isZoomed { return false }
         let translation = pan.translation(in: view)
@@ -309,4 +342,144 @@ private final class MediaPageCell: UICollectionViewCell {
 
 extension MediaPageCell: UIScrollViewDelegate {
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
+}
+
+
+/// A video or audio page: the system player, with an honest failure state behind it.
+///
+/// `AVPlayerViewController` rather than a hand-rolled transport, because it brings scrubbing,
+/// volume, AirPlay, Picture-in-Picture and the full-screen affordance that people already know —
+/// none of which is worth reimplementing to look slightly different.
+private final class MediaPlayerPageCell: UICollectionViewCell {
+    static let reuseID = "MediaPlayerPage"
+
+    private var controller: AVPlayerViewController?
+    private var path: String?
+    private let spinner = UIActivityIndicatorView(style: .large)
+    private let fallback = UIStackView()
+    private let fallbackLabel = UILabel()
+    private let fallbackButton = UIButton(type: .system)
+    private var openExternally: ((URL) -> Void)?
+    private var originURL: URL?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        spinner.color = .white
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(spinner)
+
+        fallbackLabel.textColor = .white
+        fallbackLabel.textAlignment = .center
+        fallbackLabel.numberOfLines = 0
+        fallbackLabel.font = .preferredFont(forTextStyle: .callout)
+        fallbackLabel.adjustsFontForContentSizeCategory = true
+        fallbackButton.setTitle("Open in Browser", for: .normal)
+        fallbackButton.addTarget(self, action: #selector(openOutside), for: .touchUpInside)
+        fallback.axis = .vertical
+        fallback.spacing = 12
+        fallback.alignment = .center
+        fallback.isHidden = true
+        fallback.addArrangedSubview(fallbackLabel)
+        fallback.addArrangedSubview(fallbackButton)
+        fallback.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(fallback)
+
+        NSLayoutConstraint.activate([
+            spinner.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            fallback.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            fallback.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+            fallback.leadingAnchor.constraint(
+                greaterThanOrEqualTo: contentView.leadingAnchor, constant: 32),
+            fallback.trailingAnchor.constraint(
+                lessThanOrEqualTo: contentView.trailingAnchor, constant: -32),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not from a nib") }
+
+    func configure(
+        _ preview: LinkPreview, model: ChatViewModel, host: UIViewController,
+        openExternally: @escaping (URL) -> Void
+    ) {
+        path = preview.src
+        self.openExternally = openExternally
+        originURL = URL(string: preview.url)
+        fallback.isHidden = true
+        guard let source = preview.src else {
+            showFallback("There's nothing to play here.")
+            return
+        }
+        spinner.startAnimating()
+
+        Task { @MainActor in
+            // ⚠ A proxy path is downloaded before it can play — the bytes are bearer-gated and
+            // AVURLAsset cannot carry the header. Bounded by the proxy's own 8 MB cap, which is
+            // what makes waiting rather than streaming survivable.
+            guard let url = await model.playableMediaURL(path: source, mime: preview.mime),
+                self.path == source
+            else {
+                self.spinner.stopAnimating()
+                self.showFallback("This couldn't be loaded.")
+                return
+            }
+            let asset = AVURLAsset(url: url)
+            // ⚠ ASKED, not assumed. The server proxies any `video/*`, and this platform decodes
+            // neither webm nor ogg — both common enough on IRC to matter. A player that spins
+            // forever is a worse answer than a sentence and a button.
+            let playable = (try? await asset.load(.isPlayable)) ?? false
+            guard self.path == source else { return }
+            self.spinner.stopAnimating()
+            guard playable else {
+                self.showFallback("This format can't be played on iOS.")
+                return
+            }
+            self.attachPlayer(AVPlayer(playerItem: AVPlayerItem(asset: asset)), host: host)
+        }
+    }
+
+    private func attachPlayer(_ player: AVPlayer, host: UIViewController) {
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.videoGravity = .resizeAspect
+        // Audio has no picture, so the player draws its own placeholder rather than a black void.
+        controller.view.backgroundColor = .clear
+        host.addChild(controller)
+        controller.view.frame = contentView.bounds
+        controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        contentView.addSubview(controller.view)
+        controller.didMove(toParent: host)
+        self.controller = controller
+        player.play()
+    }
+
+    private func showFallback(_ message: String) {
+        fallbackLabel.text = message
+        fallback.isHidden = false
+        fallbackButton.isHidden = originURL == nil
+    }
+
+    @objc private func openOutside() {
+        guard let originURL else { return }
+        openExternally?(originURL)
+    }
+
+    /// Stop and tear down. Called when the page scrolls away and when the viewer closes.
+    func stop() {
+        controller?.player?.pause()
+        controller?.player = nil
+        controller?.willMove(toParent: nil)
+        controller?.view.removeFromSuperview()
+        controller?.removeFromParent()
+        controller = nil
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        stop()
+        path = nil
+        spinner.stopAnimating()
+        fallback.isHidden = true
+    }
 }

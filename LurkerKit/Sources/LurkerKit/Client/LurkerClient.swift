@@ -984,6 +984,61 @@ final class LurkerClient {
     ///
     /// Unauthenticated by design on the server, but called after sign-in here because that's when
     /// `baseURL` is known. Returns the all-off default on any failure — see `InstanceFeatures`.
+    /// A URL `AVPlayer` can actually open for a preview's `src`.
+    ///
+    /// ⚠⚠ `AVURLAsset` cannot carry our Authorization header — the supported way to inject one is
+    /// an `AVAssetResourceLoaderDelegate`, and the header key that looks like a shortcut is
+    /// undocumented. So the two cases are handled honestly rather than papered over:
+    ///
+    ///   - **An ABSOLUTE url** is the byte cache serving from its CDN (`local`/`s3`/`dropper`
+    ///     modes mint one in `toDescriptor`). It carries no credential by design — that is the
+    ///     whole point of minting it — so it hands straight to `AVPlayer`, which then gets real
+    ///     streaming and seeking for free.
+    ///   - **A PROXY PATH** is bearer-gated, so the bytes are fetched through the authenticated
+    ///     path we already have and staged to a temp file. No seeking until it lands, which is
+    ///     survivable precisely because the proxy caps a preview at 8 MB.
+    ///
+    /// ⚠ The extension is carried over from the server's `mime`, because AVFoundation sniffs the
+    /// path: a temp file called `x.tmp` fails to open as an MP4 that plays perfectly as `x.mp4`.
+    func playableMediaURL(path: String, mime: String?) async -> URL? {
+        if let absolute = URL(string: path), absolute.scheme == "https" || absolute.scheme == "http"
+        {
+            return absolute
+        }
+        guard case .success(let data) = await fetchProxiedMedia(path: path) else { return nil }
+
+        // Named from the path so replaying costs nothing, and staged under the caches directory
+        // so the OS can reclaim it under pressure — this is a copy of something the server will
+        // hand over again, never the only copy of anything.
+        let name = String(abs(path.hashValue), radix: 36) + "." + Self.fileExtension(for: mime)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// ⚠ Only what AVFoundation can actually open. webm and ogg are deliberately absent: the
+    /// server will happily proxy them (`kindForContentType` passes any `video/*`) and this
+    /// platform cannot decode either, so they fall through to `bin` and the caller's
+    /// "can't play this" path — which offers the browser — rather than a player that spins.
+    nonisolated private static func fileExtension(for mime: String?) -> String {
+        switch mime?.lowercased() {
+        case "video/mp4": "mp4"
+        case "video/quicktime": "mov"
+        case "video/x-m4v": "m4v"
+        case "audio/mpeg", "audio/mp3": "mp3"
+        case "audio/mp4", "audio/x-m4a": "m4a"
+        case "audio/aac": "aac"
+        case "audio/wav", "audio/x-wav": "wav"
+        case "audio/flac", "audio/x-flac": "flac"
+        default: "bin"
+        }
+    }
+
     /// The instance's feature flags, or **nil if we didn't get an answer**.
     ///
     /// ⚠⚠ Optional deliberately. This used to collapse a transport error, a non-2xx, an
