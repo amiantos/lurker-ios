@@ -49,7 +49,18 @@ final class LurkerClient {
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
-        self.session = URLSession(configuration: .default)
+        let configuration = URLSessionConfiguration.default
+        // ⚠ A dedicated, larger URLCache, not the shared default. `URLCache` refuses to store
+        // any single response bigger than ~5% of its capacity, so against the shared 10 MB disk
+        // budget the ceiling is ~512 KB — under the size of a typical full-width preview image.
+        // On the default, preview bytes were re-downloaded on every launch and after every
+        // in-memory eviction, and the proxy's `max-age=86400, immutable` bought nothing.
+        // 200 MB puts the per-response ceiling around 10 MB, above the proxy's own 8 MB cap.
+        configuration.urlCache = URLCache(
+            memoryCapacity: 16 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024
+        )
+        self.session = URLSession(configuration: configuration)
     }
 
     // MARK: - Auth
@@ -947,6 +958,125 @@ final class LurkerClient {
             request.httpMethod = "POST"
             request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
             _ = try? await session.data(for: request)
+        }
+    }
+
+    /// Read the public, unauthenticated `/api/config` for instance feature flags.
+    ///
+    /// Unauthenticated by design on the server, but called after sign-in here because that's when
+    /// `baseURL` is known. Returns the all-off default on any failure — see `InstanceFeatures`.
+    func fetchFeatures() async -> InstanceFeatures {
+        guard let url = URL(string: baseURL + "/api/config") else { return InstanceFeatures() }
+        do {
+            let (data, response) = try await session.data(for: URLRequest(url: url))
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
+                let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return InstanceFeatures() }
+            let features = body["features"] as? [String: Any]
+            return InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true)
+        } catch {
+            return InstanceFeatures()
+        }
+    }
+
+    // MARK: - Link previews
+
+    /// Resolve a batch of URLs to preview descriptors (`POST /api/link-preview/resolve`).
+    ///
+    /// Returns whatever the server could answer; a URL it couldn't resolve simply comes back
+    /// with `status: .unavailable`, and a failed request comes back as an empty array. Both
+    /// mean "draw nothing", which is the only outcome a message row cares about — a preview
+    /// is decoration, and an error state in the timeline would be worse than a missing card.
+    func resolveLinkPreviews(_ urls: [String]) async -> [LinkPreview] {
+        guard !urls.isEmpty, let token, let url = URL(string: baseURL + "/api/link-preview/resolve")
+        else { return [] }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["urls": urls])
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return []
+            }
+            guard (200..<300).contains(code) else { return [] }
+            struct Envelope: Decodable { let previews: [LinkPreview] }
+            return (try? JSONDecoder().decode(Envelope.self, from: data))?.previews ?? []
+        } catch {
+            return []
+        }
+    }
+
+    /// Resolve a `LinkPreview`'s `src`/`thumb` into a request.
+    ///
+    /// ⚠⚠ THE VALUE IS OPAQUE, and this is the only place that may interpret it. The server
+    /// mints it and documents it as a string a client never constructs or parses; today it is
+    /// either a proxy path (`/api/link-preview/media/<token>`) or, when the instance has a
+    /// bucket-backed byte cache configured, an absolute URL on that bucket's public CDN. Both
+    /// arrive in the same field and nothing distinguishes them on the wire.
+    ///
+    /// ⚠⚠ Concatenating unconditionally is what this replaces, and it did not fail loudly:
+    /// `baseURL + "https://cdn.example.com/..."` yields `https://instance.examplehttps://...`,
+    /// which `URL(string:)` rejects, so `fetchProxiedMedia` returned nil and
+    /// `PreviewImageLoader` latched the path into `failed` — every cached preview permanently
+    /// blank for the rest of the session, with no error surfaced anywhere.
+    ///
+    /// ⚠⚠ AN ABSOLUTE URL GETS NO BEARER TOKEN. It is a third-party host by construction, and
+    /// `URLSession` forwards manually-set headers to whatever it is given — so sending one here
+    /// would put the user's session token in a CDN operator's access log for every image. The
+    /// header belongs only to requests aimed at this instance.
+    ///
+    /// ⚠ `nonisolated static`, taking the base and the token rather than reading them off
+    /// `self`. Both are `private` state on a `@MainActor` class, so an instance method could
+    /// only be exercised by driving a whole configured client from the main actor — and the two
+    /// properties worth asserting (an absolute URL is not concatenated onto the base, and never
+    /// carries the token) are invisible from `fetchProxiedMedia`, which only answers `Data?`. A
+    /// wrong URL and an unreachable server look identical through it. The function touches no
+    /// actor state, so isolating it buys nothing and costs testability.
+    nonisolated static func mediaRequest(
+        for path: String,
+        baseURL: String,
+        token: String?
+    ) -> URLRequest? {
+        if let absolute = URL(string: path), absolute.scheme != nil {
+            guard absolute.scheme == "https" || absolute.scheme == "http" else { return nil }
+            return URLRequest(url: absolute)
+        }
+        guard let token, let url = URL(string: baseURL + path) else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Fetch bytes for a preview image.
+    ///
+    /// `path` is a server-minted value out of a `LinkPreview` — never something built here.
+    /// A proxy path needs a `URLRequest` rather than a plain `UIImage(contentsOf:)` because the
+    /// proxy is authenticated and native auth is a Bearer header, not a cookie.
+    ///
+    /// Caching is the shared `URLCache`'s job — the server marks these `immutable` with a long
+    /// max-age, and the token is a pure function of the URL so it always denotes the same bytes.
+    ///
+    /// ⚠ That only works because `previewCache` below is sized for it. `URLCache.shared` refuses
+    /// to store any single response larger than ~5% of its capacity, which against the default
+    /// 10 MB disk budget is roughly 512 KB — under the size of a typical full-width preview
+    /// image. Left on the default, these were silently re-downloaded on every launch and after
+    /// every NSCache eviction, and the `max-age` bought nothing at all.
+    func fetchProxiedMedia(path: String) async -> Data? {
+        guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
+            return nil
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
+                return nil
+            }
+            return data
+        } catch {
+            return nil
         }
     }
 
