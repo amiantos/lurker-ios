@@ -58,11 +58,33 @@ public struct LinkPreview: Codable, Equatable, Sendable {
     public let embedUrl: String?
     public let mime: String?
 
+    /// When the server's answer stops being the answer, ISO-8601 as it arrives on the wire.
+    ///
+    /// ⚠⚠ This is how the server says "come back" — and it went unread for the whole life of the
+    /// reference branch. Some failures are deliberately NOT cached: pool saturation, a resolve
+    /// deadline, the instance simply being busy. Those get a ~15 second `expiresAt` instead of
+    /// the one-hour failure TTL, precisely so a client asks again. Ignoring the field made a
+    /// momentary hiccup indistinguishable from a dead link, and the row stayed blank for the
+    /// life of the app session — the exact outcome the server-side transient/verdict split was
+    /// built to avoid.
+    ///
+    /// ⚠ Kept as the raw string rather than a `Date` so the model stays a faithful decode of the
+    /// frame; `expiry` is the parsed view.
+    public let expiresAt: String?
+
+    /// `expiresAt` as a `Date`, or nil if absent or unparseable.
+    ///
+    /// ⚠ Unparseable reads as "no expiry stated", which means the answer is treated as a verdict
+    /// and never re-asked. That is the safe direction: the alternative — treating a timestamp we
+    /// could not read as already lapsed — turns one bad field into an unbounded re-ask loop.
+    public var expiry: Date? { ISOTime.parse(expiresAt) }
+
     public init(
         url: String, status: Status, kind: PreviewKind, title: String? = nil,
         description: String? = nil, siteName: String? = nil, author: String? = nil,
         src: String? = nil, thumb: String? = nil, thumbWidth: Int? = nil,
-        thumbHeight: Int? = nil, embedUrl: String? = nil, mime: String? = nil
+        thumbHeight: Int? = nil, embedUrl: String? = nil, mime: String? = nil,
+        expiresAt: String? = nil
     ) {
         self.url = url
         self.status = status
@@ -77,6 +99,7 @@ public struct LinkPreview: Codable, Equatable, Sendable {
         self.thumbHeight = thumbHeight
         self.embedUrl = embedUrl
         self.mime = mime
+        self.expiresAt = expiresAt
     }
 
     /// Whether this preview may be rendered under the current settings.
