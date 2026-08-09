@@ -212,12 +212,16 @@ final class MessageAttachmentsView: UIStackView {
             imageView.topAnchor.constraint(equalTo: container.topAnchor),
             imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-        if let path = preview.src { apply(path: path, to: imageView, model: model) }
-
         container.isAccessibilityElement = true
         container.accessibilityTraits = .button
         container.accessibilityLabel = "Image"
-        attachTap(to: container, opening: preview.url)
+        if let path = preview.src {
+            apply(path: path, to: imageView, model: model)
+            attachPlayback(
+                to: container, imageView: imageView, path: path, url: preview.url, model: model)
+        } else {
+            attachTap(to: container, opening: preview.url)
+        }
         return container
     }
 
@@ -255,6 +259,9 @@ final class MessageAttachmentsView: UIStackView {
             container.heightAnchor.constraint(equalToConstant: Self.mediaHeight).isActive = true
         }
 
+        // Set when this is an image with bytes, so the tap can offer playback if it animates.
+        var animatablePath: String?
+
         // Video and audio show their poster/placeholder here and hand off on tap. Playing
         // media inline in a table cell is an AVPlayer per row and a memory problem; the
         // system player is one tap away and is what the platform's users expect.
@@ -272,6 +279,7 @@ final class MessageAttachmentsView: UIStackView {
 
         if preview.kind == .image, let path = preview.src {
             apply(path: path, to: imageView, model: model)
+            animatablePath = path
             imageView.accessibilityLabel = "Image"
         } else {
             let glyph = UIImageView(
@@ -291,7 +299,13 @@ final class MessageAttachmentsView: UIStackView {
 
         container.isAccessibilityElement = true
         container.accessibilityTraits = .button
-        attachTap(to: container, opening: preview.url)
+        if let animatablePath {
+            attachPlayback(
+                to: container, imageView: imageView, path: animatablePath, url: preview.url,
+                model: model)
+        } else {
+            attachTap(to: container, opening: preview.url)
+        }
         return container
     }
 
@@ -501,6 +515,87 @@ final class MessageAttachmentsView: UIStackView {
         }
     }
 
+    // MARK: - Animations play on request
+
+    /// Put a play badge on an animated image, and make the tap start it rather than leave.
+    ///
+    /// ⚠⚠ Deliberately NOT autoplay, which is what "support GIFs" usually means. A page of
+    /// scrollback with a dozen animations is a dozen full frame-sets decoded and a dozen
+    /// timers running whether or not anybody is watching one — the memory and the battery both
+    /// go, and the list becomes visually noisy in a way a log should not be. Opt-in costs one
+    /// tap and gives the reader the choice.
+    ///
+    /// ⚠ The badge cannot be decided up front: whether a file animates is known only once its
+    /// bytes have been decoded, and `image/webp` says nothing either way. So it appears when
+    /// the still arrives. That is free of layout consequence — the box was already sized from
+    /// the metadata, and a badge is paint over it.
+    ///
+    /// ⚠ Playback stops when the cell is recycled, and that is wanted rather than tolerated:
+    /// the frames are released with it, so scrolling away from an animation reclaims its
+    /// memory. Unlike a revealed spoiler, nobody expects a GIF to still be running when they
+    /// scroll back to it.
+    private func attachPlayback(
+        to container: UIView, imageView: UIImageView, path: String, url: String,
+        model: ChatViewModel
+    ) {
+        let badge = UIImageView(image: UIImage(systemName: "play.circle.fill"))
+        badge.tintColor = .white
+        badge.layer.shadowOpacity = 0.35
+        badge.layer.shadowRadius = 6
+        badge.layer.shadowOffset = .zero
+        badge.isHidden = true
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(badge)
+        NSLayoutConstraint.activate([
+            badge.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            badge.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            badge.widthAnchor.constraint(equalToConstant: 40),
+            badge.heightAnchor.constraint(equalToConstant: 40),
+        ])
+
+        // Asked after the still lands, which is the only moment the answer exists.
+        PreviewImageLoader.shared.load(path: path, using: model) { [weak badge] _ in
+            badge?.isHidden = !PreviewImageLoader.shared.isAnimated(path)
+        }
+
+        // ⚠ ONE gesture, deciding at fire time. A separate badge-sized target would be a small
+        // control sitting on top of a large one with no way to tell which a tap would hit — the
+        // same objection that killed a corner badge for the mosaic's overflow count. So the tap
+        // asks what this image turned out to be: an animation toggles, anything else opens.
+        let toggle = TapPlaying(url: url) { [weak self, weak container, weak imageView, weak badge] in
+            guard let imageView, let container else { return }
+            guard PreviewImageLoader.shared.isAnimated(path) else {
+                self?.onOpen?(URL(string: url) ?? URL(string: "about:blank")!)
+                return
+            }
+            if imageView.image?.images != nil {
+                // Back to the still, and let the frames go.
+                PreviewImageLoader.shared.load(path: path, using: model) { [weak imageView] still in
+                    imageView?.image = still
+                }
+                badge?.isHidden = false
+                container.accessibilityLabel = "Animation, paused"
+                return
+            }
+            badge?.isHidden = true
+            container.accessibilityLabel = "Animation, playing"
+            PreviewImageLoader.shared.loadAnimated(path: path, using: model) {
+                [weak imageView, weak badge] animated in
+                guard let animated else {
+                    // Too large to play, or it stopped being decodable. Say so by putting the
+                    // badge back rather than leaving a still that swallowed a tap.
+                    badge?.isHidden = false
+                    return
+                }
+                imageView?.image = animated
+            }
+        }
+        container.addGestureRecognizer(toggle.recognizer)
+        objc_setAssociatedObject(
+            container, &TapOpening.key, toggle, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        container.isUserInteractionEnabled = true
+    }
+
     private func label(
         _ text: String, font: UIFont, color: UIColor, lines: Int,
         weight: UIFont.Weight? = nil
@@ -544,6 +639,22 @@ private final class TapOpening: NSObject {
     }
 
     @objc private func fire() { action(url) }
+}
+
+/// A tap that decides what it means when it fires, for an image that may turn out to animate.
+private final class TapPlaying: NSObject {
+    let recognizer = UITapGestureRecognizer()
+    private let url: String
+    private let action: () -> Void
+
+    init(url: String, action: @escaping () -> Void) {
+        self.url = url
+        self.action = action
+        super.init()
+        recognizer.addTarget(self, action: #selector(fire))
+    }
+
+    @objc private func fire() { action() }
 }
 
 extension UIFont {
