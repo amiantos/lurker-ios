@@ -92,6 +92,20 @@ struct PreviewHidingTests {
         #expect(hidden("\(SpoilerMarkup.apply(to: "||psst||")) \(a) tail", a).isEmpty)
     }
 
+    @Test("trailing sentence punctuation does not decide the verdict")
+    func trimmedPunctuationDoesNotBlockThePeel() {
+        // ⚠⚠ The span's end was measured to the end of the TRIMMED address, so the `.` the
+        // trimmer had just discarded sat between the span and the end of the message and failed
+        // the "nothing but whitespace after it" test. The same URL at the FRONT hid regardless,
+        // because the leading check is vacuously true at offset zero — so identical punctuation
+        // produced opposite verdicts depending only on which end the URL sat at.
+        #expect(hidden("look at this \(a).", a) == [a])
+        #expect(hidden("look at this \(a)!", a) == [a])
+        #expect(hidden("look at this (\(a))", a) == [a])
+        // ...and prose still wins over punctuation, which is the rule the fix must not soften.
+        #expect(hidden("I read \(a). this morning", a).isEmpty)
+    }
+
     @Test("hides nothing when there are no candidates")
     func noCandidates() {
         #expect(PreviewHiding.hideableUrls(in: "\(a) \(b)", candidates: []).isEmpty)

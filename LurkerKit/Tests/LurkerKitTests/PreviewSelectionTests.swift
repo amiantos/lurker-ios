@@ -157,6 +157,36 @@ struct PreviewSelectionTests {
         #expect(urls("\u{3}04https://e.test/red.png\u{3} done") == ["https://e.test/red.png"])
     }
 
+    @Test("resolves the URL the RENDERER linkifies, even when a code splits it")
+    func agreesWithTheRendererOnASplitUrl() {
+        // ⚠⚠ The two-parsers defect one level up from the trimmer. `MessageRenderer` assembles
+        // its attributed string from runs and then linkifies the ASSEMBLED string, while this
+        // scanned each run — and `IRCFormatting.parse` flushes a run at every control code, so a
+        // code inside a URL split it for one and not the other.
+        //
+        // Left unfixed, the first case resolves a host that does not exist and negative-caches
+        // that 404 for an hour under a string appearing nowhere in the message; the second
+        // renders a live, tappable link that can never have a preview at all. Sharing the
+        // PATTERN was not enough — they were being handed different input.
+        let coloured = "http://ex\u{3}4ample.com/page"
+        #expect(urls(coloured) == ["http://example.com/page"])
+        #expect(
+            urls(coloured) == URLMatcher.matches(in: IRCFormatting.strip(coloured)).map(\.href),
+            "selection and the linkifier must agree, address for address")
+
+        let bolded = "\u{2}https://\u{2}e.test/page"
+        #expect(urls(bolded) == ["https://e.test/page"])
+        #expect(urls(bolded) == URLMatcher.matches(in: IRCFormatting.strip(bolded)).map(\.href))
+    }
+
+    @Test("a URL straddling the edge of a spoiler is not half-resolved")
+    func partiallySpoileredUrlIsRefused() {
+        // Scanning the assembled body means a match can now overlap a spoiler rather than sit
+        // inside a run, so the test is an intersection. Resolving the visible half would be both
+        // wrong and a leak — the hidden half is the part the author meant to hide.
+        #expect(urls("https://e.test/\u{3}01,01secret\u{3}").isEmpty)
+    }
+
     // MARK: - <angle brackets> suppress a preview
 
     @Test("refuses to resolve a URL the author wrapped in brackets")
