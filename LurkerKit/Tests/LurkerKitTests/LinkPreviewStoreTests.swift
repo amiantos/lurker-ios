@@ -65,41 +65,70 @@ struct LinkPreviewStoreTests {
         #expect(stub.batches.flatMap { $0 } == ["https://e.test/x"])
     }
 
-    @Test("a failed batch is retried later, not remembered as a verdict")
+    @Test("a failed batch is retried later, not remembered as a verdict — but not instantly")
     func failureIsRetryable() async {
         // ⚠⚠ Regression guard. `asked` used to retain a URL whatever came back, and the client
         // maps any non-2xx (including a 429, which the connect-time backlog burst can provoke on
         // its own) to an empty array. So one throttled batch meant those links were blank for the
         // rest of the app session. A transport failure says nothing about the URL.
+        //
+        // ⚠ It must not be retried IMMEDIATELY either, which is what this asserted before.
+        // `forgetForRetry` takes the URL out of `asked` while arming a deadline, so a priming
+        // pass arriving right behind a 429 — a reconnect's backlog replay, a scroll-up page —
+        // re-POSTed the whole failed set 24ms after the server said it was overloaded. The
+        // backoff has to pace both ways back in, not just the timer.
+        let clock = TestClock()
         let stub = Stub()
         stub.answer = { _ in [] }
-        let store = makeStore(stub)
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
 
         store.request(["https://e.test/a", "https://e.test/b"])
         await settle()
         #expect(stub.batches.count == 1)
         #expect(store.preview(for: "https://e.test/a") == nil)
 
-        // Server recovers; the next priming pass must be allowed to ask again.
+        // Server recovers — but the ladder still holds, so priming must NOT ask yet.
         stub.answer = { urls in
             urls.map { LinkPreview(url: $0, status: .ok, kind: .page, title: "T") }
         }
+        store.request(["https://e.test/a", "https://e.test/b"])
+        await settle()
+        #expect(stub.batches.count == 1, "still inside the backoff")
+
+        // Past the deadline, the next priming pass gets through.
+        clock.date.addTimeInterval(PreviewReask.floor + 1)
         store.request(["https://e.test/a", "https://e.test/b"])
         await settle()
         #expect(stub.batches.count == 2)
         #expect(store.preview(for: "https://e.test/a")?.title == "T")
     }
 
-    @Test("an `unavailable` answer IS remembered, unlike a failure")
-    func unavailableIsRemembered() async {
-        // The distinction that matters: the server negative-caches a genuine per-URL failure
-        // itself, so re-asking would be a pointless loop. Only TRANSPORT failures are retried.
+    @Test("an `unavailable` with no stated expiry is a VERDICT, not an invitation")
+    func unavailableWithoutExpiryIsAVerdict() async {
+        // ⚠⚠ This asserted only that a second `request()` made no second batch — which passed
+        // against a store that had armed a perpetual poller, because its 240ms of sleeps are
+        // shorter than the 15s floor. It was measuring the sleep, not the rule.
+        //
+        // The rule: an absent or unreadable `expiresAt` means nothing was stated, and nothing
+        // stated is a verdict. Mapping it to "zero seconds until expiry" sailed through the
+        // short-TTL test and armed a ladder `retry` only ever clears on an `ok`, so the URL was
+        // re-POSTed forever. `LinkPreview.expiry` documented this as the safe direction and the
+        // code did the opposite of its own comment.
         let stub = Stub()
-        stub.answer = { urls in urls.map { LinkPreview(url: $0, status: .unavailable, kind: .page) } }
+        stub.answer = { urls in
+            urls.map { LinkPreview(url: $0, status: .unavailable, kind: .page) }
+        }
         let store = makeStore(stub)
 
         store.request(["https://e.test/gone"])
         await settle()
+        #expect(stub.batches.count == 1)
+        #expect(store.retry["https://e.test/gone"] == nil, "nothing armed, so nothing polls")
+        #expect(!store.runDueReasks(), "and nothing ever comes due")
+
         store.request(["https://e.test/gone"])
         await settle()
         #expect(stub.batches.count == 1)
@@ -250,6 +279,101 @@ struct LinkPreviewStoreTests {
         store.request(["https://e.test/dead"])
         await settle()
         #expect(stub.batches.count == 2)
+    }
+
+    // MARK: - Sign-out, and not repopulating what it cleared
+
+    @Test("a reset mid-flush is not undone by answers already in the air")
+    func resetDuringFlushIsNotRepopulated() async {
+        // ⚠⚠ Reachable with no timing luck at all: a 401 makes `resolveLinkPreviews` publish
+        // `.unauthorized`, which runs `onAuthLost()` → `reset()` RE-ENTRANTLY while the flush is
+        // suspended at `await resolve`. The flush then resumed on the store it had just emptied
+        // and refilled it — the previous account's metadata back in `cache`, a fresh re-ask
+        // timer armed — so the next account served A's previews and POSTed A's URLs under B's
+        // bearer token. Exactly what the sign-out comment claims to have closed.
+        let stub = Stub()
+        let store = makeStore(stub)
+        var storeRef: LinkPreviewStore?
+        let resetting = LinkPreviewStore { urls in
+            stub.batches.append(urls)
+            // Stand in for the 401 → onAuthLost → reset re-entrancy, at the exact moment the
+            // real one happens: while the answer is in flight.
+            storeRef?.reset()
+            return urls.map { LinkPreview(url: $0, status: .ok, kind: .page, title: "A") }
+        }
+        storeRef = resetting
+        _ = store
+
+        resetting.request(["https://e.test/a"])
+        await settle()
+
+        #expect(
+            resetting.preview(for: "https://e.test/a") == nil,
+            "the cleared store must stay cleared")
+        #expect(resetting.retry.isEmpty, "and no timer may survive into the next account")
+    }
+
+    @Test("one flush at a time, so pacing is not multiplied by the number of priming passes")
+    func flushesDoNotOverlap() async {
+        // ⚠⚠ `flushTask` was released BEFORE the flush body ran, so the guard suppressing a
+        // second flush stopped suppressing anything for the whole duration of one. A connect
+        // burst is a continuous stream of priming passes, and each one landing mid-flight
+        // spawned another loop — every loop granting itself an unpaced first batch, because the
+        // 600ms delay only ever applies from index 1. N loops, N times the request rate, into
+        // the account's 120/min limit whose 429s then put every URL on the ladder.
+        let stub = Stub()
+        var inFlight = 0
+        var peak = 0
+        let store = LinkPreviewStore { urls in
+            stub.batches.append(urls)
+            inFlight += 1
+            peak = max(peak, inFlight)
+            try? await Task.sleep(for: .milliseconds(60))
+            inFlight -= 1
+            return urls.map { LinkPreview(url: $0, status: .ok, kind: .image) }
+        }
+
+        // Five priming passes arriving while the first flush is in the air.
+        for pass in 0..<5 {
+            store.request((0..<30).map { "https://e.test/p\(pass)-\($0)" })
+            try? await Task.sleep(for: .milliseconds(30))
+        }
+        try? await Task.sleep(for: .seconds(3))
+
+        #expect(peak == 1, "never more than one resolve in flight; saw \(peak)")
+    }
+
+    @Test("repaints after every batch, not only when the whole flush drains")
+    func repaintsPerBatch() async {
+        // 200 URLs is 10 batches paced 600ms apart, so deferring the callback to the end held
+        // the first batch's images unpainted for the entire drain — and at the scale this class
+        // is built for ("a connect burst can prime thousands of URLs") that is about a minute of
+        // resolved previews sitting in the cache with nothing told to draw them.
+        let stub = Stub()
+        let store = makeStore(stub)
+        var updates = 0
+        store.onUpdate = { updates += 1 }
+
+        store.request((0..<45).map { "https://e.test/\($0)" })
+        // Long enough for two of the three batches, not all three.
+        try? await Task.sleep(for: .milliseconds(800))
+        #expect(updates >= 2, "each completed batch paints; saw \(updates)")
+    }
+
+    @Test("batches follow priming order, so the visible buffer is not sent to the back")
+    func batchesFollowPrimingOrder() async {
+        // ⚠ `Array(pending)` over a Set gave an order seeded per launch, so which batch a URL
+        // landed in was random — and on a large burst the buffer actually on screen could sit
+        // behind twenty paced batches for the better part of a minute, unreproducibly. Priming
+        // runs outward from the frame the reader is looking at, so insertion order is the
+        // useful order.
+        let stub = Stub()
+        let store = makeStore(stub)
+        let urls = (0..<40).map { "https://e.test/\($0)" }
+        store.request(urls)
+        try? await Task.sleep(for: .milliseconds(800))
+
+        #expect(stub.batches.first == Array(urls.prefix(20)))
     }
 
     // MARK: - Is an answer still coming?

@@ -55,6 +55,10 @@ public final class LinkPreviewStore {
     /// about the URL.
     private var asked = Set<String>()
     private var pending = Set<String>()
+    /// Insertion order for `pending`, so batching follows priming order rather than a Set's
+    /// per-launch hash seed. See `flush`.
+    private var pendingOrder: [String] = []
+    private var flushGeneration = 0
     private var flushTask: Task<Void, Never>?
 
     /// URLs due to be asked about again, and how many times they already have been.
@@ -107,9 +111,22 @@ public final class LinkPreviewStore {
     public func request(_ url: String) {
         dropIfExpired(url)
         guard !asked.contains(url) else { return }
+        // ⚠⚠ The backoff paces BOTH ways back in, not just the timer. `forgetForRetry` takes a
+        // URL out of `asked` while arming a deadline, so without this test the very next priming
+        // pass — a reconnect's backlog replay, a scroll-up history page, the settings re-walk —
+        // sailed through and re-POSTed the whole failed set 24ms after a 429. `tries` kept
+        // climbing while the delay it computed was enforced on one path only, which is a
+        // backoff that backs off exactly when nothing is happening.
+        if let deadline = retry[url]?.at, deadline > now() { return }
         asked.insert(url)
-        pending.insert(url)
+        enqueue(url)
         scheduleFlush()
+    }
+
+    /// Add to the pending set, remembering the order it arrived in.
+    private func enqueue(_ url: String) {
+        guard pending.insert(url).inserted else { return }
+        pendingOrder.append(url)
     }
 
     public func request(_ urls: [String]) {
@@ -118,6 +135,8 @@ public final class LinkPreviewStore {
 
     private func scheduleFlush() {
         guard flushTask == nil else { return }
+        flushGeneration &+= 1
+        let generation = flushGeneration
         flushTask = Task { [weak self] in
             try? await Task.sleep(for: Self.coalesceDelay)
             // ⚠ `try?` swallows the cancellation error, so a cancelled task RESUMES here.
@@ -125,14 +144,42 @@ public final class LinkPreviewStore {
             // newer task scheduled since the reset — and then flush with no coalescing window,
             // leaving two flushes racing.
             guard !Task.isCancelled, let self else { return }
+            await self.flush(generation: generation)
+            // ⚠⚠ Released AFTER the flush, not before it, and the difference is two bugs.
+            //
+            // `reset()` cancels through this handle, so clearing it up front left a sign-out
+            // with nothing to cancel — and `flush()` is suspended at `await resolve` for the
+            // whole round trip. A 401 gets there re-entrantly (`resolveLinkPreviews` publishes
+            // `.unauthorized`, which runs `onAuthLost()` → `reset()`), so the flush resumed on a
+            // store that had just been emptied and refilled it: the previous account's metadata
+            // back in `cache`, a fresh re-ask timer armed, and the next account POSTing account
+            // A's URLs under account B's token.
+            //
+            // It also un-suppressed the guard above for the entire duration of a flush, so every
+            // priming pass arriving mid-flight — and a connect burst is a continuous stream of
+            // them — spawned another flush loop that granted itself an unpaced first batch. The
+            // pacing only ever applied WITHIN one loop, so N loops meant N times the request
+            // rate, straight into the account rate limit whose 429s then put every URL on the
+            // retry ladder: the client manufacturing the storm the pacing exists to prevent.
+            //
+            // ⚠ Guarded by GENERATION, not by a nil check. `reset()` bumps it, so a resumed task
+            // cannot clear — or chain onto — a handle belonging to a newer one.
+            guard self.flushGeneration == generation else { return }
             self.flushTask = nil
-            await self.flush()
+            // Anything primed while this flush was in the air is still waiting for its turn.
+            if !self.pending.isEmpty { self.scheduleFlush() }
         }
     }
 
-    private func flush() async {
-        let urls = Array(pending)
+    private func flush(generation: Int) async {
+        // ⚠ Sorted, not `Array(pending)`. A `Set`'s iteration order is seeded per launch, so the
+        // batch a URL landed in was random — and with a large burst the buffer actually on
+        // screen could sit behind twenty paced batches for the better part of a minute, for no
+        // reason anyone could reproduce. Insertion order is the useful order: priming runs from
+        // the frame the reader is looking at outwards.
+        let urls = pendingOrder.filter { pending.contains($0) }
         pending.removeAll()
+        pendingOrder.removeAll()
         guard !urls.isEmpty else { return }
 
         let batches = stride(from: 0, to: urls.count, by: Self.maxBatch).map {
@@ -140,7 +187,13 @@ public final class LinkPreviewStore {
         }
         for (index, chunk) in batches.enumerated() {
             if index > 0 { try? await Task.sleep(for: Self.interBatchDelay) }
+            // ⚠⚠ Checked on BOTH sides of the await. A sign-out that lands mid-flight must not
+            // have its cleared state refilled by answers already in the air — `reset()` bumps
+            // the generation, so this is the one test that covers a cancel arriving at any point
+            // in a multi-batch flush.
+            guard flushGeneration == generation else { return }
             let previews = await resolve(chunk)
+            guard flushGeneration == generation else { return }
 
             var answered = Set<String>()
             for preview in previews {
@@ -149,7 +202,7 @@ public final class LinkPreviewStore {
                 if preview.status == .ok {
                     retry[preview.url] = nil
                 } else {
-                    armReask(preview.url, expiry: preview.expiry)
+                    noteUnusableAnswer(preview.url, expiry: preview.expiry)
                 }
             }
 
@@ -161,15 +214,25 @@ public final class LinkPreviewStore {
             // looked perfectly fine. A whole-batch failure (offline, 401, 429) is the same case
             // with an empty answer, so it needs no branch of its own any more.
             for url in chunk where !answered.contains(url) { forgetForRetry(url) }
-        }
 
-        // ⚠⚠ UNCONDITIONAL, where this used to fire only if a value landed. Every path above can
-        // move a URL out of the pending set, and once the reveal gate exists, ANY such move can
-        // complete a message's block and paint it — an `unavailable` very often is the answer
-        // that finishes a gate, and so is a URL the server never mentioned. Bumping only on a
-        // stored value left those blocks hidden until something unrelated redrew the table.
-        scheduleReask()
-        onUpdate?()
+            // ⚠⚠ Per BATCH, not once per flush, and unconditional.
+            //
+            // Unconditional, where this used to fire only if a value landed: every path above
+            // can move a URL out of the pending set, and once the reveal gate exists ANY such
+            // move can complete a message's block and paint it — an `unavailable` very often is
+            // the answer that finishes a gate, and so is a URL the server never mentioned.
+            //
+            // Per batch, because batches after the first are paced 600ms apart. Deferring to the
+            // end meant a 200-URL flush (10 batches) held batch 1's images unpainted for the
+            // whole drain, and at the scale this class is built for — "a connect burst can prime
+            // thousands of URLs" — a 2,000-URL flush is 100 batches and roughly a minute of
+            // resolved previews sitting in the cache with nothing told to draw them. The re-ask
+            // timer was deferred identically, so every entry that came due during the drain was
+            // re-queued in one sweep the moment it finished: precisely the synchronised wave
+            // PreviewReask's jitter exists to break up.
+            scheduleReask()
+            onUpdate?()
+        }
     }
 
     // MARK: - Coming back to an answer that wasn't one
@@ -178,8 +241,40 @@ public final class LinkPreviewStore {
     ///
     /// `expiry` nil means nothing was stated, which is what a transport failure produces — the
     /// backoff floor alone then decides.
-    private func armReask(_ url: String, expiry: Date?) {
-        let untilExpiry = expiry.map { $0.timeIntervalSince(now()) } ?? 0
+    /// The server ANSWERED, and the answer was not usable.
+    ///
+    /// ⚠⚠ An absent or unreadable `expiresAt` is a VERDICT here, not an invitation. Mapping it
+    /// to "zero seconds until expiry" made it sail through the short-TTL test and arm a poller
+    /// that `retry` only ever clears on an `ok` — so a `.unavailable` with no stated expiry was
+    /// re-POSTed forever on the 15s→300s ladder, and PreviewReask has no attempt cap by design.
+    /// Clock skew was the same trigger from the other direction: a device an hour fast computes
+    /// a negative `untilExpiry` for every one-hour failure TTL, turning all 300 dead links a
+    /// reader scrolls past into pollers. `LinkPreview.expiry` already documented this as the
+    /// safe direction — "the alternative turns one bad field into an unbounded re-ask loop" —
+    /// and the code did the opposite of its own comment.
+    private func noteUnusableAnswer(_ url: String, expiry: Date?) {
+        guard let expiry else {
+            retry[url] = nil
+            return
+        }
+        arm(url, untilExpiry: expiry.timeIntervalSince(now()))
+    }
+
+    /// Put a URL back in play after NO answer at all — a transport failure, or a URL the server
+    /// omitted from a response it did send.
+    ///
+    /// Distinct from `noteUnusableAnswer` precisely because nothing was stated: there is no
+    /// verdict to respect, so the backoff floor alone decides when to come back.
+    ///
+    /// ⚠ The cached VALUE is deliberately left alone where one exists — a stale card merely due
+    /// a refresh keeps rendering rather than blanking. What changes is `asked`, which re-opens
+    /// the URL to priming.
+    private func forgetForRetry(_ url: String) {
+        asked.remove(url)
+        arm(url, untilExpiry: 0)
+    }
+
+    private func arm(_ url: String, untilExpiry: TimeInterval) {
         let tries = (retry[url]?.tries ?? 0) + 1
         guard
             let delay = PreviewReask.delay(
@@ -191,16 +286,6 @@ public final class LinkPreviewStore {
             return
         }
         retry[url] = (at: now().addingTimeInterval(delay), tries: tries)
-    }
-
-    /// Put a URL back in play after an answer that wasn't one.
-    ///
-    /// ⚠ The cached VALUE is deliberately left alone where one exists — a stale card that is
-    /// merely due a refresh keeps rendering rather than blanking. What changes is `asked`, which
-    /// re-opens the URL to priming.
-    private func forgetForRetry(_ url: String) {
-        asked.remove(url)
-        armReask(url, expiry: nil)
     }
 
     /// Drop the "already asked" mark once the server's stated TTL has lapsed, so the next
@@ -227,9 +312,16 @@ public final class LinkPreviewStore {
             // and the floor never doubled — a "backoff" that was a flat 15-second poll.
             // Whatever comes back re-arms it, or clears it on an `ok`.
             retry[url] = (at: .distantFuture, tries: state.tries)
-            // Queued directly rather than through the `asked` gate: this URL is deliberately
-            // being asked about a second time.
-            pending.insert(url)
+            // Marked `asked` as well as queued, for state consistency rather than as a guard:
+            // the URL genuinely has been asked about, and that is what the set means.
+            //
+            // ⚠ It does NOT carry the duplicate-resolve protection, and the drill says so — the
+            // parked `.distantFuture` deadline above is what `request()` rejects, so removing
+            // this line reddens nothing. Left in because a set called `asked` that excludes a
+            // request currently in flight is a trap for the next reader, not because it defends
+            // anything today.
+            asked.insert(url)
+            enqueue(url)
             queued = true
         }
         if queued { scheduleFlush() }
@@ -297,7 +389,12 @@ public final class LinkPreviewStore {
         cache.removeAll()
         asked.removeAll()
         pending.removeAll()
+        pendingOrder.removeAll()
         retry.removeAll()
+        // ⚠⚠ Bumped, not just cancelled. A flush suspended at `await resolve` resumes whatever
+        // the handle says, and this is what tells it the store it is about to write into is no
+        // longer the store it read from.
+        flushGeneration &+= 1
         flushTask?.cancel()
         flushTask = nil
         reaskTask?.cancel()
