@@ -64,6 +64,19 @@ final class MessageAttachmentsView: UIStackView {
     /// Opens a URL. Held rather than hardcoded so a future in-app viewer is a wiring change.
     var onOpen: ((URL) -> Void)?
 
+    /// Open the message's pictures full-screen, positioned on one of them.
+    ///
+    /// ⚠ The whole message's images, not the tapped one alone, and that is what makes the
+    /// mosaic's cropping safe: a cell fills and clips so the group's height can come from the
+    /// COUNT alone, and every one of those pictures is reachable uncropped from here.
+    ///
+    /// Nil on screens with nothing to present from — the highlights feed, the layout probes —
+    /// where a tap falls back to opening the address.
+    var onOpenGallery: (([LinkPreview], Int) -> Void)?
+
+    /// Set per configure, so a tap knows which pictures it belongs among.
+    private var galleryImages: [LinkPreview] = []
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         axis = .vertical
@@ -98,6 +111,7 @@ final class MessageAttachmentsView: UIStackView {
         // the part that gets cut — so video and audio stack full width, where their transport
         // has room. That is what audio has always done here.
         let images = previews.filter { $0.kind == .image }
+        galleryImages = images
         if images.count > 1 {
             addArrangedSubview(mosaic(images, model: model))
         }
@@ -553,47 +567,37 @@ final class MessageAttachmentsView: UIStackView {
             badge.heightAnchor.constraint(equalToConstant: 40),
         ])
 
-        // Asked after the still lands, which is the only moment the answer exists.
-        PreviewImageLoader.shared.load(path: path, using: model) { [weak badge] _ in
-            badge?.isHidden = !PreviewImageLoader.shared.isAnimated(path)
+        // ⚠ The badge says "this moves", nothing more. Whether a file animates is known only
+        // once its bytes are decoded — `image/webp` says nothing either way — so it appears when
+        // the still lands, which costs no layout: the box was sized from the descriptor and a
+        // badge is paint over it.
+        PreviewImageLoader.shared.load(path: path, using: model) { [weak badge, weak container] _ in
+            let animated = PreviewImageLoader.shared.isAnimated(path)
+            badge?.isHidden = !animated
+            if animated { container?.accessibilityLabel = "Animation" }
         }
 
-        // ⚠ ONE gesture, deciding at fire time. A separate badge-sized target would be a small
-        // control sitting on top of a large one with no way to tell which a tap would hit — the
-        // same objection that killed a corner badge for the mosaic's overflow count. So the tap
-        // asks what this image turned out to be: an animation toggles, anything else opens.
-        let toggle = TapPlaying(url: url) { [weak self, weak container, weak imageView, weak badge] in
-            guard let imageView, let container else { return }
-            guard PreviewImageLoader.shared.isAnimated(path) else {
-                self?.onOpen?(URL(string: url) ?? URL(string: "about:blank")!)
+        // ⚠⚠ Playing INLINE was tried and abandoned: a mosaic tile is 160pt and cropped, and a
+        // lone image is capped in a phone-width column, so a GIF played in place ran inside a
+        // box smaller than itself. Tapping opens the viewer instead, where it plays at its own
+        // size — which is also where a cropped tile becomes recoverable and where the other
+        // pictures in the message are reachable. One gesture, one meaning.
+        attachGalleryTap(to: container, url: url)
+    }
+
+    /// Tap → the viewer, positioned on this picture; or the address, if nothing can present.
+    private func attachGalleryTap(to view: UIView, url: String) {
+        let tap = TapPlaying(url: url) { [weak self] in
+            guard let self else { return }
+            if let onOpenGallery, let at = galleryImages.firstIndex(where: { $0.url == url }) {
+                onOpenGallery(galleryImages, at)
                 return
             }
-            if imageView.image?.images != nil {
-                // Back to the still, and let the frames go.
-                PreviewImageLoader.shared.load(path: path, using: model) { [weak imageView] still in
-                    imageView?.image = still
-                }
-                badge?.isHidden = false
-                container.accessibilityLabel = "Animation, paused"
-                return
-            }
-            badge?.isHidden = true
-            container.accessibilityLabel = "Animation, playing"
-            PreviewImageLoader.shared.loadAnimated(path: path, using: model) {
-                [weak imageView, weak badge] animated in
-                guard let animated else {
-                    // Too large to play, or it stopped being decodable. Say so by putting the
-                    // badge back rather than leaving a still that swallowed a tap.
-                    badge?.isHidden = false
-                    return
-                }
-                imageView?.image = animated
-            }
+            if let parsed = URL(string: url) { onOpen?(parsed) }
         }
-        container.addGestureRecognizer(toggle.recognizer)
-        objc_setAssociatedObject(
-            container, &TapOpening.key, toggle, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
-        container.isUserInteractionEnabled = true
+        view.addGestureRecognizer(tap.recognizer)
+        objc_setAssociatedObject(view, &TapOpening.key, tap, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        view.isUserInteractionEnabled = true
     }
 
     private func label(

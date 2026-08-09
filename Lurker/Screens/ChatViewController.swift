@@ -2451,6 +2451,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             onToggleSpoiler: { [weak self] message, ordinal in
                 self?.toggleSpoiler(message, ordinal: ordinal)
             },
+            onOpenMedia: { [weak self] previews, at in
+                self?.openMediaViewer(previews, at: at)
+            },
             previews: previewContext
         )
     }
@@ -2485,6 +2488,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     }
 
+
+    /// Show a message's pictures full-screen, positioned on the one that was tapped.
+    ///
+    /// ⚠ Presented from the screen rather than from the cell, which has no business knowing how
+    /// to put a view controller on screen — the same split `onToggleSpoiler` uses.
+    private func openMediaViewer(_ previews: [LinkPreview], at index: Int) {
+        guard !previews.isEmpty else { return }
+        present(
+            MediaViewerController(previews: previews, startAt: index, model: viewModel),
+            animated: true)
+    }
 
     /// Link previews for this screen, or nil when both features are off.
     ///

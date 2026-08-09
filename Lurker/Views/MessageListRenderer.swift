@@ -44,6 +44,9 @@ struct MessageListContext {
     /// A spoiler in `Message` was tapped, identified by its ordinal within that message. The
     /// screen owns the toggle and the redraw.
     let onToggleSpoiler: (Message, Int) -> Void
+    /// Present a message's pictures full-screen. Nil on screens with nothing to present from —
+    /// the highlights feed and the layout probes — where a tap falls back to opening the address.
+    var onOpenMedia: (([LinkPreview], Int) -> Void)?
     /// Link previews, or nil on the screens that don't show them.
     ///
     /// Optional rather than always-present because the highlights feed and the throwaway
@@ -212,6 +215,7 @@ struct MessageListRenderer {
                 $0.isAllowed(inlineMedia: previews.inlineMedia, linkPreviews: previews.linkPreviews)
             }
         guard !resolved.isEmpty else { return }
+        cell.onOpenMedia = context.onOpenMedia
         cell.showAttachments(resolved, model: previews.model, traits: context.traits)
     }
 

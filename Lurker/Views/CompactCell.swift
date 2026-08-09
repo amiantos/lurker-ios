@@ -138,6 +138,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         column.isLayoutMarginsRelativeArrangement = true
         attachments.isHidden = true
         attachments.onOpen = { url in UIApplication.shared.open(url) }
+        attachments.onOpenGallery = { [weak self] previews, at in
+            self?.onOpenMedia?(previews, at)
+        }
         // Line up with the message body, which sits one character in from its author (the
         // paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
         // starts flush with the nick while the words above it don't, and the block loses the
@@ -347,6 +350,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     ///
     /// Nothing here is conditional on the settings — the renderer resolves those once per
     /// reload rather than once per cell, and hands down an already-filtered list.
+    /// Present the message's pictures full-screen. Set by the row builder from the screen, like
+    /// `onToggleSpoiler` — a cell has no business knowing how to present a view controller.
+    var onOpenMedia: (([LinkPreview], Int) -> Void)?
+
     func showAttachments(_ previews: [LinkPreview], model: ChatViewModel, traits: UITraitCollection) {
         // Resolved from the screen's traits, not `UITraitCollection.current`, which isn't
         // reliably set during `cellForRowAt` — the same trap MessageRenderer.compactFont was
@@ -372,5 +379,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The closure captures the message it was built for. Left in place, a tap on a recycled
         // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
         onToggleSpoiler = nil
+        onOpenMedia = nil
     }
 }
