@@ -69,6 +69,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
     private let messageText = MessageTextView()
+    /// Inline media / preview cards under the body (off by default; see
+    /// `chat.inline_media.enabled` and `chat.link_previews.enabled`). Hidden and empty for
+    /// the overwhelming majority of rows, which is why it's a plain stack view rather than
+    /// anything lazier — an empty hidden `UIStackView` costs a pointer.
+    private let attachments = MessageAttachmentsView()
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
     /// An optical correction on the bottom of a block's fill.
@@ -131,8 +136,17 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
         column.axis = .vertical
         column.isLayoutMarginsRelativeArrangement = true
+        attachments.isHidden = true
+        attachments.onOpen = { url in UIApplication.shared.open(url) }
+        // Line up with the message body, which sits one character in from its author (the
+        // paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
+        // starts flush with the nick while the words above it don't, and the block loses the
+        // single left edge that makes a run of messages read as one column.
+        attachments.isLayoutMarginsRelativeArrangement = true
+
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
+        column.addArrangedSubview(attachments)
         column.translatesAutoresizingMaskIntoConstraints = false
         fill.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(fill)
@@ -249,6 +263,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             : 0
 
         messageText.attributedText = attributed
+        // Torn down, not merely hidden. Hiding left the previous message's image views — and
+        // their strong references to decoded UIImages, plus a strip's width constraints — alive
+        // for the cell's whole lifetime, quietly defeating the NSCache eviction the loader
+        // relies on. `showAttachments` re-populates when there IS something to show.
+        attachments.clear()
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
@@ -309,6 +328,24 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
                 return true
             }
         }
+    }
+
+    /// Show link previews under the body. Called after `configure`, which has already cleared
+    /// whatever the recycled cell was showing before.
+    ///
+    /// Nothing here is conditional on the settings — the renderer resolves those once per
+    /// reload rather than once per cell, and hands down an already-filtered list.
+    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel, traits: UITraitCollection) {
+        // Resolved from the screen's traits, not `UITraitCollection.current`, which isn't
+        // reliably set during `cellForRowAt` — the same trap MessageRenderer.compactFont was
+        // caught in. The indent scales with Dynamic Type, so it can't be a constant.
+        let indent = MessageRenderer.compactIndent(compatibleWith: traits)
+        // Breathing room below as well as above, matching the web client. Without it an image
+        // sits flush against the next author's name and reads as belonging to the message below
+        // it rather than the one above. INSIDE the cell's fill on purpose: on a highlighted row
+        // the wash should cover the attachment and its padding, since both belong to that message.
+        attachments.layoutMargins = UIEdgeInsets(top: 6, left: indent, bottom: 8, right: 0)
+        attachments.configure(previews: previews, model: model)
     }
 
     func linkURL(at point: CGPoint) -> URL? {

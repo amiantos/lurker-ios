@@ -270,6 +270,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.dataSource = self
         tableView.delegate = self
         listRenderer.register(in: tableView)
+        // Preview metadata landing changes row heights the same way an image landing does —
+        // a row that had no attachment now has one. Same reload either way.
+        viewModel.linkPreviews.onUpdate = { [weak self] in self?.reloadVisibleForPreviews() }
         // The list's own backdrop, not the screen's: the composer, pill and banners above it stay
         // on the system background.
         tableView.backgroundColor = listRenderer.listBackground
@@ -1404,6 +1407,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
+    /// A drag that ends without a fling settles here; one with a fling settles in
+    /// `scrollViewDidEndDecelerating`. Both have to flush, or a preview that arrived mid-gesture
+    /// waits for the row to leave the screen and come back.
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { flushPendingPreviewReload() }
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        flushPendingPreviewReload()
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         // Back at the bottom — however you got there — means caught up: the badge counts
         // "new since you scrolled away", and you're not away anymore.
@@ -2436,7 +2450,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             revealedSpoilers: { [weak self] message in self?.revealedSpoilers[message.id] ?? [] },
             onToggleSpoiler: { [weak self] message, ordinal in
                 self?.toggleSpoiler(message, ordinal: ordinal)
-            }
+            },
+            previews: previewContext
         )
     }
 
@@ -2467,6 +2482,70 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The height can't change: hidden and revealed are the same glyphs, only recoloured.
         guard let index = rows.firstIndex(where: { $0.message?.id == message.id }) else { return }
         tableView.reconfigureRows(at: [IndexPath(row: index, section: 0)])
+
+    }
+
+
+    /// Link previews for this screen, or nil when both features are off.
+    ///
+    /// Nil rather than a context reporting `isEnabled == false`, so the default case — both
+    /// settings off — can't reach any of the preview machinery at all, not even to be told no.
+    private var previewContext: PreviewContext? {
+        let inlineMedia = settings.bool("chat.inline_media.enabled", default: false)
+        let linkPreviews = settings.bool("chat.link_previews.enabled", default: false)
+        guard inlineMedia || linkPreviews else { return nil }
+        return PreviewContext(
+            store: viewModel.linkPreviews,
+            model: viewModel,
+            inlineMedia: inlineMedia,
+            linkPreviews: linkPreviews
+        )
+    }
+
+    /// Re-lay-out the visible rows because preview METADATA arrived.
+    ///
+    /// A reload rather than a redraw: a row that had no attachment now has one, which changes
+    /// its height, and a self-sizing cell only remeasures on reload. Confined to what's on
+    /// screen — an off-screen row is measured correctly whenever it's dequeued.
+    ///
+    /// Note this fires for metadata only, never for image bytes. Because every attachment's
+    /// height is fixed by its metadata, an image arriving can't change a height, so it's
+    /// assigned straight into its view — see `MessageAttachmentsView.apply`.
+    ///
+    /// `withoutAnimation` because the alternative is every visible row crossfading whenever any
+    /// one image finishes, which reads as the list glitching rather than as content arriving.
+    private func reloadVisibleForPreviews() {
+        // Never mid-gesture. Reloading rows out from under an active drag or a decelerating
+        // fling remeasures self-sizing cells, the content size moves, and the in-flight scroll
+        // animation resolves against the new geometry — which is what reset scroll to the bottom.
+        guard !tableView.isDragging, !tableView.isDecelerating else {
+            // ⚠ But remember to come back. A row already ON SCREEN when metadata landed is not
+            // re-dequeued when the gesture ends, so without this it stayed bare until it left
+            // the viewport and returned. Only rows scrolling IN are covered by the dequeue.
+            previewReloadPending = true
+            return
+        }
+        previewReloadPending = false
+        guard let visible = tableView.indexPathsForVisibleRows, !visible.isEmpty else { return }
+
+        // A preview appearing grows the row, and `reloadRows` preserves contentOffset — so a
+        // reader sitting at the live tail gets pushed up by however tall the attachment is, and
+        // the image they were waiting for lands off-screen. Follow it down, exactly as a live
+        // append does.
+        let wasNearBottom = isNearBottom
+        UIView.performWithoutAnimation {
+            tableView.reloadRows(at: visible, with: .none)
+        }
+        if wasNearBottom { scrollToBottom() }
+    }
+
+    /// Set when metadata arrived mid-gesture, so the reload can be retried once the list settles.
+    private var previewReloadPending = false
+
+    /// Run a deferred preview reload once scrolling stops.
+    private func flushPendingPreviewReload() {
+        guard previewReloadPending else { return }
+        reloadVisibleForPreviews()
     }
 
     /// Whether the row at `index` is status narration (see `MessageRow.isStatus`). Out-of-range

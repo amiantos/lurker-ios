@@ -393,7 +393,8 @@ enum MessageRenderer {
         traits: UITraitCollection = .current,
         settings: Settings = Settings(),
         highlighter: NickHighlighter? = nil,
-        revealed: Set<Int> = []
+        revealed: Set<Int> = [],
+        hiddenUrls: Set<String> = []
     ) -> NSAttributedString {
         let base = compactFont(compatibleWith: traits)
 
@@ -404,7 +405,10 @@ enum MessageRenderer {
             line.append(NSAttributedString(
                 string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
-            line.append(body(message, base: base, fallback: color, highlighter: highlighter, revealed: revealed))
+            line.append(
+                body(
+                    message, base: base, fallback: color, highlighter: highlighter,
+                    revealed: revealed, hiddenUrls: hiddenUrls))
             // Two, to clear the `* ` this line opens with.
             return spaced(line, flushFirstLine: true, indentCharacters: 2, traits: traits)
         }
@@ -427,7 +431,7 @@ enum MessageRenderer {
                 // fallback IS the log's primary text colour.
                 attributedString: body(
                     message, base: base, fallback: Palette.fg,
-                    highlighter: highlighter, revealed: revealed
+                    highlighter: highlighter, revealed: revealed, hiddenUrls: hiddenUrls
                 )
             ),
             flushFirstLine: false, traits: traits
@@ -594,7 +598,8 @@ enum MessageRenderer {
 
     private static func body(
         _ message: Message, base: UIFont, fallback: UIColor,
-        highlighter: NickHighlighter? = nil, revealed: Set<Int> = []
+        highlighter: NickHighlighter? = nil, revealed: Set<Int> = [],
+        hiddenUrls: Set<String> = []
     ) -> NSAttributedString {
         let attributed = NSMutableAttributedString()
         // The spans the sender colored themselves with mIRC codes — an explicit color wins
@@ -715,6 +720,38 @@ enum MessageRenderer {
                     || spoilered.contains { NSIntersectionRange($0, range).length > 0 }
                 if taken { continue }
                 attributed.addAttribute(.foregroundColor, value: hashedColor(text.substring(with: range)), range: range)
+            }
+        }
+        // ⚠⚠ Take out the addresses whose picture is about to stand in for them, LAST — after
+        // every pass that works in the assembled string's coordinates. Deleting earlier would
+        // invalidate every range `mircColored`, `spoilered` and `links` are holding, and the
+        // nick pass below still needs them.
+        //
+        // Back to front, so each deletion leaves the earlier offsets untouched. Then trim the
+        // ends, which is what makes the result read as a sentence rather than as one with a hole
+        // in it: dropping the URL from "look at this: <url>" leaves a colon and a trailing
+        // space, and dropping it from a message that WAS only a link leaves pure whitespace,
+        // which still paints a blank line above the picture.
+        if !hiddenUrls.isEmpty {
+            for match in URLMatcher.matches(in: attributed.string).reversed()
+            where hiddenUrls.contains(match.href) {
+                attributed.deleteCharacters(in: match.range)
+            }
+            let full = attributed.string as NSString
+            let trailing = full.length - (full.rangeOfCharacter(
+                from: CharacterSet.whitespacesAndNewlines.inverted,
+                options: .backwards
+            ).location + 1)
+            if trailing > 0, trailing <= full.length {
+                attributed.deleteCharacters(
+                    in: NSRange(location: full.length - trailing, length: trailing))
+            }
+            let leading = (attributed.string as NSString).rangeOfCharacter(
+                from: CharacterSet.whitespacesAndNewlines.inverted)
+            if leading.location != NSNotFound, leading.location > 0 {
+                attributed.deleteCharacters(in: NSRange(location: 0, length: leading.location))
+            } else if leading.location == NSNotFound {
+                attributed.deleteCharacters(in: NSRange(location: 0, length: attributed.length))
             }
         }
         return attributed

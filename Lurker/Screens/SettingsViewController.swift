@@ -73,8 +73,24 @@ final class SettingsViewController: UITableViewController {
 
     /// Settings that change how the conversation *looks* rather than what the app does with a
     /// message. Its own section, so the behavior list above stays a list of behaviors.
+    ///
+    /// The two preview toggles live here and not under Chat because they change what a message
+    /// *looks like*, not what the app does with it — and they're two rather than one because
+    /// wanting your friends' screenshots to show is a different appetite from wanting every
+    /// article to sprout a card. Both default off.
+    /// Keys that only mean anything when the instance has link previews enabled
+    /// (`LURKER_LINK_PREVIEWS`). Held as a set here rather than read off the registry because the
+    /// curated lists in this file already name their keys by hand, and the server doesn't send
+    /// the flag on the wire — the Swift `SettingOption` carries no `requiresFeature`.
+    private static let requiresLinkPreviews: Set<String> = [
+        "chat.inline_media.enabled",
+        "chat.link_previews.enabled",
+    ]
+
     private static let appearanceSettings: [(key: String, label: String)] = [
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
+        ("chat.inline_media.enabled", "Inline media"),
+        ("chat.link_previews.enabled", "Link previews"),
     ]
 
     /// Preferences that belong to this install rather than to the account.
@@ -182,7 +198,15 @@ final class SettingsViewController: UITableViewController {
         // heard of gets no row rather than a control whose write would be rejected.
         func resolve(_ entries: [(key: String, label: String)]) -> [SettingRow] {
             entries.compactMap { entry in
-                registry[entry.key].map { SettingRow(label: entry.label, option: $0) }
+                // A setting belonging to a disabled instance feature gets no row at all, rather
+                // than a switch whose write the server has no route to act on. Link previews are
+                // gated by an operator env flag (LURKER_LINK_PREVIEWS): when it's off the routes
+                // aren't even mounted, so offering the toggles would be offering nothing.
+                guard let option = registry[entry.key],
+                    !Self.requiresLinkPreviews.contains(entry.key)
+                        || viewModel.features.linkPreviews
+                else { return nil }
+                return SettingRow(label: entry.label, option: option)
             }
         }
         let rows = resolve(Self.chatSettings)

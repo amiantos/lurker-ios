@@ -44,6 +44,25 @@ struct MessageListContext {
     /// A spoiler in `Message` was tapped, identified by its ordinal within that message. The
     /// screen owns the toggle and the redraw.
     let onToggleSpoiler: (Message, Int) -> Void
+    /// Link previews, or nil on the screens that don't show them.
+    ///
+    /// Optional rather than always-present because the highlights feed and the throwaway
+    /// layout probes build a context without a view model, and previews are decoration those
+    /// two have no business fetching.
+    let previews: PreviewContext?
+}
+
+/// What a row needs to draw link previews. Bundled so `MessageListContext` grows by one
+/// optional field rather than four.
+struct PreviewContext {
+    let store: LinkPreviewStore
+    let model: ChatViewModel
+    /// Resolved once per reload rather than once per cell — the settings can't change
+    /// mid-reload, and `Settings.bool` on every visible row is pure repetition.
+    let inlineMedia: Bool
+    let linkPreviews: Bool
+    /// Whether either feature is on. Both off and nothing below this ever runs.
+    var isEnabled: Bool { inlineMedia || linkPreviews }
 }
 
 /// Turns a `MessageRow` into a cell.
@@ -96,7 +115,8 @@ struct MessageListRenderer {
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
-                    revealed: context.revealedSpoilers(message)
+                    revealed: context.revealedSpoilers(message),
+                    hiddenUrls: Self.hiddenUrls(in: message, context: context)
                 ),
                 header: blockHeader,
                 startsBlock: blockHeader != nil,
@@ -104,6 +124,7 @@ struct MessageListRenderer {
                 highlighted: message.matched,
                 traits: context.traits
             )
+            attach(preview: message, to: cell, context: context)
         case .line(let message):
             cell.onToggleSpoiler = { [onToggleSpoiler = context.onToggleSpoiler] ordinal in
                 onToggleSpoiler(message, ordinal)
@@ -112,13 +133,15 @@ struct MessageListRenderer {
                 MessageRenderer.renderCompactBody(
                     message, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
-                    revealed: context.revealedSpoilers(message)
+                    revealed: context.revealedSpoilers(message),
+                    hiddenUrls: Self.hiddenUrls(in: message, context: context)
                 ),
                 header: nil, startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched,
                 traits: context.traits
             )
+            attach(preview: message, to: cell, context: context)
         case .consolidated(let summary):
             cell.configure(
                 MessageRenderer.renderCompactConsolidation(summary, traits: context.traits),
@@ -139,6 +162,94 @@ struct MessageListRenderer {
             preconditionFailure("markers are handled above")
         }
         return cell
+    }
+
+    /// Draw a message's link previews, if it has any and the reader wants them.
+    ///
+    /// The order matters and is the whole reason this is lazy: `PreviewSelection.urls` returns
+    /// empty the moment both settings are off, so a reader with the features disabled — the
+    /// default — pays one boolean check per row and nothing else. No regex, no store lookup,
+    /// no request.
+    ///
+    /// ⚠ Reads ONLY — this never asks for a preview. Requesting is done at message ingest
+    /// (`ChatViewModel.primePreviews`), so by the time a row is drawn its preview is usually
+    /// already known and the row's height is right on first measure. Asking from here is what
+    /// made scrolling into history grow rows under the reader.
+    private func attach(preview message: Message, to cell: CompactCell, context: MessageListContext) {
+        guard let previews = context.previews, previews.isEnabled else { return }
+        // ⚠ The same predicate priming uses, so the fetch path and the render path cannot
+        // disagree about what is previewable. This screen mounts cells for narration too — a
+        // quit reason or a topic carrying a URL reaches here — and nothing primed those.
+        guard PreviewSelection.isPreviewable(message.type) else { return }
+
+        let urls = PreviewSelection.urls(
+            in: message.text,
+            inlineMedia: previews.inlineMedia,
+            linkPreviews: previews.linkPreviews
+        )
+        guard !urls.isEmpty else { return }
+
+        // ⚠⚠ ATOMIC REVEAL. A message shows NONE of its attachments until every URL in it has
+        // settled, then the whole block appears at once. The rule it serves: no layout may
+        // depend on WHEN A SIBLING RESOLVES — deriving the arrangement from whatever has
+        // arrived meant a message with three images, one already cached from an earlier post,
+        // painted as a lone picture and then re-arranged into a mosaic when the other two
+        // landed. A scrolled-up reader never gets that back: the growth has already happened by
+        // the time anything hears about it.
+        //
+        // ⚠⚠ ASKED, never timed, and `allSettled` fails open in every branch — see its own note.
+        // Deciding the arrangement from the URL LIST instead was considered and does not work:
+        // an extensionless host is charged to the card budget and flips to media when it
+        // resolves, so the prediction is wrong exactly where it matters.
+        guard previews.store.allSettled(urls) else { return }
+
+        // Re-checked against the SERVER's answer, not the extension guess that prompted the
+        // request: an extensionless URL that turns out to be a PNG is inline media, and a
+        // `.jpg` that redirects to an HTML login page is not.
+        let resolved = urls
+            .compactMap { previews.store.preview(for: $0) }
+            .filter {
+                $0.isAllowed(inlineMedia: previews.inlineMedia, linkPreviews: previews.linkPreviews)
+            }
+        guard !resolved.isEmpty else { return }
+        cell.showAttachments(resolved, model: previews.model, traits: context.traits)
+    }
+
+    /// The URLs whose address may be dropped from a message's body, because the picture they
+    /// produced is about to take its place.
+    ///
+    /// Nil-safe and cheap for the overwhelmingly common case: no previews on this screen, or
+    /// nothing resolved, and it answers with an empty set before touching the text.
+    ///
+    /// ⚠ Only MEDIA is a candidate. A card keeps its address — its heading is different text
+    /// from the URL, and the address is what you copy.
+    ///
+    /// ⚠⚠ Gated on the same `allSettled` as the attachments, and that is the point of doing it
+    /// here rather than in the cell: a URL vanishing from the body is a layout change of exactly
+    /// the same kind as a picture appearing, so the two have to be the SAME event. Driving the
+    /// text off "whatever has resolved" would drop the address a frame before the image arrived
+    /// to replace it.
+    static func hiddenUrls(in message: Message, context: MessageListContext) -> Set<String> {
+        guard let previews = context.previews, previews.isEnabled,
+            PreviewSelection.isPreviewable(message.type)
+        else { return [] }
+        let urls = PreviewSelection.urls(
+            in: message.text,
+            inlineMedia: previews.inlineMedia,
+            linkPreviews: previews.linkPreviews
+        )
+        guard !urls.isEmpty, previews.store.allSettled(urls) else { return [] }
+
+        let media = Set(
+            urls.compactMap { previews.store.preview(for: $0) }
+                .filter {
+                    $0.status == .ok && $0.kind.isDirectMedia
+                        && $0.isAllowed(
+                            inlineMedia: previews.inlineMedia, linkPreviews: previews.linkPreviews)
+                }
+                .map(\.url))
+        guard !media.isEmpty else { return [] }
+        return PreviewHiding.hideableUrls(in: message.text, candidates: media)
     }
 
     /// The header for a message, or nil when it continues the block above it.
