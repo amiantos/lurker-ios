@@ -69,6 +69,15 @@ final class SettingsViewController: UITableViewController {
         ("chat.consolidate_max_names", "Max consolidated nicks"),
         ("chat.show_event_host", "Show user@host on events"),
         ("chat.show_join_account", "Show account on joins"),
+        // The `smart` rung's tuning (#63), last because it only means anything on that one
+        // rung. Greying follows the registry's `dependsOn` like everything else here — which,
+        // per the note above, stays live while *either* device class is on `smart`. These are
+        // shared settings, so a phone on "Show all" can still tune the desktop's filter.
+        ("chat.smart_filter_delay", "\"Recently spoke\" window (min)"),
+        ("chat.smart_filter_join_unmask", "Reveal join on speaking (min)"),
+        ("chat.smart_filter_join", "Filter joins"),
+        ("chat.smart_filter_quit", "Filter parts and quits"),
+        ("chat.smart_filter_nick", "Filter nick changes"),
     ]
 
     /// Settings that change how the conversation *looks* rather than what the app does with a
@@ -123,15 +132,6 @@ final class SettingsViewController: UITableViewController {
             }
         }
     }
-
-    /// Suffix marking a choice this app reads but doesn't act on.
-    ///
-    /// The choice text itself comes from the registry (`SettingOption.label(forChoice:)`), so
-    /// the phone says what the web says without a second copy to keep in step. What's local
-    /// is this: `smart` renders as "no filter" here (see `EventMode.smart`), and it only ever
-    /// appears in the picker when it is already the stored value, so the row has to report
-    /// what is actually in force rather than quietly reading back as something else.
-    private static let unsupportedChoiceSuffix = " (web only)"
 
     /// A row that's ready to render: the curated label plus the registry entry describing how
     /// to edit it. Resolved once per rebuild so the table isn't doing lookups per cell.
@@ -381,34 +381,21 @@ final class SettingsViewController: UITableViewController {
             // what the row needs to say when nothing is being touched.
             let current = viewModel.state.settings.effective(option.key)?.stringValue
                 ?? option.default.stringValue ?? ""
-            // Choice filtering and labels are the EVENT TIER's, so they're gated on its key.
-            // This branch serves any `.enum` option; left ungated, the next enum setting
-            // added here would silently lose a choice it happened to spell `smart` and get
-            // `all`/`none` relabelled "Show all"/"Hide all".
-            let isEventTier = option.key == EventFilter.modeKey
             let button = UIButton(type: .system)
             button.showsMenuAsPrimaryAction = true
             // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
             // the write still goes through `write`, and the authoritative value arrives back
             // on the `settings` frame.
             button.changesSelectionAsPrimaryAction = true
-            // A rung this app can't deliver is offered only when it's ALREADY the value —
-            // the key is shared with the web, so a choice made at a desk has to stay visible
-            // here, but the picker must not let you newly pick something we'd then ignore.
-            let choices = option.choices.filter { choice in
-                guard isEventTier else { return true }
-                return choice == current
-                    || EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true
-            }
-            let title = { (choice: String) -> String in
-                let base = option.label(forChoice: choice)
-                let unsupported =
-                    isEventTier && !(EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true)
-                return unsupported ? base + Self.unsupportedChoiceSuffix : base
-            }
-            button.menu = UIMenu(children: choices.map { choice in
-                UIAction(title: title(choice), state: choice == current ? .on : .off) {
-                    [weak self] _ in
+            // Every choice is offered, with the registry's own wording — this app implements
+            // all three rungs of the event tier (#63 closed the last one), and nothing else
+            // here is device-specific. Choice labels come from the registry
+            // (`SettingOption.label(forChoice:)`), so the phone says what the web says without
+            // a second copy to keep in step.
+            button.menu = UIMenu(children: option.choices.map { choice in
+                UIAction(
+                    title: option.label(forChoice: choice), state: choice == current ? .on : .off
+                ) { [weak self] _ in
                     self?.write(option.key, .string(choice))
                 }
             })
@@ -417,7 +404,7 @@ final class SettingsViewController: UITableViewController {
             // configuration-update pass — after this synchronous `sizeToFit()`, which would
             // leave `accessoryView` fitted to an empty button and the control clipped on the
             // first render of this screen. Same class of trap as the stack-view sizing above.
-            button.setTitle(title(current), for: .normal)
+            button.setTitle(option.label(forChoice: current), for: .normal)
             button.isEnabled = enabled
             button.sizeToFit()
             cell.accessoryView = button

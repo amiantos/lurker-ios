@@ -21,7 +21,7 @@ final class LurkerStoreTests: XCTestCase {
             buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: hydrated),
             messages: messages,
             hydrated: hydrated,
-            append: false
+            append: false, speakers: nil
         )
     }
 
@@ -119,7 +119,7 @@ final class LurkerStoreTests: XCTestCase {
             buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
             messages: [msg(2, "b"), msg(3, "c")],
             hydrated: true,
-            append: true
+            append: true, speakers: nil
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["a", "b", "c"])
 
@@ -128,7 +128,7 @@ final class LurkerStoreTests: XCTestCase {
             buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
             messages: [msg(9, "z")],
             hydrated: true,
-            append: false
+            append: false, speakers: nil
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["z"])
     }
@@ -140,7 +140,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(.history(
             networkId: 1, target: "#lurker",
             events: [msg(3, "c"), msg(4, "d"), msg(5, "e")],
-            mode: .before, hasMoreOlder: false, hasMoreNewer: false
+            mode: .before, hasMoreOlder: false, hasMoreNewer: false, speakers: nil
         ))
 
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["c", "d", "e", "f"])
@@ -155,7 +155,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(.history(
             networkId: 1, target: "#lurker",
             events: [msg(9, "old1"), msg(10, "anchor"), msg(11, "old2")],
-            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["old1", "anchor", "old2"])
         XCTAssertTrue(store.state.buffers[chanKey]!.hydrated)
@@ -167,7 +167,7 @@ final class LurkerStoreTests: XCTestCase {
         // Jump to an old message: the slice reports newer messages remain → detached.
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
-            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer, "an around slice below the tail detaches")
         // A live message must NOT splice onto the old slice.
@@ -183,7 +183,7 @@ final class LurkerStoreTests: XCTestCase {
         // Jump to a much older message (a bookmark, #42) — the buffer detaches.
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
-            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         // Traffic arrives while detached: held out of the log, but it advances the resume
         // cursor, so the server will never re-send it in a gap.
@@ -193,7 +193,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(.backlog(
             buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
             messages: [msg(700, "while away")],
-            hydrated: true, append: true
+            hydrated: true, append: true, speakers: nil
         ))
         XCTAssertEqual(
             store.state.messages[chanKey]!.map(\.text), ["anchor"],
@@ -206,7 +206,7 @@ final class LurkerStoreTests: XCTestCase {
         // Which still works, and is where the missing rows come from.
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(600, "missed"), msg(700, "while away")],
-            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["missed", "while away"])
         XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer)
@@ -224,12 +224,12 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
-            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         // Walking forward. This page still reports more ahead, so we stay detached.
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(11, "b"), msg(12, "c")],
-            mode: .after, hasMoreOlder: true, hasMoreNewer: true
+            mode: .after, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         // The final page is now in flight. The server has already read up to 13 — so 14 and 15,
         // said while it's on the wire, cannot be in it.
@@ -241,7 +241,7 @@ final class LurkerStoreTests: XCTestCase {
         )
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(13, "d")],
-            mode: .after, hasMoreOlder: true, hasMoreNewer: false
+            mode: .after, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer, "reaching the tail re-attaches")
         XCTAssertEqual(
@@ -261,7 +261,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "old")],
-            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true, speakers: nil
         ))
         store.apply(.live(networkId: 1, target: "#lurker", message: msg(500, "during")))
         store.apply(.live(networkId: 1, target: "#lurker", message: msg(501, "after the query")))
@@ -269,7 +269,7 @@ final class LurkerStoreTests: XCTestCase {
         // not 501 (it didn't).
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(499, "x"), msg(500, "during")],
-            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertEqual(
             store.state.messages[chanKey]!.map(\.text), ["x", "during", "after the query"],
@@ -286,12 +286,12 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "old")],
-            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true, speakers: nil
         ))
         store.apply(.live(networkId: 1, target: "#lurker", message: msg(0, "CTCP reply")))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(500, "latest")],
-            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["latest", "CTCP reply"])
     }
@@ -303,17 +303,17 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "anchor")],
-            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         store.apply(.live(networkId: 1, target: "#lurker", message: msg(600, "held")))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(80, "second anchor")],
-            mode: .around, hasMoreOlder: true, hasMoreNewer: true
+            mode: .around, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         XCTAssertEqual(store.state.heldLive[chanKey], [])
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(700, "tail")],
-            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertEqual(
             store.state.messages[chanKey]!.map(\.text), ["tail"],
@@ -336,13 +336,13 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(10, "old")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "old")],
-            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true, speakers: nil
         ))
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer)
         // Return to live: the latest slice re-attaches (clears the detached flag).
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(500, "latest")],
-            mode: .latest, hasMoreOlder: true, hasMoreNewer: false
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer, "latest re-attaches to the tail")
         // Live appends resume now that we're attached.
@@ -356,20 +356,20 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(500, "recent")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(10, "anchor"), msg(11, "b")],
-            mode: .around, hasMoreOlder: false, hasMoreNewer: true
+            mode: .around, hasMoreOlder: false, hasMoreNewer: true, speakers: nil
         ))
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer, "detached after the around jump")
         // Read forward: an `after` page appends newer and, with more still ahead, stays detached.
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(11, "b"), msg(12, "c"), msg(13, "d")],
-            mode: .after, hasMoreOlder: true, hasMoreNewer: true
+            mode: .after, hasMoreOlder: true, hasMoreNewer: true, speakers: nil
         ))
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["anchor", "b", "c", "d"], "appends, dedupes the overlap")
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreNewer, "still detached while newer remains")
         // The final page reaches the tail → re-attach, and live appends resume.
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(14, "e")],
-            mode: .after, hasMoreOlder: true, hasMoreNewer: false
+            mode: .after, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertFalse(store.state.buffers[chanKey]!.hasMoreNewer, "reaching the tail re-attaches")
         store.apply(.live(networkId: 1, target: "#lurker", message: msg(15, "live")))
@@ -381,7 +381,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e")]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(4, "d")],
-            mode: .before, hasMoreOlder: true, hasMoreNewer: false
+            mode: .before, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertTrue(store.state.buffers[chanKey]!.hasMoreOlder)
     }
@@ -397,7 +397,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: false, messages: []))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(5, "e")],
-            mode: .latest, hasMoreOlder: false, hasMoreNewer: false
+            mode: .latest, hasMoreOlder: false, hasMoreNewer: false, speakers: nil
         ))
 
         let buffer = store.state.buffers[chanKey]!
@@ -645,6 +645,133 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertNil(store.state.buffers["1::#nowhere"], "no row should be conjured for a patch alone")
     }
 
+    // MARK: - Speakers (#63)
+    //
+    // Who has spoken here and when. Seeded from the server's list — the only source that can
+    // see past the loaded window — and kept current from live traffic, which is the only source
+    // that can see past the seed. The `.smart` event tier reads it, so an entry that is missing
+    // or stale is a line the reader never sees.
+
+    private static let t0 = Date(timeIntervalSince1970: 1_784_548_800)
+
+    private func speech(_ id: Int, _ nick: String, at date: Date, isSelf: Bool = false) -> Message {
+        Message(id: id, type: .message, nick: nick, text: "hi", isSelf: isSelf, date: date)
+    }
+
+    func testABacklogSeedsTheSpeakerMap() {
+        let store = LurkerStore()
+        store.apply(.backlog(
+            buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
+            messages: [], hydrated: true, append: false,
+            speakers: [Speaker(nick: "Alice", lastSpoke: Self.t0)]
+        ))
+        // Keyed case-insensitively, like every other nick lookup in the store.
+        XCTAssertEqual(store.state.speakers[chanKey]?["alice"], Self.t0)
+    }
+
+    /// A history reply is the *primary* seed: a fresh connect ships shells, so a buffer's first
+    /// real speaker list arrives with the `latest` fetch its first open makes.
+    func testAHistoryReplySeedsTheSpeakerMap() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [], mode: .latest,
+            hasMoreOlder: false, hasMoreNewer: false,
+            speakers: [Speaker(nick: "bob", lastSpoke: Self.t0)]
+        ))
+        XCTAssertEqual(store.state.speakers[chanKey]?["bob"], Self.t0)
+    }
+
+    /// A frame that never mentioned speakers says nothing about them. A shell deliberately omits
+    /// the field so a re-snapshot can't wipe a map the client already has — read as an empty
+    /// list it would instead claim nobody has spoken, hiding every filterable event.
+    func testAFrameWithoutSpeakersLeavesTheMapAlone() {
+        let store = LurkerStore()
+        store.apply(.backlog(
+            buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
+            messages: [], hydrated: true, append: false,
+            speakers: [Speaker(nick: "alice", lastSpoke: Self.t0)]
+        ))
+        store.apply(channelBuffer(hydrated: false, messages: [])) // a shell: speakers nil
+        XCTAssertEqual(store.state.speakers[chanKey]?["alice"], Self.t0)
+    }
+
+    /// The seed merges rather than replaces: the server's list was computed when it built the
+    /// frame, and anything said since arrived here as a live event. On a `history` reply — which
+    /// is fetched while the buffer is open — a wholesale replace would roll those back
+    /// mid-conversation.
+    func testASeedNeverWalksALiveEntryBackwards() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        let later = Self.t0.addingTimeInterval(600)
+        store.apply(.live(networkId: 1, target: "#lurker", message: speech(1, "alice", at: later)))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [], mode: .latest,
+            hasMoreOlder: false, hasMoreNewer: false,
+            speakers: [Speaker(nick: "alice", lastSpoke: Self.t0)]
+        ))
+        XCTAssertEqual(store.state.speakers[chanKey]?["alice"], later)
+    }
+
+    /// Live speech is recorded — the half no fetch supplies, and the whole basis of the
+    /// join-unmask rule. Notices and our own messages don't count, matching what the server's
+    /// `listSpeakers` selects: the question the filter asks is whether anyone *else* was talking.
+    func testOnlySomebodyElsesRealSpeechIsRecorded() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: speech(1, "alice", at: Self.t0)))
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 2, type: .action, nick: "bob", text: "waves", date: Self.t0)
+        ))
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 3, type: .notice, nick: "botty", text: "ad", date: Self.t0)
+        ))
+        store.apply(.live(
+            networkId: 1, target: "#lurker", message: speech(4, "me", at: Self.t0, isSelf: true)
+        ))
+        XCTAssertEqual(store.state.speakers[chanKey]?.nicks, ["alice", "bob"])
+    }
+
+    /// Same seat below the id de-dupe as the membership fold, and for the same reason: a
+    /// backlog/live overlap replaying an old line must not restate a speaker's recency.
+    func testAReplayedMessageDoesNotWalkASpeakerBackwards() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        let later = Self.t0.addingTimeInterval(600)
+        store.apply(.live(networkId: 1, target: "#lurker", message: speech(1, "alice", at: later)))
+        // The same id, re-sent with the older timestamp it originally carried.
+        store.apply(.live(networkId: 1, target: "#lurker", message: speech(1, "alice", at: Self.t0)))
+        XCTAssertEqual(store.state.speakers[chanKey]?["alice"], later)
+    }
+
+    /// A rename carries the entry with it, so someone who spoke and then went `_afk` doesn't
+    /// read as a stranger when they quit ten seconds later.
+    func testANickChangeCarriesTheSpeakerEntry() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: speech(1, "alice", at: Self.t0)))
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(
+                id: 2, type: .nick, nick: "alice", text: nil, date: Self.t0, newNick: "alice_afk"
+            )
+        ))
+        XCTAssertEqual(store.state.speakers[chanKey]?.nicks, ["alice_afk"])
+        XCTAssertEqual(store.state.speakers[chanKey]?["alice_afk"], Self.t0)
+    }
+
+    /// Closed is absent: the reopen's hydrate brings a fresh server list, and a stale map would
+    /// decide which of the new backlog's events render.
+    func testClosingABufferForgetsItsSpeakers() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: speech(1, "alice", at: Self.t0)))
+        store.apply(.bufferClosed(networkId: 1, target: "#lurker"))
+        XCTAssertNil(store.state.speakers[chanKey])
+    }
+
     // MARK: - Topic
     //
     // The server has three ways of saying what a channel's topic is, and the client needs
@@ -863,7 +990,7 @@ final class LurkerStoreTests: XCTestCase {
                 buffer: Buffer(networkId: 1, target: "#other", kind: .channel, hydrated: true),
                 messages: [msg(2, "elsewhere")],
                 hydrated: true,
-                append: false
+                append: false, speakers: nil
             )
         )
 
@@ -886,7 +1013,7 @@ final class LurkerStoreTests: XCTestCase {
             ),
             messages: messages,
             hydrated: hydrated,
-            append: false
+            append: false, speakers: nil
         )
     }
 
@@ -1057,7 +1184,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(
             .backlog(
                 buffer: Buffer(networkId: 1, target: "#other", kind: .channel, hydrated: true),
-                messages: [], hydrated: true, append: false
+                messages: [], hydrated: true, append: false, speakers: nil
             )
         )
         store.apply(.backlogComplete)
@@ -1177,7 +1304,7 @@ final class LurkerStoreTests: XCTestCase {
         store.apply(channelBuffer(hydrated: true, messages: [saved(msg(2, "kept"))]))
         store.apply(.history(
             networkId: 1, target: "#lurker", events: [msg(1, "older")],
-            mode: .before, hasMoreOlder: false, hasMoreNewer: false
+            mode: .before, hasMoreOlder: false, hasMoreNewer: false, speakers: nil
         ))
         XCTAssertTrue(store.state.isBookmarked(2), "the older page said nothing about id 2")
     }
@@ -1204,7 +1331,7 @@ final class LurkerStoreTests: XCTestCase {
             buffer: Buffer(networkId: nil, target: ":system:", kind: .system, hydrated: true),
             messages: [msg(2, "an unrelated system line that happens to be id 2")],
             hydrated: true,
-            append: false
+            append: false, speakers: nil
         ))
         XCTAssertTrue(store.state.isBookmarked(2))
     }

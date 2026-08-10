@@ -120,6 +120,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Snapshotted like `settings` above, and for the same reason: the typing ticker rebuilds
     /// rows with no `state` in hand, and both paths have to agree on what they're rendering.
     private var awayState: AwayState?
+    /// Who has spoken in this buffer and when, as of the last apply — what the `.smart` event
+    /// tier (#63) judges churn against, and what ranks a truncated summary's names.
+    ///
+    /// Snapshotted like `settings` and `awayState` above, and for the same reason.
+    private var speakers = SpeakerMap()
+    /// Our own nick on this buffer's network, as of the last apply. Nil for the system buffer,
+    /// which has no network to have one on. Read by the `.smart` tier, which never hides your
+    /// own churn — and `isSelf` doesn't cover it, since the server stamps that on messages you
+    /// sent rather than on the JOIN it saw you make.
+    private var ownNick: String?
     /// Re-reads `typists` while anybody is typing.
     ///
     /// Needed because a typing entry's lease expires by the *clock*, not by a frame: the last
@@ -522,6 +532,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // arrive, and the `/unignore` that should bring lines back does nothing
                     // visible at all. (`===` is the right test — see `IgnoreSet`.)
                     && old.ignores === new.ignores
+                    // Under the `smart` tier (#63) the speaker map decides which events render
+                    // at all, and a `history` reply can re-seed it without changing a message
+                    // — the same trap as the rest of this list. The map is empty and equal on
+                    // both sides until something seeds it, so this costs nothing at `all`.
+                    && old.speakers[key] == new.speakers[key]
                     // Relay marks decide who a bot's lines are attributed to, and they arrive
                     // from another device on their own — same trap, same shape. Without this,
                     // marking a bridge in a browser leaves the phone showing the bot's nick and
@@ -800,21 +815,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // not something the reader is missing below.
             let previousTail = messages.last(where: { $0.id != 0 })?.id ?? 0
             let appended = updated.filter { $0.id > previousTail }
-            // Count what the reader will actually SEE arrive. At the `none` tier (#666) a
-            // netsplit rejoin appends dozens of rows that build to nothing, and counting
-            // them raw advertises "40 new" on a pill that jumps to a bottom looking exactly
-            // like the top. The badge is still approximate under consolidation — a run of
-            // 40 folds to one summary line — but that overcounts things that exist, which
-            // is a different kind of wrong from counting things that don't.
-            let mode = EventFilter.rendered(EventFilter.mode(state.settings))
-            newWhileDetached += mode == .none
-                ? appended.count { !EventFilter.isNoise($0.type) }
-                : appended.count
+            // Count what the reader will actually SEE arrive — the same tier the list itself
+            // applies, so the two can't disagree. At the `none` tier (#666) a netsplit rejoin
+            // appends dozens of rows that build to nothing, and counting them raw advertises
+            // "40 new" on a pill that jumps to a bottom looking exactly like the top; `smart`
+            // (#63) drops the same rejoin for everyone who wasn't in the conversation. The
+            // badge is still approximate under consolidation — a run of 40 folds to one
+            // summary line — but that overcounts things that exist, which is a different kind
+            // of wrong from counting things that don't.
+            newWhileDetached += EventFilter.visible(
+                appended,
+                settings: state.settings,
+                speakers: state.speakers[buffer.key.id] ?? SpeakerMap(),
+                ownNick: Self.ownNick(for: state, buffer: buffer)
+            ).count
         }
 
         messages = updated
         typists = state.typists(in: buffer.key)
         settings = state.settings
+        speakers = state.speakers[buffer.key.id] ?? SpeakerMap()
+        ownNick = Self.ownNick(for: state, buffer: buffer)
         awayState = Self.awayState(for: state, buffer: buffer)
         // Covered by the `old.buffers[key] == new.buffers[key]` arm of the dedupe predicate,
         // so a buffer whose only change is exhausting its history still reaches us.
@@ -1310,6 +1331,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return prefixes
     }
 
+    /// Our own nick on this buffer's network, or nil where there isn't one — the system buffer
+    /// belongs to no network. Held on `Network`, so it follows a `/nick` without this screen
+    /// having to watch for the event.
+    private static func ownNick(for state: ChatState, buffer: Buffer) -> String? {
+        buffer.networkId.flatMap { state.networks[$0]?.nick }
+    }
+
     /// Your own away state as it applies to *this* buffer (#68), or nil where it doesn't.
     ///
     /// The state itself is user-scoped — `/away` hits every connection — but the server
@@ -1345,6 +1373,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             hasMoreNewer: hasMoreNewer,
             typists: typists,
             settings: settings,
+            speakers: speakers,
+            ownNick: ownNick,
             away: awayState
         )
         // Cached so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick and

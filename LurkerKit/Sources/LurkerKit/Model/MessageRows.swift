@@ -140,7 +140,11 @@ public enum MessageRows {
     ///     detached (#42), showing an `around` window around some older message. Only the
     ///     presence markers' foot fallback reads it, and only to suppress itself: see there.
     ///   - typists: who is composing right now, for the foot of the list.
-    ///   - settings: the user's settings, for the two consolidation keys.
+    ///   - settings: the user's settings, for the event tier and the two consolidation keys.
+    ///   - speakers: who has spoken in this buffer and when. Feeds both the `.smart` tier and
+    ///     consolidation's truncated name lists — see `SpeakerMap`.
+    ///   - ownNick: your nick on this buffer's network, so the `.smart` tier never hides your
+    ///     own churn. Nil where there is no network to have a nick on (the system buffer).
     ///   - away: your own away state for this buffer's network, or nil for a buffer that
     ///     doesn't take presence markers (the `:server:` log, the system buffer). See
     ///     `presenceMarkerTTL` for when a settled pair stops being drawn.
@@ -155,6 +159,8 @@ public enum MessageRows {
         hasMoreNewer: Bool = false,
         typists: [String] = [],
         settings: Settings = Settings(),
+        speakers: SpeakerMap = SpeakerMap(),
+        ownNick: String? = nil,
         away: AwayState? = nil,
         now: Date = Date(),
         calendar: Calendar = .current
@@ -178,26 +184,25 @@ public enum MessageRows {
         // All server-side (#65), so the phone agrees with whatever the user set on the web.
         // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
         // user when bootstrap lands a moment after launch.
-        // `.rendered` collapses the rung this client can't do (`.smart`) onto the one it
-        // behaves as (`.all`), so that degrade is a stated decision rather than the accident
-        // of there being no branch for it below.
-        let eventMode = EventFilter.rendered(EventFilter.mode(settings))
+        let eventMode = EventFilter.mode(settings)
         // At `.none` there are no event rows left to fold, so the consolidation pass is
         // skipped outright rather than run over a stream it can't match.
         let consolidateEnabled = eventMode != .none
             && settings.bool("chat.consolidate_joins", default: true)
         let maxNames = settings.int("chat.consolidate_max_names", default: 5)
 
-        // The `.none` tier (#666): drop every event row before anything else looks at the
-        // stream, so dividers anchor to the first row the reader can actually see and a
-        // segment can't be built out of rows that will never render.
-        //
-        // Unconditional on purpose — this hides your own joins and mode changes too. Someone
-        // who asked for no event noise on their phone wants none of it, not
-        // none-except-mine. Kicks, topics and invites are outside `noiseTypes` and survive.
-        let messages = eventMode == .none
-            ? messages.filter { !EventFilter.isNoise($0.type) }
-            : messages
+        // The event tier (#666, #63) applies before anything else looks at the stream, so
+        // dividers anchor to the first row the reader can actually see and a segment can't be
+        // built out of rows that will never render. It also has to sit above consolidation
+        // specifically: a filtered-out event that reached a summary would inflate its counts
+        // and name people whose own lines are hidden.
+        let messages = EventFilter.visible(
+            messages, settings: settings, speakers: speakers, ownNick: ownNick
+        )
+
+        // Who to float to the front of a summary that had to truncate its name list: the
+        // people you were just talking to, rather than whoever happens to sort first.
+        let recentSpeakers = speakers.nicks
 
         var rows: [MessageRow] = []
         func appendSegment(_ slice: [Message]) {
@@ -206,7 +211,9 @@ public enum MessageRows {
                 rows.append(contentsOf: slice.map { $0.type.isBubble ? .bubble($0, .solo) : .line($0) })
                 return
             }
-            for row in Consolidation.consolidate(slice, maxNames: maxNames) {
+            for row in Consolidation.consolidate(
+                slice, maxNames: maxNames, recentSpeakers: recentSpeakers
+            ) {
                 switch row {
                 case .summary(let summary):
                     rows.append(.consolidated(summary))

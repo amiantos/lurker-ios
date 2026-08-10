@@ -104,6 +104,10 @@ public struct ChatState: Sendable {
     /// quiet without sending anything — so it's left to be cleaned up by the events above
     /// rather than by a sweep that would only exist to tidy a map nobody reads directly.
     public var typing: [String: [String: TypingEntry]] = [:]
+    /// Who has spoken in each buffer and when, keyed `BufferKey.id`. Seeded from the server's
+    /// `speakers` list on `backlog`/`history` and kept current from live traffic — see
+    /// `SpeakerMap`. Drives the `.smart` event tier (#63) and consolidation's name ranking.
+    public var speakers: [String: SpeakerMap] = [:]
     /// Whether the roster is settled: a burst has completed and none is in flight, so
     /// `buffers` is the server's whole answer *right now* and a missing key is proof the
     /// buffer isn't open.
@@ -189,6 +193,9 @@ public struct ChatState: Sendable {
     /// `members`/`typing` alongside the messages is what stops a reopened buffer inheriting a
     /// nicklist or a "still typing…" line from before the close.
     ///
+    /// `speakers` goes with them, for the same reason: the reopen's hydrate carries a fresh
+    /// server list, and a stale one would decide which of the new backlog's events render.
+    ///
     /// `peerPresence` is deliberately untouched — it's keyed by network+nick rather than by
     /// buffer, and that nick may still be visible in channels we're in.
     ///
@@ -201,6 +208,7 @@ public struct ChatState: Sendable {
         messages[key] = nil
         members[key] = nil
         typing[key] = nil
+        speakers[key] = nil
         heldLive[key] = nil
     }
 
@@ -227,10 +235,30 @@ public struct ChatState: Sendable {
         members[from] = nil
         typing[to] = typing[from]
         typing[from] = nil
+        speakers[to] = speakers[from]
+        speakers[from] = nil
         heldLive[to] = heldLive[from]
         heldLive[from] = nil
         if burstSeen.remove(from) != nil { burstSeen.insert(to) }
         if let id = renamed.bufferId { keysById[id] = to }
+    }
+
+    /// Merge a frame's `speakers` list into this buffer's map.
+    ///
+    /// Always a merge, never a replace. Everything already in the map either came from an
+    /// earlier server list or from a live message this client watched arrive, and a later query
+    /// returning fewer rows retracts neither — the server's list was computed when it built the
+    /// frame, so on a `history` reply (fetched while the buffer is open) a replace would roll
+    /// back speech from the conversation currently on screen. The web merges for the same reason.
+    ///
+    /// Which makes a nil list and an empty one both no-ops here, and that's fine: nil is a frame
+    /// that never mentioned speakers (a shell, or a server too old to send them) and empty is a
+    /// buffer nobody has spoken in, and neither is grounds for forgetting anything.
+    mutating func seedSpeakers(_ list: [Speaker]?, forKey key: String) {
+        guard let list, !list.isEmpty else { return }
+        var map = speakers[key] ?? SpeakerMap()
+        map.seed(list)
+        speakers[key] = map
     }
 
     /// Learn (or confirm) a buffer's stable id → storage-key mapping. The
@@ -543,20 +571,28 @@ final class LurkerStore {
             // happened while this device wasn't connected.
             next.pruneToBurst()
             return next
-        case .backlog(let buffer, let messages, let hydrated, let append):
-            return applyBacklog(state, buffer, messages, hydrated: hydrated, append: append)
+        case .backlog(let buffer, let messages, let hydrated, let append, let speakers):
+            return applyBacklog(
+                state, buffer, messages, hydrated: hydrated, append: append, speakers: speakers
+            )
         case .live(let networkId, let target, let message):
-            return applyLive(state, networkId: networkId, target: target, message: message)
+            return applyLive(
+                state, networkId: networkId, target: target, message: message, now: now
+            )
         case .channelTopic(let networkId, let target, let topic):
             return applyChannelTopic(state, networkId: networkId, target: target, topic: topic)
         case .channelMembers(let networkId, let target, let members):
             return applyChannelMembers(state, networkId: networkId, target: target, members: members)
         case .memberUpdate(let networkId, let target, let member):
             return applyMemberUpdate(state, networkId: networkId, target: target, member: member)
-        case .history(let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer):
+        case .history(
+            let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer,
+            let speakers
+        ):
             return applyHistory(
                 state, networkId: networkId, target: target,
-                events: events, mode: mode, hasMoreOlder: hasMoreOlder, hasMoreNewer: hasMoreNewer
+                events: events, mode: mode, hasMoreOlder: hasMoreOlder,
+                hasMoreNewer: hasMoreNewer, speakers: speakers
             )
         case .readState(let networkId, let target, let lastReadId, let unread, let highlights):
             return applyReadState(
@@ -881,11 +917,13 @@ final class LurkerStore {
         _ frameBuffer: Buffer,
         _ messages: [Message],
         hydrated: Bool,
-        append: Bool
+        append: Bool,
+        speakers: [Speaker]?
     ) -> ChatState {
         var next = state
         next.noteBookmarks(in: messages, networkId: frameBuffer.networkId)
         let key = frameBuffer.key.id
+        next.seedSpeakers(speakers, forKey: key)
         // The server named this buffer, so it survives the burst's closing prune. Recorded
         // unconditionally: outside a burst `burstSeen` is dead state that the next `snapshot`
         // clears, so there's nothing to guard against.
@@ -968,7 +1006,8 @@ final class LurkerStore {
         _ state: ChatState,
         networkId: Int?,
         target: String,
-        message: Message
+        message: Message,
+        now: Date
     ) -> ChatState {
         var next = state
         let key = BufferKey(networkId: networkId, target: target).id
@@ -1000,6 +1039,24 @@ final class LurkerStore {
         // history replays deliberately don't fold — the snapshot/`names` list is the
         // authoritative baseline those events predate.
         next.members[key] = foldMembership(next.members[key], message)
+        // Who spoke here and when (#63) — the same seat below the id de-dupe as the fold above,
+        // so a replayed line can't restate a speaker's recency.
+        //
+        // This is the half of the map no fetch supplies: the server's list was computed when it
+        // built the frame, and the join-unmask rule is entirely about speech that happens after
+        // that. `message`/`action` only, matching what the server's own `listSpeakers` counts —
+        // a notice is a bot talking at the channel, not somebody in the conversation. Our own
+        // messages don't count for the same reason they don't there: the question the filter
+        // asks is whether anyone *else* was talking to this nick.
+        if message.type == .message || message.type == .action, !message.isSelf,
+           let nick = message.nick {
+            next.speakers[key, default: SpeakerMap()].record(nick: nick, at: message.date ?? now)
+        }
+        // A rename carries the entry with it, so someone who spoke and then went `_afk` doesn't
+        // read as a stranger when they quit ten seconds later.
+        if message.type == .nick, let old = message.nick, let new = message.newNick {
+            next.speakers[key]?.rename(from: old, to: new)
+        }
         // Anything we hear *from* this nick ends their typing run, and the same seat below
         // the id de-dupe applies for the same reason.
         //
@@ -1173,11 +1230,13 @@ final class LurkerStore {
         events: [Message],
         mode: HistoryMode,
         hasMoreOlder: Bool,
-        hasMoreNewer: Bool
+        hasMoreNewer: Bool,
+        speakers: [Speaker]?
     ) -> ChatState {
         var next = state
         next.noteBookmarks(in: events, networkId: networkId)
         let key = BufferKey(networkId: networkId, target: target).id
+        next.seedSpeakers(speakers, forKey: key)
         let existing = next.messages[key] ?? []
         let wasDetached = next.buffers[key]?.hasMoreNewer == true
         switch mode {

@@ -794,9 +794,9 @@ public final class ChatViewModel {
         // scoped to a network, and whether a target is a DM is part of what a rule matches.
         let groups: [(networkId: Int?, target: String, messages: [Message])]
         switch frame {
-        case .backlog(let buffer, let messages, _, _):
+        case .backlog(let buffer, let messages, _, _, _):
             groups = [(buffer.networkId, buffer.target, messages)]
-        case .history(let networkId, let target, let events, _, _, _):
+        case .history(let networkId, let target, let events, _, _, _, _):
             groups = [(networkId, target, events)]
         case .live(let networkId, let target, let message):
             groups = [(networkId, target, [message])]
@@ -898,7 +898,7 @@ public final class ChatViewModel {
             loadingNewer.removeAll()
             store.apply(frame)
             onSocketDropped()
-        case .history(let networkId, let target, _, let mode, _, _):
+        case .history(let networkId, let target, _, let mode, _, _, _):
             // The page in flight is done — clear the set that requested this mode so the next
             // scroll can page again. Only `before` arms `loadingOlder` and only `after` arms
             // `loadingNewer`; `around`/`latest` are one-shots tracked by the screen, not here.

@@ -424,7 +424,10 @@ enum FrameParser {
             // backlog frame carries the buffer's stable id.
             bufferId: obj.intOrNull("bufferId")
         )
-        return .backlog(buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append)
+        return .backlog(
+            buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append,
+            speakers: parseSpeakers(obj)
+        )
     }
 
     private static func parseLive(_ obj: [String: Any]) -> ServerFrame {
@@ -517,8 +520,31 @@ enum FrameParser {
             events: obj.objects("events").map(parseEvent),
             mode: mode,
             hasMoreOlder: obj.bool("hasMoreOlder", obj.bool("hasMore")),
-            hasMoreNewer: obj.bool("hasMoreNewer")
+            hasMoreNewer: obj.bool("hasMoreNewer"),
+            speakers: parseSpeakers(obj)
         )
+    }
+
+    /// The server's recent-speakers list, or nil if the frame didn't carry one.
+    ///
+    /// Read from the field's PRESENCE rather than from an empty parse, because the wire draws
+    /// the distinction and this type mirrors the wire (see `ServerFrame.backlog`): a frame that
+    /// shipped `speakers: []` is saying nobody has spoken, and one that shipped nothing is
+    /// saying nothing at all.
+    ///
+    /// `lastTime` is epoch milliseconds. Entries missing either half are dropped rather than
+    /// defaulted: a speaker at the epoch reads as infinitely stale, which is the same as being
+    /// absent but harder to notice.
+    private static func parseSpeakers(_ obj: [String: Any]) -> [Speaker]? {
+        guard obj.has("speakers") else { return nil }
+        return obj.objects("speakers").compactMap { entry in
+            let nick = entry.string("nick")
+            let lastTime = entry.int("lastTime")
+            guard !nick.isEmpty, lastTime > 0 else { return nil }
+            return Speaker(
+                nick: nick, lastSpoke: Date(timeIntervalSince1970: TimeInterval(lastTime) / 1000)
+            )
+        }
     }
 
     /// MessageEvent → domain `Message`. Events are spread flat on the frame, so the

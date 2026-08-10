@@ -37,7 +37,16 @@ enum ServerFrame: Equatable, Sendable {
     /// (`reset:false` → append it) from a full/latest backlog or an oversized-gap reset
     /// (`reset:true` or no `reset` field → replace wholesale). Getting this wrong
     /// silently wipes pre-gap history the moment resume (#4) starts sending `?since`.
-    case backlog(buffer: Buffer, messages: [Message], hydrated: Bool, append: Bool)
+    ///
+    /// `speakers` is nil when the frame didn't carry the field at all, which the wire treats as
+    /// different from an empty list: a shell deliberately omits it (`wsHub.ts`'s
+    /// `buildBufferShell`) precisely so a client that *replaces* on this field can't be made to
+    /// wipe a map it already holds. This client merges either way (`ChatState.seedSpeakers`), so
+    /// both spellings are a no-op here — the optionality mirrors the wire rather than branching
+    /// behavior, and it's the honest shape for a field a server may simply not send.
+    case backlog(
+        buffer: Buffer, messages: [Message], hydrated: Bool, append: Bool, speakers: [Speaker]?
+    )
 
     /// WS `irc`: one live event, its fields spread flat on the frame.
     case live(networkId: Int?, target: String, message: Message)
@@ -46,13 +55,18 @@ enum ServerFrame: Equatable, Sendable {
     /// `backlog`, which is connect-time / open-buffer hydration). `mode` decides how the
     /// store splices it in — `before` prepends, `after` appends, `latest`/`around` replace.
     /// `events` is always oldest-first.
+    ///
+    /// Every history reply carries `speakers` (see the `backlog` note for why it's optional
+    /// anyway). This is the *primary* way the map loads: a fresh connect ships shells, so a
+    /// buffer's first real speaker list arrives with the `latest` fetch its first open makes.
     case history(
         networkId: Int?,
         target: String,
         events: [Message],
         mode: HistoryMode,
         hasMoreOlder: Bool,
-        hasMoreNewer: Bool
+        hasMoreNewer: Bool,
+        speakers: [Speaker]?
     )
 
     /// A `channel-topic` event: RPL_TOPIC on join, i.e. "here's the topic" rather than

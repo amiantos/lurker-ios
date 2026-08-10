@@ -43,13 +43,14 @@ final class MessageRowsTests: XCTestCase {
         hasMoreNewer: Bool = false,
         typists: [String] = [],
         settings: Settings = Settings(),
+        speakers: SpeakerMap = SpeakerMap(),
         away: AwayState? = nil,
         now: Date? = nil
     ) -> [MessageRow] {
         MessageRows.build(
             messages: messages, dividerAfterId: dividerAfterId, hasMoreOlder: hasMoreOlder,
-            hasMoreNewer: hasMoreNewer, typists: typists, settings: settings, away: away,
-            now: now ?? noon, calendar: utc
+            hasMoreNewer: hasMoreNewer, typists: typists, settings: settings, speakers: speakers,
+            away: away, now: now ?? noon, calendar: utc
         )
     }
 
@@ -480,6 +481,23 @@ final class MessageRowsTests: XCTestCase {
         let rows = build(joins, settings: settings)
         guard case .consolidated(let summary) = row(rows, 1) else { return XCTFail("expected a summary") }
         XCTAssertEqual(summary.groups.first?.visible.count, 2)
+        XCTAssertEqual(summary.groups.first?.hidden, 3)
+    }
+
+    /// A truncated name list shows the people you were just talking to, not whoever happened to
+    /// arrive first. `Consolidation` has always been able to do this; until #63 nothing passed
+    /// it a speaker set, so every capped summary silently showed insertion order.
+    func testATruncatedSummaryFloatsRecentSpeakersToTheFront() {
+        let settings = Settings(registry: [:], values: ["chat.consolidate_max_names": .int(2)])
+        let joins = (1...5).map { msg($0, .join, "user\($0)", text: nil, at: noon) }
+        let speakers = SpeakerMap([
+            Speaker(nick: "user4", lastSpoke: noon), Speaker(nick: "user5", lastSpoke: noon),
+        ])
+        let rows = build(joins, settings: settings, speakers: speakers)
+        guard case .consolidated(let summary) = row(rows, 1) else { return XCTFail("expected a summary") }
+        XCTAssertEqual(
+            summary.groups.first?.visible, [.nick("user4"), .nick("user5")]
+        )
         XCTAssertEqual(summary.groups.first?.hidden, 3)
     }
 
