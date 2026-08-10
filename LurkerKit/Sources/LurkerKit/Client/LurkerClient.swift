@@ -23,6 +23,8 @@ final class LurkerClient {
 
     private let onFrame: (ServerFrame) -> Void
     private let session: URLSession
+    /// Preview bytes only, so its cache can be purged on sign-out without touching API state.
+    private let mediaSession: URLSession
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
@@ -50,6 +52,34 @@ final class LurkerClient {
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
         self.session = URLSession(configuration: .default)
+
+        // ⚠⚠ Preview BYTES get their own session, and the separation is not tidiness.
+        //
+        // The cache has to be big: `URLCache` refuses to store any single response over ~5% of
+        // its capacity, so against the shared 10 MB disk budget the ceiling is ~512 KB — under a
+        // typical full-width preview image, which meant the proxy's `max-age=86400, immutable`
+        // bought nothing and every image was re-fetched on every launch. 200 MB puts the
+        // per-response ceiling around 10 MB, above the proxy's own 8 MB cap.
+        //
+        // But that cache was installed on the ONE session behind every authenticated endpoint —
+        // login, settings, highlights, bookmarks, push, uploads, the socket upgrade — and
+        // nothing purged it on sign-out. So while sign-out carefully cleared the preview
+        // METADATA on the grounds that it is "the previous account's reading history", the
+        // largest and most identifying artefact of that history, the pictures themselves, stayed
+        // in Library/Caches for whoever signed in next. On its own session the purge is a
+        // one-liner (`clearMediaCache`), and a 200 MB byte budget stops competing with API JSON
+        // for the same eviction.
+        let mediaConfiguration = URLSessionConfiguration.default
+        mediaConfiguration.urlCache = URLCache(
+            memoryCapacity: 16 * 1024 * 1024,
+            diskCapacity: 200 * 1024 * 1024
+        )
+        self.mediaSession = URLSession(configuration: mediaConfiguration)
+    }
+
+    /// Drop every cached preview image. Sign-out only — see the session's own note.
+    func clearMediaCache() {
+        mediaSession.configuration.urlCache?.removeAllCachedResponses()
     }
 
     // MARK: - Auth
@@ -947,6 +977,318 @@ final class LurkerClient {
             request.httpMethod = "POST"
             request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
             _ = try? await session.data(for: request)
+        }
+    }
+
+    /// A URL `AVPlayer` can actually open for a preview's `src`.
+    ///
+    /// ⚠⚠ `AVURLAsset` cannot carry our Authorization header — the supported way to inject one is
+    /// an `AVAssetResourceLoaderDelegate`, and the header key that looks like a shortcut is
+    /// undocumented. So the two cases are handled honestly rather than papered over:
+    ///
+    ///   - **An ABSOLUTE url** is the byte cache serving from its CDN (`local`/`s3`/`dropper`
+    ///     modes mint one in `toDescriptor`). It carries no credential by design — that is the
+    ///     whole point of minting it — so it hands straight to `AVPlayer`, which then gets real
+    ///     streaming and seeking for free.
+    ///   - **A PROXY PATH** is bearer-gated, so the bytes are streamed through the authenticated
+    ///     path we already have and staged to a file. No seeking until it lands.
+    ///
+    /// ⚠ That staging used to be justified here as "bounded by the proxy's 8 MB cap". It is not:
+    /// 8 MB is the cap for IMAGES, and video and audio get `MAX_MEDIA_PROXY_BYTES` — sixty-four.
+    /// The reassurance was about a different limit than the branch it was written on.
+    ///
+    /// ⚠ The extension is carried over from the server's `mime`, because AVFoundation sniffs the
+    /// path: a temp file called `x.tmp` fails to open as an MP4 that plays perfectly as `x.mp4`.
+    func playableMediaURL(path: String, mime: String?) async -> URL? {
+        if let absolute = URL(string: path), absolute.scheme == "https" || absolute.scheme == "http"
+        {
+            return absolute
+        }
+        guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
+            return nil
+        }
+
+        // ⚠⚠ STREAMED to disk, never buffered. This used to read the whole clip into a `Data`
+        // and then write a second copy, both on the main actor, justified by a comment claiming
+        // "the proxy's 8 MB cap" — which is the cap for IMAGES. Video and audio get
+        // MAX_MEDIA_PROXY_BYTES, sixty-four megabytes, so the reassurance was about a different
+        // limit than the branch it was written on: 128 MB of main-actor allocation while the
+        // viewer animates in.
+        let staged = Self.stagedMediaURL(for: path, mime: mime)
+        // ⚠ Named from a STABLE digest. `String.hashValue` is reseeded every launch, so the
+        // reuse check could never hit across cold starts: every clip was re-downloaded and
+        // re-written while the previous launch's copies stayed on disk under names nothing would
+        // ever look for again. (It also trapped on `Int.min` through `abs`.)
+        if FileManager.default.fileExists(atPath: staged.path) { return staged }
+        do {
+            let (temporary, response) = try await mediaSession.download(for: request)
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
+                try? FileManager.default.removeItem(at: temporary)
+                return nil
+            }
+            try? FileManager.default.removeItem(at: staged)
+            try FileManager.default.moveItem(at: temporary, to: staged)
+            return staged
+        } catch {
+            return nil
+        }
+    }
+
+    /// Where a proxied clip is staged for playback.
+    ///
+    /// ⚠ `Library/Caches`, not `temporaryDirectory` — the previous comment claimed the former and
+    /// used the latter. This is a copy of something the server will hand over again, so the OS
+    /// reclaiming it under pressure is exactly right.
+    nonisolated private static func stagedMediaURL(for path: String, mime: String?) -> URL {
+        // FNV-1a: stable across launches, unlike `String.hashValue`, and enough to name a file.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in Array(path.utf8) {
+            hash = (hash ^ UInt64(byte)) &* 0x1000_0000_01b3
+        }
+        let name = String(hash, radix: 36) + "." + fileExtension(for: mime)
+        return stagedMediaDirectory().appendingPathComponent(name)
+    }
+
+    nonisolated private static func stagedMediaDirectory() -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("preview-media", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Delete every staged clip. Sign-out only.
+    ///
+    /// ⚠⚠ Without this the departing account's VIDEOS sat on disk in the clear for whoever
+    /// signed in next — while the same teardown carefully cleared the metadata store, the
+    /// decoded-image cache and the media `URLCache` on the grounds that they were that person's
+    /// reading history. The heaviest and most identifying artefact was the one nobody deleted.
+    /// The `mediaSession` split closed this exact hole one layer up; this is the layer below it.
+    func clearStagedMedia() {
+        try? FileManager.default.removeItem(at: Self.stagedMediaDirectory())
+    }
+
+    /// ⚠ Only what AVFoundation can actually open. webm and ogg are deliberately absent: the
+    /// server will happily proxy them (`kindForContentType` passes any `video/*`) and this
+    /// platform cannot decode either, so they fall through to `bin` and the caller's
+    /// "can't play this" path — which offers the browser — rather than a player that spins.
+    nonisolated private static func fileExtension(for mime: String?) -> String {
+        switch mime?.lowercased() {
+        case "video/mp4": "mp4"
+        case "video/quicktime": "mov"
+        case "video/x-m4v": "m4v"
+        case "audio/mpeg", "audio/mp3": "mp3"
+        case "audio/mp4", "audio/x-m4a": "m4a"
+        case "audio/aac": "aac"
+        case "audio/wav", "audio/x-wav": "wav"
+        case "audio/flac", "audio/x-flac": "flac"
+        default: "bin"
+        }
+    }
+
+    /// The instance's feature flags, or **nil if we didn't get an answer**.
+    ///
+    /// ⚠⚠ Optional deliberately. This used to collapse a transport error, a non-2xx, an
+    /// unparseable body and a genuinely-off flag into the same all-off value — so one 502 or DNS
+    /// hiccup on the single call at cold launch silently disabled link previews for the whole
+    /// app session on an instance that has them on, with nothing to notice and no retry. A
+    /// default is not a statement: the caller needs to tell "the server says no" from "the
+    /// server didn't say", because only one of those is worth latching.
+    ///
+    /// ⚠ Short timeout, against the session's 60s default. Nothing waits on this to render, and
+    /// a flag that decides whether to DECORATE messages must never be in a position to delay
+    /// getting them.
+    func fetchFeatures() async -> InstanceFeatures? {
+        guard let request = Self.configRequest(baseURL: baseURL, token: token) else { return nil }
+        do {
+            let (data, response) = try await session.data(for: request)
+            return Self.parseFeatures(data, code: (response as? HTTPURLResponse)?.statusCode ?? 0)
+        } catch {
+            return nil
+        }
+    }
+
+    /// The request for `/api/config`.
+    ///
+    /// ⚠⚠ It carries the bearer token, even though the server calls this endpoint "public,
+    /// unauthenticated bootstrap config the client can read before login". That is true of a
+    /// self-hosted instance and false of a hosted one: on lurker.chat the control plane proxies
+    /// `/api/*` to a CELL, and it works out which cell from the caller's session. An anonymous
+    /// request has nothing to route on, so it comes back `401 {"error":"not routable"}` — which
+    /// this client correctly reads as "no answer", leaving previews off forever on precisely the
+    /// deployment most people use. The browser never noticed because its fetch carries the
+    /// session cookie; native auth is a Bearer header and has to be asked for.
+    ///
+    /// ⚠ Harmless where it genuinely is public — an instance that ignores the header returns the
+    /// same body — so there is one code path rather than a deployment test the client would have
+    /// to get right.
+    ///
+    /// `nonisolated static` for the same reason as `mediaRequest`: the property worth asserting
+    /// is invisible through the awaiting method, which can only answer "no flags".
+    nonisolated static func configRequest(baseURL: String, token: String?) -> URLRequest? {
+        guard let url = URL(string: baseURL + "/api/config") else { return nil }
+        var request = URLRequest(url: url)
+        // Nothing waits on this to render, and a flag deciding whether to DECORATE messages must
+        // never be in a position to delay getting them.
+        request.timeoutInterval = 10
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        return request
+    }
+
+    /// `/api/config` → flags, or **nil for "that wasn't an answer"**.
+    ///
+    /// ⚠ An absent `features` object IS an answer: an older instance that doesn't have the
+    /// feature. Only a failure to obtain a well-formed response is unknown — and the difference
+    /// decides whether the caller latches the result or retries it on the next reconnect.
+    ///
+    /// `nonisolated static` per `mediaRequest`'s note: this is the half worth asserting and it
+    /// is unreachable through the awaiting method without a live server.
+    nonisolated static func parseFeatures(_ data: Data, code: Int) -> InstanceFeatures? {
+        guard (200..<300).contains(code),
+            let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let features = body["features"] as? [String: Any]
+        return InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true)
+    }
+
+    // MARK: - Link previews
+
+    /// Resolve a batch of URLs to preview descriptors (`POST /api/link-preview/resolve`).
+    ///
+    /// Returns whatever the server could answer; a URL it couldn't resolve simply comes back
+    /// with `status: .unavailable`, and a failed request comes back as an empty array. Both
+    /// mean "draw nothing", which is the only outcome a message row cares about — a preview
+    /// is decoration, and an error state in the timeline would be worse than a missing card.
+    func resolveLinkPreviews(_ urls: [String]) async -> [LinkPreview] {
+        guard !urls.isEmpty, let token, let url = URL(string: baseURL + "/api/link-preview/resolve")
+        else { return [] }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONEncoder().encode(["urls": urls])
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                onFrame(.unauthorized)
+                return []
+            }
+            guard (200..<300).contains(code) else { return [] }
+            return Self.decodePreviews(data)
+        } catch {
+            return []
+        }
+    }
+
+    /// The resolve response's descriptors, skipping any this build cannot understand.
+    ///
+    /// ⚠⚠ Decoded ELEMENT BY ELEMENT, not as `[LinkPreview]` in one go. `kind` and `status` are
+    /// non-optional raw-value enums with no unknown case, so a single descriptor carrying a
+    /// value this build doesn't know would throw inside the array decode and take the whole
+    /// batch of twenty with it — indistinguishable, one layer up, from a transport failure. The
+    /// store would then arm all twenty for retry, and because a decode failure is deterministic
+    /// every retry fails identically: nineteen perfectly good previews never rendering, and all
+    /// twenty polling to the 300s ceiling forever.
+    ///
+    /// It cannot fire against today's server, whose union matches the Swift enum exactly. It is
+    /// pinned because this is a self-hosted product where operators upgrade on their own
+    /// schedule and App Store builds lag, and the repo treats that skew as normal elsewhere.
+    ///
+    /// ⚠ `nonisolated static` for the same reason as `mediaRequest`: the behaviour worth
+    /// asserting is invisible through `resolveLinkPreviews`, which only answers `[LinkPreview]`
+    /// and cannot be reached without a live session. A test that rebuilt this envelope itself
+    /// would assert a fact about `FailableDecodable` rather than about what this client does
+    /// with it — which is exactly what the first version of its test did, and the revert drill
+    /// said so.
+    nonisolated static func decodePreviews(_ data: Data) -> [LinkPreview] {
+        struct Envelope: Decodable { let previews: [FailableDecodable<LinkPreview>] }
+        return (try? JSONDecoder().decode(Envelope.self, from: data))?
+            .previews.compactMap(\.value) ?? []
+    }
+
+    /// Resolve a `LinkPreview`'s `src`/`thumb` into a request.
+    ///
+    /// ⚠⚠ THE VALUE IS OPAQUE, and this is the only place that may interpret it. The server
+    /// mints it and documents it as a string a client never constructs or parses; today it is
+    /// either a proxy path (`/api/link-preview/media/<token>`) or, when the instance has a
+    /// bucket-backed byte cache configured, an absolute URL on that bucket's public CDN. Both
+    /// arrive in the same field and nothing distinguishes them on the wire.
+    ///
+    /// ⚠⚠ Concatenating unconditionally is what this replaces, and it did not fail loudly:
+    /// `baseURL + "https://cdn.example.com/..."` yields `https://instance.examplehttps://...`,
+    /// which `URL(string:)` rejects, so `fetchProxiedMedia` returned nil and
+    /// `PreviewImageLoader` latched the path into `failed` — every cached preview permanently
+    /// blank for the rest of the session, with no error surfaced anywhere.
+    ///
+    /// ⚠⚠ AN ABSOLUTE URL GETS NO BEARER TOKEN. It is a third-party host by construction, and
+    /// `URLSession` forwards manually-set headers to whatever it is given — so sending one here
+    /// would put the user's session token in a CDN operator's access log for every image. The
+    /// header belongs only to requests aimed at this instance.
+    ///
+    /// ⚠ `nonisolated static`, taking the base and the token rather than reading them off
+    /// `self`. Both are `private` state on a `@MainActor` class, so an instance method could
+    /// only be exercised by driving a whole configured client from the main actor — and the two
+    /// properties worth asserting (an absolute URL is not concatenated onto the base, and never
+    /// carries the token) are invisible from `fetchProxiedMedia`, which only answers `Data?`. A
+    /// wrong URL and an unreachable server look identical through it. The function touches no
+    /// actor state, so isolating it buys nothing and costs testability.
+    nonisolated static func mediaRequest(
+        for path: String,
+        baseURL: String,
+        token: String?
+    ) -> URLRequest? {
+        if let absolute = URL(string: path), absolute.scheme != nil {
+            guard absolute.scheme == "https" || absolute.scheme == "http" else { return nil }
+            return URLRequest(url: absolute)
+        }
+        // ⚠⚠ The relative branch must be genuinely relative TO THE ROOT, or the concatenation
+        // moves the host. `baseURL + "api/media/x"` is `https://chat.exampleapi/media/x`, whose
+        // host is `chat.exampleapi` — a domain someone else can register — and this is the
+        // branch that attaches the Bearer token. Nothing the current server mints looks like
+        // that, which is exactly why it needs stating: it is the one path where a change at the
+        // other end of the wire turns a cosmetic bug into handing out the session token.
+        guard path.hasPrefix("/") else { return nil }
+        guard let token, let url = URL(string: baseURL + path) else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Fetch bytes for a preview image.
+    ///
+    /// `path` is a server-minted value out of a `LinkPreview` — never something built here.
+    /// A proxy path needs a `URLRequest` rather than a plain `UIImage(contentsOf:)` because the
+    /// proxy is authenticated and native auth is a Bearer header, not a cookie.
+    ///
+    /// Caching is the shared `URLCache`'s job — the server marks these `immutable` with a long
+    /// max-age, and the token is a pure function of the URL so it always denotes the same bytes.
+    ///
+    /// ⚠ That only works because `previewCache` below is sized for it. `URLCache.shared` refuses
+    /// to store any single response larger than ~5% of its capacity, which against the default
+    /// 10 MB disk budget is roughly 512 KB — under the size of a typical full-width preview
+    /// image. Left on the default, these were silently re-downloaded on every launch and after
+    /// every NSCache eviction, and the `max-age` bought nothing at all.
+    func fetchProxiedMedia(path: String) async -> MediaFetch {
+        guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
+            return .permanent
+        }
+        do {
+            let (data, response) = try await mediaSession.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if (200..<300).contains(code) { return .success(data) }
+            // ⚠⚠ 503 means COME BACK. The byte proxy maps a transient origin refusal — a 429,
+            // a 5xx, and in particular opengraph.githubassets.com's 100-request budget, which a
+            // channel with a run of GitHub links spends in one burst — to 503 + Retry-After, and
+            // keeps 404 for a refused content type. Treating every non-2xx alike is the bug the
+            // web had in the other direction: an <img> takes 404 as final and never re-asks, so
+            // a minute of throttling became permanently blank images no reload could repair.
+            return code == 503 || code == 429 || (500..<600).contains(code)
+                ? .retryable : .permanent
+        } catch {
+            // A dropped connection says nothing about the file.
+            return .retryable
         }
     }
 

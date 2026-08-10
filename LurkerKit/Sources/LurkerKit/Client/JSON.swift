@@ -41,3 +41,20 @@ extension Dictionary where Key == String, Value == Any {
         return !(value is NSNull)
     }
 }
+
+/// One element of a heterogeneous array, decoded independently of its neighbours.
+///
+/// ⚠ For wire arrays where a single unrecognised element must not discard the rest. `Decodable`
+/// on `[T]` is all-or-nothing: one element that throws takes the whole array with it, and one
+/// layer up that is indistinguishable from the request having failed — which, for anything with
+/// a retry path, turns a decode mismatch into a permanent loop over data that will never decode.
+///
+/// The failure is deliberately silent. The caller is deciding what to DRAW; an element it cannot
+/// understand is one it cannot draw, and there is nothing useful to say about it.
+struct FailableDecodable<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+    }
+}

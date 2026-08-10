@@ -90,6 +90,7 @@ public final class ChatViewModel {
         case .success(let token):
             sessions.save(PersistedSession(backend: backend, server: server, token: token))
             sessionSubject.value = .loggedIn
+            Task { await loadFeatures() }
             await client.start()
             return true
         case .failure(let message):
@@ -116,6 +117,20 @@ public final class ChatViewModel {
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.
         settingsCache.clear()
+        // Previews carry the same hazard the settings cache does, plus two more: the metadata
+        // is the previous account's reading history, and the `asked` set would suppress
+        // re-resolution against a DIFFERENT instance — whose signed proxy tokens wouldn't verify
+        // anyway, so every image would 403. Both of these were dead code until now.
+        linkPreviews.reset()
+        onPreviewCachesCleared?()
+        // ⚠ And the BYTES, which are the part that actually identifies a reading history. The
+        // decoded-image cache goes via the closure above (it's UIKit, this package isn't); this
+        // drops the on-disk HTTP cache the images were served from.
+        client.clearMediaCache()
+        client.clearStagedMedia()
+        features = InstanceFeatures()
+        featuresKnown = false
+        lastPreviewToggles = nil
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
@@ -219,6 +234,70 @@ public final class ChatViewModel {
         let page = await client.fetchHighlights(before: before)
         store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
         return page
+    }
+
+    // MARK: - Link previews
+
+    /// The app-wide preview cache.
+    ///
+    /// One store, not one per screen: the same link shows up in a channel, in the highlights
+    /// feed and in search results, and it should be resolved once for all three. Lazy because
+    /// with both settings off nothing ever asks it anything, and it shouldn't cost even an
+    /// allocation for the people who — reasonably — don't want this feature.
+    public lazy var linkPreviews = LinkPreviewStore { [weak self] urls in
+        await self?.client.resolveLinkPreviews(urls) ?? []
+    }
+
+    /// Called on sign-out so the app layer can drop its decoded-image cache. A closure rather
+    /// than a direct call because the image cache is UIKit and this package is not.
+    public var onPreviewCachesCleared: (() -> Void)?
+
+    /// Instance feature flags, fetched once per session from `/api/config`.
+    ///
+    /// ⚠ Off until proven on. Link previews are a whole feature behind an operator env flag: when
+    /// it's off the server doesn't even mount the routes, so the settings rows are HIDDEN rather
+    /// than offered inert, and nothing is primed.
+    public private(set) var features = InstanceFeatures()
+
+    /// Whether `features` is an ANSWER or still the off-by-default guess.
+    ///
+    /// ⚠⚠ A presence flag, because a default is not a statement. Without it, one 502 at cold
+    /// launch was indistinguishable from an instance that has the feature switched off — and it
+    /// latched for the whole session, because nothing re-fetched.
+    private var featuresKnown = false
+
+    /// Resolve instance feature flags.
+    ///
+    /// ⚠⚠ **Never awaited ahead of `client.start()`.** It was, and that put an untimed HTTP GET
+    /// in front of the WebSocket for every user, previews or not: launch behind a captive portal
+    /// or an overloaded cell that accepts TCP but black-holes `/api/config`, and the buffer list
+    /// renders while the app sits with no socket, no buffers and no messages for up to a minute.
+    /// `LurkerClient.start()` documents that exact hazard and detaches `fetchSettings()` for it;
+    /// this is the same trade and it wants the same answer. A flag that decides whether to
+    /// DECORATE messages must never delay getting them.
+    ///
+    /// Ordering costs nothing now, because arriving late is handled rather than raced: turning
+    /// out to be enabled re-primes what is already loaded, exactly as flipping the setting does.
+    private func loadFeatures() async {
+        guard let fetched = await client.fetchFeatures() else { return }
+        let wasEnabled = features.linkPreviews
+        features = fetched
+        featuresKnown = true
+        if fetched.linkPreviews, !wasEnabled { primeLoadedBuffers() }
+    }
+
+    /// Bytes from the server's media proxy, for a server-minted path off a `LinkPreview`.
+    ///
+    /// Goes through the client because the proxy is authenticated and native auth is a Bearer
+    /// header — there's no cookie for a bare `UIImage(contentsOf:)` to ride on.
+    public func proxiedMedia(path: String) async -> MediaFetch {
+        await client.fetchProxiedMedia(path: path)
+    }
+
+    /// A URL `AVPlayer` can open for a preview's `src` — see the client's note for why this is
+    /// two cases rather than one.
+    public func playableMediaURL(path: String, mime: String?) async -> URL? {
+        await client.playableMediaURL(path: path, mime: mime)
     }
 
     /// Fetch a page of bookmarks. Same cursor contract as `fetchHighlights`, and the
@@ -673,10 +752,134 @@ public final class ChatViewModel {
         }
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
+        Task { await loadFeatures() }
         Task { await client.start() }
     }
 
     // MARK: - Frame routing
+
+    /// Kick off preview resolution for the messages a frame carries.
+    ///
+    /// ⚠⚠ The ONLY place previews are requested. Rendering a row must never trigger a fetch.
+    ///
+    /// The first version asked from `cellForRowAt`, which meant every scroll into history
+    /// started fetches that grew rows under the reader and forced the table to reload to
+    /// remeasure. QA felt it as "scrolling up, image links snap into existence later and mess
+    /// up the scroll position". Slack and Discord don't have this problem because an unfurl is
+    /// part of the message record — it arrives WITH the message, so scrollback is laid out
+    /// correctly on first paint. Priming at ingest buys the same property.
+    ///
+    /// Fire-and-forget: a history page must not wait on the internet before it can be read.
+    private func primePreviews(_ frame: ServerFrame) {
+        // The instance flag gates everything: a stored `true` from another instance must not
+        // start priming against one that has the feature off.
+        guard features.linkPreviews else { return }
+        let wantMedia = store.state.settings.bool("chat.inline_media.enabled", default: false)
+        let wantPages = store.state.settings.bool("chat.link_previews.enabled", default: false)
+
+        // ⚠⚠ Recorded BEFORE the "both off" return, which is where it used to sit — and the
+        // ordering is a bug rather than a detail. Turning previews off never updated the record,
+        // so the stored value stayed at the last ON state; turning them back on then compared
+        // equal and skipped the rescan entirely, and every message already loaded stayed bare
+        // until something else re-ingested it. Off-then-on is exactly how somebody tries a
+        // setting out.
+        if case .settingsBootstrap = frame { recordToggles(wantMedia, wantPages) }
+        if case .settingsChanged = frame { recordToggles(wantMedia, wantPages) }
+        if case .settingsValues = frame { recordToggles(wantMedia, wantPages) }
+
+        guard wantMedia || wantPages else { return }
+
+        // Carried as (networkId, target, messages) rather than as bare text, because both
+        // filters below need to know which buffer a line came from — an ignore rule can be
+        // scoped to a network, and whether a target is a DM is part of what a rule matches.
+        let groups: [(networkId: Int?, target: String, messages: [Message])]
+        switch frame {
+        case .backlog(let buffer, let messages, _, _):
+            groups = [(buffer.networkId, buffer.target, messages)]
+        case .history(let networkId, let target, let events, _, _, _):
+            groups = [(networkId, target, events)]
+        case .live(let networkId, let target, let message):
+            groups = [(networkId, target, [message])]
+        // ⚠ A settings change has to re-prime what's ALREADY loaded. Priming is ingest-driven,
+        // and turning a toggle on doesn't re-ingest anything — so without this the fix shows
+        // previews only for messages that arrive afterwards, which reads as the setting being
+        // broken. Exactly the "I turned it on and nothing happened" report.
+        //
+        // ⚠⚠ Gated on the two preview toggles actually MOVING, because this branch re-scans
+        // every message in every buffer synchronously on the main actor and `state.messages` has
+        // no cap — it grows with every scroll-up page. Measured on device: 30 buffers x 2,000
+        // messages is ~330ms, x10,000 is ~1.5 SECONDS of parse + regex + ignore evaluation.
+        //
+        // And it fired far more often than "a preview toggle changed": the switch keys on the
+        // frame CASE and never looked at which setting moved, `updateSettings` applies its own
+        // HTTP reply as `.settingsValues` while the server also echoes `.settingsChanged` (so
+        // one toggle is two full walks), and a reconnect re-fetches settings — which
+        // `enterForeground` triggers after any background longer than 30 seconds. Pocketing the
+        // phone for half a minute cost a full rescan of every message ever loaded.
+        case .settingsBootstrap, .settingsChanged, .settingsValues:
+            // `recordToggles` above already compared and stored; it answers whether this frame
+            // actually moved a preview setting.
+            guard togglesJustChanged else { return }
+            primeLoadedBuffers()
+            return
+        default: return
+        }
+
+        // The type filter and the ignore veto both live in `PreviewSelection`, not here — see
+        // its `urls(in:networkId:target:ignores:…)`. What is left in this function is the list
+        // of frames priming listens to, which is the part that genuinely belongs to routing.
+        let ignores = store.state.ignores
+        let urls = groups.flatMap {
+            PreviewSelection.urls(
+                in: $0.messages, networkId: $0.networkId, target: $0.target, ignores: ignores,
+                inlineMedia: wantMedia, linkPreviews: wantPages
+            )
+        }
+        linkPreviews.request(urls)
+    }
+
+    /// The two preview settings, as one comparable value. See `lastPreviewToggles`.
+    private struct PreviewToggles: Equatable {
+        let media: Bool
+        let pages: Bool
+    }
+
+    /// What the preview toggles were when a settings frame last carried them, so an unrelated
+    /// setting — or a reconnect's re-fetch — doesn't buy a full rescan.
+    private var lastPreviewToggles: PreviewToggles?
+    /// Whether the frame being handled actually moved one of them.
+    private var togglesJustChanged = false
+
+    private func recordToggles(_ media: Bool, _ pages: Bool) {
+        let toggles = PreviewToggles(media: media, pages: pages)
+        togglesJustChanged = lastPreviewToggles != toggles
+        lastPreviewToggles = toggles
+    }
+
+    /// Re-prime every message already in the store.
+    ///
+    /// Two callers, and they are the two ways the answer can change after the messages arrived:
+    /// a preview toggle moving, and the instance feature flag turning out to be on. The second
+    /// is what makes `loadFeatures` safe to detach — arriving late is handled rather than raced.
+    ///
+    /// ⚠ Walked by BUFFER rather than over `state.messages.values`, because that dictionary is
+    /// keyed by an id string with the network folded out of it, and the ignore check needs it.
+    private func primeLoadedBuffers() {
+        guard features.linkPreviews else { return }
+        let wantMedia = store.state.settings.bool("chat.inline_media.enabled", default: false)
+        let wantPages = store.state.settings.bool("chat.link_previews.enabled", default: false)
+        guard wantMedia || wantPages else { return }
+
+        let ignores = store.state.ignores
+        let urls = store.state.buffers.values.flatMap { buffer in
+            PreviewSelection.urls(
+                in: store.state.messages[buffer.key.id] ?? [], networkId: buffer.networkId,
+                target: buffer.target, ignores: ignores,
+                inlineMedia: wantMedia, linkPreviews: wantPages
+            )
+        }
+        linkPreviews.request(urls)
+    }
 
     private func handle(_ frame: ServerFrame) {
         switch frame {
@@ -731,6 +934,16 @@ public final class ChatViewModel {
         default:
             store.apply(frame)
         }
+
+        // ⚠⚠ AFTER `store.apply`, never before. `primePreviews` reads the settings out of the
+        // store to decide whether either feature is on — so running it first meant a
+        // `settingsChanged` frame was evaluated against the OLD values, the guard returned
+        // early, and turning a toggle on primed nothing at all. The fix for "I enabled it and
+        // nothing happened" was itself inert until this moved.
+        //
+        // It also means the message frames prime against a store that already holds them, which
+        // is the more obviously correct order even though those read their texts from the frame.
+        primePreviews(frame)
     }
 
     // MARK: - Reconnect
@@ -759,6 +972,12 @@ public final class ChatViewModel {
     private func doReconnect(force: Bool) {
         guard session == .loggedIn, isForeground else { return }
         if !force, store.state.connection == .connected { return }
+        // ⚠ Retry the feature flags if we never got an answer. They were fetched exactly once
+        // per session entry and never again, so a single 502 or DNS hiccup at cold launch
+        // disabled link previews for the whole app session on an instance that has them on —
+        // and the reconnect that fixes everything else went right past it. Only when UNKNOWN: a
+        // server that said no is not re-asked on every drop.
+        if !featuresKnown { Task { await loadFeatures() } }
         client.reconnect(since: store.state.maxEventId)
     }
 
@@ -779,6 +998,21 @@ public final class ChatViewModel {
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.
         settingsCache.clear()
+        // Previews carry the same hazard the settings cache does, plus two more: the metadata
+        // is the previous account's reading history, and the `asked` set would suppress
+        // re-resolution against a DIFFERENT instance — whose signed proxy tokens wouldn't verify
+        // anyway, so every image would 403. Both of these were dead code until now.
+        linkPreviews.reset()
+        onPreviewCachesCleared?()
+        // ⚠ Kept in step with `logout()` deliberately. This path had drifted — it dropped the
+        // preview caches but left `features` asserting the departing instance's answer, so a
+        // 401-bounce followed by signing in elsewhere primed against a flag nobody had checked.
+        // The two teardowns lead to the same screen and must leave the same state behind.
+        client.clearMediaCache()
+        client.clearStagedMedia()
+        features = InstanceFeatures()
+        featuresKnown = false
+        lastPreviewToggles = nil
         store.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()

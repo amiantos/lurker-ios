@@ -69,6 +69,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
     private let messageText = MessageTextView()
+    /// Inline media / preview cards under the body (off by default; see
+    /// `chat.inline_media.enabled` and `chat.link_previews.enabled`). Hidden and empty for
+    /// the overwhelming majority of rows, which is why it's a plain stack view rather than
+    /// anything lazier — an empty hidden `UIStackView` costs a pointer.
+    private let attachments = MessageAttachmentsView()
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
     /// An optical correction on the bottom of a block's fill.
@@ -126,13 +131,36 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // in step with it so an unstyled string dropped in here doesn't arrive a different color.
         messageText.textColor = Palette.fg
         messageText.textContainer.lineFragmentPadding = 0
+        // ⚠⚠ The words must never be the thing that gives. A `UITextView` resists vertical
+        // compression at 750 by default, and an attachment's height constraints are REQUIRED —
+        // so any layout pass that hands this cell less height than its content wants collapses
+        // the TEXT rather than the picture, and a message quietly loses lines. Observed as "in
+        // lurker 2.1.1 there is a glimpse of" with the rest of the sentence gone, on exactly the
+        // rows that carried an attachment.
+        //
+        // Paired with the attachment heights dropping to 999 (see `MessageAttachmentsView`), so
+        // the two can't both be immovable: if something has to yield it is the decoration, which
+        // is recoverable by looking, not the sentence, which is not.
+        messageText.setContentCompressionResistancePriority(.required, for: .vertical)
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
         messageText.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
 
         column.axis = .vertical
         column.isLayoutMarginsRelativeArrangement = true
+        attachments.isHidden = true
+        attachments.onOpen = { url in UIApplication.shared.open(url) }
+        attachments.onOpenGallery = { [weak self] previews, at in
+            self?.onOpenMedia?(previews, at)
+        }
+        // Line up with the message body, which sits one character in from its author (the
+        // paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
+        // starts flush with the nick while the words above it don't, and the block loses the
+        // single left edge that makes a run of messages read as one column.
+        attachments.isLayoutMarginsRelativeArrangement = true
+
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
+        column.addArrangedSubview(attachments)
         column.translatesAutoresizingMaskIntoConstraints = false
         fill.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(fill)
@@ -249,6 +277,23 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             : 0
 
         messageText.attributedText = attributed
+        // ⚠⚠ Collapsed when the body has no text left, which happens exactly when every URL in
+        // the message was hidden because its picture is standing in for it — the common shape
+        // for "someone posted a screenshot and nothing else". An empty `UITextView` still claims
+        // a full line box, so without this the picture sits under a blank line and reads as
+        // belonging to the message above it.
+        //
+        // This is iOS's answer to the case the web solved differently: there an attachments-only
+        // body has no line box at all, so `align-items: baseline` fell through to whatever the
+        // attachment exposed and the nick appeared level with an image's bottom edge, or a
+        // card's title, seemingly at random. A stack view collapses a hidden arranged subview
+        // outright, so the nick and timestamp keep their place with nothing to fall through to.
+        messageText.isHidden = attributed.length == 0
+        // Torn down, not merely hidden. Hiding left the previous message's image views — and
+        // their strong references to decoded UIImages, plus a strip's width constraints — alive
+        // for the cell's whole lifetime, quietly defeating the NSCache eviction the loader
+        // relies on. `showAttachments` re-populates when there IS something to show.
+        attachments.clear()
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
@@ -311,6 +356,28 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         }
     }
 
+    /// Show link previews under the body. Called after `configure`, which has already cleared
+    /// whatever the recycled cell was showing before.
+    ///
+    /// Nothing here is conditional on the settings — the renderer resolves those once per
+    /// reload rather than once per cell, and hands down an already-filtered list.
+    /// Present the message's pictures full-screen. Set by the row builder from the screen, like
+    /// `onToggleSpoiler` — a cell has no business knowing how to present a view controller.
+    var onOpenMedia: (([LinkPreview], Int) -> Void)?
+
+    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel, traits: UITraitCollection) {
+        // Resolved from the screen's traits, not `UITraitCollection.current`, which isn't
+        // reliably set during `cellForRowAt` — the same trap MessageRenderer.compactFont was
+        // caught in. The indent scales with Dynamic Type, so it can't be a constant.
+        let indent = MessageRenderer.compactIndent(compatibleWith: traits)
+        // Breathing room below as well as above, matching the web client. Without it an image
+        // sits flush against the next author's name and reads as belonging to the message below
+        // it rather than the one above. INSIDE the cell's fill on purpose: on a highlighted row
+        // the wash should cover the attachment and its padding, since both belong to that message.
+        attachments.layoutMargins = UIEdgeInsets(top: 6, left: indent, bottom: 8, right: 0)
+        attachments.configure(previews: previews, model: model)
+    }
+
     func linkURL(at point: CGPoint) -> URL? {
         messageText.url(at: convert(point, to: messageText))
     }
@@ -323,5 +390,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The closure captures the message it was built for. Left in place, a tap on a recycled
         // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
         onToggleSpoiler = nil
+        onOpenMedia = nil
     }
 }

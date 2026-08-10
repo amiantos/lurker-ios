@@ -393,7 +393,8 @@ enum MessageRenderer {
         traits: UITraitCollection = .current,
         settings: Settings = Settings(),
         highlighter: NickHighlighter? = nil,
-        revealed: Set<Int> = []
+        revealed: Set<Int> = [],
+        hiddenUrls: Set<String> = []
     ) -> NSAttributedString {
         let base = compactFont(compatibleWith: traits)
 
@@ -404,7 +405,10 @@ enum MessageRenderer {
             line.append(NSAttributedString(
                 string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
-            line.append(body(message, base: base, fallback: color, highlighter: highlighter, revealed: revealed))
+            line.append(
+                body(
+                    message, base: base, fallback: color, highlighter: highlighter,
+                    revealed: revealed, hiddenUrls: hiddenUrls))
             // Two, to clear the `* ` this line opens with.
             return spaced(line, flushFirstLine: true, indentCharacters: 2, traits: traits)
         }
@@ -427,7 +431,7 @@ enum MessageRenderer {
                 // fallback IS the log's primary text colour.
                 attributedString: body(
                     message, base: base, fallback: Palette.fg,
-                    highlighter: highlighter, revealed: revealed
+                    highlighter: highlighter, revealed: revealed, hiddenUrls: hiddenUrls
                 )
             ),
             flushFirstLine: false, traits: traits
@@ -594,7 +598,8 @@ enum MessageRenderer {
 
     private static func body(
         _ message: Message, base: UIFont, fallback: UIColor,
-        highlighter: NickHighlighter? = nil, revealed: Set<Int> = []
+        highlighter: NickHighlighter? = nil, revealed: Set<Int> = [],
+        hiddenUrls: Set<String> = []
     ) -> NSAttributedString {
         let attributed = NSMutableAttributedString()
         // The spans the sender colored themselves with mIRC codes — an explicit color wins
@@ -715,6 +720,67 @@ enum MessageRenderer {
                     || spoilered.contains { NSIntersectionRange($0, range).length > 0 }
                 if taken { continue }
                 attributed.addAttribute(.foregroundColor, value: hashedColor(text.substring(with: range)), range: range)
+            }
+        }
+        // ⚠⚠ Both deletions happen HERE, last, after every pass that holds ranges into the
+        // assembled string — `mircColored`, `spoilered` and `links` are plain arrays and do not
+        // move when characters do, so deleting earlier silently mis-styles whatever follows.
+        // (The attributed string's OWN attributes survive a deletion; the bookkeeping beside it
+        // does not, and that is the trap.) One pass, back to front, so each deletion leaves the
+        // earlier offsets untouched.
+        //
+        // Two jobs:
+        //
+        // 1. `<https://example.com>` renders WITHOUT its brackets — RFC 3986 Appendix C's
+        //    delimiter convention, which Discord borrowed as "link, but no unfurl".
+        //    `PreviewSelection` already declines to resolve one; this is the other half, and
+        //    without it the convention is visible punctuation that appears to do nothing.
+        //    ⚠ This changes rendering for EVERY message, not only previewed ones — the two
+        //    settings are off by default and this is the app-wide linkifier. Deliberate, and it
+        //    matches the web: the convention is about how a person writes a link.
+        //
+        // 2. Addresses whose picture is about to stand in for them come out entirely.
+        for match in URLMatcher.matches(in: attributed.string).reversed() {
+            if hiddenUrls.contains(match.href) {
+                // ⚠⚠ The RAW match, not the trimmed one. `PreviewText.UrlSpan.end` deliberately
+                // measures the untrimmed match, so the hiding rule counted a trailing `.` or `)`
+                // as part of the address when it decided the URL sat against the edge — and
+                // deleting only the trimmed span orphans exactly that punctuation. `look at this
+                // https://e.test/a.png.` became `look at this .`; a message that was ONLY
+                // `https://e.test/shot.png.` collapsed to a body of one full stop, which is not
+                // empty, so the blank-body collapse never fired and a line holding a lone `.`
+                // was painted above the picture. Delete what the rule measured.
+                attributed.deleteCharacters(in: match.delimiters ?? match.raw)
+                continue
+            }
+            guard let delimiters = match.delimiters,
+                !spoilered.contains(where: { NSIntersectionRange($0, match.range).length > 0 })
+            else { continue }
+            attributed.deleteCharacters(
+                in: NSRange(location: delimiters.location + delimiters.length - 1, length: 1))
+            attributed.deleteCharacters(in: NSRange(location: delimiters.location, length: 1))
+        }
+        // Trim the ends, which is what makes a body that lost a URL read as a sentence rather
+        // than as one with a hole in it: dropping the address from "look at this: <url>" leaves
+        // a colon and a trailing space, and dropping it from a message that WAS only a link
+        // leaves pure whitespace, which still paints a blank line above the picture.
+        if !hiddenUrls.isEmpty {
+            let text = attributed.string as NSString
+            let firstInk = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
+            if firstInk.location == NSNotFound {
+                attributed.deleteCharacters(in: NSRange(location: 0, length: attributed.length))
+            } else {
+                let lastInk = text.rangeOfCharacter(
+                    from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards)
+                let tail = lastInk.location + lastInk.length
+                if tail < text.length {
+                    attributed.deleteCharacters(
+                        in: NSRange(location: tail, length: text.length - tail))
+                }
+                if firstInk.location > 0 {
+                    attributed.deleteCharacters(
+                        in: NSRange(location: 0, length: firstInk.location))
+                }
             }
         }
         return attributed
