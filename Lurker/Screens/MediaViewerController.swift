@@ -536,6 +536,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         let controller = AVPlayerViewController()
         controller.player = player
         controller.delegate = self
+        configureAudioSession()
         controller.videoGravity = .resizeAspect
         // Audio has no picture, so the player draws its own placeholder rather than a black void.
         controller.view.backgroundColor = .clear
@@ -588,6 +589,24 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     ///     which `showFallback` itself hides when the origin URL will not parse.
     ///
     /// Hidden again the moment a player attaches, so the two never both offer an exit.
+    /// Make this app's audio a PLAYBACK session, so a video can actually be heard.
+    ///
+    /// ⚠⚠ With no category set, the process default applies — and that one obeys the ring/silent
+    /// switch, so a clip plays silently for anyone with silent mode on, which is most people most
+    /// of the time. It reads as "this video has no sound" rather than as a device setting,
+    /// because nothing on screen mentions the switch. `.playback` is the category that says this
+    /// audio IS the point, and it is what every video app uses.
+    ///
+    /// ⚠ Activating it interrupts whatever the reader was listening to, which is the accepted
+    /// bargain for a video somebody deliberately opened — and `stop()` deactivates with
+    /// `notifyOthersOnDeactivation` so their music resumes afterwards rather than staying
+    /// stopped.
+    private func configureAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, mode: .moviePlayback)
+        try? session.setActive(true)
+    }
+
     private func hideOwnExit() {
         spinner.stopAnimating()
         fallback.isHidden = true
@@ -612,6 +631,9 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     /// no control anywhere to stop it, which is the exact outcome this method exists to prevent.
     /// The Task also held the viewer alive through its captured `host`.
     func stop() {
+        // Hand the audio system back before tearing the player down, so whatever was playing
+        // before the reader opened this can pick up again.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         loadTask?.cancel()
         loadTask = nil
         path = nil
