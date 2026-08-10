@@ -87,6 +87,16 @@ enum ServerFrame: Equatable, Sendable {
     /// one-nick edit (a chghost, an account change). Also ephemeral and silent.
     case memberUpdate(networkId: Int?, target: String, member: Member)
 
+    /// An `own-nick` event: *our* nick on this network changed — by `/nick`, or because
+    /// services renamed us. Network-scoped and target-less, like `peer-presence`.
+    ///
+    /// Silent by design: the visible line is the ordinary `nick` event fanned out to each
+    /// shared channel, and this frame is only the state behind it. Without it `Network.nick`
+    /// is whatever the last connect snapshot said, and everything that asks "is this me?"
+    /// — the `.smart` tier's own-churn exemption (#63), the member list's self marking,
+    /// nick-completion's exclusion of ourselves — answers with a nick we no longer have.
+    case ownNick(networkId: Int, nick: String)
+
     /// WS `read-state`: server-authoritative read counts for a buffer, broadcast to all of
     /// the user's devices (after a mark-read, or any countable event). The client mirrors
     /// these onto the buffer — it never derives unread/highlight counts locally.

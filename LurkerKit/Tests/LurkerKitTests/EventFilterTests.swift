@@ -327,6 +327,32 @@ final class EventFilterTests: XCTestCase {
         XCTAssertEqual(rows(messages, smart(), ownNick: "mE"), [1, 2])
     }
 
+    /// A rename is the one event whose actor has two names, and the store carries their speaker
+    /// entry from the old to the new one *as it applies the event* — so by render time the nick
+    /// printed on the row is the one no longer in the map. Looking only there hid the rename of
+    /// somebody who had just been talking, which is exactly the churn this rung keeps.
+    func testARenameIsJudgedUnderBothOfItsNicks() {
+        let rename = [message(1, .nick, "alice", at: 1)] // → alice_afk
+        XCTAssertEqual(
+            rows(rename, smart(), speakers: spoke("alice_afk", at: 0)), [1],
+            "the carried entry counts"
+        )
+        XCTAssertEqual(
+            rows(rename, smart(), speakers: spoke("alice", at: 0)), [1],
+            "and so does an uncarried one — a backlog rename never went through the carry"
+        )
+        XCTAssertEqual(rows(rename, smart()), [], "a genuine lurker's rename still goes")
+    }
+
+    /// Our own rename straddles the change: whichever of `own-nick` and the `nick` line the
+    /// store applies first, the other name is the one `ownNick` is holding. Both are exempt, so
+    /// neither order can hide our own churn.
+    func testOurOwnRenameIsExemptUnderEitherName() {
+        let rename = [message(1, .nick, "me", at: 0)] // → me_afk
+        XCTAssertEqual(rows(rename, smart(), ownNick: "me"), [1], "own-nick hasn't landed yet")
+        XCTAssertEqual(rows(rename, smart(), ownNick: "me_afk"), [1], "own-nick landed first")
+    }
+
     /// The rung filters churn and nothing else. Conversation, kicks, topics and mode changes are
     /// things that happened — `.none` is the tier that hides those, and only some of them.
     func testSmartLeavesEverythingThatIsNotChurnAlone() {

@@ -128,14 +128,14 @@ public struct SmartFilter: Sendable {
     public func hides(_ message: Message, speakers: SpeakerMap, ownNick: String?) -> Bool {
         guard filters(message.type), !message.isSelf,
               let nick = message.nick, !nick.isEmpty,
-              nick.lowercased() != ownNick?.lowercased()
+              !isOurs(message, ownNick: ownNick)
         else { return false }
         // No clock, no window to judge: an undated event can't be shown to be stale, so it
         // renders. (The web reads an unparseable time as epoch, which makes every such event
         // infinitely old and therefore always hidden — the wrong way to fail for a row whose
         // only problem is a missing timestamp.)
         guard let at = message.date else { return false }
-        guard let spoke = speakers[nick] else { return true }
+        guard let spoke = lastSpoke(before: message, in: speakers) else { return true }
         // Spoke shortly before: somebody was talking to them, so their leaving is news.
         if spoke <= at, at.timeIntervalSince(spoke) <= delay { return false }
         // Spoke shortly after joining: they arrived and got straight into it, so the join
@@ -145,6 +145,31 @@ public struct SmartFilter: Sendable {
             return false
         }
         return true
+    }
+
+    /// Whether this event is our own churn, which no rung of the tier hides.
+    ///
+    /// `isSelf` doesn't answer it: the server stamps that on messages we *sent*, not on the JOIN
+    /// it saw us make. Both nicks are checked because our own rename is the one event that
+    /// straddles the change — whichever of `own-nick` and the `nick` line the store applies
+    /// first, the other name is the one `ownNick` is holding.
+    private func isOurs(_ message: Message, ownNick: String?) -> Bool {
+        guard let own = ownNick?.lowercased() else { return false }
+        return message.nick?.lowercased() == own || message.newNick?.lowercased() == own
+    }
+
+    /// When this event's actor last spoke, looked up under **both** of the nicks a rename gives
+    /// them.
+    ///
+    /// A `nick` row is the one event whose actor has two names, and the store carries their
+    /// speaker entry from the old to the new one as it applies the event — so by the time the
+    /// row is rendered, the nick printed on it (`nick`, the old one) is the one no longer in the
+    /// map. Looking that up alone hid the rename of somebody who had just been talking, which is
+    /// precisely the churn this rung is supposed to keep. The later of the two wins, so neither
+    /// order of the carry can lose recency.
+    private func lastSpoke(before message: Message, in speakers: SpeakerMap) -> Date? {
+        let times = [message.nick, message.newNick].compactMap { $0.flatMap { speakers[$0] } }
+        return times.max()
     }
 
     private func filters(_ type: EventType) -> Bool {

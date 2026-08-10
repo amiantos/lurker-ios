@@ -748,6 +748,19 @@ final class LurkerStoreTests: XCTestCase {
 
     /// A rename carries the entry with it, so someone who spoke and then went `_afk` doesn't
     /// read as a stranger when they quit ten seconds later.
+    /// Our own nick has to follow a `/nick`, or everything that asks "is this me?" answers with
+    /// a nick we no longer have — including the `.smart` tier's own-churn exemption, which would
+    /// then hide our own part and quit lines. Target-less and silent: the visible line is the
+    /// ordinary `nick` event fanned out per channel.
+    func testAnOwnNickEventUpdatesTheNetworksNick() {
+        let store = LurkerStore()
+        seedMembers(store, [])
+        XCTAssertEqual(store.state.networks[1]?.nick, "me")
+        store.apply(FrameParser.parseWs(##"{"kind":"irc","type":"own-nick","networkId":1,"nick":"me_afk"}"##))
+        XCTAssertEqual(store.state.networks[1]?.nick, "me_afk")
+        XCTAssertEqual(store.state.messages["1::#lurker"] ?? [], [], "state, not a line")
+    }
+
     func testANickChangeCarriesTheSpeakerEntry() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: []))

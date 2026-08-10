@@ -585,6 +585,13 @@ final class LurkerStore {
             return applyChannelMembers(state, networkId: networkId, target: target, members: members)
         case .memberUpdate(let networkId, let target, let member):
             return applyMemberUpdate(state, networkId: networkId, target: target, member: member)
+        case .ownNick(let networkId, let nick):
+            // Patched onto a network we already know, never conjuring one: a nick for a
+            // network with no row is nothing to apply it to, and the snapshot that creates
+            // the row carries the current nick anyway.
+            var next = state
+            next.networks[networkId]?.nick = nick
+            return next
         case .history(
             let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer,
             let speakers

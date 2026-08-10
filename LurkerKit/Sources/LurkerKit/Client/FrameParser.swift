@@ -454,6 +454,16 @@ enum FrameParser {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }
             return .awayState(networkId: networkId, away: parseAwayState(obj["away"]))
         }
+        // `own-nick` is network-scoped state too, and carries no target at all — the visible
+        // line is the ordinary `nick` event fanned out per channel, which arrives separately.
+        // Below the target guard it would be dropped, leaving `Network.nick` pinned to whatever
+        // the connect snapshot said for the rest of the session.
+        if obj.string("type") == "own-nick" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let nick = obj.string("nick")
+            if nick.isEmpty { return .ignored }
+            return .ownNick(networkId: networkId, nick: nick)
+        }
         let target = obj.string("target")
         if target.isEmpty { return .ignored }
         // `channel-topic` rides the `irc` kind like everything else, but it isn't an event
