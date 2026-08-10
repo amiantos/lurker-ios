@@ -133,6 +133,20 @@ final class MessageAttachmentsView: UIStackView {
         }
     }
 
+
+    /// A height an attachment ASKS for, one notch below required.
+    ///
+    /// ⚠⚠ Never required, and this is a rule about what may be lost rather than a layout tweak.
+    /// A message's text resists vertical compression at 750 by default; a required height here
+    /// outranks it, so any pass that gives the cell less room than its content wants collapses
+    /// the SENTENCE and leaves the picture untouched — a message silently missing its last
+    /// lines, which is what happened. At 999 the decoration yields first. A slightly short
+    /// image is recoverable by looking at it; a lost line of what somebody said is not.
+    private static func yielding(_ constraint: NSLayoutConstraint) -> NSLayoutConstraint {
+        constraint.priority = UILayoutPriority(999)
+        return constraint
+    }
+
     // MARK: - The mosaic
 
     /// Two or more images as a two-column grid.
@@ -196,8 +210,9 @@ final class MessageAttachmentsView: UIStackView {
         row.axis = .horizontal
         row.spacing = Self.mosaicGap
         row.distribution = .fillEqually
-        row.heightAnchor.constraint(
-            equalToConstant: Self.mosaicRowHeight * 2 + Self.mosaicGap
+        Self.yielding(
+            row.heightAnchor.constraint(
+                equalToConstant: Self.mosaicRowHeight * 2 + Self.mosaicGap)
         ).isActive = true
         return row
     }
@@ -209,7 +224,8 @@ final class MessageAttachmentsView: UIStackView {
         row.axis = .horizontal
         row.spacing = Self.mosaicGap
         row.distribution = .fillEqually
-        row.heightAnchor.constraint(equalToConstant: Self.mosaicRowHeight).isActive = true
+        Self.yielding(row.heightAnchor.constraint(equalToConstant: Self.mosaicRowHeight))
+            .isActive = true
         return row
     }
 
@@ -271,12 +287,16 @@ final class MessageAttachmentsView: UIStackView {
             shaped.priority = .defaultHigh
             NSLayoutConstraint.activate([
                 shaped,
-                container.heightAnchor.constraint(
-                    greaterThanOrEqualToConstant: Self.loneMinHeight),
-                container.heightAnchor.constraint(lessThanOrEqualToConstant: Self.loneMaxHeight),
+                Self.yielding(
+                    container.heightAnchor.constraint(
+                        greaterThanOrEqualToConstant: Self.loneMinHeight)),
+                Self.yielding(
+                    container.heightAnchor.constraint(
+                        lessThanOrEqualToConstant: Self.loneMaxHeight)),
             ])
         } else {
-            container.heightAnchor.constraint(equalToConstant: Self.mediaHeight).isActive = true
+            Self.yielding(container.heightAnchor.constraint(equalToConstant: Self.mediaHeight))
+                .isActive = true
         }
 
         // Set when this is an image with bytes, so the tap can offer playback if it animates.
@@ -473,8 +493,9 @@ final class MessageAttachmentsView: UIStackView {
         image.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(image)
         NSLayoutConstraint.activate([
-            container.heightAnchor.constraint(
-                equalTo: container.widthAnchor, multiplier: 1 / Self.heroAspect),
+            Self.yielding(
+                container.heightAnchor.constraint(
+                    equalTo: container.widthAnchor, multiplier: 1 / Self.heroAspect)),
             image.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             image.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             image.topAnchor.constraint(equalTo: container.topAnchor),
@@ -516,7 +537,9 @@ final class MessageAttachmentsView: UIStackView {
         container.addSubview(badge)
 
         NSLayoutConstraint.activate([
-            container.heightAnchor.constraint(equalTo: container.widthAnchor, multiplier: 9.0 / 16.0),
+            Self.yielding(
+                container.heightAnchor.constraint(
+                    equalTo: container.widthAnchor, multiplier: 9.0 / 16.0)),
             thumb.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             thumb.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             thumb.topAnchor.constraint(equalTo: container.topAnchor),

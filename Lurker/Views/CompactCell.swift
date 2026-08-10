@@ -131,6 +131,17 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // in step with it so an unstyled string dropped in here doesn't arrive a different color.
         messageText.textColor = Palette.fg
         messageText.textContainer.lineFragmentPadding = 0
+        // ⚠⚠ The words must never be the thing that gives. A `UITextView` resists vertical
+        // compression at 750 by default, and an attachment's height constraints are REQUIRED —
+        // so any layout pass that hands this cell less height than its content wants collapses
+        // the TEXT rather than the picture, and a message quietly loses lines. Observed as "in
+        // lurker 2.1.1 there is a glimpse of" with the rest of the sentence gone, on exactly the
+        // rows that carried an attachment.
+        //
+        // Paired with the attachment heights dropping to 999 (see `MessageAttachmentsView`), so
+        // the two can't both be immovable: if something has to yield it is the decoration, which
+        // is recoverable by looking, not the sentence, which is not.
+        messageText.setContentCompressionResistancePriority(.required, for: .vertical)
         messageText.onOpenURL = { url in UIApplication.shared.open(url) }
         messageText.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
 
