@@ -53,7 +53,6 @@ final class MediaViewerController: UIViewController {
     private let counter = UILabel()
     private let closeButton = UIButton(type: .system)
     private let shareButton = UIButton(type: .system)
-    private lazy var chrome = UIStackView(arrangedSubviews: [closeButton, counter, shareButton])
 
     init(previews: [LinkPreview], startAt index: Int, model: ChatViewModel) {
         self.previews = previews
@@ -105,12 +104,19 @@ final class MediaViewerController: UIViewController {
         shareButton.accessibilityLabel = "Share link"
         shareButton.addTarget(self, action: #selector(share), for: .touchUpInside)
 
-        chrome.axis = .horizontal
-        chrome.alignment = .center
-        chrome.distribution = .fill
-        counter.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // ⚠⚠ Three separate views, NOT a bar. They were a full-width `UIStackView` pinned across
+        // the top, and a container is a touch target for its whole rectangle whether or not
+        // anything is drawn in it — so an invisible full-width band sat over the top of the
+        // screen swallowing every tap in that strip.
+        //
+        // `AVPlayerViewController`'s controls overlay is VIEW-sized rather than video-sized, so
+        // its top row — Picture-in-Picture, AirPlay — lands directly under that band and became
+        // unusable. Hiding the buttons inside the stack did nothing, because the bar was never
+        // the buttons: it was the container they sat in. Constrained individually, the only
+        // thing that can intercept a touch is a button the reader can actually see.
+        counter.isUserInteractionEnabled = false
 
-        for subview in [pages, chrome] {
+        for subview in [pages, closeButton, counter, shareButton] as [UIView] {
             subview.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(subview)
         }
@@ -119,15 +125,27 @@ final class MediaViewerController: UIViewController {
             pages.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             pages.topAnchor.constraint(equalTo: view.topAnchor),
             pages.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            chrome.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
-            chrome.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            chrome.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            closeButton.leadingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            closeButton.topAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            shareButton.trailingAnchor.constraint(
+                equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
+            shareButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            counter.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            counter.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
         ])
 
         let dismissTap = UITapGestureRecognizer(target: self, action: #selector(close))
         // ⚠ Loses to a double-tap-to-zoom, or zooming in always dismisses on the first tap of
         // the pair. The page cell owns the double tap; this waits to see if one is coming.
         dismissTap.require(toFail: doubleTapOfVisiblePage())
+        // ⚠⚠ And it must never see a touch that landed on the player. A gesture recognizer on an
+        // ANCESTOR still receives touches delivered to its descendants, and `cancelsTouchesInView`
+        // defaults to true — so this recogniser sat above `AVPlayerViewController`'s controls and
+        // ate the taps meant for them, then dismissed the viewer for good measure. Play, scrub,
+        // PiP and AirPlay were all unreachable, and none of it was visible in the layout.
+        dismissTap.delegate = self
         pages.addGestureRecognizer(dismissTap)
 
         let swipe = UIPanGestureRecognizer(target: self, action: #selector(pan))
@@ -151,6 +169,11 @@ final class MediaViewerController: UIViewController {
     private func doubleTapOfVisiblePage() -> UIGestureRecognizer {
         let placeholder = UITapGestureRecognizer()
         placeholder.numberOfTapsRequired = 2
+        // ⚠ It exists only to be failed against, so it must not affect touch delivery on its way
+        // there — the same trap as the dismiss tap, one step quieter, because a recogniser with
+        // no action still cancels touches to the views beneath it by default.
+        placeholder.cancelsTouchesInView = false
+        placeholder.delegate = self
         pages.addGestureRecognizer(placeholder)
         return placeholder
     }
@@ -268,6 +291,25 @@ extension MediaViewerController: UIGestureRecognizerDelegate {
         _ gestureRecognizer: UIGestureRecognizer,
         shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
     ) -> Bool { true }
+
+    /// ⚠⚠ Tap-to-dismiss never sees a touch inside a player page. Everything the system player
+    /// draws — the transport, the scrubber, PiP, AirPlay — lives in views below this recogniser,
+    /// which would otherwise intercept the tap AND cancel it on its way to the control.
+    ///
+    /// Tested by asking the view under the touch, not by asking which page index is showing: a
+    /// player's controls extend over the whole page, and mid-swipe two pages are on screen at
+    /// once.
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch
+    ) -> Bool {
+        guard gestureRecognizer is UITapGestureRecognizer else { return true }
+        var view: UIView? = touch.view
+        while let current = view {
+            if current is MediaPlayerPageCell { return false }
+            view = current.superview
+        }
+        return true
+    }
 
     /// ⚠ The dismiss pan stands down while the picture is zoomed in, or panning around a
     /// magnified image would throw the viewer away instead of moving the image. It also stands
