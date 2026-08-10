@@ -26,6 +26,34 @@ public enum PreviewKind: String, Codable, Sendable {
     }
 }
 
+extension LinkPreview {
+    /// Whether the media viewer can present this, and it answers per KIND because the two get
+    /// their bytes from different places.
+    ///
+    /// An image is drawn from bytes our own proxy serves, so it needs a `src`. Video and audio
+    /// are STREAMED FROM THE ORIGIN and have no `src` at all — the server stopped minting one,
+    /// because a card that renders by itself must not report the reader to a stranger's host,
+    /// while pressing play is a deliberate act that an address could not be hidden from anyway.
+    /// So what those need is an address AVURLAsset can open. A page has nothing to show either way.
+    ///
+    /// ⚠⚠ This replaces a flat `src != nil` test, which was correct while everything came from
+    /// the proxy and became a silent feature deletion the moment the server changed: every clip
+    /// fell out of the gallery, the tap took its "nothing to present" branch, and the reader was
+    /// handed to Safari. The player and its scrubbing, PiP and AirPlay were all still there and
+    /// simply stopped being reachable — no crash, no error, nothing to notice in a log.
+    public var isViewable: Bool {
+        switch kind {
+        case .image:
+            return src != nil
+        case .video, .audio:
+            guard let scheme = URL(string: url)?.scheme?.lowercased() else { return false }
+            return scheme == "https" || scheme == "http"
+        case .page, .videoEmbed:
+            return false
+        }
+    }
+}
+
 /// The server's answer about one URL.
 ///
 /// Byte URLs (`src`, `thumb`) are *paths on our own server*, minted and signed by it. The

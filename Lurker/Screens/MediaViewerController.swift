@@ -493,28 +493,40 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         openExternally: @escaping (URL) -> Void,
         onPlayerDismissed: @escaping () -> Void
     ) {
-        path = preview.src
+        // ⚠⚠ THE ORIGIN URL, never `preview.src`, and this cell deliberately ignores that field
+        // even when one is present. The server stopped minting a byte URL for video and audio
+        // (see "Link previews & inline media" in the lurker repo's docs/SELF_HOSTING.md): a card
+        // that renders by itself must not report the reader to a stranger's host, but pressing
+        // play is a deliberate act, and hiding an address at that moment conceals nothing that
+        // opening the link reveals a second later. Relaying whole clips through the instance
+        // bought no privacy anyone kept and cost it a great deal of memory.
+        //
+        // ⚠ Preferring `src` when it happens to exist would be the obvious defensive spelling
+        // and it is a TRAP: a descriptor minted before that server change may still be in memory
+        // on a running client, and its token now answers 404 — so the defensive branch is the
+        // one that reliably fails.
+        let source = preview.url
+        path = source
         self.openExternally = openExternally
         self.onPlayerDismissed = onPlayerDismissed
         originURL = URL(string: preview.url)
-        guard let source = preview.src else {
-            showFallback("There's nothing to play here.")
-            return
-        }
         showLoading()
 
         loadTask?.cancel()
         loadTask = Task { @MainActor in
-            // ⚠ A proxy path is downloaded before it can play — the bytes are bearer-gated and
-            // AVURLAsset cannot carry the header. Bounded by the proxy's own 8 MB cap, which is
-            // what makes waiting rather than streaming survivable.
+            // ⚠ STREAMED, not staged. `playableMediaURL` hands an absolute http(s) address
+            // straight back, so AVURLAsset does its own ranged reads and playback starts on the
+            // first frames rather than after the whole file lands. The download-to-Caches path
+            // in that function is for bearer-gated proxy paths, which this no longer produces.
+            // ⚠ No Authorization header goes anywhere near this: it is a third-party address by
+            // construction, and `mediaRequest` is never reached on the absolute branch.
             // ⚠ The reuse token is checked FIRST and on its own. Folded into the same `guard`
             // as the success condition, a completion arriving for a page that had already moved
             // on took the failure branch and painted "couldn't be loaded" over whatever the cell
             // had become. A stale answer is not a failed one; it is nobody's answer.
             guard !Task.isCancelled, self.path == source else { return }
             guard let url = await model.playableMediaURL(path: source, mime: preview.mime) else {
-                self.showFallback("This couldn't be loaded.")
+                self.showFallback("There's nothing to play here.")
                 return
             }
             guard !Task.isCancelled, self.path == source else { return }
@@ -623,8 +635,9 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
 
     /// Stop and tear down. Called when the page scrolls away and when the viewer closes.
     ///
-    /// ⚠⚠ Clears `path` and cancels the fetch, and both matter. A clip is DOWNLOADED before it
-    /// can play, so dismissing mid-download left a Task suspended in `playableMediaURL` that
+    /// ⚠⚠ Clears `path` and cancels the load, and both matter. The awaited step is now an
+    /// `isPlayable` probe rather than a whole download — clips stream from the origin — but it
+    /// is still a suspension point, and dismissing across it left a Task that
     /// resumed afterwards, passed its reuse check — `path` was still set, because only
     /// `prepareForReuse` cleared it and a dismissed cell is never dequeued again — and called
     /// `addChild` plus `play()` on a torn-down view controller. Audio over the message list with
