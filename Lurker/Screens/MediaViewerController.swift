@@ -449,8 +449,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
         spinner.color = .white
-        spinner.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(spinner)
 
         fallbackLabel.textColor = .white
         fallbackLabel.textAlignment = .center
@@ -461,10 +459,16 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         fallbackButton.addTarget(self, action: #selector(openOutside), for: .touchUpInside)
         closeButton.setTitle("Close", for: .normal)
         closeButton.addTarget(self, action: #selector(closeViewer), for: .touchUpInside)
+        // ⚠ ONE stack holding all four, rather than a centred spinner and a centred fallback.
+        // Two views pinned to the same centre are two views in the same place: the moment the
+        // exit needed to appear during LOADING, un-hiding its container also un-hid the message
+        // and "Open in Browser", and they drew straight over the spinner. A stack lays its
+        // children out in sequence, so nothing can overlap whatever combination is showing.
         fallback.axis = .vertical
         fallback.spacing = 12
         fallback.alignment = .center
         fallback.isHidden = true
+        fallback.addArrangedSubview(spinner)
         fallback.addArrangedSubview(fallbackLabel)
         fallback.addArrangedSubview(fallbackButton)
         fallback.addArrangedSubview(closeButton)
@@ -472,8 +476,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         contentView.addSubview(fallback)
 
         NSLayoutConstraint.activate([
-            spinner.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             fallback.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             fallback.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
             fallback.leadingAnchor.constraint(
@@ -495,13 +497,11 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         self.openExternally = openExternally
         self.onPlayerDismissed = onPlayerDismissed
         originURL = URL(string: preview.url)
-        fallback.isHidden = true
         guard let source = preview.src else {
             showFallback("There's nothing to play here.")
             return
         }
-        spinner.startAnimating()
-        showsOwnExit(true)
+        showLoading()
 
         loadTask?.cancel()
         loadTask = Task { @MainActor in
@@ -514,7 +514,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
             // had become. A stale answer is not a failed one; it is nobody's answer.
             guard !Task.isCancelled, self.path == source else { return }
             guard let url = await model.playableMediaURL(path: source, mime: preview.mime) else {
-                self.spinner.stopAnimating()
                 self.showFallback("This couldn't be loaded.")
                 return
             }
@@ -525,7 +524,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
             // forever is a worse answer than a sentence and a button.
             let playable = (try? await asset.load(.isPlayable)) ?? false
             guard !Task.isCancelled, self.path == source else { return }
-            self.spinner.stopAnimating()
             guard playable else {
                 self.showFallback("This format can't be played on iOS.")
                 return
@@ -548,16 +546,30 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         controller.didMove(toParent: host)
         self.controller = controller
         // The player draws its own dismiss now, so ours steps aside — verified on device.
-        fallback.isHidden = true
-        showsOwnExit(false)
+        hideOwnExit()
         player.play()
     }
 
-    private func showFallback(_ message: String) {
-        fallbackLabel.text = message
+    /// Waiting on the bytes: a spinner and the way out, and nothing else.
+    private func showLoading() {
+        spinner.startAnimating()
+        spinner.isHidden = false
+        fallbackLabel.isHidden = true
+        fallbackButton.isHidden = true
+        closeButton.isHidden = false
         fallback.isHidden = false
+    }
+
+    private func showFallback(_ message: String) {
+        spinner.stopAnimating()
+        spinner.isHidden = true
+        fallbackLabel.text = message
+        fallbackLabel.isHidden = false
+        // Hidden when the origin address won't parse — which is exactly why the exit below it
+        // is unconditional rather than the fallback's only control.
         fallbackButton.isHidden = originURL == nil
-        showsOwnExit(true)
+        closeButton.isHidden = false
+        fallback.isHidden = false
     }
 
     /// ⚠⚠ A page with no player must carry its own way out.
@@ -576,9 +588,9 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     ///     which `showFallback` itself hides when the origin URL will not parse.
     ///
     /// Hidden again the moment a player attaches, so the two never both offer an exit.
-    private func showsOwnExit(_ visible: Bool) {
-        closeButton.isHidden = !visible
-        if visible { fallback.isHidden = false }
+    private func hideOwnExit() {
+        spinner.stopAnimating()
+        fallback.isHidden = true
     }
 
     @objc private func openOutside() {
@@ -614,9 +626,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         stop()
-        spinner.stopAnimating()
-        fallback.isHidden = true
-        closeButton.isHidden = true
+        hideOwnExit()
     }
 }
 
