@@ -1052,15 +1052,40 @@ final class LurkerClient {
     /// a flag that decides whether to DECORATE messages must never be in a position to delay
     /// getting them.
     func fetchFeatures() async -> InstanceFeatures? {
-        guard let url = URL(string: baseURL + "/api/config") else { return nil }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 10
+        guard let request = Self.configRequest(baseURL: baseURL, token: token) else { return nil }
         do {
             let (data, response) = try await session.data(for: request)
             return Self.parseFeatures(data, code: (response as? HTTPURLResponse)?.statusCode ?? 0)
         } catch {
             return nil
         }
+    }
+
+    /// The request for `/api/config`.
+    ///
+    /// ⚠⚠ It carries the bearer token, even though the server calls this endpoint "public,
+    /// unauthenticated bootstrap config the client can read before login". That is true of a
+    /// self-hosted instance and false of a hosted one: on lurker.chat the control plane proxies
+    /// `/api/*` to a CELL, and it works out which cell from the caller's session. An anonymous
+    /// request has nothing to route on, so it comes back `401 {"error":"not routable"}` — which
+    /// this client correctly reads as "no answer", leaving previews off forever on precisely the
+    /// deployment most people use. The browser never noticed because its fetch carries the
+    /// session cookie; native auth is a Bearer header and has to be asked for.
+    ///
+    /// ⚠ Harmless where it genuinely is public — an instance that ignores the header returns the
+    /// same body — so there is one code path rather than a deployment test the client would have
+    /// to get right.
+    ///
+    /// `nonisolated static` for the same reason as `mediaRequest`: the property worth asserting
+    /// is invisible through the awaiting method, which can only answer "no flags".
+    nonisolated static func configRequest(baseURL: String, token: String?) -> URLRequest? {
+        guard let url = URL(string: baseURL + "/api/config") else { return nil }
+        var request = URLRequest(url: url)
+        // Nothing waits on this to render, and a flag deciding whether to DECORATE messages must
+        // never be in a position to delay getting them.
+        request.timeoutInterval = 10
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        return request
     }
 
     /// `/api/config` → flags, or **nil for "that wasn't an answer"**.

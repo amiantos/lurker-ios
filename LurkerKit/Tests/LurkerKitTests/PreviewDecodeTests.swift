@@ -87,6 +87,27 @@ struct PreviewDecodeTests {
                 == false)
     }
 
+    @Test("the config request carries the session token, or hosted can't route it")
+    func configRequestIsAuthenticated() {
+        // ⚠⚠ The server documents this endpoint as public and unauthenticated, and that is true
+        // of a self-hosted instance and false of a hosted one: on lurker.chat the control plane
+        // proxies /api/* to a CELL and works out which one from the caller's session. Anonymous,
+        // it answers 401 "not routable" — read (correctly) as "no answer", which left link
+        // previews off forever on the deployment most people use, with the settings rows hidden
+        // so nothing on screen suggested anything was wrong. The browser never noticed: its
+        // fetch carries the session cookie.
+        let request = LurkerClient.configRequest(baseURL: "https://app.lurker.chat", token: "t0k")
+        #expect(request?.url?.absoluteString == "https://app.lurker.chat/api/config")
+        #expect(request?.value(forHTTPHeaderField: "Authorization") == "Bearer t0k")
+    }
+
+    @Test("and asks anonymously before there is a session, which self-hosted allows")
+    func configRequestWithoutATokenIsStillValid() {
+        let request = LurkerClient.configRequest(baseURL: "https://irc.example", token: nil)
+        #expect(request != nil)
+        #expect(request?.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
     @Test("reads the flag when the server sets it")
     func flagIsRead() {
         let on = Data("{\"features\":{\"linkPreviews\":true}}".utf8)
