@@ -440,6 +440,8 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     private let fallback = UIStackView()
     private let fallbackLabel = UILabel()
     private let fallbackButton = UIButton(type: .system)
+    /// The way out while there is no player to provide one. See `showsOwnExit`.
+    private let closeButton = UIButton(type: .system)
     private var openExternally: ((URL) -> Void)?
     private var onPlayerDismissed: (() -> Void)?
     private var originURL: URL?
@@ -457,12 +459,15 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         fallbackLabel.adjustsFontForContentSizeCategory = true
         fallbackButton.setTitle("Open in Browser", for: .normal)
         fallbackButton.addTarget(self, action: #selector(openOutside), for: .touchUpInside)
+        closeButton.setTitle("Close", for: .normal)
+        closeButton.addTarget(self, action: #selector(closeViewer), for: .touchUpInside)
         fallback.axis = .vertical
         fallback.spacing = 12
         fallback.alignment = .center
         fallback.isHidden = true
         fallback.addArrangedSubview(fallbackLabel)
         fallback.addArrangedSubview(fallbackButton)
+        fallback.addArrangedSubview(closeButton)
         fallback.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(fallback)
 
@@ -496,6 +501,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
             return
         }
         spinner.startAnimating()
+        showsOwnExit(true)
 
         loadTask?.cancel()
         loadTask = Task { @MainActor in
@@ -541,6 +547,9 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         contentView.addSubview(controller.view)
         controller.didMove(toParent: host)
         self.controller = controller
+        // The player draws its own dismiss now, so ours steps aside — verified on device.
+        fallback.isHidden = true
+        showsOwnExit(false)
         player.play()
     }
 
@@ -548,11 +557,37 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         fallbackLabel.text = message
         fallback.isHidden = false
         fallbackButton.isHidden = originURL == nil
+        showsOwnExit(true)
+    }
+
+    /// ⚠⚠ A page with no player must carry its own way out.
+    ///
+    /// The viewer hides ALL of its chrome on a player page — close, counter and share — because
+    /// the system player draws its own dismiss, and the swipe stands down there because a
+    /// scrubber is a horizontal drag inside a vertically-dismissing view. That trade is sound
+    /// exactly as long as a player exists. It does not exist in three states, and each one was a
+    /// screen with no exit:
+    ///
+    ///   - the clip is still DOWNLOADING (a proxy path is fetched whole before it can play, and
+    ///     the cap for video is 64 MB, so on a slow link this is a spinner and nothing else),
+    ///   - the fetch FAILED,
+    ///   - the format is one AVFoundation will not open — webm and ogg, both ordinary on IRC —
+    ///     where the only other control is "Open in Browser", which leaves the app entirely, and
+    ///     which `showFallback` itself hides when the origin URL will not parse.
+    ///
+    /// Hidden again the moment a player attaches, so the two never both offer an exit.
+    private func showsOwnExit(_ visible: Bool) {
+        closeButton.isHidden = !visible
+        if visible { fallback.isHidden = false }
     }
 
     @objc private func openOutside() {
         guard let originURL else { return }
         openExternally?(originURL)
+    }
+
+    @objc private func closeViewer() {
+        onPlayerDismissed?()
     }
 
     /// Stop and tear down. Called when the page scrolls away and when the viewer closes.
@@ -581,6 +616,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         stop()
         spinner.stopAnimating()
         fallback.isHidden = true
+        closeButton.isHidden = true
     }
 }
 
