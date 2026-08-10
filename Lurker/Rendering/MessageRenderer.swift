@@ -742,8 +742,15 @@ enum MessageRenderer {
         // 2. Addresses whose picture is about to stand in for them come out entirely.
         for match in URLMatcher.matches(in: attributed.string).reversed() {
             if hiddenUrls.contains(match.href) {
-                let whole = match.delimiters ?? match.range
-                attributed.deleteCharacters(in: whole)
+                // ⚠⚠ The RAW match, not the trimmed one. `PreviewText.UrlSpan.end` deliberately
+                // measures the untrimmed match, so the hiding rule counted a trailing `.` or `)`
+                // as part of the address when it decided the URL sat against the edge — and
+                // deleting only the trimmed span orphans exactly that punctuation. `look at this
+                // https://e.test/a.png.` became `look at this .`; a message that was ONLY
+                // `https://e.test/shot.png.` collapsed to a body of one full stop, which is not
+                // empty, so the blank-body collapse never fired and a line holding a lone `.`
+                // was painted above the picture. Delete what the rule measured.
+                attributed.deleteCharacters(in: match.delimiters ?? match.raw)
                 continue
             }
             guard let delimiters = match.delimiters,

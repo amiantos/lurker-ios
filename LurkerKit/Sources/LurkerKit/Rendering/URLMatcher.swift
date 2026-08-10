@@ -67,26 +67,47 @@ public enum URLMatcher {
     /// away. Trimming there would also break `isBracketedUrl`, which measures the untrimmed
     /// match — see its note.
     public static func matches(in text: String)
-        -> [(range: NSRange, href: String, delimiters: NSRange?)]
+        -> [(range: NSRange, href: String, delimiters: NSRange?, raw: NSRange)]
     {
         let ns = text as NSString
         return rawRanges(in: text).compactMap { range in
-            if isBracketedUrl(text, at: range) {
-                let raw = ns.substring(with: range)
+            let matched = ns.substring(with: range)
+            if isBracketedUrl(text, at: range), carriesAScheme(matched) {
                 return (
-                    range, href(for: raw),
-                    NSRange(location: range.location - 1, length: range.length + 2)
+                    range, href(for: matched),
+                    NSRange(location: range.location - 1, length: range.length + 2),
+                    range
                 )
             }
-            let raw = ns.substring(with: range)
-            let trimmed = trimTrailingPunctuation(raw)
+            let trimmed = trimTrailingPunctuation(matched)
             guard !trimmed.isEmpty else { return nil }
             return (
                 NSRange(location: range.location, length: (trimmed as NSString).length),
                 href(for: trimmed),
-                nil
+                nil,
+                range
             )
         }
+    }
+
+    /// Whether a match is a URI as WRITTEN, rather than a bare address the matcher inferred a
+    /// scheme for.
+    ///
+    /// ⚠⚠ This is what keeps the `<…>` convention off email. `isBracketedUrl` deliberately applies
+    /// no scheme test — `<www.example.com>` is the same convention — and the renderer took that
+    /// permissive answer as licence to DELETE the brackets, so
+    /// `Co-Authored-By: Claude <noreply@anthropic.com>` rendered as
+    /// `Co-Authored-By: Claude noreply@anthropic.com`. RFC 5322 angle-addr is ordinary traffic on
+    /// IRC — git trailers, quoted mail, "mail me at <foo@bar.com>" — and this fires in the
+    /// app-wide linkifier, so it hit every message for every user with both preview settings off.
+    ///
+    /// RFC 3986 Appendix C is about delimiting a URI. A bare `foo@bar.com` is not one; we merely
+    /// guess `mailto:` for it, and a guess is not grounds for rewriting what somebody typed.
+    private static func carriesAScheme(_ matched: String) -> Bool {
+        let lower = matched.lowercased()
+        return lower.hasPrefix("http://") || lower.hasPrefix("https://")
+            || lower.hasPrefix("ftp://") || lower.hasPrefix("ftps://")
+            || lower.hasPrefix("mailto:") || lower.hasPrefix("www.")
     }
 
     /// `text` with every URL replaced by a single space — what a content pattern is matched

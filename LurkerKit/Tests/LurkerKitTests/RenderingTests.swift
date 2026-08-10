@@ -135,6 +135,39 @@ final class RenderingTests: XCTestCase {
         XCTAssertEqual(matches.first?.href, "https://en.wikipedia.org/wiki/Foo.")
     }
 
+    /// ⚠⚠ The convention delimits a URI. A bare `foo@bar.com` is not one — we merely GUESS
+    /// `mailto:` for it — and a guess is not grounds for rewriting what somebody typed. The
+    /// renderer deletes whatever `delimiters` reports, so reporting it here rewrote
+    /// `Co-Authored-By: Claude <noreply@anthropic.com>` into
+    /// `Co-Authored-By: Claude noreply@anthropic.com`, in every message, for every user, with
+    /// both preview settings off. RFC 5322 angle-addr is ordinary IRC traffic.
+    func testAngleBracketsAroundABareEmailAreLeftAlone() {
+        let matches = URLMatcher.matches(in: "Co-Authored-By: Claude <noreply@anthropic.com>")
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches[0].href, "mailto:noreply@anthropic.com")
+        XCTAssertNil(matches[0].delimiters, "a bare email is not a URI the convention delimits")
+    }
+
+    /// ...while a written scheme still is one, including the `www.` case `isBracketedUrl`'s own
+    /// note calls out.
+    func testAngleBracketsStillStripForAWrittenScheme() {
+        XCTAssertNotNil(URLMatcher.matches(in: "<https://example.com>").first?.delimiters)
+        XCTAssertNotNil(URLMatcher.matches(in: "<www.example.com>").first?.delimiters)
+        XCTAssertNotNil(URLMatcher.matches(in: "<mailto:a@b.co>").first?.delimiters)
+    }
+
+    /// ⚠⚠ `raw` is the UNTRIMMED match, and the hidden-URL deletion uses it rather than `range`.
+    /// `PreviewText` measures a span's end the same way when deciding whether a URL sits against
+    /// the edge, so deleting only the trimmed span orphans the punctuation the rule had already
+    /// counted as part of the address — `look at this <url>.` became `look at this .`.
+    func testRawRangeCoversTheTrailingPunctuationTheTrimDropped() {
+        let text = "look at this https://e.test/a.png."
+        let match = URLMatcher.matches(in: text).first
+        XCTAssertEqual(match?.href, "https://e.test/a.png")
+        XCTAssertEqual(match?.raw.length, ("https://e.test/a.png." as NSString).length)
+        XCTAssertEqual(match?.range.length, ("https://e.test/a.png" as NSString).length)
+    }
+
     func testAnOrdinaryUrlReportsNoDelimiters() {
         XCTAssertNil(URLMatcher.matches(in: "see https://example.com now").first?.delimiters)
         // A half-open bracket is ordinary prose, not the convention.
