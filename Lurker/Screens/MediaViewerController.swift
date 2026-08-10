@@ -434,6 +434,8 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
 
     private var controller: AVPlayerViewController?
     private var path: String?
+    /// The in-flight source fetch, so teardown can stop it. See `stop()`.
+    private var loadTask: Task<Void, Never>?
     private let spinner = UIActivityIndicatorView(style: .large)
     private let fallback = UIStackView()
     private let fallbackLabel = UILabel()
@@ -495,23 +497,28 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         }
         spinner.startAnimating()
 
-        Task { @MainActor in
+        loadTask?.cancel()
+        loadTask = Task { @MainActor in
             // ⚠ A proxy path is downloaded before it can play — the bytes are bearer-gated and
             // AVURLAsset cannot carry the header. Bounded by the proxy's own 8 MB cap, which is
             // what makes waiting rather than streaming survivable.
-            guard let url = await model.playableMediaURL(path: source, mime: preview.mime),
-                self.path == source
-            else {
+            // ⚠ The reuse token is checked FIRST and on its own. Folded into the same `guard`
+            // as the success condition, a completion arriving for a page that had already moved
+            // on took the failure branch and painted "couldn't be loaded" over whatever the cell
+            // had become. A stale answer is not a failed one; it is nobody's answer.
+            guard !Task.isCancelled, self.path == source else { return }
+            guard let url = await model.playableMediaURL(path: source, mime: preview.mime) else {
                 self.spinner.stopAnimating()
                 self.showFallback("This couldn't be loaded.")
                 return
             }
+            guard !Task.isCancelled, self.path == source else { return }
             let asset = AVURLAsset(url: url)
             // ⚠ ASKED, not assumed. The server proxies any `video/*`, and this platform decodes
             // neither webm nor ogg — both common enough on IRC to matter. A player that spins
             // forever is a worse answer than a sentence and a button.
             let playable = (try? await asset.load(.isPlayable)) ?? false
-            guard self.path == source else { return }
+            guard !Task.isCancelled, self.path == source else { return }
             self.spinner.stopAnimating()
             guard playable else {
                 self.showFallback("This format can't be played on iOS.")
@@ -549,7 +556,18 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     }
 
     /// Stop and tear down. Called when the page scrolls away and when the viewer closes.
+    ///
+    /// ⚠⚠ Clears `path` and cancels the fetch, and both matter. A clip is DOWNLOADED before it
+    /// can play, so dismissing mid-download left a Task suspended in `playableMediaURL` that
+    /// resumed afterwards, passed its reuse check — `path` was still set, because only
+    /// `prepareForReuse` cleared it and a dismissed cell is never dequeued again — and called
+    /// `addChild` plus `play()` on a torn-down view controller. Audio over the message list with
+    /// no control anywhere to stop it, which is the exact outcome this method exists to prevent.
+    /// The Task also held the viewer alive through its captured `host`.
     func stop() {
+        loadTask?.cancel()
+        loadTask = nil
+        path = nil
         controller?.player?.pause()
         controller?.player = nil
         controller?.willMove(toParent: nil)
@@ -561,7 +579,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         stop()
-        path = nil
         spinner.stopAnimating()
         fallback.isHidden = true
     }
@@ -569,6 +586,12 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
 
 
 /// ⚠⚠ The player's own dismiss has to close the VIEWER, not just itself.
+///
+/// ⚠ Static review argued this callback cannot fire for an embedded controller, and that hiding
+/// our chrome therefore traps a reader on a lone clip. **Verified on device by the operator
+/// (2026-08-09): exiting works.** Do not "fix" this by restoring the close button on a player
+/// page without testing a single-video message on hardware first — the device is the authority
+/// here and the reasoning was wrong.
 ///
 /// Our chrome hides on a player page — the system draws its own X, and two in one corner is
 /// worse than either — and the swipe-to-dismiss stands down there because a scrubber is a

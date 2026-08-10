@@ -1005,20 +1005,69 @@ final class LurkerClient {
         {
             return absolute
         }
-        guard case .success(let data) = await fetchProxiedMedia(path: path) else { return nil }
+        guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
+            return nil
+        }
 
-        // Named from the path so replaying costs nothing, and staged under the caches directory
-        // so the OS can reclaim it under pressure — this is a copy of something the server will
-        // hand over again, never the only copy of anything.
-        let name = String(abs(path.hashValue), radix: 36) + "." + Self.fileExtension(for: mime)
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: url.path) { return url }
+        // ⚠⚠ STREAMED to disk, never buffered. This used to read the whole clip into a `Data`
+        // and then write a second copy, both on the main actor, justified by a comment claiming
+        // "the proxy's 8 MB cap" — which is the cap for IMAGES. Video and audio get
+        // MAX_MEDIA_PROXY_BYTES, sixty-four megabytes, so the reassurance was about a different
+        // limit than the branch it was written on: 128 MB of main-actor allocation while the
+        // viewer animates in.
+        let staged = Self.stagedMediaURL(for: path, mime: mime)
+        // ⚠ Named from a STABLE digest. `String.hashValue` is reseeded every launch, so the
+        // reuse check could never hit across cold starts: every clip was re-downloaded and
+        // re-written while the previous launch's copies stayed on disk under names nothing would
+        // ever look for again. (It also trapped on `Int.min` through `abs`.)
+        if FileManager.default.fileExists(atPath: staged.path) { return staged }
         do {
-            try data.write(to: url, options: .atomic)
-            return url
+            let (temporary, response) = try await mediaSession.download(for: request)
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else {
+                try? FileManager.default.removeItem(at: temporary)
+                return nil
+            }
+            try? FileManager.default.removeItem(at: staged)
+            try FileManager.default.moveItem(at: temporary, to: staged)
+            return staged
         } catch {
             return nil
         }
+    }
+
+    /// Where a proxied clip is staged for playback.
+    ///
+    /// ⚠ `Library/Caches`, not `temporaryDirectory` — the previous comment claimed the former and
+    /// used the latter. This is a copy of something the server will hand over again, so the OS
+    /// reclaiming it under pressure is exactly right.
+    nonisolated private static func stagedMediaURL(for path: String, mime: String?) -> URL {
+        // FNV-1a: stable across launches, unlike `String.hashValue`, and enough to name a file.
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in Array(path.utf8) {
+            hash = (hash ^ UInt64(byte)) &* 0x1000_0000_01b3
+        }
+        let name = String(hash, radix: 36) + "." + fileExtension(for: mime)
+        return stagedMediaDirectory().appendingPathComponent(name)
+    }
+
+    nonisolated private static func stagedMediaDirectory() -> URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let directory = base.appendingPathComponent("preview-media", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Delete every staged clip. Sign-out only.
+    ///
+    /// ⚠⚠ Without this the departing account's VIDEOS sat on disk in the clear for whoever
+    /// signed in next — while the same teardown carefully cleared the metadata store, the
+    /// decoded-image cache and the media `URLCache` on the grounds that they were that person's
+    /// reading history. The heaviest and most identifying artefact was the one nobody deleted.
+    /// The `mediaSession` split closed this exact hole one layer up; this is the layer below it.
+    func clearStagedMedia() {
+        try? FileManager.default.removeItem(at: Self.stagedMediaDirectory())
     }
 
     /// ⚠ Only what AVFoundation can actually open. webm and ogg are deliberately absent: the

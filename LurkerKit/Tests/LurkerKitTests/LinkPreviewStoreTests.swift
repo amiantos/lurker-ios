@@ -376,6 +376,64 @@ struct LinkPreviewStoreTests {
         #expect(stub.batches.first == Array(urls.prefix(20)))
     }
 
+    @Test("an expiry already in the PAST is a verdict, not an invitation")
+    func lapsedExpiryIsAVerdict() async {
+        // ⚠⚠ The first fix closed only the nil half of its own documented bug. A stamp already
+        // behind us yields a NEGATIVE untilExpiry, which sails through the short-TTL test and
+        // arms the ladder — so a device whose clock runs an hour fast reads every one-hour
+        // failure TTL as lapsed and turns all 300 dead links a reader scrolls past into pollers.
+        // That is the scenario the comment claimed to have closed. A lapsed answer is re-opened
+        // by priming, which does not need a timer as well.
+        let clock = TestClock()
+        let stub = Stub()
+        stub.answer = { urls in
+            urls.map {
+                LinkPreview(
+                    url: $0, status: .unavailable, kind: .page,
+                    expiresAt: ISOTime.string(from: clock.date.addingTimeInterval(-3600)))
+            }
+        }
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
+        store.request(["https://e.test/skewed"])
+        await settle()
+        #expect(store.retry["https://e.test/skewed"] == nil)
+        #expect(!store.runDueReasks())
+    }
+
+    @Test("a URL nobody ever answers is chased a bounded number of times, then let go")
+    func unansweredRetriesAreBounded() async {
+        // ⚠⚠ This path can never reach a verdict on its own: nothing was ANSWERED, so `delay`
+        // sees a zero expiry and always says come back. PreviewReask justifies having no attempt
+        // cap on the grounds that a dead URL arrives with a one-hour TTL — true of an answer,
+        // false of silence. So a 502, or the operator turning the feature off mid-session, put
+        // every primed URL on a permanent five-minute poll for the life of the session.
+        //
+        // `asked` stays clear, so a later priming pass can still try — driven by new messages
+        // rather than by a timer, which is the difference between recovering and hammering.
+        let clock = TestClock()
+        let stub = Stub()
+        stub.answer = { _ in [] }
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
+        store.request(["https://e.test/silent"])
+        await settle()
+
+        var rounds = 0
+        while store.retry["https://e.test/silent"] != nil, rounds < 20 {
+            clock.date.addTimeInterval(600)
+            _ = store.runDueReasks()
+            await settle()
+            rounds += 1
+        }
+        #expect(rounds < 20, "it gave up rather than polling forever")
+        #expect(store.retry["https://e.test/silent"] == nil)
+    }
+
     // MARK: - Is an answer still coming?
 
     @Test("a URL nobody ever asked about is settled, not pending")

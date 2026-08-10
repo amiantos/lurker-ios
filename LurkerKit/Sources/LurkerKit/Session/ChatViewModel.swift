@@ -127,6 +127,7 @@ public final class ChatViewModel {
         // decoded-image cache goes via the closure above (it's UIKit, this package isn't); this
         // drops the on-disk HTTP cache the images were served from.
         client.clearMediaCache()
+        client.clearStagedMedia()
         features = InstanceFeatures()
         featuresKnown = false
         lastPreviewToggles = nil
@@ -775,6 +776,17 @@ public final class ChatViewModel {
         guard features.linkPreviews else { return }
         let wantMedia = store.state.settings.bool("chat.inline_media.enabled", default: false)
         let wantPages = store.state.settings.bool("chat.link_previews.enabled", default: false)
+
+        // ⚠⚠ Recorded BEFORE the "both off" return, which is where it used to sit — and the
+        // ordering is a bug rather than a detail. Turning previews off never updated the record,
+        // so the stored value stayed at the last ON state; turning them back on then compared
+        // equal and skipped the rescan entirely, and every message already loaded stayed bare
+        // until something else re-ingested it. Off-then-on is exactly how somebody tries a
+        // setting out.
+        if case .settingsBootstrap = frame { recordToggles(wantMedia, wantPages) }
+        if case .settingsChanged = frame { recordToggles(wantMedia, wantPages) }
+        if case .settingsValues = frame { recordToggles(wantMedia, wantPages) }
+
         guard wantMedia || wantPages else { return }
 
         // Carried as (networkId, target, messages) rather than as bare text, because both
@@ -805,9 +817,9 @@ public final class ChatViewModel {
         // `enterForeground` triggers after any background longer than 30 seconds. Pocketing the
         // phone for half a minute cost a full rescan of every message ever loaded.
         case .settingsBootstrap, .settingsChanged, .settingsValues:
-            let toggles = PreviewToggles(media: wantMedia, pages: wantPages)
-            guard lastPreviewToggles != toggles else { return }
-            lastPreviewToggles = toggles
+            // `recordToggles` above already compared and stored; it answers whether this frame
+            // actually moved a preview setting.
+            guard togglesJustChanged else { return }
             primeLoadedBuffers()
             return
         default: return
@@ -832,9 +844,17 @@ public final class ChatViewModel {
         let pages: Bool
     }
 
-    /// What the preview toggles were the last time a settings frame caused a rescan, so an
-    /// unrelated setting — or a reconnect's re-fetch — doesn't buy one.
+    /// What the preview toggles were when a settings frame last carried them, so an unrelated
+    /// setting — or a reconnect's re-fetch — doesn't buy a full rescan.
     private var lastPreviewToggles: PreviewToggles?
+    /// Whether the frame being handled actually moved one of them.
+    private var togglesJustChanged = false
+
+    private func recordToggles(_ media: Bool, _ pages: Bool) {
+        let toggles = PreviewToggles(media: media, pages: pages)
+        togglesJustChanged = lastPreviewToggles != toggles
+        lastPreviewToggles = toggles
+    }
 
     /// Re-prime every message already in the store.
     ///
@@ -989,6 +1009,7 @@ public final class ChatViewModel {
         // 401-bounce followed by signing in elsewhere primed against a flag nobody had checked.
         // The two teardowns lead to the same screen and must leave the same state behind.
         client.clearMediaCache()
+        client.clearStagedMedia()
         features = InstanceFeatures()
         featuresKnown = false
         lastPreviewToggles = nil

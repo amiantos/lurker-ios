@@ -69,6 +69,7 @@ final class PreviewImageLoader {
         }
         waiters[path] = [deliver]
 
+        let generation = self.generation
         Task { @MainActor in
             // Decoding off the main actor: a full-width JPEG is a few milliseconds, and a few
             // milliseconds during a scroll is a dropped frame.
@@ -87,6 +88,11 @@ final class PreviewImageLoader {
             case .permanent:
                 break
             }
+            // ⚠⚠ A sign-out landing mid-fetch must not be undone by the answer. `reset()`
+            // empties the caches, and without this the in-flight decode resumed afterwards and
+            // wrote the departing account's picture straight back into them — the same shape as
+            // the resolve flush repopulating a cleared store, one layer down.
+            guard generation == self.generation else { return }
             let pending = waiters.removeValue(forKey: path) ?? []
             guard let image else {
                 // ⚠⚠ Only a VERDICT is latched. The proxy answers a throttled origin with 503 —
@@ -125,6 +131,10 @@ final class PreviewImageLoader {
 
     /// Frame counts by path, learned when the still was decoded.
     private var frames: [String: Int] = [:]
+
+    /// Bumped by `reset()`, so answers already in the air can tell they belong to the account
+    /// that just signed out.
+    private var generation = 0
 
     /// Longest edge an animation frame is decoded to.
     ///
@@ -228,5 +238,7 @@ final class PreviewImageLoader {
         waiters.removeAll()
         failed.removeAll()
         frames.removeAll()
+        waiters.removeAll()
+        generation &+= 1
     }
 }

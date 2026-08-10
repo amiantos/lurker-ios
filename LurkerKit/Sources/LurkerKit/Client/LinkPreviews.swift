@@ -257,7 +257,19 @@ public final class LinkPreviewStore {
             retry[url] = nil
             return
         }
-        arm(url, untilExpiry: expiry.timeIntervalSince(now()))
+        // ⚠⚠ An expiry already in the PAST is a verdict too, and the first version of this only
+        // closed the nil half of its own documented bug. A lapsed stamp yields a negative
+        // `untilExpiry`, which sails through the short-TTL test and arms the ladder — so a device
+        // whose clock runs an hour fast reads every one-hour failure TTL as expired and turns all
+        // 300 dead links a reader scrolls past into pollers, which is the exact scenario the
+        // comment claimed to have closed. A lapsed answer is re-opened by `dropIfExpired` on the
+        // next priming pass; it does not need a timer as well.
+        let untilExpiry = expiry.timeIntervalSince(now())
+        guard untilExpiry > 0 else {
+            retry[url] = nil
+            return
+        }
+        arm(url, untilExpiry: untilExpiry)
     }
 
     /// Put a URL back in play after NO answer at all — a transport failure, or a URL the server
@@ -271,8 +283,32 @@ public final class LinkPreviewStore {
     /// the URL to priming.
     private func forgetForRetry(_ url: String) {
         asked.remove(url)
+        // ⚠⚠ Bounded, because this path can never reach a verdict on its own. `PreviewReask`
+        // justifies having no attempt cap on the grounds that "a genuinely dead URL is answered
+        // with the one-hour failure TTL, so it is a verdict and never reaches here" — true of
+        // `noteUnusableAnswer`, false of this. Nothing was ever ANSWERED here, so `delay` sees a
+        // zero expiry and always says come back. Two live triggers: the resolve endpoint 502s
+        // or the operator turns the feature off mid-session, in which case every URL of every
+        // chunk lands here — a connect burst having primed thousands — and polls for the life of
+        // the session; or `FailableDecodable` drops a descriptor this build can't read, which
+        // fails identically on every retry, forever.
+        //
+        // After the ladder reaches its ceiling we stop. `asked` is already clear, so the next
+        // priming pass that mentions the URL asks again — driven by new messages arriving rather
+        // than by a timer, which is the difference between recovering and hammering.
+        let tries = (retry[url]?.tries ?? 0) + 1
+        guard tries <= Self.maxUnansweredRetries else {
+            retry[url] = nil
+            return
+        }
         arm(url, untilExpiry: 0)
     }
+
+    /// How many times a URL nobody answered is chased before we let it go.
+    ///
+    /// Six lands on the 15s→300s ladder's ceiling, so the last wait is already five minutes.
+    /// Past that a timer is not recovery, it is a background process.
+    private static let maxUnansweredRetries = 6
 
     private func arm(_ url: String, untilExpiry: TimeInterval) {
         let tries = (retry[url]?.tries ?? 0) + 1
