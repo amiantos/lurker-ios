@@ -858,23 +858,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Connection trouble spelled out (#19) — the loud counterpart to the title dot —
         // and, behind an empty list, whether we're still loading or genuinely have nothing.
         connectionBanner.update(ConnectionBannerState.of(reachable: state.reachable, connection: state.connection))
-        // Keyed off the BUILT rows, not the raw messages — `hasMessages` means "any
-        // renderable line is already on screen", and since the `none` event tier (#666)
-        // those two can disagree. A quiet channel whose only stored rows are joins and mode
-        // changes has messages but builds to nothing; reading `updated` there reports
-        // content, suppresses the placeholder, and leaves the reader on a completely blank
-        // screen with no empty-state and no spinner — and nothing to scroll, so no paging
-        // fires to correct it. Runs after `rebuildRows()` above, so `rows` is current.
-        //
-        // The top-up runs first and reports whether it asked for more, so a window filtered
-        // down to nothing says "Loading messages…" rather than claiming the buffer is empty
-        // while a page is on its way to prove otherwise.
-        let toppingUp = topUpIfFilteredEmpty(state)
-        updatePlaceholder(
-            hasMessages: !rows.isEmpty,
-            known: state.buffers[buffer.key.id],
-            forceLoading: toppingUp
-        )
         // New traffic arrived while we're on screen → keep it marked read.
         //
         // Never before the boundary above is latched. `markRead` pushes the server's pointer to
@@ -949,6 +932,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 clampToContent()
             }
         }
+        // Below the reload, and forcing a layout, because the question it asks is about
+        // MEASURED content: whether what we just drew fills the viewport. The two branches
+        // above that don't already lay out synchronously would otherwise leave `contentSize`
+        // reporting the previous pass's rows.
+        tableView.layoutIfNeeded()
+        // Keyed off the BUILT rows, not the raw messages — `hasMessages` means "any
+        // renderable line is already on screen", and since the `none` event tier (#666)
+        // those two can disagree. A quiet channel whose only stored rows are joins and mode
+        // changes has messages but builds to nothing; reading `updated` there reports
+        // content, suppresses the placeholder, and leaves the reader on a completely blank
+        // screen with no empty-state and no spinner.
+        //
+        // The top-up runs first and reports whether it asked for more, so a window filtered
+        // down to nothing says "Loading messages…" rather than claiming the buffer is empty
+        // while a page is on its way to prove otherwise.
+        let toppingUp = topUpIfUnscrollable()
+        updatePlaceholder(
+            hasMessages: !rows.isEmpty,
+            known: state.buffers[buffer.key.id],
+            forceLoading: toppingUp
+        )
         // After the landing, not before: the first apply reaches here with the offset
         // still at the top, and the pill would flash in for the frame before
         // `landInitialIfNeeded` parks the buffer at its newest message.
@@ -970,6 +974,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The other half of the initial scroll: this is where an already-hydrated buffer
         // finally gets a height to scroll within.
         landInitialIfNeeded()
+        // And the other half of the top-up, for the same reason: "does the content fill the
+        // viewport" is unanswerable until there is a viewport, and a buffer whose first apply
+        // beat layout would otherwise sit thinned-out and unscrollable with nothing scheduled
+        // to notice. Also covers the viewport *growing* later — a rotation, or the keyboard
+        // going away. Free when there's nothing to do: `loadOlder` no-ops without
+        // `hasMoreOlder`, and once the content overflows this stops asking.
+        topUpIfUnscrollable()
     }
 
     /// The one-shot landing. Needs both rows to scroll to and a height to scroll within, which
@@ -1234,32 +1245,60 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Show a loading spinner or an empty-state placeholder behind an empty message list,
     /// or nothing when there are messages. Set as the table's `backgroundView`, so it sits
     /// behind the cells and the table hides it the instant there's a row to draw.
-    /// Pull older history when everything loaded is filtered out but more exists.
+    /// Pull older history when what's loaded doesn't fill the screen but more exists.
     ///
-    /// Paging is driven by scrolling, and a table with no rows cannot scroll — so a window
-    /// whose every line is hidden is a dead end: the buffer shows "No messages yet", nothing
-    /// can fire `loadOlder`, and it stays that way for the life of the screen even though the
-    /// server has plenty more. An ignored sender who dominates a channel reaches this easily,
-    /// and so does the `.none` event tier in a channel whose recent traffic is all joins.
+    /// Paging is driven by scrolling, and a table whose content fits inside its viewport cannot
+    /// scroll — so a window the filters have thinned out is a dead end: nothing can fire
+    /// `loadOlder`, and it stays that way for the life of the screen even though the server has
+    /// plenty more. An ignored sender who dominates a channel reaches this easily; so does the
+    /// `.none` tier in a channel whose recent traffic is all joins, and so does `.smart` (#63),
+    /// which is the worse case of the two — `.none` at least has a page unit the server can
+    /// count in (`HistoryCountBy.chat`), while nothing lets a server size a page for a filter
+    /// that turns on who spoke recently.
     ///
-    /// So the filters that can empty the view have to re-arm paging themselves, exactly as
+    /// So the filters that can thin the view have to re-arm paging themselves, exactly as
     /// `HistoryFeedViewController.settle()` does for the same reason. `loadOlder` is guarded
     /// against re-entry and reads the RAW store list for its cursor, so calling it here is
-    /// safe and correctly paged even though the visible list is empty.
+    /// safe and correctly paged however little of that list is visible.
+    ///
+    /// **Measured, not counted.** The condition is "the reader cannot scroll", and an empty row
+    /// list is only the extreme case of it: three surviving lines in a full-height viewport are
+    /// just as stuck, and were left stuck by the `rows.isEmpty` test this replaces. Requires a
+    /// laid-out table — see the call site.
     ///
     /// Gated on the raw list being non-empty: with genuinely nothing loaded this is an
-    /// un-hydrated buffer, which `hydrateIfNeeded` owns.
-    /// Returns whether a page was requested, so the caller can show the spinner instead of an
-    /// empty state while it lands.
+    /// un-hydrated buffer, which `hydrateIfNeeded` owns. Returns whether a page was requested,
+    /// so the caller can show the spinner instead of an empty state while it lands.
+    ///
+    /// Reads the store directly rather than taking a snapshot, because its other caller is a
+    /// layout pass with no state in hand. Reading the newest is the right answer either way:
+    /// this decides whether to make a REQUEST, and a request is judged against what the server
+    /// has told us most recently, not against the frame that happened to trigger a redraw.
     @discardableResult
-    private func topUpIfFilteredEmpty(_ state: ChatState) -> Bool {
-        guard rows.isEmpty, pendingJumpId == nil else { return false }
+    private func topUpIfUnscrollable() -> Bool {
+        guard pendingJumpId == nil, !canScroll else { return false }
+        let state = viewModel.state
         guard let known = state.buffers[buffer.key.id], known.hydrated, known.hasMoreOlder else {
             return false
         }
         guard !(state.messages[buffer.key.id] ?? []).isEmpty else { return false }
         viewModel.loadOlder(buffer.key)
         return true
+    }
+
+    /// Whether the table has more content than viewport to show it in — i.e. whether a scroll,
+    /// and so the paging it drives, is possible at all. Insets count: the composer and the
+    /// navigation bar eat into the height a row can occupy, so the scrollable region is what's
+    /// left between them, which is exactly what `adjustedContentInset` describes.
+    private var canScroll: Bool {
+        let visible = tableView.bounds.height
+            - tableView.adjustedContentInset.top - tableView.adjustedContentInset.bottom
+        // No height yet — the first apply can precede layout. Fall back to the row count, which
+        // is the case this test grew out of: an empty list is unscrollable at any height, and
+        // anything finer is a question only a laid-out table can answer. `viewDidLayoutSubviews`
+        // asks it again the moment there IS a height.
+        guard visible > 0 else { return !rows.isEmpty }
+        return tableView.contentSize.height > visible
     }
 
     private func updatePlaceholder(hasMessages: Bool, known: Buffer?, forceLoading: Bool = false) {
