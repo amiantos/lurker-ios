@@ -364,7 +364,16 @@ final class MessageAttachmentsView: UIStackView {
 
         let text = UIStackView()
         text.axis = .vertical
-        text.spacing = 1
+        // Line-to-line air. At 1 the byline, title and description read as one dense block —
+        // three different things at three different weights, with nothing between them saying so.
+        text.spacing = 4
+        // ⚠ Trailing inset on the TEXT, not on its row. A hero band is text's sibling here, and
+        // insetting the row would pull the picture off the card's edge with it — the web keeps
+        // the hero flush to both edges deliberately and narrows the CARD instead. So the words
+        // get the margin and the picture keeps the full width.
+        text.isLayoutMarginsRelativeArrangement = true
+        text.directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: 0, leading: 0, bottom: 0, trailing: 8)
 
         if let site = preview.siteName {
             let byline = preview.author.map { "\(site) · \($0)" } ?? site
@@ -429,10 +438,13 @@ final class MessageAttachmentsView: UIStackView {
             rule.topAnchor.constraint(equalTo: wrapper.topAnchor),
             rule.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
             rule.widthAnchor.constraint(equalToConstant: 3),
-            row.leadingAnchor.constraint(equalTo: rule.trailingAnchor, constant: 10),
+            row.leadingAnchor.constraint(equalTo: rule.trailingAnchor, constant: 12),
             row.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
-            row.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 2),
-            row.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -2),
+            // The rule runs the full height of the card, so this is the gap between it and the
+            // first line rather than the card's outer padding — at 2 the text sat hard against
+            // the top of its own accent.
+            row.topAnchor.constraint(equalTo: wrapper.topAnchor, constant: 6),
+            row.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor, constant: -6),
         ])
 
         wrapper.isAccessibilityElement = true
