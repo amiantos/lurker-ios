@@ -238,7 +238,6 @@ final class PreviewImageLoader {
         waiters.removeAll()
         failed.removeAll()
         frames.removeAll()
-        waiters.removeAll()
         generation &+= 1
     }
 }

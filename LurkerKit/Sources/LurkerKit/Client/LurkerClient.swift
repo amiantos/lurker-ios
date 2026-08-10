@@ -980,10 +980,6 @@ final class LurkerClient {
         }
     }
 
-    /// Read the public, unauthenticated `/api/config` for instance feature flags.
-    ///
-    /// Unauthenticated by design on the server, but called after sign-in here because that's when
-    /// `baseURL` is known. Returns the all-off default on any failure — see `InstanceFeatures`.
     /// A URL `AVPlayer` can actually open for a preview's `src`.
     ///
     /// ⚠⚠ `AVURLAsset` cannot carry our Authorization header — the supported way to inject one is
@@ -994,9 +990,12 @@ final class LurkerClient {
     ///     modes mint one in `toDescriptor`). It carries no credential by design — that is the
     ///     whole point of minting it — so it hands straight to `AVPlayer`, which then gets real
     ///     streaming and seeking for free.
-    ///   - **A PROXY PATH** is bearer-gated, so the bytes are fetched through the authenticated
-    ///     path we already have and staged to a temp file. No seeking until it lands, which is
-    ///     survivable precisely because the proxy caps a preview at 8 MB.
+    ///   - **A PROXY PATH** is bearer-gated, so the bytes are streamed through the authenticated
+    ///     path we already have and staged to a file. No seeking until it lands.
+    ///
+    /// ⚠ That staging used to be justified here as "bounded by the proxy's 8 MB cap". It is not:
+    /// 8 MB is the cap for IMAGES, and video and audio get `MAX_MEDIA_PROXY_BYTES` — sixty-four.
+    /// The reassurance was about a different limit than the branch it was written on.
     ///
     /// ⚠ The extension is carried over from the server's `mime`, because AVFoundation sniffs the
     /// path: a temp file called `x.tmp` fails to open as an MP4 that plays perfectly as `x.mp4`.
