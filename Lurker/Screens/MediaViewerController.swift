@@ -185,11 +185,15 @@ final class MediaViewerController: UIViewController {
     /// stacked in the same corner, one of which auto-hides and one of which does not, and the
     /// reader can reach neither reliably.
     ///
-    /// So on a player page ours gets out of the way rather than trying to coexist: the counter
-    /// and share step aside and the player's chrome is the interface, which is the one people
-    /// already know how to use. The close button STAYS — it is top-left, clear of everything the
-    /// player draws, and it is the only way out of a video page since the swipe stands down
-    /// there too (its scrubber is a horizontal drag inside a vertically-dismissing view).
+    /// So on a player page ALL of ours gets out of the way, close button included: the system
+    /// player draws its own dismiss, and two X buttons in one corner is worse than either.
+    ///
+    /// ⚠⚠ Which makes the player's dismiss the only way out of a video page — the swipe stands
+    /// down there too, because a scrubber is a horizontal drag inside a vertically-dismissing
+    /// view. `MediaPlayerPageCell` therefore reports its player's dismissal back here and this
+    /// closes with it. Without that, a message holding ONE video would be a screen with no exit:
+    /// in a longer gallery you could swipe to a picture and use its X, but a lone clip has
+    /// nothing to swipe to.
     ///
     /// ⚠ The cost is that a video can't be shared from in here. The address is still in the
     /// message, and losing a button beats losing the player's own controls.
@@ -198,6 +202,7 @@ final class MediaViewerController: UIViewController {
         counter.text = previews.count > 1 ? "\(index + 1) of \(previews.count)" : nil
         counter.isHidden = isPlayer
         shareButton.isHidden = isPlayer
+        closeButton.isHidden = isPlayer
     }
 
     @objc private func close() { dismiss(animated: true) }
@@ -255,9 +260,12 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: MediaPlayerPageCell.reuseID, for: indexPath)
             as! MediaPlayerPageCell
-        cell.configure(preview, model: model, host: self) { [weak self] url in
-            self?.dismiss(animated: true) { UIApplication.shared.open(url) }
-        }
+        cell.configure(
+            preview, model: model, host: self,
+            openExternally: { [weak self] url in
+                self?.dismiss(animated: true) { UIApplication.shared.open(url) }
+            },
+            onPlayerDismissed: { [weak self] in self?.dismiss(animated: true) })
         return cell
     }
 
@@ -431,6 +439,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     private let fallbackLabel = UILabel()
     private let fallbackButton = UIButton(type: .system)
     private var openExternally: ((URL) -> Void)?
+    private var onPlayerDismissed: (() -> Void)?
     private var originURL: URL?
 
     override init(frame: CGRect) {
@@ -472,10 +481,12 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
 
     func configure(
         _ preview: LinkPreview, model: ChatViewModel, host: UIViewController,
-        openExternally: @escaping (URL) -> Void
+        openExternally: @escaping (URL) -> Void,
+        onPlayerDismissed: @escaping () -> Void
     ) {
         path = preview.src
         self.openExternally = openExternally
+        self.onPlayerDismissed = onPlayerDismissed
         originURL = URL(string: preview.url)
         fallback.isHidden = true
         guard let source = preview.src else {
@@ -513,6 +524,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     private func attachPlayer(_ player: AVPlayer, host: UIViewController) {
         let controller = AVPlayerViewController()
         controller.player = player
+        controller.delegate = self
         controller.videoGravity = .resizeAspect
         // Audio has no picture, so the player draws its own placeholder rather than a black void.
         controller.view.backgroundColor = .clear
@@ -552,5 +564,26 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         path = nil
         spinner.stopAnimating()
         fallback.isHidden = true
+    }
+}
+
+
+/// ⚠⚠ The player's own dismiss has to close the VIEWER, not just itself.
+///
+/// Our chrome hides on a player page — the system draws its own X, and two in one corner is
+/// worse than either — and the swipe-to-dismiss stands down there because a scrubber is a
+/// horizontal drag inside a vertically-dismissing view. So the player's control is the only exit,
+/// and if it merely collapsed its own presentation the reader would land back on a page with no
+/// chrome, no swipe and nothing to swipe to. A message with one video would be a room with no
+/// door.
+extension MediaPlayerPageCell: AVPlayerViewControllerDelegate {
+    func playerViewController(
+        _ playerViewController: AVPlayerViewController,
+        willEndFullScreenPresentationWithAnimationCoordinator
+            coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in
+            self?.onPlayerDismissed?()
+        }
     }
 }
