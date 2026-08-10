@@ -78,8 +78,9 @@ final class BufferBadgeLabel: UILabel {
 /// row and it looks like a card rather than a row: a filled, rounded tile that reads as "tap
 /// target" at a glance, distinct from the grouped rows below it that carry swipe actions.
 ///
-/// Density is layout, not type size — one font size app-wide. The name is weight, the network
-/// hint is color, and the pill is the same one the rows use.
+/// Density is layout, not type size — one font size app-wide, and one WEIGHT within a chip: the
+/// card is the emphasis, so the name doesn't also need to be bold. The network hint is colour,
+/// and the pill is the same one the rows use.
 ///
 /// **One line, not two.** The card used to print the network name under every name, which
 /// spent the taller half of a chip restating something that is the same for every chip on a
@@ -122,15 +123,19 @@ final class BufferChipCell: UICollectionViewCell {
             presenceDot.heightAnchor.constraint(equalToConstant: 10),
         ])
 
-        // Semibold at the body size, scaled by the body metric so it still tracks Dynamic Type.
-        let base = UIFont.systemFont(ofSize: 17, weight: .semibold)
-        nameLabel.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: base)
+        // Body weight, not semibold. A chip is already lifted out of the roster onto its own
+        // card — the card IS the emphasis — so bolding the name inside it says the same thing
+        // twice, and a grid of eight bold names reads as eight things shouting rather than as a
+        // quick-access shelf.
+        nameLabel.font = .preferredFont(forTextStyle: .body)
         nameLabel.adjustsFontForContentSizeCategory = true
         nameLabel.textColor = .label
         nameLabel.lineBreakMode = .byTruncatingTail
 
-        // Same size as the name — one font size app-wide, so the hint demotes itself with
-        // color and weight alone, exactly as the web's `.net-hint` does.
+        // Same size AND weight as the name — one font size app-wide, so the hint now demotes
+        // itself with colour alone. It was colour plus weight while the name was semibold; the
+        // secondary label is doing the whole job on its own, which is what the web's `.net-hint`
+        // relies on too.
         networkHintLabel.font = .preferredFont(forTextStyle: .body)
         networkHintLabel.adjustsFontForContentSizeCategory = true
         networkHintLabel.textColor = .secondaryLabel
@@ -166,11 +171,11 @@ final class BufferChipCell: UICollectionViewCell {
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
-        // `.center`, not `.firstBaseline`, even though this is a row of text: both labels
-        // scale off the SAME body metric at the same point size (only their weight differs),
-        // so their boxes are identical heights and centering puts the baselines in exactly
-        // the same place — while `.firstBaseline` would also have to align the spacer, which
-        // has no text and therefore no baseline but its own top edge.
+        // `.center`, not `.firstBaseline`, even though this is a row of text: both labels are
+        // now the same font outright — they were already the same body metric at the same point
+        // size, differing only in weight — so their boxes are identical heights and centering
+        // puts the baselines in exactly the same place, while `.firstBaseline` would also have
+        // to align the spacer, which has no text and therefore no baseline but its own top edge.
         let textStack = UIStackView(arrangedSubviews: [nameLabel, networkHintLabel, spacer])
         textStack.axis = .horizontal
         textStack.spacing = 4
