@@ -112,8 +112,10 @@ public enum UploadBatch {
     ///   `stopsABatch` error cut the run short — the files never attempted have no error of
     ///   their own, and are accounted for by the count rather than invented reasons.
     /// - `unreadable`: picked files that couldn't even be staged off the picker.
-    /// - `cancelled`: the user stopped it. Silent by design — they know; an alert confirming
-    ///   what someone just asked for is a dialog to dismiss, not information.
+    /// - `cancelled`: the user stopped it. The *stopping* is silent by design — they know, and
+    ///   an alert confirming what someone just asked for is a dialog to dismiss, not
+    ///   information. What already went wrong before they stopped is still news, though, so a
+    ///   cancel suppresses the counts and not the errors.
     public static func summary(
         picked: Int,
         uploaded: Int,
@@ -121,8 +123,15 @@ public enum UploadBatch {
         unreadable: Int,
         cancelled: Bool
     ) -> String? {
-        if cancelled { return nil }
         if failures.isEmpty && unreadable == 0 { return nil }
+        if cancelled {
+            // No "Uploaded N of M": the shortfall is the user's own doing and counting it back
+            // at them reads as an accusation. The failures they didn't choose still stand.
+            guard let first = failures.first else { return nil }
+            return failures.count == 1
+                ? first.userMessage
+                : "\(failures.count) failed — first error: \(first.userMessage)"
+        }
 
         // A single file that failed on its own reads as a plain error, exactly as it did
         // before batches existed. "Uploaded 0 of 1" is a statistic where a sentence will do.

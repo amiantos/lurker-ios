@@ -232,14 +232,36 @@ final class UploadProgressTests: XCTestCase {
         )
     }
 
-    func testACancelledBatchSaysNothing() {
+    func testACancelledBatchSaysNothingAboutTheCancelling() {
         // The user stopped it; they know. An alert confirming what someone just asked for is a
         // dialog to dismiss, not information.
         XCTAssertNil(
             UploadBatch.summary(
-                picked: 5, uploaded: 2, failures: [.tooLarge], unreadable: 0, cancelled: true
+                picked: 5, uploaded: 2, failures: [], unreadable: 0, cancelled: true
             )
         )
+    }
+
+    func testACancelStillReportsWhatFailedBeforeIt() {
+        // The shortfall is the user's own doing; the two files that failed on their way past
+        // are not, and swallowing those leaves a composer holding fewer links than expected
+        // with nothing anywhere saying why.
+        XCTAssertEqual(
+            UploadBatch.summary(
+                picked: 5, uploaded: 2, failures: [.tooLarge], unreadable: 0, cancelled: true
+            ),
+            UploadError.tooLarge.userMessage
+        )
+    }
+
+    func testACancelDoesNotCountTheFilesItSkipped() {
+        // No "Uploaded 2 of 5" — counting a shortfall back at the person who asked for it
+        // reads as an accusation.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 2, failures: [.tooLarge, .server("nope")], unreadable: 0, cancelled: true
+        )
+        XCTAssertEqual(summary, "2 failed — first error: \(UploadError.tooLarge.userMessage)")
+        XCTAssertFalse(summary?.contains("of 5") ?? true)
     }
 
     func testOneFileFailingAloneReadsAsAPlainError() {

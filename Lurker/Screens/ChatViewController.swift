@@ -1996,25 +1996,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// (Cancel, or an iPad outside-tap that fires no handler) never leaves `attachmentPicker`
     /// set — which would wedge `isUploadBusy` true and disable the paperclip for the session.
     private func pick(
-        _ start: (AttachmentPicker, @escaping (Result<AttachmentPicker.Batch, AttachmentPicker.PickError>) -> Void) -> Void
+        _ start: (AttachmentPicker, @escaping (Result<[AttachmentPicker.Source], AttachmentPicker.PickError>) -> Void) -> Void
     ) {
         guard !isUploadBusy else { return }
         let picker = AttachmentPicker(presenter: self)
-        // The export/copy is a silent multi-second stretch for a large or iCloud video —
-        // raise the readout the moment an item is committed so it isn't a dead pause. For a
-        // batch it also has to keep moving, or ten iCloud videos are one frozen "Preparing…".
-        picker.onPreparing = { [weak self] index, total in
-            self?.uploadStatus.present(.preparing, in: .init(index: index, count: total))
-        }
         attachmentPicker = picker
         start(picker) { [weak self] in self?.handlePick($0) }
     }
 
-    private func handlePick(_ result: Result<AttachmentPicker.Batch, AttachmentPicker.PickError>) {
+    private func handlePick(_ result: Result<[AttachmentPicker.Source], AttachmentPicker.PickError>) {
         attachmentPicker = nil
         switch result {
-        case .success(let batch):
-            beginUpload(batch.items, unreadable: batch.failed)
+        case .success(let sources):
+            beginUpload(sources)
         case .failure(.cancelled):
             // A cancel never raised the "Preparing…" readout (it's shown only once an item is
             // committed), but dismiss defensively in case staging began then bailed.
@@ -2039,7 +2033,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             presentUploadAlert("Couldn't read the pasted image.")
             return
         }
-        beginUpload([AttachmentPicker.Picked(url: url, filename: filename, mime: mime, isVideo: false)])
+        beginUpload([.ready(AttachmentPicker.Picked(url: url, filename: filename, mime: mime, isVideo: false))])
     }
 
     /// A mutable `UploadProgress` the upload's two progress callbacks share. They fire from
@@ -2055,6 +2049,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     @MainActor
     private final class UploadProgressBox {
         var value = UploadProgress()
+        /// Cleared once this file is done. Its progress callbacks hop to the main actor, so
+        /// one enqueued just before the upload returned can run *after* the next file has
+        /// claimed the readout — stamping "1/3 · Uploading… 99%" over a file 2 that is already
+        /// underway, until the next real tick corrects it.
+        var isCurrent = true
     }
 
     /// Where a completed upload lands, and where a failure is a `case`, not an exception.
@@ -2068,51 +2067,46 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// Sequential rather than concurrent: each upload is its own request (the server takes one
     /// file per `POST`), the readout can only narrate one at a time, and a phone pushing five
-    /// videos at once would just make all five slower. `unreadable` counts files that never
-    /// made it out of the picker — they're reported here so a partial pick isn't silently
-    /// smaller than what the user chose.
-    private func beginUpload(_ items: [AttachmentPicker.Picked], unreadable: Int = 0) {
-        guard !items.isEmpty else {
-            // Everything the user picked failed to stage. Nothing to upload, but something to
-            // say — otherwise the pick simply evaporates.
-            if unreadable > 0 {
-                presentUploadAlert(
-                    UploadBatch.summary(
-                        picked: unreadable, uploaded: 0, failures: [], unreadable: unreadable, cancelled: false
-                    ) ?? "Those files couldn't be read."
-                )
-            }
-            return
-        }
-        let picked = items.count + unreadable
-        uploadStatus.present(
-            items[0].isVideo ? .compressing(0) : .uploading(0),
-            in: .init(index: 1, count: picked)
-        )
+    /// videos at once would just make all five slower.
+    ///
+    /// Each source is staged to disk *here*, immediately before its own upload, and deleted
+    /// immediately after — so peak temp usage is one file however many were picked. It also
+    /// puts the copying inside `uploadTask`, which is what makes cancel work during the long
+    /// silent stretch of an iCloud download.
+    private func beginUpload(_ sources: [AttachmentPicker.Source]) {
+        guard !sources.isEmpty else { return }
+        uploadStatus.present(.preparing, in: .init(index: 1, count: sources.count))
         // Strong `self`: the upload must run to completion even if the user leaves this buffer
         // mid-flight (which replaces the root VC). Setting `uploadTask = nil` below breaks the
         // resulting retain cycle, so this VC is released the moment the upload ends.
         uploadTask = Task {
-            // Every staged copy is ours to delete, including the ones a cancel or an aborting
-            // failure means we never process. `performUpload` also removes the file it handled,
-            // which is why these are `try?` — a sweep that is idempotent rather than conditional.
-            defer { for item in items { try? FileManager.default.removeItem(at: item.url) } }
-
             var uploaded = 0
             var failures: [UploadError] = []
             var orphaned: [String] = []
+            var unreadable = 0
             var cancelled = false
             var aborted = false
 
-            for (index, item) in items.enumerated() {
-                // Positioned against the files being uploaded, not against everything picked:
-                // a readout that counts up to a total including files that never staged would
-                // stop short of its own total and read as a stall. The picked-vs-uploaded
-                // accounting is the summary's job.
+            for (index, source) in sources.enumerated() {
+                // Checked between files, not during one: neither `loadFileRepresentation` nor
+                // a `FileManager` copy is cancellable, so a cancel mid-copy costs the rest of
+                // that one file and stops everything after it.
+                if Task.isCancelled {
+                    cancelled = true
+                    break
+                }
+                let batch = UploadStatusView.Batch(index: index + 1, count: sources.count)
+                self.uploadStatus.update(.preparing, in: batch)
+                guard case .success(let item) = await AttachmentPicker.stage(source) else {
+                    // Couldn't even get the bytes: counted, so the summary can say the batch
+                    // was smaller than the pick rather than letting a file quietly vanish.
+                    unreadable += 1
+                    continue
+                }
                 let outcome = await self.performUpload(
                     item,
                     token: UUID().uuidString,
-                    batch: .init(index: index + 1, count: items.count)
+                    batch: batch
                 )
                 switch outcome {
                 case .inserted(let url):
@@ -2152,7 +2146,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             var title = "Upload finished"
             var sentences: [String] = []
             if let summary = UploadBatch.summary(
-                picked: picked, uploaded: uploaded, failures: failures,
+                picked: sources.count, uploaded: uploaded, failures: failures,
                 unreadable: unreadable, cancelled: cancelled
             ) {
                 // "Upload failed" is a lie when four of five worked.
@@ -2255,17 +2249,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             progressToken: token,
             onProgress: { fraction in
                 Task { @MainActor [weak self] in
+                    guard progress.isCurrent else { return }
                     progress.value.apply(deviceFraction: fraction)
                     self?.uploadStatus.update(UploadStatusView.Phase(progress.value), in: batch)
                 }
             },
             onServerProgress: { frame in
                 Task { @MainActor [weak self] in
+                    guard progress.isCurrent else { return }
                     progress.value.apply(server: frame)
                     self?.uploadStatus.update(UploadStatusView.Phase(progress.value), in: batch)
                 }
             }
         )
+        // This file no longer owns the readout — see UploadProgressBox.isCurrent.
+        progress.isCurrent = false
         if Task.isCancelled { return .cancelled }
         switch result {
         case .success(let response): return .inserted(response.url)
