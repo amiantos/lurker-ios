@@ -48,6 +48,14 @@ final class LurkerClient {
     private var searchToken = 0
     /// Searches awaiting a reply, by token. See `search(_:networkId:before:limit:)`.
     private var pendingSearches: [Int: CheckedContinuation<HighlightsPage?, Never>] = [:]
+    /// Uploads currently in flight, by the `progressToken` each one put in its multipart body
+    /// — the sink for that upload's server-side progress (#47).
+    ///
+    /// This registry is also the filter. `upload-progress` fans out to every socket the user
+    /// has open, so the phone gets frames for an upload the *browser* is running; matching on
+    /// a token we ourselves minted is what keeps someone else's bytes off this readout. An
+    /// unrecognized token is dropped, silently and correctly.
+    private var uploadProgressSinks: [String: @Sendable (UploadServerProgress) -> Void] = [:]
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
@@ -330,11 +338,15 @@ final class LurkerClient {
             // A search reply is a reply, not state: it answers one awaiting call and never
             // travels on to the store. Intercepted here rather than routed through
             // `ChatViewModel` because request/reply correlation is this layer's job — the
-            // store has no idea a question was asked.
+            // store has no idea a question was asked. Upload progress is the same shape: an
+            // answer about one thing this device started, matched by the token that started it.
             let frame = FrameParser.parseWs(text)
-            if case .searchResult(let token, let page) = frame {
+            switch frame {
+            case .searchResult(let token, let page):
                 finishSearch(token, with: page)
-            } else {
+            case .uploadProgress(let token, let progress):
+                uploadProgressSinks[token]?(progress)
+            default:
                 onFrame(frame)
             }
         }
@@ -1331,7 +1343,8 @@ final class LurkerClient {
         filename: String,
         mime: String,
         progressToken: String,
-        onProgress: @escaping @Sendable (Double) -> Void
+        onProgress: @escaping @Sendable (Double) -> Void,
+        onServerProgress: @escaping @Sendable (UploadServerProgress) -> Void
     ) async throws -> UploadResponse {
         guard let token, let url = URL(string: baseURL + "/api/uploads") else {
             throw UploadError.notSignedIn
@@ -1341,6 +1354,12 @@ final class LurkerClient {
             token: progressToken, fileURL: fileURL, filename: filename, mime: mime
         )
         defer { try? FileManager.default.removeItem(at: body.fileURL) }
+
+        // Registered before a byte goes out, and torn down on every exit — including the
+        // throws below, which is why it's a `defer` rather than a line after the response.
+        // A sink left behind would be a leak keyed on a token nothing will ever send again.
+        uploadProgressSinks[progressToken] = onServerProgress
+        defer { uploadProgressSinks.removeValue(forKey: progressToken) }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

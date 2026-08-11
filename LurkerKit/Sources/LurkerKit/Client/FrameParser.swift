@@ -70,6 +70,26 @@ enum FrameParser {
             // gone.
             guard let token = obj.intOrNull("token") else { return .ignored }
             return .searchResult(token: token, page: parseSearchPage(obj))
+        case "upload-progress":
+            // Same trust posture as its siblings. A frame with no token can't be matched to
+            // the upload it describes, and an unrecognized phase is a server saying something
+            // this build has no rendering for — in both cases the readout is better off on the
+            // indeterminate fallback it already shows than acting on a payload we can't read.
+            //
+            // `percent` is legitimately null (the phase has no number), which is NOT the same
+            // as absent-and-therefore-zero: `int()` would read a missing key as 0% and freeze
+            // the bar there for the whole send. `intOrNull` keeps the two apart.
+            guard let token = obj.stringOrNull("token"),
+                  let phase = UploadServerProgress.Phase(rawValue: obj.string("phase"))
+            else { return .ignored }
+            return .uploadProgress(
+                token: token,
+                progress: UploadServerProgress(
+                    phase: phase,
+                    percent: obj.intOrNull("percent"),
+                    destination: obj.stringOrNull("destination")
+                )
+            )
         case "ignore-list-updated":
             // A frame with no usable `masks` array is dropped rather than read as "this scope
             // now has no rules". `objects()` answers `[]` for a missing, null or mistyped key,

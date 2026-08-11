@@ -130,6 +130,16 @@ enum ServerFrame: Equatable, Sendable {
     /// consumed there rather than travelling on to `ChatViewModel`.
     case searchResult(token: Int, page: HighlightsPage)
 
+    /// WS `upload-progress`: how far along the server is with an upload *this* device is
+    /// running (#47), correlated by the `progressToken` we put in the multipart body.
+    ///
+    /// **The second frame that never reaches the store**, for the same reason as
+    /// `searchResult`: it is an answer to something this device started, not state the account
+    /// owns. It also fans out to every socket the user has open — two devices uploading at
+    /// once would otherwise drive each other's readouts — so `LurkerClient` matches the token
+    /// against its in-flight uploads and drops anything it didn't ask for.
+    case uploadProgress(token: String, progress: UploadServerProgress)
+
     /// WS `buffer-closed`: the user closed this buffer — from *any* of their devices.
     /// Drop it from the model entirely: closed is absent (lurker `CLIENT_PROTOCOL.md` §9.1).
     ///

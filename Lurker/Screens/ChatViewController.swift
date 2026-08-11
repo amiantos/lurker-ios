@@ -2039,6 +2039,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         beginUpload(AttachmentPicker.Picked(url: url, filename: filename, mime: mime, isVideo: false))
     }
 
+    /// A mutable `UploadProgress` the upload's two progress callbacks share. They fire from
+    /// two different places — `URLSession`'s delegate queue and the WS — and each hops to the
+    /// main actor before touching this; that isolation (the repo's default) is what makes the
+    /// box safe to capture in the `@Sendable` closures the client takes, and what serializes
+    /// the two streams against each other without a lock.
+    private final class UploadProgressBox {
+        var value = UploadProgress()
+    }
+
     /// Where a completed upload lands, and where a failure is a `case`, not an exception.
     private enum UploadOutcome {
         case inserted(String)
@@ -2145,11 +2154,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         if Task.isCancelled { return .cancelled }
         uploadStatus.update(.uploading(0))
+        // Both legs fold into one value, on the main actor, because they arrive from two
+        // different places — `URLSession`'s delegate queue and the WS — and only their
+        // combination knows which leg the readout should be naming.
+        let progress = UploadProgressBox()
         let result = await viewModel.upload(
-            fileURL: fileURL, filename: filename, mime: mime, progressToken: token
-        ) { fraction in
-            Task { @MainActor [weak self] in self?.uploadStatus.update(.uploading(fraction)) }
-        }
+            fileURL: fileURL,
+            filename: filename,
+            mime: mime,
+            progressToken: token,
+            onProgress: { fraction in
+                Task { @MainActor [weak self] in
+                    progress.value.apply(deviceFraction: fraction)
+                    self?.uploadStatus.update(UploadStatusView.Phase(progress.value))
+                }
+            },
+            onServerProgress: { frame in
+                Task { @MainActor [weak self] in
+                    progress.value.apply(server: frame)
+                    self?.uploadStatus.update(UploadStatusView.Phase(progress.value))
+                }
+            }
+        )
         if Task.isCancelled { return .cancelled }
         switch result {
         case .success(let response): return .inserted(response.url)

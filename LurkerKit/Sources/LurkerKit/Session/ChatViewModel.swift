@@ -379,19 +379,24 @@ public final class ChatViewModel {
     /// Upload a prepared file and return the stored object's URL for the composer to paste
     /// (#14). The caller has already picked the file and — for video — compressed it to fit
     /// the instance cap; this layer only speaks to the server. `onProgress` reports the
-    /// device→server leg as a 0…1 fraction. UIKit-free by design: the picker and the video
-    /// transcode live in the app target, so this package stays platform-light.
+    /// device→server leg as a 0…1 fraction; `onServerProgress` reports the two legs only the
+    /// server can see, over the WS this session already holds (#47). Feed both into an
+    /// `UploadProgress` rather than rendering them separately — it is what knows which leg
+    /// the readout should be naming. UIKit-free by design: the picker and the video transcode
+    /// live in the app target, so this package stays platform-light.
     public func upload(
         fileURL: URL,
         filename: String,
         mime: String,
         progressToken: String,
-        onProgress: @escaping @Sendable (Double) -> Void
+        onProgress: @escaping @Sendable (Double) -> Void,
+        onServerProgress: @escaping @Sendable (UploadServerProgress) -> Void
     ) async -> Result<UploadResponse, UploadError> {
         do {
             let response = try await client.upload(
                 fileURL: fileURL, filename: filename, mime: mime,
-                progressToken: progressToken, onProgress: onProgress
+                progressToken: progressToken, onProgress: onProgress,
+                onServerProgress: onServerProgress
             )
             return .success(response)
         } catch let error as UploadError {
