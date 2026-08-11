@@ -80,7 +80,13 @@ final class MessageAttachmentsView: UIStackView {
     /// and audio alike, not just the images the mosaic drew. They share a viewer because they
     /// share a question ("show me this properly"), and a message that mixes a screenshot and a
     /// clip should let the reader swipe between them rather than making the clip a different
-    /// kind of thing. Items with no `src` are excluded: there is nothing for a page to show.
+    /// kind of thing.
+    ///
+    /// ⚠⚠ The admission test is `LinkPreview.isViewable`, which answers PER KIND because the two
+    /// get their bytes from different places now. It lives on the model rather than here: it is
+    /// a fact about a preview, not about this view, and the app target has no test bundle — in
+    /// LurkerKit it can be asserted, and the regression it guards against was invisible without
+    /// a test (no crash, no error, just a feature that stopped being reachable).
     private var galleryImages: [LinkPreview] = []
 
     override init(frame: CGRect) {
@@ -117,7 +123,7 @@ final class MessageAttachmentsView: UIStackView {
         // the part that gets cut — so video and audio stack full width, where their transport
         // has room. That is what audio has always done here.
         let images = previews.filter { $0.kind == .image }
-        galleryImages = previews.filter { $0.kind.isDirectMedia && $0.src != nil }
+        galleryImages = previews.filter(\.isViewable)
         if images.count > 1 {
             addArrangedSubview(mosaic(images, model: model))
         }
