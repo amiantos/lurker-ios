@@ -396,7 +396,7 @@ struct LinkPreviewStoreTests {
         store.onUpdate = { reported.append($0) }
 
         store.request(["https://e.test/a", "https://e.test/b"])
-        try? await Task.sleep(for: .milliseconds(300))
+        #expect(await eventually { !reported.isEmpty })
 
         #expect(reported.count == 1)
         #expect(reported.first == ["https://e.test/a", "https://e.test/b"])
@@ -420,14 +420,17 @@ struct LinkPreviewStoreTests {
         var reported: [Set<String>] = []
         store.onUpdate = { reported.append($0) }
         store.request(["https://e.test/dead"])
-        await settle()
+        #expect(await eventually { !reported.isEmpty })
         #expect(reported == [["https://e.test/dead"]], "the first omission settles the gate")
 
         // The ladder comes due and the server fails it again.
         clock.date.addTimeInterval(PreviewReask.floor + 1)
         store.request(["https://e.test/dead"])
+        #expect(await eventually { stub.batches.count == 2 }, "asked a second time")
+        // ⚠ A beat AFTER the batch lands, because the stub records its call before the flush
+        // decides whether to say anything — asserting the silence on the batch alone would be
+        // asserting it a moment too early, which is a test that passes for the wrong reason.
         await settle()
-        #expect(stub.batches.count == 2, "asked a second time")
         #expect(reported.count == 1, "and the second answer says nothing new")
     }
 
@@ -447,7 +450,9 @@ struct LinkPreviewStoreTests {
             return stub.answer(urls)
         }
         store.request(["https://e.test/dead"])
-        await settle()
+        // The ladder has to be armed before the clock is advanced past it, or there is no rung
+        // to come due and this tests nothing.
+        #expect(await eventually { store.retry["https://e.test/dead"] != nil })
 
         var reported: [Set<String>] = []
         store.onUpdate = { reported.append($0) }
@@ -472,7 +477,7 @@ struct LinkPreviewStoreTests {
         store.onUpdate = { reported.append($0) }
 
         store.request(["https://e.test/a", "https://e.test/b"])
-        try? await Task.sleep(for: .milliseconds(300))
+        #expect(await eventually { !reported.isEmpty })
 
         #expect(reported.first?.contains("https://e.test/b") == true)
     }
