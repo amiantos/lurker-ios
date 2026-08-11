@@ -373,9 +373,19 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(speakers?.first?.lastSpoke, Date(timeIntervalSince1970: 1_784_548_800))
     }
 
-    /// Absent and empty are different answers, and the store acts on the difference: a shell
-    /// omits the field so a re-snapshot can't wipe what the client already knows, while an empty
-    /// list is the server saying nobody has spoken here.
+    /// Absent and empty are different answers ON THE WIRE, and the parser keeps them apart
+    /// rather than folding both to `[]` — a decode that erases the difference cannot be undone
+    /// by a later layer that wants it.
+    ///
+    /// ⚠ What the store does with them is deliberately the SAME: `seedSpeakers` merges
+    /// forward-only and never clears, so neither answer can wipe what the client already knows.
+    /// The web reaches that by merging every existing entry back over the incoming list
+    /// (`buffers.ts:1178`), which makes seeding `[]` a no-op by construction; we reach it one
+    /// step earlier with a guard. Nobody acts on the difference today, and that is not an
+    /// oversight — an empty list is what `listSpeakers` returns for a channel with no speech in
+    /// its scan window, and what `buildSystemBacklog` hardcodes for a buffer that has no
+    /// speakers at all. Neither is an assertion worth discarding known nicks over. What the
+    /// server's OMISSION buys (`wsHub.ts:927`) is not having to rely on that.
     func testAnAbsentSpeakersFieldIsNilAndAnEmptyOneIsEmpty() {
         let absent = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true}"##
