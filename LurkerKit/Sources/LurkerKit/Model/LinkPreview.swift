@@ -46,8 +46,19 @@ extension LinkPreview {
         case .image:
             return src != nil
         case .video, .audio:
-            guard let scheme = URL(string: url)?.scheme?.lowercased() else { return false }
-            return scheme == "https" || scheme == "http"
+            // ⚠⚠ https ONLY, and the reason is that admitting `http` promises something the app
+            // then refuses. App Transport Security blocks a public cleartext load, so an http
+            // clip was admitted to the gallery, dequeued, and failed inside AVFoundation — a
+            // dead end the reader cannot act on, and one that reads as a broken player rather
+            // than as a policy. Refused here it falls through to the browser hand-off, which
+            // works. The alternative was `NSAllowsArbitraryLoadsForMedia`, which buys one rare
+            // clip by weakening every load the app makes.
+            //
+            // ⚠ `NSAllowsLocalNetworking` still covers a `.local` or private-range host, but that
+            // exemption is about reaching a LAN INSTANCE, and this address is never the
+            // instance: since the server stopped minting `src`, it is the third party the link
+            // pointed at. A self-hosted setup does not make somebody else's origin cleartext.
+            return URL(string: url)?.scheme?.lowercased() == "https"
         case .page, .videoEmbed:
             return false
         }

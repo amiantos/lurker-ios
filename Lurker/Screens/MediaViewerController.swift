@@ -155,9 +155,31 @@ final class MediaViewerController: UIViewController {
         updateChrome()
     }
 
+    /// The page size, set BEFORE the pass that lays the pager out rather than after it.
+    ///
+    /// ⚠⚠ A privacy fix, not a layout tidy-up. Assigned in `viewDidLayoutSubviews`, this arrived
+    /// one pass too late: the first one ran at the flow layout's default 50x50, and at that size
+    /// every page fits on screen at once — so the collection view dequeued ALL of them. Each page
+    /// starts an `AVURLAsset.load` on its source, so opening a message that holds a clip beside a
+    /// picture reached out to that clip's third-party origin the instant the viewer appeared,
+    /// before the reader had swiped anywhere near it. `LinkPreview.inlinePicture` states the
+    /// opposite as this feature's rule: a clip's bytes "are fetched only on a deliberate tap".
+    /// Measured rather than reasoned — 6 pages dequeued at the default size, 1 at page size.
+    ///
+    /// From `view.bounds` rather than the screen's, because the pager is pinned to this view's
+    /// four edges and those are not the same rectangle in a split view or Stage Manager. It
+    /// tracks a rotation for the same reason the old assignment did, and is guarded on a change
+    /// because assigning `itemSize` invalidates the layout.
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        guard let layout = pages.collectionViewLayout as? UICollectionViewFlowLayout,
+            view.bounds.size != .zero, layout.itemSize != view.bounds.size
+        else { return }
+        layout.itemSize = view.bounds.size
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        (pages.collectionViewLayout as? UICollectionViewFlowLayout)?.itemSize = pages.bounds.size
         // Only before the first paint: doing it on every layout pass would fight the reader's
         // own scrolling, and a rotation is handled by the same first-run branch re-arming.
         if pages.contentOffset.x == 0, index > 0, pages.bounds.width > 0 {
@@ -534,7 +556,22 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
             // ⚠ ASKED, not assumed. The server proxies any `video/*`, and this platform decodes
             // neither webm nor ogg — both common enough on IRC to matter. A player that spins
             // forever is a worse answer than a sentence and a button.
-            let playable = (try? await asset.load(.isPlayable)) ?? false
+            //
+            // ⚠⚠ A THROWN error is a different answer from `isPlayable == false`, and `try?`
+            // collapsed the two into one sentence about the format. Since the bytes started
+            // coming from the origin rather than from this instance, reaching them is the part
+            // that fails: a 404, a DNS or TLS failure, and — most likely of all — a host that
+            // 403s a hotlinked request. Every one of those told the reader their phone couldn't
+            // decode the file, which sends them to check a setting that isn't the problem. The
+            // distinction costs a `do`/`catch` and the string that used to be here.
+            let playable: Bool
+            do {
+                playable = try await asset.load(.isPlayable)
+            } catch {
+                guard !Task.isCancelled, self.path == source else { return }
+                self.showFallback("This couldn't be loaded.")
+                return
+            }
             guard !Task.isCancelled, self.path == source else { return }
             guard playable else {
                 self.showFallback("This format can't be played on iOS.")
@@ -593,9 +630,10 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     /// exactly as long as a player exists. It does not exist in three states, and each one was a
     /// screen with no exit:
     ///
-    ///   - the clip is still DOWNLOADING (a proxy path is fetched whole before it can play, and
-    ///     the cap for video is 64 MB, so on a slow link this is a spinner and nothing else),
-    ///   - the fetch FAILED,
+    ///   - the clip is still being ASKED ABOUT (nothing is downloaded any more — clips stream
+    ///     from the origin — but the `isPlayable` probe is a round trip to a stranger's host, so
+    ///     on a slow link this is still a spinner and nothing else),
+    ///   - it could not be REACHED — a 404, a TLS failure, a host that refuses a hotlink,
     ///   - the format is one AVFoundation will not open — webm and ogg, both ordinary on IRC —
     ///     where the only other control is "Open in Browser", which leaves the app entirely, and
     ///     which `showFallback` itself hides when the origin URL will not parse.

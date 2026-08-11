@@ -986,10 +986,14 @@ final class LurkerClient {
     /// an `AVAssetResourceLoaderDelegate`, and the header key that looks like a shortcut is
     /// undocumented. So the two cases are handled honestly rather than papered over:
     ///
-    ///   - **An ABSOLUTE url** is the byte cache serving from its CDN (`local`/`s3`/`dropper`
-    ///     modes mint one in `toDescriptor`). It carries no credential by design — that is the
-    ///     whole point of minting it — so it hands straight to `AVPlayer`, which then gets real
-    ///     streaming and seeking for free.
+    ///   - **An ABSOLUTE url** hands straight to `AVPlayer`, which then gets real streaming and
+    ///     seeking for free. ⚠⚠ It is a THIRD-PARTY address, not ours: the only caller passes
+    ///     `preview.url`, because the server stopped minting a `src` for video and audio and the
+    ///     bytes now stream from the origin. It was the byte cache's own CDN url when this was
+    ///     written, which is the reading to be careful of — nothing here has been vetted, so it
+    ///     must never be given a credential, a cache policy, or any trust that belonged to the
+    ///     old branch. Carrying no Authorization header stopped being a nicety and became the
+    ///     requirement.
     ///   - **A PROXY PATH** is bearer-gated, so the bytes are streamed through the authenticated
     ///     path we already have and staged to a file. No seeking until it lands.
     ///
