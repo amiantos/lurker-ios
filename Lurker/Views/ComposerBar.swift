@@ -345,8 +345,23 @@ final class ComposerBar: UIView {
     /// after it so the caret sits ready for a caption. The user then edits and sends: the
     /// upload produces a link, it doesn't send one, which keeps send-control where IRC wants
     /// it (a message is a URL plus whatever you say about it).
-    func insert(_ text: String) {
-        let range = textView.selectedRange
+    ///
+    /// `atCaret: false` appends at the end instead, and leaves the keyboard alone. That is for
+    /// the *second and later* URLs of a multi-file upload, which arrive minutes apart while
+    /// the user may well be typing the caption: splicing each one wherever the caret happens
+    /// to be would cut their sentence in half, and taking first responder every time would
+    /// shove the keyboard back up over a run they'd stopped watching.
+    ///
+    /// An append still carries the caret along **when it was sitting at the end** — which it
+    /// is in the ordinary case, because that's where the previous insert left it. Pinning it
+    /// there regardless meant every link after the first landed correctly while the caret
+    /// stayed stranded behind the first one, so a caption typed afterwards would go in the
+    /// wrong place. Only a caret the user has moved *into* the text is one they're using, and
+    /// that is the only one worth protecting.
+    func insert(_ text: String, atCaret: Bool = true) {
+        let range = atCaret
+            ? textView.selectedRange
+            : NSRange(location: (textView.text as NSString).length, length: 0)
         let current = textView.text as NSString
         var payload = text
         if range.location > 0 {
@@ -357,8 +372,18 @@ final class ComposerBar: UIView {
             }
         }
         payload += " "
+        // A caret resting at the end of the text isn't one the user is working at — it's just
+        // where the last insert left it — so it rides along to the new end. Anywhere else, or
+        // any live selection, is theirs and gets put back. `replaceToken` always drops the
+        // caret past what it wrote, which is the "rides along" case already.
+        let resumeAt = textView.selectedRange
+        let caretWasTrailing = resumeAt.length == 0 && resumeAt.location >= current.length
         replaceToken(range, with: payload)
-        becomeFirstResponder()
+        if atCaret {
+            becomeFirstResponder()
+        } else if !caretWasTrailing, resumeAt.upperBound <= (textView.text as NSString).length {
+            textView.selectedRange = resumeAt
+        }
     }
 
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits

@@ -31,7 +31,24 @@ final class UploadStatusView: UIView {
         case uploading(Double)
         case processing
         case sending(fraction: Double?, destination: String?)
+        /// Cancelled, but not yet stopped. Neither a photo-library copy nor a compression pass
+        /// ends on the instant, and until the run really ends the paperclip stays disabled —
+        /// so hiding the readout the moment the X is tapped trades a beat of responsiveness
+        /// for a stretch where the attach button does nothing and nothing on screen says why.
+        case stopping
     }
+
+    /// Which file of how many, when a pick produced more than one. Shown as a prefix rather
+    /// than folded into each phase's wording, because it's true of every phase and the
+    /// alternative is five labels that each have to remember to say it.
+    struct Batch {
+        /// 1-based, to be read aloud ("2 of 4"), not indexed with.
+        let index: Int
+        let count: Int
+    }
+
+    /// Latched by a `.stopping` update and cleared only by `present`. See `update`.
+    private var isStopping = false
 
     private let glass = UIVisualEffectView()
     private let spinner = UIActivityIndicatorView(style: .medium)
@@ -103,7 +120,16 @@ final class UploadStatusView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    func update(_ phase: Phase) {
+    func update(_ phase: Phase, in batch: Batch? = nil) {
+        // `stopping` is terminal for this run. The legs still unwinding behind a cancel keep
+        // reporting — a compression pass ticks until it notices, and device-progress callbacks
+        // are already in flight to the main actor — and any one of them would otherwise repaint
+        // a live percentage over "Stopping…" and hand back the cancel button the user just
+        // pressed. Cleared by the next `present`, which is what starts a run.
+        if isStopping { return }
+        if case .stopping = phase { isStopping = true }
+        // Restored on every phase but `stopping`, so the next run gets its cancel back.
+        cancelButton.isHidden = false
         switch phase {
         case .preparing:
             label.text = "Preparing…"
@@ -118,12 +144,34 @@ final class UploadStatusView: UIView {
             // legibly "this is going to Catbox" rather than an anonymous stall.
             let sendingTo = destination.map { "Sending to \($0)" } ?? "Sending"
             label.text = fraction.map { "\(sendingTo)… \(percent($0))" } ?? "\(sendingTo)…"
+        case .stopping:
+            label.text = "Stopping…"
+            // The X is gone: it has already been pressed, and pressing it again does nothing.
+            cancelButton.isHidden = true
         }
-        label.accessibilityLabel = label.text
+        // Only when there is genuinely more than one — a lone "1/1" on every single-file
+        // upload would be noise dressed as information.
+        if let batch, batch.count > 1 {
+            label.text = "\(batch.index)/\(batch.count) · \(label.text ?? "")"
+            // Spoken in full: "1/4" reads as a fraction or a date, and the slash is a visual
+            // shorthand that shouldn't survive into speech.
+            label.accessibilityLabel = "File \(batch.index) of \(batch.count). \(spokenPhase(label.text))"
+        } else {
+            label.accessibilityLabel = label.text
+        }
     }
 
-    func present(_ phase: Phase) {
-        update(phase)
+    /// The label minus the batch prefix, for VoiceOver — which gets the position as a sentence
+    /// of its own rather than hearing the glyph.
+    private func spokenPhase(_ text: String?) -> String {
+        guard let text, let separator = text.range(of: " · ") else { return text ?? "" }
+        return String(text[separator.upperBound...])
+    }
+
+    func present(_ phase: Phase, in batch: Batch? = nil) {
+        // A new run, so whatever the last one ended as no longer applies.
+        isStopping = false
+        update(phase, in: batch)
         guard isHidden || alpha < 1 else { return }
         isHidden = false
         UIView.animate(

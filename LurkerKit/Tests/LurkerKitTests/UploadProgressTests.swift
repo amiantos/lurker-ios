@@ -208,6 +208,178 @@ final class UploadProgressTests: XCTestCase {
         XCTAssertEqual(progress.sentFraction, 1)
     }
 
+    // MARK: - Batch policy
+
+    func testConnectionLevelErrorsStopABatchAndFileLevelOnesDoNot() {
+        // The split is "about the pipe" vs "about the file". Getting it backwards means either
+        // four good uploads stranded behind one oversized photo, or nine more files each
+        // waiting out a 300-second timeout on a connection that is already gone.
+        XCTAssertTrue(UploadError.notSignedIn.stopsABatch)
+        XCTAssertTrue(UploadError.unauthorized.stopsABatch)
+        XCTAssertTrue(UploadError.transport("offline").stopsABatch)
+        XCTAssertFalse(UploadError.tooLarge.stopsABatch)
+        XCTAssertFalse(UploadError.cannotCompressEnough.stopsABatch)
+        XCTAssertFalse(UploadError.compressionFailed("bad codec").stopsABatch)
+        // The server ANSWERED, so the pipe works and it was this file it refused.
+        XCTAssertFalse(UploadError.server("unsupported type").stopsABatch)
+    }
+
+    func testARepeatedRefusalStopsTheBatch() {
+        // How an instance-level refusal announces itself when it can't say so directly: the
+        // server maps every uploader-driver failure onto one status, so a stale provider
+        // credential arrives as a per-file rejection — the IDENTICAL per-file rejection, every
+        // time. Ten videos on cellular each compressed and pushed in full before hearing it
+        // again is most of a gigabyte spent learning what file two already said.
+        let sameTwice: [UploadError] = [.server("upstream rejected the upload"), .server("upstream rejected the upload")]
+        XCTAssertTrue(UploadBatch.shouldStop(after: sameTwice))
+    }
+
+    func testOneRefusalDoesNotStopTheBatch() {
+        // Waiting for the repeat is the point: one file genuinely can be the wrong type with
+        // the next nine perfectly fine.
+        XCTAssertFalse(UploadBatch.shouldStop(after: [.server("unsupported type")]))
+        XCTAssertFalse(UploadBatch.shouldStop(after: [.tooLarge]))
+        XCTAssertFalse(UploadBatch.shouldStop(after: []))
+    }
+
+    func testDifferentRefusalsDoNotStopTheBatch() {
+        // Two files rejected for two different reasons is two bad files, not a broken instance.
+        XCTAssertFalse(
+            UploadBatch.shouldStop(after: [.server("unsupported type"), .server("upstream rejected the upload")])
+        )
+    }
+
+    func testAConnectionErrorStopsTheBatchOnItsFirstAppearance() {
+        // No need to see this one twice.
+        XCTAssertTrue(UploadBatch.shouldStop(after: [.tooLarge, .unauthorized]))
+    }
+
+    func testTheRepeatMustBeConsecutive() {
+        // A reason that recurs after something else intervened is a coincidence, not a
+        // pattern — the file in between proves uploads still work.
+        XCTAssertFalse(
+            UploadBatch.shouldStop(after: [.server("nope"), .tooLarge, .server("nope")])
+        )
+    }
+
+    // MARK: - What to say afterwards
+
+    func testACleanBatchSaysNothing() {
+        XCTAssertNil(
+            UploadBatch.summary(picked: 4, uploaded: 4, failures: [], unreadable: 0, cancelled: false)
+        )
+    }
+
+    func testACancelledBatchSaysNothingAboutTheCancelling() {
+        // The user stopped it; they know. An alert confirming what someone just asked for is a
+        // dialog to dismiss, not information.
+        XCTAssertNil(
+            UploadBatch.summary(
+                picked: 5, uploaded: 2, failures: [], unreadable: 0, cancelled: true
+            )
+        )
+    }
+
+    func testACancelStillReportsWhatFailedBeforeIt() {
+        // The shortfall is the user's own doing; the two files that failed on their way past
+        // are not, and swallowing those leaves a composer holding fewer links than expected
+        // with nothing anywhere saying why.
+        XCTAssertEqual(
+            UploadBatch.summary(
+                picked: 5, uploaded: 2, failures: [.tooLarge], unreadable: 0, cancelled: true
+            ),
+            UploadError.tooLarge.userMessage
+        )
+    }
+
+    func testACancelDoesNotCountTheFilesItSkipped() {
+        // No "Uploaded 2 of 5" — counting a shortfall back at the person who asked for it
+        // reads as an accusation.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 2, failures: [.tooLarge, .server("nope")], unreadable: 0, cancelled: true
+        )
+        XCTAssertEqual(summary, "2 failed — first error: \(UploadError.tooLarge.userMessage)")
+        XCTAssertFalse(summary?.contains("of 5") ?? true)
+    }
+
+    func testOneFileFailingAloneReadsAsAPlainError() {
+        // Unchanged from before batches existed: "Uploaded 0 of 1" is a statistic where a
+        // sentence will do.
+        XCTAssertEqual(
+            UploadBatch.summary(picked: 1, uploaded: 0, failures: [.tooLarge], unreadable: 0, cancelled: false),
+            UploadError.tooLarge.userMessage
+        )
+    }
+
+    func testAPartialBatchCountsWhatLanded() {
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 4, failures: [.tooLarge], unreadable: 0, cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 4 of 5. \(UploadError.tooLarge.userMessage)")
+    }
+
+    func testUnreadableFilesAreCountedRatherThanVanishing() {
+        // The whole reason the picker reports its own failures: three of five uploading with
+        // no mention of the other two reads as data loss.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 3, failures: [], unreadable: 2, cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 3 of 5. 2 couldn't be read.")
+    }
+
+    func testAnUnreadableFileQuotesItsOwnReason() {
+        // "No space left on device" is something the user can act on. "Couldn't be read" is
+        // something to shrug at.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 3, failures: [], unreadable: 2,
+            unreadableReason: "No space left on device", cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 3 of 5. 2 couldn't be read: No space left on device")
+    }
+
+    func testASingleUnreadableFileReadsAsItsOwnReason() {
+        XCTAssertEqual(
+            UploadBatch.summary(
+                picked: 1, uploaded: 0, failures: [], unreadable: 1,
+                unreadableReason: "You don't have permission to open this file.", cancelled: false
+            ),
+            "You don't have permission to open this file."
+        )
+    }
+
+    func testACancelStillReportsFilesThatCouldNotBeRead() {
+        // Files that failed to stage are errors the user did NOT choose, so a cancel must not
+        // swallow them — otherwise picking five, watching three fail off iCloud, and then
+        // stopping leaves an empty composer and no alert at all.
+        XCTAssertEqual(
+            UploadBatch.summary(
+                picked: 5, uploaded: 0, failures: [], unreadable: 3, cancelled: true
+            ),
+            "3 couldn't be read."
+        )
+    }
+
+    func testManyFailuresLeadWithACountAndOneExample() {
+        let summary = UploadBatch.summary(
+            picked: 4, uploaded: 1, failures: [.tooLarge, .cannotCompressEnough, .server("nope")],
+            unreadable: 0, cancelled: false
+        )
+        XCTAssertEqual(
+            summary,
+            "Uploaded 1 of 4. 3 failed — first error: \(UploadError.tooLarge.userMessage)"
+        )
+    }
+
+    func testFilesNeverAttemptedAreCountedNotInvented() {
+        // A `stopsABatch` error cuts the run short, so there are fewer errors than missing
+        // files. The gap is accounted for by "1 of 5" rather than by attributing a reason to
+        // files that were never tried.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 1, failures: [.unauthorized], unreadable: 0, cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 1 of 5. \(UploadError.unauthorized.userMessage)")
+    }
+
     func testTheWholeHappyPathInOrder() {
         var progress = UploadProgress()
         progress.apply(deviceFraction: 0.5)

@@ -79,6 +79,108 @@ public enum UploadError: Error, Sendable, Equatable {
             return "Upload failed: \(why)"
         }
     }
+
+    /// Whether this condemns a whole batch, or only the file that hit it.
+    ///
+    /// The split is *is this about the file, or about the pipe?* A file the server refused —
+    /// too large, undecodable — says nothing about the next one, and stopping there would
+    /// strand four good uploads behind one bad photo. A dead session or a broken transport
+    /// will fail every remaining file identically, and each one costs another bounce to
+    /// sign-in or another 300-second timeout before it says so.
+    ///
+    /// `.server` sits on the continue side, but only provisionally — see
+    /// `UploadBatch.shouldStop(after:)`. The server answering means the pipe works, yet the
+    /// refusal may still be about the *instance* rather than the file: lurker maps every
+    /// uploader-driver failure onto one status (a stale provider credential, a provider that
+    /// is down), so "this file was rejected" and "nothing will upload today" arrive here
+    /// looking identical. What tells them apart is repetition, which needs the batch's
+    /// history rather than one error.
+    public var stopsABatch: Bool {
+        switch self {
+        case .notSignedIn, .unauthorized, .transport:
+            return true
+        case .tooLarge, .cannotCompressEnough, .compressionFailed, .server:
+            return false
+        }
+    }
+}
+
+/// What to tell the user after a multi-file upload. Pure, so the wording of a half-failed
+/// batch is decided somewhere it can be tested rather than inside a view controller.
+public enum UploadBatch {
+    /// Whether to abandon the rest of a batch, given everything that has failed so far.
+    ///
+    /// Two ways to earn it. The first is an error that is plainly about the connection rather
+    /// than the file (`UploadError.stopsABatch`). The second is **the same message twice in a
+    /// row**, which is how an instance-level refusal announces itself when it can't say so
+    /// directly: a stale provider credential comes back as a per-file rejection, but it comes
+    /// back as the *identical* per-file rejection every time. Ten videos on cellular, each
+    /// compressed and pushed in full before being told the same thing, is most of a gigabyte
+    /// spent learning what the second file already said.
+    ///
+    /// Waiting for the repeat rather than guessing from the first is the point: one file
+    /// genuinely can be too big, or the wrong type, with the next nine perfectly fine.
+    public static func shouldStop(after failures: [UploadError]) -> Bool {
+        guard let last = failures.last else { return false }
+        if last.stopsABatch { return true }
+        guard failures.count >= 2 else { return false }
+        return failures[failures.count - 2].userMessage == last.userMessage
+    }
+
+    /// The sentence for a batch that didn't fully succeed, or nil when there is nothing worth
+    /// interrupting for.
+    ///
+    /// - `picked`: everything the user selected, including files that never staged.
+    /// - `uploaded`: how many produced a URL.
+    /// - `failures`: the per-file errors actually hit. Shorter than `picked - uploaded` when a
+    ///   `stopsABatch` error cut the run short — the files never attempted have no error of
+    ///   their own, and are accounted for by the count rather than invented reasons.
+    /// - `unreadable`: picked files that couldn't even be staged off the picker.
+    /// - `unreadableReason`: the first such failure's own words ("No space left on device"),
+    ///   which is the difference between a user who can fix it and one who can only shrug.
+    /// - `cancelled`: the user stopped it. The *stopping* is silent by design — they know, and
+    ///   an alert confirming what someone just asked for is a dialog to dismiss, not
+    ///   information. What already went wrong before they stopped is still news, though, so a
+    ///   cancel suppresses the counts and not the errors.
+    public static func summary(
+        picked: Int,
+        uploaded: Int,
+        failures: [UploadError],
+        unreadable: Int,
+        unreadableReason: String? = nil,
+        cancelled: Bool
+    ) -> String? {
+        if failures.isEmpty && unreadable == 0 { return nil }
+
+        // What the files that failed have to say for themselves, whether or not the run was
+        // cancelled — a cancel excuses the files not attempted, not the ones that broke.
+        let unreadableClause: String? = {
+            guard unreadable > 0 else { return nil }
+            let count = unreadable == 1 ? "1 couldn't be read" : "\(unreadable) couldn't be read"
+            return unreadableReason.map { "\(count): \($0)" } ?? "\(count)."
+        }()
+        let failureClause: String? = failures.first.map { first in
+            failures.count == 1
+                ? first.userMessage
+                : "\(failures.count) failed — first error: \(first.userMessage)"
+        }
+
+        if cancelled {
+            // No "Uploaded N of M": that shortfall is the user's own doing, and counting it
+            // back at them reads as an accusation.
+            return [unreadableClause, failureClause].compactMap { $0 }.joined(separator: " ")
+        }
+
+        // A single file that failed on its own reads as a plain error, exactly as it did
+        // before batches existed. "Uploaded 0 of 1" is a statistic where a sentence will do.
+        if picked == 1, unreadable == 0, let only = failures.first { return only.userMessage }
+        if picked == 1, unreadable == 1 {
+            return unreadableReason ?? "That file couldn't be read."
+        }
+
+        return (["Uploaded \(uploaded) of \(picked)."] + [unreadableClause, failureClause].compactMap { $0 })
+            .joined(separator: " ")
+    }
 }
 
 /// One `upload-progress` frame: the server narrating the half of an upload this device
