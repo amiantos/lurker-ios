@@ -1014,6 +1014,18 @@ final class LurkerClient {
         if let absolute = URL(string: path), let scheme = absolute.scheme?.lowercased(),
             scheme == "https" || scheme == "http"
         {
+            // ⚠⚠ The same cleartext rule `LinkPreview.isViewable` gates on, asked of the same
+            // `LocalNetworking`, because this is the function that hands an address to
+            // AVFoundation. `isViewable` is the gate — nothing reaches a player page without
+            // passing it — and this is the backstop: a second caller, or the two drifting, would
+            // otherwise put back the ATS dead end this change exists to remove. One authority,
+            // asked twice, is the only version of that which can't disagree with itself.
+            if scheme == "http" {
+                // Strict about a missing host too, the way `isViewable` is: `http:///a.mp4` has
+                // nothing to reach, so there is nothing to permit.
+                guard let host = absolute.host, LocalNetworking.permitsCleartext(host: host)
+                else { return nil }
+            }
             return absolute
         }
         guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {

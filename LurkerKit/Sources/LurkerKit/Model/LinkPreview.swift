@@ -60,9 +60,10 @@ extension LinkPreview {
             // `http://box.local/…`, which played in the viewer before and still should. See
             // `LocalNetworking`, which mirrors that key so the refusal here and the app's actual
             // capability can't drift apart.
-            guard let scheme = URL(string: url)?.scheme?.lowercased() else { return false }
+            guard let address = URL(string: url), let scheme = address.scheme?.lowercased()
+            else { return false }
             if scheme == "https" { return true }
-            guard scheme == "http", let host = URL(string: url)?.host else { return false }
+            guard scheme == "http", let host = address.host else { return false }
             return LocalNetworking.permitsCleartext(host: host)
         case .page, .videoEmbed:
             return false
