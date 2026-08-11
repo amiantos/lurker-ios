@@ -334,27 +334,36 @@ final class MessageAttachmentsView: UIStackView {
             imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
-        let symbol = preview.kind == .audio ? "waveform" : "play.circle.fill"
+        // ⚠ Per KIND, with no default. `kind == .video ? play : waveform` was fine while only
+        // clips reached the glyph; once an image can too — a stored descriptor with no `src`,
+        // which this file is otherwise careful about — a default puts the WRONG symbol on the
+        // odd one out. A still we can't draw is a missing picture, not something to press play
+        // on, and a play button over it advertises a viewer that `isViewable` will refuse.
+        let symbol: String
+        switch preview.kind {
+        case .video: symbol = "play.circle.fill"
+        case .audio: symbol = "waveform"
+        case .image, .page, .videoEmbed: symbol = "photo"
+        }
         if preview.kind == .image, let path = picture {
             apply(path: path, to: imageView, model: model)
             animatablePath = path
-            imageView.accessibilityLabel = "Image"
         } else {
-            // A clip. The glyph is the same either way and says the same thing — this plays —
-            // but WHAT IT SITS ON decides how it has to look: over a poster it is paint on a
-            // picture and needs the white-and-shadow treatment every other overlay badge uses,
-            // while an empty box is a placeholder and wants the muted, unemphatic tint. A
-            // secondary-label symbol over a photograph is the one combination that reads as
-            // neither.
-            let glyph: UIImageView
-            if let path = picture {
-                apply(path: path, to: imageView, model: model)
-                glyph = Self.overlayBadge(symbol)
-            } else {
-                glyph = UIImageView(image: UIImage(systemName: symbol))
-                glyph.tintColor = .secondaryLabel
-                glyph.translatesAutoresizingMaskIntoConstraints = false
-            }
+            // A glyph that says what this is. WHAT IT ENDS UP SITTING ON decides how it looks:
+            // over a poster it is paint on a picture and needs the white-and-shadow treatment
+            // every other overlay badge uses, and on an empty box it wants the muted, unemphatic
+            // tint of a placeholder. A secondary-label symbol over a photograph reads as neither.
+            //
+            // ⚠⚠ It starts muted and is promoted WHEN THE BYTES LAND, not when the descriptor
+            // merely promises them. A poster is the one preview image with no origin to re-fetch
+            // from, so `thumb` can point at an evicted cache entry and 404 — the server calls a
+            // posterless render a supported state — and styling from the promise painted white
+            // glyph on pale grey, in light mode, permanently. Free of layout consequence for the
+            // same reason `attachPlayback`'s badge is: the box was sized from the descriptor and
+            // a badge is paint over it.
+            let glyph = UIImageView(image: UIImage(systemName: symbol))
+            glyph.tintColor = .secondaryLabel
+            glyph.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(glyph)
             NSLayoutConstraint.activate([
                 glyph.centerXAnchor.constraint(equalTo: container.centerXAnchor),
@@ -362,11 +371,25 @@ final class MessageAttachmentsView: UIStackView {
                 glyph.widthAnchor.constraint(equalToConstant: 44),
                 glyph.heightAnchor.constraint(equalToConstant: 44),
             ])
-            container.accessibilityLabel = preview.kind == .video ? "Video" : "Audio"
+            if let path = picture {
+                apply(path: path, to: imageView, model: model) { [weak glyph] in
+                    guard let glyph else { return }
+                    Self.styleAsOverlay(glyph)
+                }
+            }
         }
 
         container.isAccessibilityElement = true
         container.accessibilityTraits = .button
+        // ⚠ On the CONTAINER, which is the accessibility element — a label on the image view
+        // inside it is swallowed whole, and an inline image was announced as an unnamed "button"
+        // for exactly that reason. `attachPlayback` upgrades this to "Animation" if the bytes
+        // turn out to move.
+        switch preview.kind {
+        case .video: container.accessibilityLabel = "Video"
+        case .audio: container.accessibilityLabel = "Audio"
+        case .image, .page, .videoEmbed: container.accessibilityLabel = "Image"
+        }
         if let animatablePath {
             attachPlayback(
                 to: container, imageView: imageView, path: animatablePath, url: preview.url,
@@ -580,18 +603,24 @@ final class MessageAttachmentsView: UIStackView {
 
     /// A glyph meant to sit ON a picture rather than in an empty box.
     ///
-    /// White with a soft shadow rather than a tinted symbol, because it has to stay legible over
-    /// whatever frame happens to be underneath — a snow scene and a night shot both. The caller
-    /// owns the size and the constraints; the badge is never a control (the whole tile is), so it
-    /// carries no traits of its own.
+    /// The caller owns the size and the constraints; the badge is never a control (the whole tile
+    /// is), so it carries no traits of its own.
     private static func overlayBadge(_ symbol: String) -> UIImageView {
         let badge = UIImageView(image: UIImage(systemName: symbol))
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        styleAsOverlay(badge)
+        return badge
+    }
+
+    /// White with a soft shadow rather than a tinted symbol, because a glyph on top of a picture
+    /// has to stay legible over whatever frame is underneath — a snow scene and a night shot
+    /// both. Applied separately from construction so a glyph that only MIGHT get a picture can
+    /// wait until the bytes actually land before it takes the treatment.
+    private static func styleAsOverlay(_ badge: UIImageView) {
         badge.tintColor = .white
         badge.layer.shadowOpacity = 0.35
         badge.layer.shadowRadius = 6
         badge.layer.shadowOffset = .zero
-        badge.translatesAutoresizingMaskIntoConstraints = false
-        return badge
     }
 
     /// Put the image into the view as soon as it exists.
@@ -606,9 +635,15 @@ final class MessageAttachmentsView: UIStackView {
     /// cell's old image views are already detached and deallocated by the time a stale
     /// callback fires — it finds nil and does nothing, instead of painting one row's image
     /// into another.
-    private func apply(path: String, to imageView: UIImageView, model: ChatViewModel) {
+    /// `onArrival` runs only when bytes were decoded — the loader is silent on a failure — so it
+    /// is the hook for anything that must not be done on a descriptor's promise alone.
+    private func apply(
+        path: String, to imageView: UIImageView, model: ChatViewModel,
+        onArrival: (() -> Void)? = nil
+    ) {
         PreviewImageLoader.shared.load(path: path, using: model) { [weak imageView] image in
             imageView?.image = image
+            onArrival?()
         }
     }
 
