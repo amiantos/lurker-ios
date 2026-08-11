@@ -52,6 +52,26 @@ extension LinkPreview {
             return false
         }
     }
+
+    /// The picture drawn for this preview inline in the timeline, or nil for a box with none.
+    ///
+    /// It comes from a different field per kind, and the split is the media policy in one line.
+    /// An image IS its bytes, which our own proxy serves as `src`. A clip's bytes are never
+    /// relayed — what it gets is `thumb`: a POSTER this instance decoded from a couple of ranges
+    /// of the file, so it exists on our server and asking for it tells the origin nothing. Both
+    /// are therefore safe to render unasked, which is the test every auto-rendering preview image
+    /// has to pass; the clip's actual bytes never are, and are fetched only on a deliberate tap.
+    ///
+    /// ⚠⚠ `src` IS NEVER USED FOR A CLIP, even when one is present — the same trap
+    /// `MediaPlayerPageCell` documents. A descriptor minted before the server stopped relaying
+    /// video can still be sitting in a running client's store, and its token now answers 404, so
+    /// the defensive-looking "prefer src if we have it" spelling is the one that reliably fails.
+    public var inlinePicture: String? {
+        switch kind {
+        case .image: src
+        case .video, .audio, .page, .videoEmbed: thumb
+        }
+    }
 }
 
 /// The server's answer about one URL.

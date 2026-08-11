@@ -277,14 +277,25 @@ final class MessageAttachmentsView: UIStackView {
         container.layer.cornerRadius = Self.corner
         container.clipsToBounds = true
 
+        // The picture this box draws — `src` for an image, the decoded POSTER for a clip. The
+        // rule lives on the model, with the tests, for the same reason `isViewable` does: it is
+        // a predicate whose failure is a thing that silently never appears. See `inlinePicture`.
+        let picture = preview.inlinePicture
+
         // ⚠⚠ A box before the bytes, always. The height comes from the server's dimensions or
         // from a fixed fallback — never from the image, which would mean every picture growing
         // its row at decode time, under the reader's thumb. A lone image is shaped rather than
         // fixed because it is the one case where a flat height is actively wrong: a portrait
         // screenshot cropped into a landscape letterbox is unreadable, and unlike a mosaic tile
         // there is no sibling making the crop legible as a deliberate arrangement.
-        if preview.kind == .image, let width = preview.thumbWidth, let height = preview.thumbHeight,
-            width > 0, height > 0
+        //
+        // ⚠ A POSTER is shaped by the same rule, and the case for it is stronger: for these rows
+        // the declared pair describes the frame we decoded rather than something a stranger's
+        // markup asserted, and phone video is overwhelmingly portrait — the population a flat
+        // landscape box crops worst. A clip with NO poster keeps the fixed height: there is no
+        // picture whose shape could be honoured.
+        if preview.kind == .image || picture != nil, let width = preview.thumbWidth,
+            let height = preview.thumbHeight, width > 0, height > 0
         {
             let ratio = CGFloat(width) / CGFloat(height)
             let shaped = container.heightAnchor.constraint(
@@ -323,16 +334,27 @@ final class MessageAttachmentsView: UIStackView {
             imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
-        if preview.kind == .image, let path = preview.src {
+        let symbol = preview.kind == .audio ? "waveform" : "play.circle.fill"
+        if preview.kind == .image, let path = picture {
             apply(path: path, to: imageView, model: model)
             animatablePath = path
             imageView.accessibilityLabel = "Image"
         } else {
-            let glyph = UIImageView(
-                image: UIImage(systemName: preview.kind == .video ? "play.circle.fill" : "waveform")
-            )
-            glyph.tintColor = .secondaryLabel
-            glyph.translatesAutoresizingMaskIntoConstraints = false
+            // A clip. The glyph is the same either way and says the same thing — this plays —
+            // but WHAT IT SITS ON decides how it has to look: over a poster it is paint on a
+            // picture and needs the white-and-shadow treatment every other overlay badge uses,
+            // while an empty box is a placeholder and wants the muted, unemphatic tint. A
+            // secondary-label symbol over a photograph is the one combination that reads as
+            // neither.
+            let glyph: UIImageView
+            if let path = picture {
+                apply(path: path, to: imageView, model: model)
+                glyph = Self.overlayBadge(symbol)
+            } else {
+                glyph = UIImageView(image: UIImage(systemName: symbol))
+                glyph.tintColor = .secondaryLabel
+                glyph.translatesAutoresizingMaskIntoConstraints = false
+            }
             container.addSubview(glyph)
             NSLayoutConstraint.activate([
                 glyph.centerXAnchor.constraint(equalTo: container.centerXAnchor),
@@ -534,12 +556,7 @@ final class MessageAttachmentsView: UIStackView {
         thumb.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(thumb)
 
-        let badge = UIImageView(image: UIImage(systemName: "play.circle.fill"))
-        badge.tintColor = .white
-        badge.layer.shadowOpacity = 0.35
-        badge.layer.shadowRadius = 6
-        badge.layer.shadowOffset = .zero
-        badge.translatesAutoresizingMaskIntoConstraints = false
+        let badge = Self.overlayBadge("play.circle.fill")
         container.addSubview(badge)
 
         NSLayoutConstraint.activate([
@@ -560,6 +577,22 @@ final class MessageAttachmentsView: UIStackView {
     }
 
     // MARK: - Plumbing
+
+    /// A glyph meant to sit ON a picture rather than in an empty box.
+    ///
+    /// White with a soft shadow rather than a tinted symbol, because it has to stay legible over
+    /// whatever frame happens to be underneath — a snow scene and a night shot both. The caller
+    /// owns the size and the constraints; the badge is never a control (the whole tile is), so it
+    /// carries no traits of its own.
+    private static func overlayBadge(_ symbol: String) -> UIImageView {
+        let badge = UIImageView(image: UIImage(systemName: symbol))
+        badge.tintColor = .white
+        badge.layer.shadowOpacity = 0.35
+        badge.layer.shadowRadius = 6
+        badge.layer.shadowOffset = .zero
+        badge.translatesAutoresizingMaskIntoConstraints = false
+        return badge
+    }
 
     /// Put the image into the view as soon as it exists.
     ///
@@ -602,13 +635,8 @@ final class MessageAttachmentsView: UIStackView {
         to container: UIView, imageView: UIImageView, path: String, url: String,
         model: ChatViewModel
     ) {
-        let badge = UIImageView(image: UIImage(systemName: "play.circle.fill"))
-        badge.tintColor = .white
-        badge.layer.shadowOpacity = 0.35
-        badge.layer.shadowRadius = 6
-        badge.layer.shadowOffset = .zero
+        let badge = Self.overlayBadge("play.circle.fill")
         badge.isHidden = true
-        badge.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(badge)
         NSLayoutConstraint.activate([
             badge.centerXAnchor.constraint(equalTo: container.centerXAnchor),
