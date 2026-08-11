@@ -14,9 +14,10 @@ import XCTest
 /// still compiled in and simply stopped being reachable. A feature can be deleted by a predicate.
 final class LinkPreviewViewableTests: XCTestCase {
     private func preview(
-        kind: PreviewKind, url: String = "https://cdn.example.com/a.mp4", src: String? = nil
+        kind: PreviewKind, url: String = "https://cdn.example.com/a.mp4", src: String? = nil,
+        thumb: String? = nil
     ) -> LinkPreview {
-        LinkPreview(url: url, status: .ok, kind: kind, src: src)
+        LinkPreview(url: url, status: .ok, kind: kind, src: src, thumb: thumb)
     }
 
     // MARK: - Video and audio stream from the origin, so an address is all they need
@@ -78,6 +79,90 @@ final class LinkPreviewViewableTests: XCTestCase {
         for kind in [PreviewKind.page, .videoEmbed] {
             XCTAssertFalse(preview(kind: kind, url: "https://example.com/post").isViewable)
             XCTAssertFalse(preview(kind: kind, src: "/api/x").isViewable)
+        }
+    }
+
+    // MARK: - What a row DRAWS, which is a different question from what the viewer plays
+
+    /// The whole point of the poster: a clip stops being a grey box in the timeline. This is the
+    /// same shape of predicate as `isViewable` above, so it gets the same guard — the failure
+    /// mode is once again silent, a picture that simply never appears.
+    func testVideoDrawsItsPoster() {
+        XCTAssertEqual(
+            preview(kind: .video, thumb: "/api/link-preview/poster/tok").inlinePicture,
+            "/api/link-preview/poster/tok")
+    }
+
+    func testAudioDrawsItsPoster() {
+        XCTAssertEqual(
+            preview(kind: .audio, url: "https://cdn.example.com/a.mp3", thumb: "/api/p").inlinePicture,
+            "/api/p")
+    }
+
+    /// A posterless clip has nothing to draw and says so, rather than reaching for the field that
+    /// happens to be populated. The card falls back to its glyph.
+    func testPosterlessClipDrawsNothing() {
+        XCTAssertNil(preview(kind: .video).inlinePicture)
+    }
+
+    /// ⚠⚠ The stale-`src` trap again, on the drawing side this time. A descriptor minted before
+    /// the server stopped relaying video can still be in a running client's store; drawing from
+    /// its token means a 404 and a permanently-empty box, so the clip branch must never look at
+    /// `src` — not even when there is no poster and it is the only thing there.
+    func testClipNeverDrawsFromALegacySrc() {
+        XCTAssertNil(preview(kind: .video, src: "/api/link-preview/media/stale").inlinePicture)
+    }
+
+    func testImageDrawsFromItsProxiedBytes() {
+        XCTAssertEqual(
+            preview(kind: .image, url: "https://cdn.example.com/a.png", src: "/api/x",
+                    thumb: "/api/never").inlinePicture,
+            "/api/x")
+    }
+
+    /// ⚠ A card draws its picture itself, beside its text and with its own shape rule, so it is
+    /// not one of these. This is the test that stops the property being read as "any picture".
+    func testACardsThumbnailIsNotAnInlinePicture() {
+        for kind in [PreviewKind.page, .videoEmbed] {
+            XCTAssertNil(
+                preview(kind: kind, url: "https://example.com/post", thumb: "/api/x").inlinePicture,
+                "a \(kind.rawValue) card draws its own thumbnail")
+        }
+    }
+
+    // MARK: - Whether the thing on screen IS what the address points to
+
+    /// ⚠⚠ The invariant: nothing is hidden without something rendered in its place. Every case
+    /// below is a message whose text would silently lose a URL if this answered wrong.
+    func testAPosterStandsInForItsVideo() {
+        XCTAssertTrue(preview(kind: .video, thumb: "/api/link-preview/poster/tok").standsInForItsURL)
+    }
+
+    func testAPosterlessClipStandsInForNothing() {
+        XCTAssertFalse(preview(kind: .video).standsInForItsURL)
+        XCTAssertFalse(preview(kind: .video, src: "/api/link-preview/media/stale").standsInForItsURL)
+    }
+
+    /// ⚠⚠ Cover art is a picture ABOUT the track, not the track — the one place this parts
+    /// company with `inlinePicture`, which happily draws it. Hiding an mp3's address left album
+    /// art and a waveform glyph, with no filename and nothing to copy.
+    func testCoverArtDoesNotStandInForItsAudio() {
+        let mp3 = preview(kind: .audio, url: "https://cdn.example.com/a.mp3", thumb: "/api/p")
+        XCTAssertFalse(mp3.standsInForItsURL)
+        XCTAssertEqual(mp3.inlinePicture, "/api/p", "it still DRAWS the art")
+    }
+
+    func testAnImageStandsInForItselfOnlyOnceItHasBytes() {
+        let url = "https://cdn.example.com/a.png"
+        XCTAssertFalse(preview(kind: .image, url: url).standsInForItsURL)
+        XCTAssertTrue(preview(kind: .image, url: url, src: "/api/x").standsInForItsURL)
+    }
+
+    func testACardNeverTakesItsLinkAway() {
+        for kind in [PreviewKind.page, .videoEmbed] {
+            XCTAssertFalse(
+                preview(kind: kind, url: "https://example.com/post", src: "/api/x", thumb: "/api/y")
+                    .standsInForItsURL, "a \(kind.rawValue) card keeps its URL")
         }
     }
 }
