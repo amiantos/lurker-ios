@@ -2041,9 +2041,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// A mutable `UploadProgress` the upload's two progress callbacks share. They fire from
     /// two different places — `URLSession`'s delegate queue and the WS — and each hops to the
-    /// main actor before touching this; that isolation (the repo's default) is what makes the
-    /// box safe to capture in the `@Sendable` closures the client takes, and what serializes
-    /// the two streams against each other without a lock.
+    /// main actor before touching this; that isolation is what makes the box safe to capture
+    /// in the `@Sendable` closures the client takes, and what serializes the two streams
+    /// against each other without a lock.
+    ///
+    /// `@MainActor` is stated rather than inherited. The target's `SWIFT_DEFAULT_ACTOR_ISOLATION`
+    /// would supply it anyway, but a nested type does NOT pick up its enclosing type's
+    /// isolation, so a reader checking this one's safety would be reasoning about the wrong
+    /// mechanism — and it silently becomes a data race if that project-wide setting ever moves.
+    @MainActor
     private final class UploadProgressBox {
         var value = UploadProgress()
     }

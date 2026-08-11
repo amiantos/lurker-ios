@@ -125,6 +125,38 @@ final class UploadProgressTests: XCTestCase {
         XCTAssertEqual(progress.sentFraction, 0.3)
     }
 
+    func testARestartedBodyReturnsToTheDeviceLeg() {
+        // `URLSession` can re-send the whole body (an HTTP/2 GOAWAY retry, a redirect), which
+        // resets its byte count to zero. Latching on "Processing…" would sit there through the
+        // entire second transmission — minutes, for a large video — and no server frame could
+        // correct it, because the server hasn't got the file yet.
+        var progress = UploadProgress()
+        progress.apply(deviceFraction: 1)
+        XCTAssertEqual(progress.stage, .processing)
+        progress.apply(deviceFraction: 0.02)
+        XCTAssertEqual(progress.stage, .uploading)
+        XCTAssertEqual(progress.deviceFraction, 0.02, accuracy: 0.0001)
+    }
+
+    func testARepeatedFinalTickIsNotMistakenForARestart() {
+        // Only a fraction that goes BACKWARDS is a restart. A duplicate 100% is just a tick.
+        var progress = UploadProgress()
+        progress.apply(deviceFraction: 1)
+        progress.apply(deviceFraction: 1)
+        XCTAssertEqual(progress.stage, .processing)
+    }
+
+    func testTheDeviceLegCannotReopenOnceTheServerHasSpoken() {
+        // Past this point the server's account beats the device's: the bytes are there, so a
+        // low tick is a straggler crossing the WS, not a restart. This is the guard that keeps
+        // the re-entry above from reintroducing the rewind it's carved out of.
+        var progress = UploadProgress()
+        progress.apply(deviceFraction: 1)
+        progress.apply(server: UploadServerProgress(phase: .processing, percent: nil, destination: "Catbox"))
+        progress.apply(deviceFraction: 0.02)
+        XCTAssertEqual(progress.stage, .processing)
+    }
+
     func testSendingCarriesItsFraction() {
         var progress = UploadProgress()
         progress.apply(server: UploadServerProgress(phase: .sending, percent: 75, destination: "Catbox"))

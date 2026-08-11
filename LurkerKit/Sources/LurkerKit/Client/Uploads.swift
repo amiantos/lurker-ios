@@ -138,17 +138,32 @@ public struct UploadProgress: Sendable, Equatable {
     /// blank a label that is already on screen.
     public private(set) var destination: String?
 
+    /// Whether the server has narrated anything yet. Once it has, its account of where the
+    /// upload is beats anything the device leg can say — see `apply(deviceFraction:)`.
+    private var heardFromServer = false
+
     public init() {}
 
     /// A `didSendBodyData` tick. Advances to `.processing` at 100% by itself — see the type's
-    /// note on tier 1 — and is otherwise **ignored once a later stage has begun**. Those
-    /// callbacks hop threads to reach the main actor, so a straggler can land after the
-    /// server's first frame; letting one rewind the readout to "Uploading…" would undo the
-    /// very thing this exists to fix.
+    /// note on tier 1 — and is otherwise ignored once a later stage has begun, because those
+    /// callbacks hop threads to reach the main actor and a straggler landing after the
+    /// server's first frame would undo the very thing this exists to fix.
+    ///
+    /// **The one exception is a fraction that goes backwards before the server has said
+    /// anything.** That isn't a straggler — device ticks are generated in order on one serial
+    /// queue and enqueued in order, so they can only reorder against the *WS*, never against
+    /// each other. It means `URLSession` restarted the request body (an HTTP/2 `GOAWAY` retry,
+    /// a redirect): `totalBytesSent` resets and the whole file goes again. Latching would sit
+    /// on "Processing…" through that entire second transmission — up to the 300 s timeout on a
+    /// large video — and no server frame could correct it, because the server hasn't received
+    /// the file yet. So re-enter, and report the leg that is genuinely running.
     public mutating func apply(deviceFraction fraction: Double) {
-        guard stage == .uploading else { return }
-        deviceFraction = max(0, min(1, fraction))
-        if deviceFraction >= 1 { stage = .processing }
+        let clamped = max(0, min(1, fraction))
+        if stage != .uploading {
+            guard !heardFromServer, clamped < deviceFraction else { return }
+        }
+        deviceFraction = clamped
+        stage = clamped >= 1 ? .processing : .uploading
     }
 
     /// A server frame. Monotonic in the same direction and for the same reason: a delayed
@@ -156,6 +171,7 @@ public struct UploadProgress: Sendable, Equatable {
     /// indeterminate label. WS ordering makes that unlikely, not impossible, and a visibly
     /// jumping readout is more expensive than the guard.
     public mutating func apply(server frame: UploadServerProgress) {
+        heardFromServer = true
         if let destination = frame.destination, !destination.isEmpty {
             self.destination = destination
         }
