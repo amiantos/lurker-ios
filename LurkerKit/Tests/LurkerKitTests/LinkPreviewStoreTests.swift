@@ -127,7 +127,7 @@ struct LinkPreviewStoreTests {
         await settle()
         #expect(stub.batches.count == 1)
         #expect(store.retry["https://e.test/gone"] == nil, "nothing armed, so nothing polls")
-        #expect(!store.runDueReasks(), "and nothing ever comes due")
+        #expect(store.runDueReasks().isEmpty, "and nothing ever comes due")
 
         store.request(["https://e.test/gone"])
         await settle()
@@ -210,11 +210,11 @@ struct LinkPreviewStoreTests {
 
         // Not yet due: the floor is 15s and the deadline is jittered around it.
         clock.date.addTimeInterval(5)
-        #expect(!store.runDueReasks())
+        #expect(store.runDueReasks().isEmpty)
         #expect(stub.batches.count == 1)
 
         clock.date.addTimeInterval(60)
-        #expect(store.runDueReasks())
+        #expect(!store.runDueReasks().isEmpty)
         await settle()
         #expect(stub.batches.count == 2, "the URL is asked about a second time")
     }
@@ -244,7 +244,7 @@ struct LinkPreviewStoreTests {
         #expect(store.retry["https://e.test/dead"] == nil, "a verdict arms nothing")
 
         clock.date.addTimeInterval(600)
-        #expect(!store.runDueReasks())
+        #expect(store.runDueReasks().isEmpty)
         #expect(stub.batches.count == 1)
     }
 
@@ -352,12 +352,50 @@ struct LinkPreviewStoreTests {
         let stub = Stub()
         let store = makeStore(stub)
         var updates = 0
-        store.onUpdate = { updates += 1 }
+        store.onUpdate = { _ in updates += 1 }
 
         store.request((0..<45).map { "https://e.test/\($0)" })
         // Long enough for two of the three batches, not all three.
         try? await Task.sleep(for: .milliseconds(800))
         #expect(updates >= 2, "each completed batch paints; saw \(updates)")
+    }
+
+    @Test("says WHICH urls moved, so a consumer can tell whether it is affected")
+    func reportsTheUrlsThatMoved() async {
+        // Without this the only thing a list could learn is "something, somewhere, changed" —
+        // so links resolving for one buffer rebuilt every visible cell of whichever buffer the
+        // reader was actually looking at, once per batch.
+        let stub = Stub()
+        let store = makeStore(stub)
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+
+        store.request(["https://e.test/a", "https://e.test/b"])
+        try? await Task.sleep(for: .milliseconds(300))
+
+        #expect(reported.count == 1)
+        #expect(reported.first == ["https://e.test/a", "https://e.test/b"])
+    }
+
+    @Test("a url the server never mentioned still counts as moved")
+    func reportsOmittedUrlsToo() async {
+        // ⚠ The set is what MOVED, not what was answered. An omission goes onto the retry
+        // ladder, and `allSettled` reads that as settled — which can be the event that completes
+        // a message's reveal gate. Reporting only the answers would leave that message blank
+        // until something unrelated redrew it.
+        let stub = Stub()
+        stub.answer = { urls in
+            urls.filter { $0 != "https://e.test/b" }
+                .map { LinkPreview(url: $0, status: .ok, kind: .image, src: "/proxy/\($0)") }
+        }
+        let store = makeStore(stub)
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+
+        store.request(["https://e.test/a", "https://e.test/b"])
+        try? await Task.sleep(for: .milliseconds(300))
+
+        #expect(reported.first?.contains("https://e.test/b") == true)
     }
 
     @Test("batches follow priming order, so the visible buffer is not sent to the back")
@@ -400,7 +438,7 @@ struct LinkPreviewStoreTests {
         store.request(["https://e.test/skewed"])
         await settle()
         #expect(store.retry["https://e.test/skewed"] == nil)
-        #expect(!store.runDueReasks())
+        #expect(store.runDueReasks().isEmpty)
     }
 
     @Test("a URL nobody ever answers is chased a bounded number of times, then let go")
@@ -484,7 +522,7 @@ struct LinkPreviewStoreTests {
         #expect(store.preview(for: "https://e.test/busy") == nil, "no value to short-circuit on")
 
         clock.date.addTimeInterval(60)
-        #expect(store.runDueReasks(), "the URL is now queued for a second ask")
+        #expect(!store.runDueReasks().isEmpty, "the URL is now queued for a second ask")
         #expect(store.retry["https://e.test/busy"] != nil, "and still carries its retry entry")
         #expect(!store.isPending("https://e.test/busy"))
         #expect(store.allSettled(["https://e.test/busy"]))
@@ -512,7 +550,7 @@ struct LinkPreviewStoreTests {
                 == PreviewReask.floor)
 
         clock.date.addTimeInterval(60)
-        #expect(store.runDueReasks())
+        #expect(!store.runDueReasks().isEmpty)
         await settle()
 
         #expect(store.retry["https://e.test/flaky"]?.tries == 2, "the count carried across")

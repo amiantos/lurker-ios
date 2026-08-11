@@ -77,7 +77,18 @@ public final class LinkPreviewStore {
 
     /// Called when previews arrive, so the list can re-lay-out the rows that now have one.
     /// The list reloads rather than mutating a cell, because a preview changes a row's height.
-    public var onUpdate: (() -> Void)?
+    ///
+    /// ⚠⚠ Carries WHICH URLs moved, and that is the whole point of the parameter. Without it a
+    /// consumer can only answer "something changed somewhere", so a batch resolving links posted
+    /// in `##videogames` rebuilt every visible cell of `#lurker` — every `CompactCell` and every
+    /// `MessageAttachmentsView` subtree discarded and rebuilt, a touch in progress on a link or
+    /// an image cancelled, and the reader re-pinned to the bottom. A burst is `ceil(N / 20)` of
+    /// those, 600ms apart.
+    ///
+    /// ⚠ The set is every URL whose state MOVED, not only the ones that got a value. A URL the
+    /// server omitted, or one put back on the retry ladder, moves a message's reveal gate exactly
+    /// as an answer does — see `allSettled`, which is why this used to fire unconditionally.
+    public var onUpdate: ((Set<String>) -> Void)?
 
     private let resolve: ([String]) async -> [LinkPreview]
     private let now: () -> Date
@@ -231,7 +242,9 @@ public final class LinkPreviewStore {
             // re-queued in one sweep the moment it finished: precisely the synchronised wave
             // PreviewReask's jitter exists to break up.
             scheduleReask()
-            onUpdate?()
+            // The whole chunk, not just `answered`: a URL the server omitted was moved onto the
+            // retry ladder above, and that moves its message's gate too.
+            onUpdate?(Set(chunk))
         }
     }
 
@@ -333,15 +346,20 @@ public final class LinkPreviewStore {
         asked.remove(url)
     }
 
-    /// Re-queue everything whose re-ask has come due. Returns whether anything was queued.
+    /// Re-queue everything whose re-ask has come due. Returns WHICH URLs were queued — empty
+    /// when nothing was due.
+    ///
+    /// ⚠ The set rather than a bool because `onUpdate` carries it now: a re-ask puts a URL back
+    /// in play, which un-settles its message's gate, and a consumer deciding whether that touches
+    /// anything on screen needs to know which message.
     ///
     /// Internal rather than private so a test can drive it directly: the decision is the part
     /// worth asserting, and reaching it through `reaskTask` would mean sleeping out a real
     /// backoff to see it.
     @discardableResult
-    func runDueReasks() -> Bool {
+    func runDueReasks() -> Set<String> {
         let moment = now()
-        var queued = false
+        var queued: Set<String> = []
         for (url, state) in retry where state.at <= moment {
             // Parked as in-flight rather than deleted, and the difference IS the backoff: the
             // `tries` count lives in this entry, so removing it re-armed at tries = 1 every time
@@ -358,9 +376,9 @@ public final class LinkPreviewStore {
             // anything today.
             asked.insert(url)
             enqueue(url)
-            queued = true
+            queued.insert(url)
         }
-        if queued { scheduleFlush() }
+        if !queued.isEmpty { scheduleFlush() }
         return queued
     }
 
@@ -376,7 +394,8 @@ public final class LinkPreviewStore {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             self.reaskTask = nil
-            if self.runDueReasks() { self.onUpdate?() }
+            let requeued = self.runDueReasks()
+            if !requeued.isEmpty { self.onUpdate?(requeued) }
             self.scheduleReask()
         }
     }
