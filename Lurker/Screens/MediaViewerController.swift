@@ -462,7 +462,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     private let fallback = UIStackView()
     private let fallbackLabel = UILabel()
     private let fallbackButton = UIButton(type: .system)
-    /// The way out while there is no player to provide one. See `showsOwnExit`.
+    /// The way out while there is no player to provide one. See `showLoading`.
     private let closeButton = UIButton(type: .system)
     private var openExternally: ((URL) -> Void)?
     private var onPlayerDismissed: (() -> Void)?
@@ -600,6 +600,32 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         player.play()
     }
 
+    // MARK: - The exit a page with no player has to carry
+
+    /// ⚠⚠ A page with no player must carry its own way out.
+    ///
+    /// The viewer hides ALL of its chrome on a player page — close, counter and share — because
+    /// the system player draws its own dismiss, and the swipe stands down there because a
+    /// scrubber is a horizontal drag inside a vertically-dismissing view. That trade is sound
+    /// exactly as long as a player exists. It does not exist in three states, and each one was a
+    /// screen with no exit:
+    ///
+    ///   - the clip is still being ASKED ABOUT (nothing is downloaded any more — clips stream
+    ///     from the origin — but the `isPlayable` probe is a round trip to a stranger's host, so
+    ///     on a slow link this is still a spinner and nothing else),
+    ///   - it could not be REACHED — a 404, a TLS failure, a host that refuses a hotlink,
+    ///   - the format is one AVFoundation will not open — webm and ogg, both ordinary on IRC —
+    ///     where the only other control is "Open in Browser", which leaves the app entirely, and
+    ///     which `showFallback` itself hides when the origin URL will not parse.
+    ///
+    /// `hideOwnExit` takes it away again the moment a player attaches, so the two never both
+    /// offer an exit.
+    ///
+    /// ⚠ This is a note about `showLoading`/`showFallback`/`hideOwnExit` below, and it used to
+    /// sit one declaration further down — where it ran into the next docblock and was filed,
+    /// silently, on `configureAudioSession`. `MediaPlayerPageCell` still pointed at it as
+    /// `showsOwnExit`, which has never been the name of anything here.
+    ///
     /// Waiting on the bytes: a spinner and the way out, and nothing else.
     private func showLoading() {
         spinner.startAnimating()
@@ -622,23 +648,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         fallback.isHidden = false
     }
 
-    /// ⚠⚠ A page with no player must carry its own way out.
-    ///
-    /// The viewer hides ALL of its chrome on a player page — close, counter and share — because
-    /// the system player draws its own dismiss, and the swipe stands down there because a
-    /// scrubber is a horizontal drag inside a vertically-dismissing view. That trade is sound
-    /// exactly as long as a player exists. It does not exist in three states, and each one was a
-    /// screen with no exit:
-    ///
-    ///   - the clip is still being ASKED ABOUT (nothing is downloaded any more — clips stream
-    ///     from the origin — but the `isPlayable` probe is a round trip to a stranger's host, so
-    ///     on a slow link this is still a spinner and nothing else),
-    ///   - it could not be REACHED — a 404, a TLS failure, a host that refuses a hotlink,
-    ///   - the format is one AVFoundation will not open — webm and ogg, both ordinary on IRC —
-    ///     where the only other control is "Open in Browser", which leaves the app entirely, and
-    ///     which `showFallback` itself hides when the origin URL will not parse.
-    ///
-    /// Hidden again the moment a player attaches, so the two never both offer an exit.
     /// Make this app's audio a PLAYBACK session, so a video can actually be heard.
     ///
     /// ⚠⚠ With no category set, the process default applies — and that one obeys the ring/silent

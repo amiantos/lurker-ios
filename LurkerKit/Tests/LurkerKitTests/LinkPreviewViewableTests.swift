@@ -30,16 +30,15 @@ final class LinkPreviewViewableTests: XCTestCase {
         XCTAssertTrue(preview(kind: .audio, url: "https://cdn.example.com/a.mp3").isViewable)
     }
 
-    /// ⚠⚠ This asserted the opposite, on the grounds that "a self-hosted instance on a LAN is not
-    /// required to be https". Two things were wrong with that. The address here is not the
-    /// instance — since the server stopped minting `src`, it is the origin the link pointed at,
-    /// and a LAN instance doesn't make a stranger's host cleartext. And the case it named, a
-    /// `.local` host, is the one `NSAllowsLocalNetworking` already permits; what the assertion
-    /// actually admitted was PUBLIC cleartext, which App Transport Security then refuses inside
-    /// AVFoundation. Admitting it bought a failure the reader can't act on instead of the
-    /// browser hand-off, which works.
-    func testPlainHttpOriginIsNotViewable() {
-        XCTAssertFalse(preview(kind: .video, url: "http://box.local/a.mp4").isViewable)
+    /// ⚠⚠ The line is PUBLIC cleartext, not cleartext. This test used to admit both, justified by
+    /// "a self-hosted instance on a LAN is not required to be https" — true of the `.local` host
+    /// it named, which `NSAllowsLocalNetworking` permits, and not true of the public address it
+    /// also let through, which App Transport Security refuses inside AVFoundation. Admitting that
+    /// one bought a failure the reader can't act on in place of the browser hand-off, which
+    /// works. Both halves are asserted here so neither can drift back.
+    func testHttpIsViewableOnlyWhereTheAppCanActuallyLoadIt() {
+        XCTAssertTrue(preview(kind: .video, url: "http://box.local/a.mp4").isViewable)
+        XCTAssertTrue(preview(kind: .video, url: "http://192.168.1.9:8080/a.mp4").isViewable)
         XCTAssertFalse(preview(kind: .video, url: "http://cdn.example.com/a.mp4").isViewable)
     }
 

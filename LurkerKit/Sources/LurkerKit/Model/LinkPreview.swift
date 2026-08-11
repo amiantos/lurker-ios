@@ -46,19 +46,24 @@ extension LinkPreview {
         case .image:
             return src != nil
         case .video, .audio:
-            // ⚠⚠ https ONLY, and the reason is that admitting `http` promises something the app
-            // then refuses. App Transport Security blocks a public cleartext load, so an http
-            // clip was admitted to the gallery, dequeued, and failed inside AVFoundation — a
-            // dead end the reader cannot act on, and one that reads as a broken player rather
-            // than as a policy. Refused here it falls through to the browser hand-off, which
-            // works. The alternative was `NSAllowsArbitraryLoadsForMedia`, which buys one rare
-            // clip by weakening every load the app makes.
+            // ⚠⚠ The test is what this app can actually LOAD, not what AVURLAsset would accept.
+            // App Transport Security blocks cleartext to a public host regardless, so admitting
+            // one promised a player and delivered a failure deep inside AVFoundation — a dead end
+            // the reader can't act on, and one that reads as a broken app rather than as a
+            // policy. Refused here, it falls through to the browser hand-off, which works. The
+            // alternative was `NSAllowsArbitraryLoadsForMedia`, which buys one rare clip by
+            // weakening every load the app makes.
             //
-            // ⚠ `NSAllowsLocalNetworking` still covers a `.local` or private-range host, but that
-            // exemption is about reaching a LAN INSTANCE, and this address is never the
-            // instance: since the server stopped minting `src`, it is the third party the link
-            // pointed at. A self-hosted setup does not make somebody else's origin cleartext.
-            return URL(string: url)?.scheme?.lowercased() == "https"
+            // ⚠⚠ But only the loads ATS really refuses. `Info.plist` sets
+            // `NSAllowsLocalNetworking`, so cleartext to the local network is permitted — and a
+            // self-hosted instance on a plain-http LAN posts its OWN uploads as
+            // `http://box.local/…`, which played in the viewer before and still should. See
+            // `LocalNetworking`, which mirrors that key so the refusal here and the app's actual
+            // capability can't drift apart.
+            guard let scheme = URL(string: url)?.scheme?.lowercased() else { return false }
+            if scheme == "https" { return true }
+            guard scheme == "http", let host = URL(string: url)?.host else { return false }
+            return LocalNetworking.permitsCleartext(host: host)
         case .page, .videoEmbed:
             return false
         }

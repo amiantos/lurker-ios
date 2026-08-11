@@ -1004,7 +1004,15 @@ final class LurkerClient {
     /// ⚠ The extension is carried over from the server's `mime`, because AVFoundation sniffs the
     /// path: a temp file called `x.tmp` fails to open as an MP4 that plays perfectly as `x.mp4`.
     func playableMediaURL(path: String, mime: String?) async -> URL? {
-        if let absolute = URL(string: path), absolute.scheme == "https" || absolute.scheme == "http"
+        // ⚠ LOWERCASED, because `URL.scheme` keeps the case it was written in (measured:
+        // `URL(string: "HTTPS://h/a.mp4")?.scheme` is `"HTTPS"`) and `isViewable` — the gate that
+        // decides this is worth opening at all — folds case before it compares. Raw, the two
+        // disagreed on exactly the addresses `LinkPreviewViewableTests.testSchemeMatchIs-
+        // CaseInsensitive` admits: into the gallery, past the tap, missed here, refused by
+        // `mediaRequest` as well, and the page dead-ended on "There's nothing to play here" for
+        // an address that plays perfectly.
+        if let absolute = URL(string: path), let scheme = absolute.scheme?.lowercased(),
+            scheme == "https" || scheme == "http"
         {
             return absolute
         }
