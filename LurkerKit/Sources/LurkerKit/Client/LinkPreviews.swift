@@ -77,7 +77,22 @@ public final class LinkPreviewStore {
 
     /// Called when previews arrive, so the list can re-lay-out the rows that now have one.
     /// The list reloads rather than mutating a cell, because a preview changes a row's height.
-    public var onUpdate: (() -> Void)?
+    ///
+    /// ⚠⚠ Carries WHICH URLs moved, and that is the whole point of the parameter. Without it a
+    /// consumer can only answer "something changed somewhere", so a batch resolving links posted
+    /// in `##videogames` rebuilt every visible cell of `#lurker` — every `CompactCell` and every
+    /// `MessageAttachmentsView` subtree discarded and rebuilt, a touch in progress on a link or
+    /// an image cancelled, and the reader re-pinned to the bottom. A burst is `ceil(N / 20)` of
+    /// those, 600ms apart.
+    ///
+    /// ⚠ The set is every URL whose state MOVED, not only the ones that got a value. A URL the
+    /// server omitted moves a message's reveal gate exactly as an answer does: `forgetForRetry`
+    /// arms its ladder, and `isPending` reads anything holding a retry entry as settled — so the
+    /// omission can be the event that completes a gate. That is why this fires for the whole
+    /// batch that was sent.
+    ///
+    /// ⚠⚠ A RE-ASK is not such an event and does not come through here — see `runDueReasks`.
+    public var onUpdate: ((Set<String>) -> Void)?
 
     private let resolve: ([String]) async -> [LinkPreview]
     private let now: () -> Date
@@ -213,14 +228,30 @@ public final class LinkPreviewStore {
             // existed so nothing came back for it. Permanently blank, from a response that
             // looked perfectly fine. A whole-batch failure (offline, 401, 429) is the same case
             // with an empty answer, so it needs no branch of its own any more.
-            for url in chunk where !answered.contains(url) { forgetForRetry(url) }
-
-            // ⚠⚠ Per BATCH, not once per flush, and unconditional.
             //
-            // Unconditional, where this used to fire only if a value landed: every path above
-            // can move a URL out of the pending set, and once the reveal gate exists ANY such
-            // move can complete a message's block and paint it — an `unavailable` very often is
-            // the answer that finishes a gate, and so is a URL the server never mentioned.
+            // ⚠⚠ And a URL only MOVED if it wasn't already on the ladder. Second time round, it
+            // was settled before this (`isPending` reads a retry entry as settled) and it is
+            // settled after, with no value either way — so nothing about it can draw differently,
+            // and telling the list otherwise spends a reload per rung: six for a link the server
+            // can't resolve, each rebuilding a row to redraw the same thing. The FIRST omission
+            // is the one that matters, because that is the one that moves the URL out of `asked`
+            // and completes its message's gate.
+            var moved = answered
+            for url in chunk where !answered.contains(url) {
+                let wasAlreadyOnTheLadder = retry[url] != nil
+                forgetForRetry(url)
+                if !wasAlreadyOnTheLadder { moved.insert(url) }
+            }
+
+            // ⚠⚠ Per BATCH, not once per flush.
+            //
+            // ⚠ It is NOT "whenever the batch finishes", which is what this said while it fired
+            // unconditionally. That was itself a correction of an older rule — "only if a value
+            // landed" — which missed that an `unavailable`, and a URL the server never mentioned
+            // at all, are very often the answer that finishes a message's reveal gate. Both
+            // versions were reaching for the same question and neither asked it: what fires this
+            // is a URL whose state MOVED, which is what `moved` above computes. A batch of
+            // nothing but repeat failures for URLs already on the ladder moves nothing.
             //
             // Per batch, because batches after the first are paced 600ms apart. Deferring to the
             // end meant a 200-URL flush (10 batches) held batch 1's images unpainted for the
@@ -231,7 +262,9 @@ public final class LinkPreviewStore {
             // re-queued in one sweep the moment it finished: precisely the synchronised wave
             // PreviewReask's jitter exists to break up.
             scheduleReask()
-            onUpdate?()
+            // Silent when nothing moved — a batch of nothing but repeat failures for URLs
+            // already on the ladder is a round trip the reader's screen has no stake in.
+            if !moved.isEmpty { onUpdate?(moved) }
         }
     }
 
@@ -335,6 +368,14 @@ public final class LinkPreviewStore {
 
     /// Re-queue everything whose re-ask has come due. Returns whether anything was queued.
     ///
+    /// ⚠⚠ It notifies NOBODY, and that is not an oversight. A re-ask changes no rendering: the
+    /// `retry` entry stays (parked at `.distantFuture` below), and `isPending` answers `false`
+    /// for anything holding one — so the message's gate was settled before this ran and is
+    /// settled after. What the reader eventually sees is the ANSWER, which comes back through
+    /// `flush` and is announced there. Telling the list about the re-queue instead spent a full
+    /// visible-rows reload per rung of the ladder — six of them for a link the server can't
+    /// resolve, each rebuilding every cell on screen to redraw nothing.
+    ///
     /// Internal rather than private so a test can drive it directly: the decision is the part
     /// worth asserting, and reaching it through `reaskTask` would mean sleeping out a real
     /// backoff to see it.
@@ -376,7 +417,7 @@ public final class LinkPreviewStore {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             self.reaskTask = nil
-            if self.runDueReasks() { self.onUpdate?() }
+            self.runDueReasks()
             self.scheduleReask()
         }
     }

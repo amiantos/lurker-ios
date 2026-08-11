@@ -377,12 +377,109 @@ struct LinkPreviewStoreTests {
         let stub = Stub()
         let store = makeStore(stub)
         var updates = 0
-        store.onUpdate = { updates += 1 }
+        store.onUpdate = { _ in updates += 1 }
 
         store.request((0..<45).map { "https://e.test/\($0)" })
         // Long enough for two of the three batches, not all three.
         try? await Task.sleep(for: .milliseconds(800))
         #expect(updates >= 2, "each completed batch paints; saw \(updates)")
+    }
+
+    @Test("says WHICH urls moved, so a consumer can tell whether it is affected")
+    func reportsTheUrlsThatMoved() async {
+        // Without this the only thing a list could learn is "something, somewhere, changed" —
+        // so links resolving for one buffer rebuilt every visible cell of whichever buffer the
+        // reader was actually looking at, once per batch.
+        let stub = Stub()
+        let store = makeStore(stub)
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+
+        store.request(["https://e.test/a", "https://e.test/b"])
+        #expect(await eventually { !reported.isEmpty })
+
+        #expect(reported.count == 1)
+        #expect(reported.first == ["https://e.test/a", "https://e.test/b"])
+    }
+
+    @Test("a repeat failure for a url already on the ladder tells the list nothing")
+    func repeatFailureIsSilent() async {
+        // ⚠ The other half of the re-ask being silent. Its FLUSH still runs, and reporting the
+        // whole chunk there put the wasted reload straight back: the URL is mentioned by a
+        // visible row, so the filter lets it through, and a dead link redraws the row it sits in
+        // once per rung. The first omission is the event — it takes the URL out of `asked` and
+        // settles its message's gate. The second says nothing new.
+        let clock = TestClock()
+        let stub = Stub()
+        stub.answer = { _ in [] }
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
+
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+        store.request(["https://e.test/dead"])
+        #expect(await eventually { !reported.isEmpty })
+        #expect(reported == [["https://e.test/dead"]], "the first omission settles the gate")
+
+        // The ladder comes due and the server fails it again.
+        clock.date.addTimeInterval(PreviewReask.floor + 1)
+        store.request(["https://e.test/dead"])
+        #expect(await eventually { stub.batches.count == 2 }, "asked a second time")
+        // ⚠ A beat AFTER the batch lands, because the stub records its call before the flush
+        // decides whether to say anything — asserting the silence on the batch alone would be
+        // asserting it a moment too early, which is a test that passes for the wrong reason.
+        await settle()
+        #expect(reported.count == 1, "and the second answer says nothing new")
+    }
+
+    @Test("a re-ask tells the list nothing, because it changes nothing on screen")
+    func reaskIsSilent() async {
+        // ⚠⚠ A re-ask re-queues a URL but KEEPS its retry entry (parked), and `isPending` reads
+        // anything holding one as settled — so the message's gate was settled before and is
+        // settled after, and no row can draw differently. Announcing it spent a full reload of
+        // every visible cell per rung of the ladder: six of them for a link the server can't
+        // resolve, each one discarding and rebuilding the screen to redraw nothing. The ANSWER
+        // is what gets announced, from the flush that follows.
+        let clock = TestClock()
+        let stub = Stub()
+        stub.answer = { _ in [] }  // a transport failure: arms the ladder
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
+        store.request(["https://e.test/dead"])
+        // The ladder has to be armed before the clock is advanced past it, or there is no rung
+        // to come due and this tests nothing.
+        #expect(await eventually { store.retry["https://e.test/dead"] != nil })
+
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+        clock.date.addTimeInterval(PreviewReask.floor + 1)
+        #expect(store.runDueReasks(), "the rung is due")
+        #expect(reported.isEmpty, "and it is nobody's business but the store's")
+    }
+
+    @Test("a url the server never mentioned still counts as moved")
+    func reportsOmittedUrlsToo() async {
+        // ⚠ The set is what MOVED, not what was answered. An omission goes onto the retry
+        // ladder, and `allSettled` reads that as settled — which can be the event that completes
+        // a message's reveal gate. Reporting only the answers would leave that message blank
+        // until something unrelated redrew it.
+        let stub = Stub()
+        stub.answer = { urls in
+            urls.filter { $0 != "https://e.test/b" }
+                .map { LinkPreview(url: $0, status: .ok, kind: .image, src: "/proxy/\($0)") }
+        }
+        let store = makeStore(stub)
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+
+        store.request(["https://e.test/a", "https://e.test/b"])
+        #expect(await eventually { !reported.isEmpty })
+
+        #expect(reported.first?.contains("https://e.test/b") == true)
     }
 
     @Test("batches follow priming order, so the visible buffer is not sent to the back")

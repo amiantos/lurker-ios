@@ -295,8 +295,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.delegate = self
         listRenderer.register(in: tableView)
         // Preview metadata landing changes row heights the same way an image landing does —
-        // a row that had no attachment now has one. Same reload either way.
-        viewModel.linkPreviews.onUpdate = { [weak self] in self?.reloadVisibleForPreviews() }
+        // a row that had no attachment now has one. The store says WHICH addresses moved, so
+        // this screen can tell whether any of them are on it (see `previewsResolved`); the store
+        // is shared by every buffer, and most of what resolves belongs to another one.
+        viewModel.linkPreviews.onUpdate = { [weak self] urls in self?.previewsResolved(urls) }
         // The list's own backdrop, not the screen's: the composer, pill and banners above it stay
         // on the system background.
         tableView.backgroundColor = listRenderer.listBackground
@@ -926,21 +928,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
-                // The first captured line that still has a row — see `visibleAnchors`.
-                let survivor = anchors.lazy
-                    .compactMap { anchor in
-                        self.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
-                    }
-                    .first
-                if let (index, offset) = survivor {
-                    // Put the anchored line back at the same screen offset it had before.
-                    let target = tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - offset
-                    tableView.contentOffset.y = target
-                } else if prepended || tableView.contentSize.height < oldContentHeight {
-                    // Nothing anchorable survived. Fall back to the height delta — which is
-                    // the right approximation in both directions: content grew above us (a
-                    // prepend) or shrank (rows filtered away). Not applied when the content
-                    // merely grew *below* the viewport, where the offset is already correct.
+                // The reader's line back exactly (`restorePosition`), or approximated when none
+                // of the captured anchors survived.
+                if !restorePosition(anchoredTo: anchors),
+                    prepended || tableView.contentSize.height < oldContentHeight
+                {
+                    // Fall back to the height delta — which is the right approximation in both
+                    // directions: content grew above us (a prepend) or shrank (rows filtered
+                    // away). Not applied when the content merely grew *below* the viewport,
+                    // where the offset is already correct.
                     tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
                 }
                 clampToContent()
@@ -1498,6 +1494,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             anchors.append((id, frame.minY - tableView.contentOffset.y))
         }
         return anchors
+    }
+
+    /// Put the reader's line back where it was, using the first of `anchors` that still has a
+    /// row. Answers whether one did — a caller with a fallback (see `apply`'s height delta) needs
+    /// to know that none survived, rather than being told the position is fine when nothing moved.
+    ///
+    /// ⚠ The table must already have laid out: this reads `rectForRow`, which describes the rows
+    /// the last layout pass measured, not the ones just handed to `reloadRows`.
+    @discardableResult
+    private func restorePosition(anchoredTo anchors: [(id: Int, offset: CGFloat)]) -> Bool {
+        // The first captured line that still has a row — see `visibleAnchors`.
+        let survivor = anchors.lazy
+            .compactMap { anchor in
+                self.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
+            }
+            .first
+        guard let (index, offset) = survivor else { return false }
+        tableView.contentOffset.y =
+            tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - offset
+        clampToContent()
+        return true
     }
 
     /// The row that now represents message `id` — its own row, or the summary whose span
@@ -2661,7 +2678,36 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
     }
 
-    /// Re-lay-out the visible rows because preview METADATA arrived.
+    /// URLs whose state has moved since the last reload — see `previewsResolved`. Held rather
+    /// than acted on immediately so a run of answers costs one reload, and so a deferral (a
+    /// gesture in progress) doesn't lose what it was going to redraw.
+    private var movedPreviewUrls: Set<String> = []
+    /// Whether a coalesced reload is already booked for this runloop turn.
+    private var previewReloadScheduled = false
+
+    /// Preview state moved for `urls` — somewhere, not necessarily here.
+    ///
+    /// ⚠⚠ Coalesced to ONE reload per runloop turn rather than run inline. The store answers per
+    /// batch (deliberately — see its own note), so a priming burst of N URLs arrives as
+    /// `ceil(N / 20)` separate calls, and each one used to rebuild every visible cell.
+    ///
+    /// ⚠ And deliberately no longer than that. A debounce long enough to merge *across* batches
+    /// would have to exceed their 600ms pacing, which is precisely the delay the per-batch
+    /// callback exists to avoid: the first batch's images would sit unpainted waiting for a
+    /// window that keeps being pushed out by the next one. Same-turn coalescing is free; the real
+    /// saving is refusing the reload altogether, which `reloadVisibleForPreviews` decides.
+    private func previewsResolved(_ urls: Set<String>) {
+        movedPreviewUrls.formUnion(urls)
+        guard !previewReloadScheduled else { return }
+        previewReloadScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            previewReloadScheduled = false
+            reloadVisibleForPreviews()
+        }
+    }
+
+    /// Re-lay-out the visible rows because preview METADATA arrived for something they show.
     ///
     /// A reload rather than a redraw: a row that had no attachment now has one, which changes
     /// its height, and a self-sizing cell only remeasures on reload. Confined to what's on
@@ -2677,33 +2723,79 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Never mid-gesture. Reloading rows out from under an active drag or a decelerating
         // fling remeasures self-sizing cells, the content size moves, and the in-flight scroll
         // animation resolves against the new geometry — which is what reset scroll to the bottom.
-        guard !tableView.isDragging, !tableView.isDecelerating else {
-            // ⚠ But remember to come back. A row already ON SCREEN when metadata landed is not
-            // re-dequeued when the gesture ends, so without this it stayed bare until it left
-            // the viewport and returned. Only rows scrolling IN are covered by the dequeue.
-            previewReloadPending = true
-            return
-        }
-        previewReloadPending = false
+        //
+        // ⚠ `movedPreviewUrls` is kept, not cleared: the URLs are still owed a redraw, and
+        // `flushPendingPreviewReload` comes back for them when the list settles. A row already ON
+        // SCREEN when metadata landed is not re-dequeued when the gesture ends, so dropping them
+        // here left it bare until it left the viewport and returned.
+        guard !tableView.isDragging, !tableView.isDecelerating else { return }
         guard let visible = tableView.indexPathsForVisibleRows, !visible.isEmpty else { return }
 
-        // A preview appearing grows the row, and `reloadRows` preserves contentOffset — so a
-        // reader sitting at the live tail gets pushed up by however tall the attachment is, and
-        // the image they were waiting for lands off-screen. Follow it down, exactly as a live
-        // append does.
+        // ⚠⚠ Does any of this belong to what is ON SCREEN? The store is shared by every buffer,
+        // so without this test links resolving in one channel rebuilt the reader's view of
+        // another — every `CompactCell` and every `MessageAttachmentsView` subtree discarded and
+        // remade, a touch in progress on a link or an image cancelled, and the reader re-pinned
+        // to the bottom, once per batch for the length of a connect burst. Parsing the URLs out
+        // of a dozen visible rows costs a great deal less than rebuilding them.
+        //
+        // ⚠ And then only the rows that matched, not the screenful they sit in. A row nobody
+        // resolved anything for cannot change height, so rebuilding it is the same waste at
+        // smaller scale — and it is the scale that actually reaches the reader, since priming
+        // runs outward from the frame they are looking at: their own buffer is what matches on
+        // batch 1 of a burst, and a finger resting on one of its images would be thrown off by a
+        // link resolving three rows away.
+        let moved = movedPreviewUrls
+        movedPreviewUrls = []
+        guard !moved.isEmpty else { return }
+        let affected = visible.filter { mentionsAny(of: moved, at: $0.row) }
+        guard !affected.isEmpty else { return }
+
+        // Two ways to stay where you are, and which one applies is the reader's position.
+        //
+        // At the tail: a preview appearing grows the row, and `reloadRows` preserves
+        // `contentOffset` — so the reader gets pushed up by however tall the attachment is and
+        // the image they were waiting for lands off screen. Follow it down, as a live append does.
+        //
+        // ⚠ Anywhere else: the same growth happens ABOVE them, and offset-preservation moves the
+        // line they are reading down the screen by exactly that much. That is the lurch #42
+        // removed from `apply`, arriving by another door — so the same anchors answer it.
         let wasNearBottom = isNearBottom
+        let anchors = wasNearBottom ? [] : visibleAnchors()
         UIView.performWithoutAnimation {
-            tableView.reloadRows(at: visible, with: .none)
+            tableView.reloadRows(at: affected, with: .none)
+            tableView.layoutIfNeeded()
+            if !wasNearBottom { restorePosition(anchoredTo: anchors) }
         }
         if wasNearBottom { scrollToBottom() }
     }
 
-    /// Set when metadata arrived mid-gesture, so the reload can be retried once the list settles.
-    private var previewReloadPending = false
+    /// Whether the row at `index` shows any of `urls` — the test that decides whether a batch of
+    /// resolutions has anything to do with this screen.
+    ///
+    /// Reads the addresses out of the message the same way the renderer does, through
+    /// `PreviewSelection`, so the two can't disagree about what a row mentions. Rows that aren't
+    /// messages, and every row at all when the feature is off, answer no for free.
+    ///
+    /// ⚠ Through `MessageRow.message`, which is exhaustive over the enum, rather than a switch of
+    /// its own with a `default`. A new message-bearing row case would compile clean against the
+    /// default and quietly answer "mentions nothing" — so its previews would never repaint while
+    /// it was on screen, only once it had left the viewport and come back, which is the exact bug
+    /// `flushPendingPreviewReload` exists to close.
+    private func mentionsAny(of urls: Set<String>, at index: Int) -> Bool {
+        guard let previews = previewContext, previews.isEnabled, rows.indices.contains(index)
+        else { return false }
+        guard let message = rows[index].message, PreviewSelection.isPreviewable(message.type)
+        else { return false }
+        return PreviewSelection.urls(
+            in: message.text,
+            inlineMedia: previews.inlineMedia,
+            linkPreviews: previews.linkPreviews
+        ).contains(where: urls.contains)
+    }
 
     /// Run a deferred preview reload once scrolling stops.
     private func flushPendingPreviewReload() {
-        guard previewReloadPending else { return }
+        guard !movedPreviewUrls.isEmpty else { return }
         reloadVisibleForPreviews()
     }
 
