@@ -69,15 +69,29 @@ final class SettingsViewController: UITableViewController {
         ("chat.consolidate_max_names", "Max consolidated nicks"),
         ("chat.show_event_host", "Show user@host on events"),
         ("chat.show_join_account", "Show account on joins"),
-        // The `smart` rung's tuning (#63), last because it only means anything on that one
-        // rung. Greying follows the registry's `dependsOn` like everything else here — which,
-        // per the note above, stays live while *either* device class is on `smart`. These are
-        // shared settings, so a phone on "Show all" can still tune the desktop's filter.
-        ("chat.smart_filter_delay", "\"Recently spoke\" window (min)"),
-        ("chat.smart_filter_join_unmask", "Reveal join on speaking (min)"),
+    ]
+
+    /// The `smart` rung's tuning (#63): its own section under Events, because these five answer
+    /// a question the section above doesn't ask. Events is "what do I see and how is it folded",
+    /// and every row of it applies whatever the filter is set to; these apply on ONE rung, and
+    /// left in that list they read as five more general event options — a phone-sized list where
+    /// half the rows are conditional on the first one is a list you have to already understand
+    /// to scan.
+    ///
+    /// Ordered as the feature is explained rather than as the registry stores it: WHAT it hides
+    /// first, then HOW LONG it remembers someone. (The web keeps one flat Events category, so
+    /// there is no ordering to match — only the labels, which stay curated as everywhere here.)
+    ///
+    /// Greying follows the registry's `dependsOn` like everything else on this screen, which
+    /// per the note above stays live while *either* device class is on `smart`. These are shared
+    /// settings, so a phone on "Show all" can still tune the desktop's filter — which is also
+    /// why the section carries a footer instead of relying on the rows being dimmed to say it.
+    private static let smartFilterSettings: [(key: String, label: String)] = [
         ("chat.smart_filter_join", "Filter joins"),
         ("chat.smart_filter_quit", "Filter parts and quits"),
         ("chat.smart_filter_nick", "Filter nick changes"),
+        ("chat.smart_filter_delay", "\"Recently spoke\" window (min)"),
+        ("chat.smart_filter_join_unmask", "Reveal join on speaking (min)"),
     ]
 
     /// Settings that change how the conversation *looks* rather than what the app does with a
@@ -143,6 +157,7 @@ final class SettingsViewController: UITableViewController {
     private enum Section {
         case chat([SettingRow])
         case events([SettingRow])
+        case smartFilter([SettingRow])
         case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
@@ -211,6 +226,7 @@ final class SettingsViewController: UITableViewController {
         }
         let rows = resolve(Self.chatSettings)
         let eventRows = resolve(Self.eventSettings)
+        let smartFilterRows = resolve(Self.smartFilterSettings)
         let appearanceRows = resolve(Self.appearanceSettings)
         // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
         // silently rendering a Settings screen whose only contents are Sign Out and a version
@@ -221,7 +237,9 @@ final class SettingsViewController: UITableViewController {
         // legitimately not know an appearance key yet, and an empty section is worse than none.
         // Each optional section is dropped when empty rather than rendered blank — a server
         // predating the event filter knows the consolidation keys but not `chat.events`, so a
-        // partial Events section is normal and an absent one has to be too.
+        // partial Events section is normal and an absent one has to be too. Smart Filter is the
+        // sharpest case of that: a server from before #63 has every other event key and none of
+        // these, and a "Smart Filter" header over nothing would advertise a rung it can't serve.
         // The device section is unconditional — it needs no registry, and it's the one part of
         // this screen that still works on a server too old (or too unreachable) to describe
         // itself.
@@ -229,6 +247,7 @@ final class SettingsViewController: UITableViewController {
             ? [.unavailable, .device, .account, .about]
             : [.chat(rows)]
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
+                + (smartFilterRows.isEmpty ? [] : [.smartFilter(smartFilterRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
                 + [.device, .account, .about]
         tableView.reloadData()
@@ -240,7 +259,8 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
-        case .chat(let rows), .events(let rows), .appearance(let rows): rows.count
+        case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
+            rows.count
         case .device: DeviceSetting.allCases.count
         case .unavailable, .account, .about: 1
         }
@@ -250,21 +270,32 @@ final class SettingsViewController: UITableViewController {
         switch sections[section] {
         case .chat, .unavailable: "Chat"
         case .events: "Events"
+        case .smartFilter: "Smart Filter"
         case .appearance: "Appearance"
         case .device: "This Device"
         case .account, .about: nil
         }
     }
 
-    /// One footer, on the one section that needs to explain itself: the rest of this screen
-    /// follows you between clients, and this doesn't.
+    /// Footers, on the two sections that can't be understood from their rows alone.
     ///
-    /// Phrased about this section alone rather than as "the settings above are shared" —
-    /// which reads fine under a full screen and is a lie in the no-registry branch, where the
-    /// only thing above it is the notice saying the settings couldn't be loaded.
+    /// **This Device** — the rest of this screen follows you between clients and this doesn't.
+    /// Phrased about its own section rather than as "the settings above are shared", which reads
+    /// fine under a full screen and is a lie in the no-registry branch, where the only thing
+    /// above it is the notice saying the settings couldn't be loaded.
+    ///
+    /// **Smart Filter** — ⚠ its rows do nothing on the other two rungs, and nothing on screen
+    /// says so. Dimming can't carry it: `dependsOn` is ORed across device classes, so with a
+    /// desktop on Smart these rows stay live on a phone set to Show all — correctly, since they
+    /// are shared settings and that phone is editing the desktop's filter. A section that is
+    /// live, editable, and inert on the device you are holding is exactly a section that has to
+    /// explain itself.
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        guard case .device = sections[section] else { return nil }
-        return "Applies to this device only — not shared with your other Lurker clients."
+        switch sections[section] {
+        case .device: "Applies to this device only — not shared with your other Lurker clients."
+        case .smartFilter: "Used when Event filter is set to Smart."
+        default: nil
+        }
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -275,7 +306,7 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
-        case .chat(let rows), .events(let rows), .appearance(let rows):
+        case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
             // The subtitle slot is otherwise unused, so a failed write can say why right under
