@@ -205,13 +205,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// How many times the landing has re-scrolled while the geometry settled — see
-    /// `landInitialIfNeeded`. Reset with the rest of the one-shot state by `resetJumpState`'s
-    /// callers, since a re-arm (`jumpToLatest`) is a new landing.
+    /// `landInitialIfNeeded`. Zeroed by `needsInitialScroll`'s `didSet` above, so a re-armed
+    /// landing (a jump to latest, a re-attach) gets its passes back.
     private var landingPasses = 0
-    /// The bound on that. Two or three is the real number — a pre-window pass, the pass that
-    /// brings the safe area, and the one that brings the composer's reservation — so this is
-    /// slack, not a target.
-    private static let landingPasses = 8
+    /// The bound on that. Two or three is the real number — the pass that brings the safe area,
+    /// the one that brings the composer's reservation, and one to confirm — so this is slack,
+    /// not a target.
+    private static let maxLandingPasses = 8
 
     /// The message to open *at* rather than the bottom (#42) — a tapped highlight (later a
     /// notification, a search hit). The initial landing scrolls to it instead of the tail, and
@@ -1023,10 +1023,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         guard !rows.isEmpty else { return }
-        // Already there — the previous pass's landing survived this one's geometry, so it was
-        // computed against the real thing and the screen is parked. Anything below the bottom
-        // (a buffer too short to scroll) settles here too.
-        guard distanceFromBottom > 0.5 else {
+        // ⚠ Laid out BEFORE anything is measured, for the reason `apply` forces a pass of its
+        // own: `viewDidLayoutSubviews` runs ahead of the table's own layout, where `contentSize`
+        // still describes the previous pass's bounds and rows. Releasing against that reading is
+        // the same class of bug as landing against the pre-window insets — a short buffer whose
+        // estimated content doesn't fill the viewport would satisfy the test below and spend the
+        // landing without ever having scrolled.
+        tableView.layoutIfNeeded()
+        // Already there — a previous pass's landing survived this one's geometry, so it was
+        // computed against the real thing and the screen is parked. Only ever a release, never a
+        // reason to skip the first scroll: a buffer too short to scroll reads as at-the-bottom
+        // from the start, and it still has to be asked, because `scrollToBottom`'s own layout is
+        // what makes the reading below real.
+        if landingPasses > 0, distanceFromBottom <= 0.5 {
             needsInitialScroll = false
             return
         }
@@ -1034,7 +1043,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         landingPasses += 1
         // Bounded, for the same reason the jump's convergence is: a screen whose content somehow
         // never settles must stop stealing the scroll rather than fight the reader forever.
-        if landingPasses >= Self.landingPasses { needsInitialScroll = false }
+        if landingPasses >= Self.maxLandingPasses { needsInitialScroll = false }
     }
 
     /// The row a converging jump scrolls to and flashes: the first unread (just below the
@@ -1516,13 +1525,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
-    /// The reader has taken hold of the list, so nothing is owed a landing any more.
+    /// The reader has taken hold of the list, so the screen's OWN opening landing is spent.
     ///
-    /// The landing holds across several layout passes now (see `landInitialIfNeeded`), and a
-    /// buffer whose rows arrive late can still be waiting for one when a finger arrives first.
-    /// Without this, the next pass — a keyboard, a rotation, a composer growing a line — would
-    /// answer a deliberate scroll by pulling the reader back to the bottom.
+    /// It holds across several layout passes now (see `landInitialIfNeeded`), and a buffer whose
+    /// rows arrive late can still be waiting for one when a finger arrives first. Without this,
+    /// the next pass — a keyboard, a rotation, a composer growing a line — would answer a
+    /// deliberate scroll by pulling the reader back to the bottom.
+    ///
+    /// ⚠⚠ Only that landing, never one that was ASKED for. A jump (#42/#45) and a re-attach
+    /// (`jumpToLatest`, and the re-attach `send` makes for you) both re-arm `needsInitialScroll`
+    /// and then wait on a fetch, and both are the reader's own request — so a drag while the
+    /// slice is in flight must not quietly drop it. Clearing it there would be worse than a
+    /// missed scroll: `beginJumpLanding` is only reachable through that flag, so `pendingJumpId`
+    /// would never clear, and it gates `hydrateIfNeeded`, `apply`'s branch and the unread banner
+    /// for the rest of the screen's life. `isDetached` is the re-attach's tell — the flag is only
+    /// set on a detached buffer there, and by the time the slice lands it has cleared.
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        guard pendingJumpId == nil, !isDetached else { return }
         needsInitialScroll = false
     }
 
