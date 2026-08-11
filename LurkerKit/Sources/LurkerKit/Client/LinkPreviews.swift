@@ -243,12 +243,15 @@ public final class LinkPreviewStore {
                 if !wasAlreadyOnTheLadder { moved.insert(url) }
             }
 
-            // ⚠⚠ Per BATCH, not once per flush, and unconditional.
+            // ⚠⚠ Per BATCH, not once per flush.
             //
-            // Unconditional, where this used to fire only if a value landed: every path above
-            // can move a URL out of the pending set, and once the reveal gate exists ANY such
-            // move can complete a message's block and paint it — an `unavailable` very often is
-            // the answer that finishes a gate, and so is a URL the server never mentioned.
+            // ⚠ It is NOT "whenever the batch finishes", which is what this said while it fired
+            // unconditionally. That was itself a correction of an older rule — "only if a value
+            // landed" — which missed that an `unavailable`, and a URL the server never mentioned
+            // at all, are very often the answer that finishes a message's reveal gate. Both
+            // versions were reaching for the same question and neither asked it: what fires this
+            // is a URL whose state MOVED, which is what `moved` above computes. A batch of
+            // nothing but repeat failures for URLs already on the ladder moves nothing.
             //
             // Per batch, because batches after the first are paced 600ms apart. Deferring to the
             // end meant a 200-URL flush (10 batches) held batch 1's images unpainted for the
