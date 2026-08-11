@@ -224,6 +224,44 @@ final class UploadProgressTests: XCTestCase {
         XCTAssertFalse(UploadError.server("unsupported type").stopsABatch)
     }
 
+    func testARepeatedRefusalStopsTheBatch() {
+        // How an instance-level refusal announces itself when it can't say so directly: the
+        // server maps every uploader-driver failure onto one status, so a stale provider
+        // credential arrives as a per-file rejection — the IDENTICAL per-file rejection, every
+        // time. Ten videos on cellular each compressed and pushed in full before hearing it
+        // again is most of a gigabyte spent learning what file two already said.
+        let sameTwice: [UploadError] = [.server("upstream rejected the upload"), .server("upstream rejected the upload")]
+        XCTAssertTrue(UploadBatch.shouldStop(after: sameTwice))
+    }
+
+    func testOneRefusalDoesNotStopTheBatch() {
+        // Waiting for the repeat is the point: one file genuinely can be the wrong type with
+        // the next nine perfectly fine.
+        XCTAssertFalse(UploadBatch.shouldStop(after: [.server("unsupported type")]))
+        XCTAssertFalse(UploadBatch.shouldStop(after: [.tooLarge]))
+        XCTAssertFalse(UploadBatch.shouldStop(after: []))
+    }
+
+    func testDifferentRefusalsDoNotStopTheBatch() {
+        // Two files rejected for two different reasons is two bad files, not a broken instance.
+        XCTAssertFalse(
+            UploadBatch.shouldStop(after: [.server("unsupported type"), .server("upstream rejected the upload")])
+        )
+    }
+
+    func testAConnectionErrorStopsTheBatchOnItsFirstAppearance() {
+        // No need to see this one twice.
+        XCTAssertTrue(UploadBatch.shouldStop(after: [.tooLarge, .unauthorized]))
+    }
+
+    func testTheRepeatMustBeConsecutive() {
+        // A reason that recurs after something else intervened is a coincidence, not a
+        // pattern — the file in between proves uploads still work.
+        XCTAssertFalse(
+            UploadBatch.shouldStop(after: [.server("nope"), .tooLarge, .server("nope")])
+        )
+    }
+
     // MARK: - What to say afterwards
 
     func testACleanBatchSaysNothing() {
@@ -287,6 +325,38 @@ final class UploadProgressTests: XCTestCase {
             picked: 5, uploaded: 3, failures: [], unreadable: 2, cancelled: false
         )
         XCTAssertEqual(summary, "Uploaded 3 of 5. 2 couldn't be read.")
+    }
+
+    func testAnUnreadableFileQuotesItsOwnReason() {
+        // "No space left on device" is something the user can act on. "Couldn't be read" is
+        // something to shrug at.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 3, failures: [], unreadable: 2,
+            unreadableReason: "No space left on device", cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 3 of 5. 2 couldn't be read: No space left on device")
+    }
+
+    func testASingleUnreadableFileReadsAsItsOwnReason() {
+        XCTAssertEqual(
+            UploadBatch.summary(
+                picked: 1, uploaded: 0, failures: [], unreadable: 1,
+                unreadableReason: "You don't have permission to open this file.", cancelled: false
+            ),
+            "You don't have permission to open this file."
+        )
+    }
+
+    func testACancelStillReportsFilesThatCouldNotBeRead() {
+        // Files that failed to stage are errors the user did NOT choose, so a cancel must not
+        // swallow them — otherwise picking five, watching three fail off iCloud, and then
+        // stopping leaves an empty composer and no alert at all.
+        XCTAssertEqual(
+            UploadBatch.summary(
+                picked: 5, uploaded: 0, failures: [], unreadable: 3, cancelled: true
+            ),
+            "3 couldn't be read."
+        )
     }
 
     func testManyFailuresLeadWithACountAndOneExample() {

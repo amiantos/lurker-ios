@@ -2084,10 +2084,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             var failures: [UploadError] = []
             var orphaned: [String] = []
             var unreadable = 0
+            var unreadableReason: String?
             var cancelled = false
-            var aborted = false
 
-            for (index, source) in sources.enumerated() {
+            files: for (index, source) in sources.enumerated() {
                 // Checked between files, not during one: neither `loadFileRepresentation` nor
                 // a `FileManager` copy is cancellable, so a cancel mid-copy costs the rest of
                 // that one file and stops everything after it.
@@ -2097,11 +2097,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 }
                 let batch = UploadStatusView.Batch(index: index + 1, count: sources.count)
                 self.uploadStatus.update(.preparing, in: batch)
-                guard case .success(let item) = await AttachmentPicker.stage(source) else {
+                // Labelled, because an unlabelled `break` in here would leave the switch and
+                // not the loop — and the compiler would then have to prove `item` initialized
+                // on a path that never assigns it.
+                let item: AttachmentPicker.Picked
+                switch await AttachmentPicker.stage(source) {
+                case .success(let staged):
+                    item = staged
+                case .failure(.cancelled):
+                    // The staging itself was cancelled — that's the user, not a bad file.
+                    cancelled = true
+                    break files
+                case .failure(.failed(let reason)):
                     // Couldn't even get the bytes: counted, so the summary can say the batch
-                    // was smaller than the pick rather than letting a file quietly vanish.
+                    // was smaller than the pick rather than letting a file quietly vanish —
+                    // and quoted, because "No space left on device" is something the user can
+                    // act on where "couldn't be read" is something to shrug at.
                     unreadable += 1
-                    continue
+                    if unreadableReason == nil { unreadableReason = reason }
+                    continue files
                 }
                 let outcome = await self.performUpload(
                     item,
@@ -2121,19 +2135,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // can back out to (#49) — and a successful upload whose link goes nowhere,
                     // silently, is the worst of the outcomes. Hold it for the clipboard below.
                     if let chat = Self.activeChat() {
-                        chat.composer.insert(url)
+                        // Only the first URL claims the caret and the keyboard; the rest of a
+                        // long run append at the end, so they don't cut a caption in half or
+                        // shove the keyboard back up minutes later.
+                        chat.composer.insert(url, atCaret: uploaded == 1)
                     } else {
                         orphaned.append(url)
                     }
                 case .failed(let error):
                     failures.append(error)
-                    // One bad file doesn't condemn the rest — but a dead session or a broken
-                    // transport will fail every remaining one identically, and slowly.
-                    aborted = error.stopsABatch
                 case .cancelled:
                     cancelled = true
                 }
-                if cancelled || aborted { break }
+                // One bad file doesn't condemn the rest — but a dead session, a broken
+                // transport, or the same refusal twice running will fail every remaining one
+                // identically, and slowly.
+                if cancelled || UploadBatch.shouldStop(after: failures) { break files }
             }
 
             self.uploadTask = nil
@@ -2147,7 +2164,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             var sentences: [String] = []
             if let summary = UploadBatch.summary(
                 picked: sources.count, uploaded: uploaded, failures: failures,
-                unreadable: unreadable, cancelled: cancelled
+                unreadable: unreadable, unreadableReason: unreadableReason, cancelled: cancelled
             ) {
                 // "Upload failed" is a lie when four of five worked.
                 title = uploaded > 0 ? "Upload incomplete" : "Upload failed"
@@ -2208,12 +2225,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         var mime = picked.mime
         var derivedTemp: URL?
         defer { if let derivedTemp { try? FileManager.default.removeItem(at: derivedTemp) } }
+        // Declared up here rather than at the upload call, so the compression leg shares its
+        // staleness gate. `isCurrent` is cleared once this file is done, whichever leg it
+        // reached.
+        let progress = UploadProgressBox()
+        defer { progress.isCurrent = false }
 
         if picked.isVideo {
             uploadStatus.update(.compressing(0), in: batch)
             do {
                 let prepared = try await VideoCompressor.prepare(source: picked.url) { fraction in
-                    Task { @MainActor [weak self] in self?.uploadStatus.update(.compressing(fraction), in: batch) }
+                    Task { @MainActor [weak self] in
+                        // Same staleness gate as the upload legs: a tick landing after this
+                        // file is done would stamp its position over the next one's readout.
+                        guard progress.isCurrent else { return }
+                        self?.uploadStatus.update(.compressing(fraction), in: batch)
+                    }
                 }
                 if prepared.isTemporary {
                     derivedTemp = prepared.url
@@ -2241,7 +2268,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Both legs fold into one value, on the main actor, because they arrive from two
         // different places — `URLSession`'s delegate queue and the WS — and only their
         // combination knows which leg the readout should be naming.
-        let progress = UploadProgressBox()
         let result = await viewModel.upload(
             fileURL: fileURL,
             filename: filename,
@@ -2262,8 +2288,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 }
             }
         )
-        // This file no longer owns the readout — see UploadProgressBox.isCurrent.
-        progress.isCurrent = false
         if Task.isCancelled { return .cancelled }
         switch result {
         case .success(let response): return .inserted(response.url)
@@ -2271,12 +2295,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Cancel button on the status view. Cancels the task (the upload leg aborts promptly; an
-    /// in-progress transcode is abandoned at the next await) and dismisses the readout now so
-    /// the tap feels instant — the task's own unwind clears `uploadTask`.
+    /// Cancel button on the status view. Cancels the task — the upload leg and a photo-library
+    /// copy both abort promptly, an in-progress transcode is abandoned at the next await — and
+    /// switches the readout to "Stopping…" rather than hiding it.
+    ///
+    /// It used to dismiss immediately so the tap felt instant, which was a lie of a beat:
+    /// `uploadTask` stays non-nil until the current file actually unwinds, and `isUploadBusy`
+    /// with it, so the paperclip and paste-to-upload are inert for that whole stretch. Hiding
+    /// the readout left nothing on screen to explain why. The task's own unwind dismisses it.
     private func cancelUpload() {
         uploadTask?.cancel()
-        uploadStatus.dismiss()
+        uploadStatus.update(.stopping)
     }
 
     private func presentUploadAlert(_ message: String) {

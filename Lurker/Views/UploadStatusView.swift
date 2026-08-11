@@ -31,6 +31,11 @@ final class UploadStatusView: UIView {
         case uploading(Double)
         case processing
         case sending(fraction: Double?, destination: String?)
+        /// Cancelled, but not yet stopped. Neither a photo-library copy nor a compression pass
+        /// ends on the instant, and until the run really ends the paperclip stays disabled —
+        /// so hiding the readout the moment the X is tapped trades a beat of responsiveness
+        /// for a stretch where the attach button does nothing and nothing on screen says why.
+        case stopping
     }
 
     /// Which file of how many, when a pick produced more than one. Shown as a prefix rather
@@ -113,6 +118,8 @@ final class UploadStatusView: UIView {
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
     func update(_ phase: Phase, in batch: Batch? = nil) {
+        // Restored on every phase but `stopping`, so the next run gets its cancel back.
+        cancelButton.isHidden = false
         switch phase {
         case .preparing:
             label.text = "Preparing…"
@@ -127,6 +134,10 @@ final class UploadStatusView: UIView {
             // legibly "this is going to Catbox" rather than an anonymous stall.
             let sendingTo = destination.map { "Sending to \($0)" } ?? "Sending"
             label.text = fraction.map { "\(sendingTo)… \(percent($0))" } ?? "\(sendingTo)…"
+        case .stopping:
+            label.text = "Stopping…"
+            // The X is gone: it has already been pressed, and pressing it again does nothing.
+            cancelButton.isHidden = true
         }
         // Only when there is genuinely more than one — a lone "1/1" on every single-file
         // upload would be noise dressed as information.

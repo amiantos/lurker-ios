@@ -108,18 +108,33 @@ final class AttachmentPicker: NSObject {
         case .unsupported:
             return .failure(.failed("That item can't be uploaded."))
         case .photo(let provider, let typeID, let isVideo):
-            return await withCheckedContinuation { continuation in
-                // The vended URL is valid only inside this closure, so the move has to happen
-                // there and the continuation resumes with the staged result, not the URL.
-                provider.loadFileRepresentation(forTypeIdentifier: typeID) { url, error in
-                    guard let url else {
-                        continuation.resume(
-                            returning: .failure(.failed(error?.localizedDescription ?? "Couldn't read the file."))
-                        )
-                        return
+            // Cancellable, and that matters twice over. This is the long silent stretch of the
+            // pick — an iCloud video is a download — so a cancel here has to actually stop
+            // rather than run the batch out. And it's the one step whose completion is not
+            // ours to guarantee: it comes from an out-of-process picker extension, which can
+            // be jetsammed mid-load. Without a way out, that would hang the run forever and,
+            // because the task never ends, leave the paperclip dead until the app relaunched.
+            // `Handoff` resumes on cancel WITHOUT waiting for the provider, so the way out
+            // exists even when the callback never comes.
+            let handoff = Handoff()
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    guard handoff.begin(continuation) else { return }
+                    // The vended URL is valid only inside this closure, so the move has to
+                    // happen there and the handoff carries the staged result, not the URL.
+                    let progress = provider.loadFileRepresentation(forTypeIdentifier: typeID) { url, error in
+                        guard let url else {
+                            handoff.finish(
+                                .failure(.failed(error?.localizedDescription ?? "Couldn't read the file."))
+                            )
+                            return
+                        }
+                        handoff.finish(copy(url, isVideo: isVideo, allowMove: true))
                     }
-                    continuation.resume(returning: copy(url, isVideo: isVideo, allowMove: true))
+                    handoff.track(progress)
                 }
+            } onCancel: {
+                handoff.cancel()
             }
         case .document(let url, let isVideo):
             return await withCheckedContinuation { continuation in
@@ -162,6 +177,75 @@ final class AttachmentPicker: NSObject {
         let mime = UTType(filenameExtension: ext)?.preferredMIMEType
             ?? (isVideo ? "video/mp4" : "application/octet-stream")
         return .success(Picked(url: dest, filename: source.lastPathComponent, mime: mime, isVideo: isVideo))
+    }
+
+    /// Resume-once plumbing for a staging step that can finish two ways — the provider calling
+    /// back, or the task being cancelled — from two different threads.
+    ///
+    /// Resuming a `CheckedContinuation` twice traps, and every ordering here is possible: the
+    /// task can already be cancelled before the load starts, cancellation can land between
+    /// starting the load and getting the `Progress` handle back, and a cancelled load still
+    /// calls its completion afterwards. So the lock guards one decision — who got here first —
+    /// and everything else is a no-op.
+    ///
+    /// Cancelling resumes immediately rather than waiting for the provider to acknowledge it,
+    /// which is what bounds the case where the provider never speaks again.
+    /// `nonisolated` is load-bearing: the target's default actor isolation would otherwise
+    /// make this main-actor, and every one of its callers is off it — a provider callback on
+    /// its own queue, and a cancellation handler that runs wherever the cancel came from. The
+    /// lock is what makes it safe, not an actor.
+    private nonisolated final class Handoff: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<Result<Picked, PickError>, Never>?
+        private var progress: Progress?
+        private var cancelled = false
+
+        /// Adopt the continuation. Answers false when the task was *already* cancelled, having
+        /// resumed it — the caller must not start any work.
+        func begin(_ continuation: CheckedContinuation<Result<Picked, PickError>, Never>) -> Bool {
+            lock.lock()
+            if cancelled {
+                lock.unlock()
+                continuation.resume(returning: .failure(.cancelled))
+                return false
+            }
+            self.continuation = continuation
+            lock.unlock()
+            return true
+        }
+
+        /// Hand over the load's `Progress` so a cancel can stop it. If the cancel already
+        /// happened, stop it now — otherwise a load started microseconds before would run to
+        /// completion with nobody waiting for it.
+        func track(_ progress: Progress) {
+            lock.lock()
+            if cancelled {
+                lock.unlock()
+                progress.cancel()
+                return
+            }
+            self.progress = progress
+            lock.unlock()
+        }
+
+        func finish(_ result: Result<Picked, PickError>) {
+            lock.lock()
+            let waiting = continuation
+            continuation = nil
+            lock.unlock()
+            waiting?.resume(returning: result)
+        }
+
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            let running = progress
+            let waiting = continuation
+            continuation = nil
+            lock.unlock()
+            running?.cancel()
+            waiting?.resume(returning: .failure(.cancelled))
+        }
     }
 
     private func deliver(_ result: Result<[Source], PickError>) {

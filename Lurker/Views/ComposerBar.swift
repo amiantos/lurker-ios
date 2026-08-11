@@ -345,8 +345,16 @@ final class ComposerBar: UIView {
     /// after it so the caret sits ready for a caption. The user then edits and sends: the
     /// upload produces a link, it doesn't send one, which keeps send-control where IRC wants
     /// it (a message is a URL plus whatever you say about it).
-    func insert(_ text: String) {
-        let range = textView.selectedRange
+    ///
+    /// `atCaret: false` appends at the end instead, and leaves the keyboard alone. That is for
+    /// the *second and later* URLs of a multi-file upload, which arrive minutes apart while
+    /// the user may well be typing the caption: splicing each one wherever the caret happens
+    /// to be would cut their sentence in half, and taking first responder every time would
+    /// shove the keyboard back up over a run they'd stopped watching.
+    func insert(_ text: String, atCaret: Bool = true) {
+        let range = atCaret
+            ? textView.selectedRange
+            : NSRange(location: (textView.text as NSString).length, length: 0)
         let current = textView.text as NSString
         var payload = text
         if range.location > 0 {
@@ -357,8 +365,15 @@ final class ComposerBar: UIView {
             }
         }
         payload += " "
+        // Appending must not move a caret the user is typing at, so only a caret insert
+        // repositions — `replaceToken` always drops the caret past what it wrote.
+        let resumeAt = textView.selectedRange
         replaceToken(range, with: payload)
-        becomeFirstResponder()
+        if atCaret {
+            becomeFirstResponder()
+        } else if resumeAt.location <= (textView.text as NSString).length {
+            textView.selectedRange = resumeAt
+        }
     }
 
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits
