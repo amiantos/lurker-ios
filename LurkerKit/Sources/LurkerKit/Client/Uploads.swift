@@ -81,6 +81,115 @@ public enum UploadError: Error, Sendable, Equatable {
     }
 }
 
+/// One `upload-progress` frame: the server narrating the half of an upload this device
+/// cannot see (#47; server-side #545).
+///
+/// `URLSession`'s `didSendBodyData` measures device→server and nothing else. When it reads
+/// 100% the file has merely *arrived* at the cell — and then the two slowest phases run: the
+/// sharp/scrub pipeline, and the server→provider send, which on a home uplink is by far the
+/// longest. Only the server knows about those, so only the server can narrate them.
+public struct UploadServerProgress: Sendable, Equatable {
+    public enum Phase: String, Sendable {
+        /// The server's pipeline (image re-encode / media scrub). A one-shot native call with
+        /// no seam to count, so it never carries a percentage.
+        case processing
+        /// The send to the provider. Carries a percentage only when the driver can report
+        /// bytes — `local` renames a temp file, and there is no wire to count.
+        case sending
+    }
+
+    public let phase: Phase
+    /// 0…100 for the provider send, or nil when there is no number to give.
+    public let percent: Int?
+    /// The resolved uploader's human label ("Catbox", "Local disk"), so the readout can name
+    /// where the file is going. Nil when the server didn't say.
+    public let destination: String?
+
+    public init(phase: Phase, percent: Int?, destination: String?) {
+        self.phase = phase
+        self.percent = percent
+        self.destination = destination
+    }
+}
+
+/// The legs of an upload, folded into the one thing the readout renders.
+///
+/// **Tier 1 is local and unconditional; tier 2 only refines it.** The moment the device leg
+/// finishes, this advances to `.processing` on its own — without waiting for any frame. That
+/// alone kills the "Uploading… 100%" dead air even against an old server or a dropped socket,
+/// and the server's frames then sharpen the label rather than enable it. Progress is a
+/// courtesy, never a precondition: the HTTP response is still what completes the upload.
+public struct UploadProgress: Sendable, Equatable {
+    public enum Stage: Sendable, Equatable {
+        /// device → server, the only leg `URLSession` can see.
+        case uploading
+        /// The server's pipeline. Indeterminate by nature.
+        case processing
+        /// server → provider. The long one.
+        case sending
+    }
+
+    public private(set) var stage: Stage = .uploading
+    /// 0…1 for the device leg. Only meaningful while `stage == .uploading`.
+    public private(set) var deviceFraction: Double = 0
+    /// 0…1 for the provider send, or nil when the phase can't be counted.
+    public private(set) var sentFraction: Double?
+    /// Sticky once the server names it: a later frame that omits the destination must not
+    /// blank a label that is already on screen.
+    public private(set) var destination: String?
+
+    /// Whether the server has narrated anything yet. Once it has, its account of where the
+    /// upload is beats anything the device leg can say — see `apply(deviceFraction:)`.
+    private var heardFromServer = false
+
+    public init() {}
+
+    /// A `didSendBodyData` tick. Advances to `.processing` at 100% by itself — see the type's
+    /// note on tier 1 — and is otherwise ignored once a later stage has begun, because those
+    /// callbacks hop threads to reach the main actor and a straggler landing after the
+    /// server's first frame would undo the very thing this exists to fix.
+    ///
+    /// **The one exception is a fraction that goes backwards before the server has said
+    /// anything.** That isn't a straggler — device ticks are generated in order on one serial
+    /// queue and enqueued in order, so they can only reorder against the *WS*, never against
+    /// each other. It means `URLSession` restarted the request body (an HTTP/2 `GOAWAY` retry,
+    /// a redirect): `totalBytesSent` resets and the whole file goes again. Latching would sit
+    /// on "Processing…" through that entire second transmission — up to the 300 s timeout on a
+    /// large video — and no server frame could correct it, because the server hasn't received
+    /// the file yet. So re-enter, and report the leg that is genuinely running.
+    public mutating func apply(deviceFraction fraction: Double) {
+        let clamped = max(0, min(1, fraction))
+        if stage != .uploading {
+            guard !heardFromServer, clamped < deviceFraction else { return }
+        }
+        deviceFraction = clamped
+        stage = clamped >= 1 ? .processing : .uploading
+    }
+
+    /// A server frame. Monotonic in the same direction and for the same reason: a delayed
+    /// `processing` arriving after `sending` has begun would rewind a real percentage to an
+    /// indeterminate label. WS ordering makes that unlikely, not impossible, and a visibly
+    /// jumping readout is more expensive than the guard.
+    public mutating func apply(server frame: UploadServerProgress) {
+        heardFromServer = true
+        if let destination = frame.destination, !destination.isEmpty {
+            self.destination = destination
+        }
+        if stage == .sending && frame.phase == .processing { return }
+        switch frame.phase {
+        case .processing:
+            stage = .processing
+            sentFraction = nil
+        case .sending:
+            stage = .sending
+            // A percentage only where one was actually reported. An assumed 0% would freeze
+            // at "Sending to Local disk… 0%" for a driver that never counts a byte — the same
+            // species of lie as the 100% this whole feature exists to kill.
+            sentFraction = frame.percent.map { Double(max(0, min(100, $0))) / 100 }
+        }
+    }
+}
+
 /// Assembles a `multipart/form-data` body **to a file on disk**, streaming the source in
 /// chunks so a 200 MB video is never held in memory. The whole feature turns on this: the
 /// server's own upload route went to disk-backed multer for exactly this reason (a 200 MB
@@ -149,9 +258,8 @@ enum MultipartBody {
 }
 
 /// Per-task delegate that turns `URLSession`'s byte-sent callbacks into a 0…1 fraction. This
-/// is the device→server leg only — the slower server→provider leg is narrated over the WS
-/// (the web client's "tier 2"), a courtesy we can wire later; device→server progress alone
-/// is honest and needs no server cooperation.
+/// is the device→server leg only; the slower server→provider leg is narrated over the WS as
+/// `UploadServerProgress`, and `UploadProgress` folds the two together.
 final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let onProgress: @Sendable (Double) -> Void
     /// Last whole-percent forwarded. URLSession fires `didSendBodyData` far more often than a

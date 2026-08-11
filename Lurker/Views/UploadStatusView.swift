@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import LurkerKit
 import UIKit
 
 /// The in-flight upload readout: a floating glass capsule above the composer that names the
@@ -13,14 +14,23 @@ final class UploadStatusView: UIView {
     /// Tapped the cancel button.
     var onCancel: (() -> Void)?
 
-    /// What the upload is doing. `preparing` covers the silent stretch before anything can
-    /// report progress — the picker exporting the asset out of the photo library (a download,
-    /// if it's an iCloud video) and staging it. Compression progress is coarse (the transcode
-    /// reports it only loosely); the device→server upload leg is a real fraction.
+    /// What the upload is doing, in the order it happens. `preparing` covers the silent
+    /// stretch before anything can report progress — the picker exporting the asset out of the
+    /// photo library (a download, if it's an iCloud video) and staging it. Compression
+    /// progress is coarse (the transcode reports it only loosely); the device→server upload
+    /// leg is a real fraction.
+    ///
+    /// The last two are the server's own legs, narrated over the WS (#47). A percentage
+    /// appears only where one is real: `processing` is a native one-shot with nothing to
+    /// count, and `sending` has a number only when the uploader driver reports bytes. An
+    /// indeterminate label is honest about an unmeasurable phase; the "Uploading… 100%" that
+    /// used to sit there through both of these was not.
     enum Phase {
         case preparing
         case compressing(Double)
         case uploading(Double)
+        case processing
+        case sending(fraction: Double?, destination: String?)
     }
 
     private let glass = UIVisualEffectView()
@@ -41,6 +51,11 @@ final class UploadStatusView: UIView {
         label.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
         label.textColor = .label
         label.adjustsFontForContentSizeCategory = true
+        // Truncate the MIDDLE, not the tail. The capsule is centred with 16pt of margin, so a
+        // long provider label (operators name their own uploaders) plus an accessibility text
+        // size can outgrow it — and tail truncation would eat the percentage, which is the one
+        // part of "Sending to Some Long Name… 42%" that changes and the part being watched.
+        label.lineBreakMode = .byTruncatingMiddle
         label.translatesAutoresizingMaskIntoConstraints = false
 
         var config = UIButton.Configuration.plain()
@@ -96,6 +111,13 @@ final class UploadStatusView: UIView {
             label.text = fraction > 0.01 ? "Compressing… \(percent(fraction))" : "Compressing…"
         case .uploading(let fraction):
             label.text = "Uploading… \(percent(fraction))"
+        case .processing:
+            label.text = "Processing…"
+        case .sending(let fraction, let destination):
+            // Name the provider when the server told us which one, so the long wait is
+            // legibly "this is going to Catbox" rather than an anonymous stall.
+            let sendingTo = destination.map { "Sending to \($0)" } ?? "Sending"
+            label.text = fraction.map { "\(sendingTo)… \(percent($0))" } ?? "\(sendingTo)…"
         }
         label.accessibilityLabel = label.text
     }
@@ -130,4 +152,17 @@ final class UploadStatusView: UIView {
 
     /// Rests just below its final spot so it slides up into place from over the composer.
     private static let tuckedDown = CGAffineTransform(translationX: 0, y: 12)
+}
+
+extension UploadStatusView.Phase {
+    /// The readout for an upload's folded progress. The two on-device phases (`preparing`,
+    /// `compressing`) happen before an upload exists, so `UploadProgress` doesn't model them
+    /// and this conversion never produces them.
+    init(_ progress: UploadProgress) {
+        switch progress.stage {
+        case .uploading: self = .uploading(progress.deviceFraction)
+        case .processing: self = .processing
+        case .sending: self = .sending(fraction: progress.sentFraction, destination: progress.destination)
+        }
+    }
 }

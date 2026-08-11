@@ -775,12 +775,14 @@ final class LurkerStore {
         case .unauthorized, .ignored:
             // Session-level / no-op; the view model intercepts `.unauthorized` first.
             return state
-        case .searchResult:
-            // Never reaches here — `LurkerClient` consumes it to resume the awaiting
-            // `search(_:)` call, and it is the only frame that does not travel on. Handled
-            // explicitly rather than folded into the no-op case above so that "search results
-            // are a reply, not state" stays a stated rule instead of a silent one: matches
-            // span every buffer at once, and there is no buffer for them to belong to.
+        case .searchResult, .uploadProgress:
+            // Neither reaches here — `LurkerClient` consumes both: a search reply resumes the
+            // awaiting `search(_:)` call, and an upload's progress drives the readout of the
+            // upload that minted its token. Handled explicitly rather than folded into the
+            // no-op case above so that "these are replies, not state" stays a stated rule
+            // instead of a silent one. Search matches span every buffer at once and belong to
+            // none; an upload's progress belongs to one transfer on one device, and the
+            // account owns neither.
             return state
         }
     }
