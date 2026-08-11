@@ -377,6 +377,35 @@ struct LinkPreviewStoreTests {
         #expect(reported.first == ["https://e.test/a", "https://e.test/b"])
     }
 
+    @Test("a repeat failure for a url already on the ladder tells the list nothing")
+    func repeatFailureIsSilent() async {
+        // ⚠ The other half of the re-ask being silent. Its FLUSH still runs, and reporting the
+        // whole chunk there put the wasted reload straight back: the URL is mentioned by a
+        // visible row, so the filter lets it through, and a dead link redraws the row it sits in
+        // once per rung. The first omission is the event — it takes the URL out of `asked` and
+        // settles its message's gate. The second says nothing new.
+        let clock = TestClock()
+        let stub = Stub()
+        stub.answer = { _ in [] }
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
+
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+        store.request(["https://e.test/dead"])
+        await settle()
+        #expect(reported == [["https://e.test/dead"]], "the first omission settles the gate")
+
+        // The ladder comes due and the server fails it again.
+        clock.date.addTimeInterval(PreviewReask.floor + 1)
+        store.request(["https://e.test/dead"])
+        await settle()
+        #expect(stub.batches.count == 2, "asked a second time")
+        #expect(reported.count == 1, "and the second answer says nothing new")
+    }
+
     @Test("a re-ask tells the list nothing, because it changes nothing on screen")
     func reaskIsSilent() async {
         // ⚠⚠ A re-ask re-queues a URL but KEEPS its retry entry (parked), and `isPending` reads

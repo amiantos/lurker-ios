@@ -228,7 +228,20 @@ public final class LinkPreviewStore {
             // existed so nothing came back for it. Permanently blank, from a response that
             // looked perfectly fine. A whole-batch failure (offline, 401, 429) is the same case
             // with an empty answer, so it needs no branch of its own any more.
-            for url in chunk where !answered.contains(url) { forgetForRetry(url) }
+            //
+            // ⚠⚠ And a URL only MOVED if it wasn't already on the ladder. Second time round, it
+            // was settled before this (`isPending` reads a retry entry as settled) and it is
+            // settled after, with no value either way — so nothing about it can draw differently,
+            // and telling the list otherwise spends a reload per rung: six for a link the server
+            // can't resolve, each rebuilding a row to redraw the same thing. The FIRST omission
+            // is the one that matters, because that is the one that moves the URL out of `asked`
+            // and completes its message's gate.
+            var moved = answered
+            for url in chunk where !answered.contains(url) {
+                let wasAlreadyOnTheLadder = retry[url] != nil
+                forgetForRetry(url)
+                if !wasAlreadyOnTheLadder { moved.insert(url) }
+            }
 
             // ⚠⚠ Per BATCH, not once per flush, and unconditional.
             //
@@ -246,9 +259,9 @@ public final class LinkPreviewStore {
             // re-queued in one sweep the moment it finished: precisely the synchronised wave
             // PreviewReask's jitter exists to break up.
             scheduleReask()
-            // The whole chunk, not just `answered`: a URL the server omitted was moved onto the
-            // retry ladder above, and that moves its message's gate too.
-            onUpdate?(Set(chunk))
+            // Silent when nothing moved — a batch of nothing but repeat failures for URLs
+            // already on the ladder is a round trip the reader's screen has no stake in.
+            if !moved.isEmpty { onUpdate?(moved) }
         }
     }
 
