@@ -224,15 +224,22 @@ struct MessageListRenderer {
         // ⚠ Only MEDIA may take its address away. A card keeps its URL — its heading is different
         // text from the address, and the address is what you copy.
         //
-        // ⚠⚠ And only media that actually DREW SOMETHING: nothing is ever hidden without
-        // something rendered in its place. A posterless clip is a grey box with a glyph in it,
-        // and taking the address out of the message left an unnamed rectangle with no way to
-        // tell what it was, copy it, or reach it — the reader lost the link and gained nothing.
-        // With a poster the picture IS the thing, exactly like an image, and the address below
-        // it is a machine-readable duplicate of what they are looking at. The line moved WITH
-        // the rendering, which is the same correction the web client made when posters landed
-        // there (`rendersInline` in MessageBody.vue).
-        let media = Set(resolved.filter { $0.inlinePicture != nil }.map(\.url))
+        // ⚠⚠ And only media that IS what the address points to — `standsInForItsURL`, not the
+        // kind. Nothing may be hidden without something rendered in its place: a posterless clip
+        // is a grey box with a glyph in it, and taking the address out of the message left an
+        // unnamed rectangle with no way to tell what it was, copy it, or reach it. A video's
+        // poster is a frame OF the video and does stand in for it; an mp3's is cover art, a
+        // picture ABOUT the track, and does not. See `standsInForItsURL` for the whole rule.
+        //
+        // ⚠ Decided from the DESCRIPTOR, knowingly, even though a poster is the one preview
+        // image the server may legitimately 404 (an evicted byte-cache entry under a record that
+        // still mints its token) — in which case an address is hidden behind a box that stays
+        // empty. Deciding it from whether the bytes actually arrived would be worse, and not
+        // marginally: the message's TEXT would then depend on when a download finished, so a row
+        // would re-flow mid-scroll — the late-growth class the atomic reveal exists to kill. An
+        // image whose bytes fail has always behaved exactly this way, and the box is still
+        // tappable, so the link is reachable if not copyable.
+        let media = Set(resolved.filter(\.standsInForItsURL).map(\.url))
         let hidden =
             media.isEmpty ? [] : PreviewHiding.hideableUrls(in: message.text, candidates: media)
         return PreviewPlan(hidden: hidden, resolved: resolved)

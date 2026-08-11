@@ -289,12 +289,17 @@ final class MessageAttachmentsView: UIStackView {
         // screenshot cropped into a landscape letterbox is unreadable, and unlike a mosaic tile
         // there is no sibling making the crop legible as a deliberate arrangement.
         //
-        // ⚠ A POSTER is shaped by the same rule, and the case for it is stronger: for these rows
-        // the declared pair describes the frame we decoded rather than something a stranger's
-        // markup asserted, and phone video is overwhelmingly portrait — the population a flat
-        // landscape box crops worst. A clip with NO poster keeps the fixed height: there is no
-        // picture whose shape could be honoured.
-        if preview.kind == .image || picture != nil, let width = preview.thumbWidth,
+        // ⚠ A VIDEO POSTER is shaped by the same rule, and the case for it is stronger: for those
+        // rows the declared pair describes the frame we decoded rather than something a
+        // stranger's markup asserted, and phone video is overwhelmingly portrait — the population
+        // a flat landscape box crops worst. A clip with NO poster keeps the fixed height, and
+        // needs no test for it: the server withholds the dimensions and the picture together.
+        //
+        // ⚠⚠ NOT AUDIO, whose picture is cover art rather than a frame of the content. Shaping
+        // exists to stop a portrait subject being cropped; album art is square, so all shaping
+        // does there is turn a flat band into a 280pt slab that is STILL cropped. See
+        // `standsInForItsURL` — same line, drawn once, for both this and the message's text.
+        if preview.kind != .audio, let width = preview.thumbWidth,
             let height = preview.thumbHeight, width > 0, height > 0
         {
             let ratio = CGFloat(width) / CGFloat(height)
@@ -637,12 +642,18 @@ final class MessageAttachmentsView: UIStackView {
     /// into another.
     /// `onArrival` runs only when bytes were decoded — the loader is silent on a failure — so it
     /// is the hook for anything that must not be done on a descriptor's promise alone.
+    ///
+    /// ⚠ And only while the image view is still ALIVE, i.e. inside the same reuse guard the
+    /// assignment gets. Firing it for a recycled cell would hand the callback the one thing
+    /// `[weak imageView]` exists to prevent — a chance to paint one row's state into another —
+    /// and it would do it through a parameter whose whole job is to run arbitrary caller code.
     private func apply(
         path: String, to imageView: UIImageView, model: ChatViewModel,
         onArrival: (() -> Void)? = nil
     ) {
         PreviewImageLoader.shared.load(path: path, using: model) { [weak imageView] image in
-            imageView?.image = image
+            guard let imageView else { return }
+            imageView.image = image
             onArrival?()
         }
     }

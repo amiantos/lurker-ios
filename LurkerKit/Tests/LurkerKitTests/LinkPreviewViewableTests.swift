@@ -120,15 +120,49 @@ final class LinkPreviewViewableTests: XCTestCase {
             "/api/x")
     }
 
-    /// ⚠⚠ A card's thumbnail is a real picture and still not one of these. The callers ask "is
-    /// the thing itself on screen" — the one that hides a message's URL text most of all — and a
-    /// card is a note about something, so it keeps its address. This is the test that stops the
-    /// property from being read as "any picture we have".
+    /// ⚠ A card draws its picture itself, beside its text and with its own shape rule, so it is
+    /// not one of these. This is the test that stops the property being read as "any picture".
     func testACardsThumbnailIsNotAnInlinePicture() {
         for kind in [PreviewKind.page, .videoEmbed] {
             XCTAssertNil(
                 preview(kind: kind, url: "https://example.com/post", thumb: "/api/x").inlinePicture,
-                "a \(kind.rawValue) card must keep its URL")
+                "a \(kind.rawValue) card draws its own thumbnail")
+        }
+    }
+
+    // MARK: - Whether the thing on screen IS what the address points to
+
+    /// ⚠⚠ The invariant: nothing is hidden without something rendered in its place. Every case
+    /// below is a message whose text would silently lose a URL if this answered wrong.
+    func testAPosterStandsInForItsVideo() {
+        XCTAssertTrue(preview(kind: .video, thumb: "/api/link-preview/poster/tok").standsInForItsURL)
+    }
+
+    func testAPosterlessClipStandsInForNothing() {
+        XCTAssertFalse(preview(kind: .video).standsInForItsURL)
+        XCTAssertFalse(preview(kind: .video, src: "/api/link-preview/media/stale").standsInForItsURL)
+    }
+
+    /// ⚠⚠ Cover art is a picture ABOUT the track, not the track — the one place this parts
+    /// company with `inlinePicture`, which happily draws it. Hiding an mp3's address left album
+    /// art and a waveform glyph, with no filename and nothing to copy.
+    func testCoverArtDoesNotStandInForItsAudio() {
+        let mp3 = preview(kind: .audio, url: "https://cdn.example.com/a.mp3", thumb: "/api/p")
+        XCTAssertFalse(mp3.standsInForItsURL)
+        XCTAssertEqual(mp3.inlinePicture, "/api/p", "it still DRAWS the art")
+    }
+
+    func testAnImageStandsInForItselfOnlyOnceItHasBytes() {
+        let url = "https://cdn.example.com/a.png"
+        XCTAssertFalse(preview(kind: .image, url: url).standsInForItsURL)
+        XCTAssertTrue(preview(kind: .image, url: url, src: "/api/x").standsInForItsURL)
+    }
+
+    func testACardNeverTakesItsLinkAway() {
+        for kind in [PreviewKind.page, .videoEmbed] {
+            XCTAssertFalse(
+                preview(kind: kind, url: "https://example.com/post", src: "/api/x", thumb: "/api/y")
+                    .standsInForItsURL, "a \(kind.rawValue) card keeps its URL")
         }
     }
 }

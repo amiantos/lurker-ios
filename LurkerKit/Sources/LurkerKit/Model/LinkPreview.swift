@@ -67,17 +67,41 @@ extension LinkPreview {
     /// video can still be sitting in a running client's store, and its token now answers 404, so
     /// the defensive-looking "prefer src if we have it" spelling is the one that reliably fails.
     ///
-    /// ⚠⚠ A CARD'S PICTURE IS NOT ONE OF THESE, though a page's `thumb` is a perfectly real
-    /// image. The question this answers is "is the thing itself on screen", not "is there a
-    /// picture anywhere" — a card is a note ABOUT something, and the rules that read this
-    /// (whether the address may be taken out of the message) give exactly the wrong answer for
-    /// one. It is the counterpart of the web client's `rendersInline`, and it is deliberately
-    /// nil-for-cards there too.
+    /// ⚠ A CARD'S PICTURE IS NOT ONE OF THESE, though a page's `thumb` is a perfectly real image.
+    /// A card is a note ABOUT something and draws its picture as decoration beside its text —
+    /// `MessageAttachmentsView.cardView` reads `thumb` itself, and has its own chip/hero rule for
+    /// what shape to give it.
     public var inlinePicture: String? {
         switch kind {
         case .image: src
         case .video, .audio: thumb
         case .page, .videoEmbed: nil
+        }
+    }
+
+    /// Whether what is on screen IS the thing linked, so the address may be dropped from the
+    /// message body and the box may take the picture's own shape.
+    ///
+    /// A stricter question than `inlinePicture`, and the gap between them is entirely audio.
+    /// Hiding a URL is only honest when the reader is looking at what the address points to: an
+    /// image IS the message, and a video's poster is a frame OF the video, so in both cases the
+    /// address is a machine-readable duplicate of something already on screen.
+    ///
+    /// ⚠⚠ AUDIO IS NOT. Its "poster" is the same `-frames:v 1` decode landing on the file's
+    /// attached COVER ART — a picture about the track rather than the track, which is the
+    /// definition of a card's thumbnail and not of inline media. Taking the address away left a
+    /// square of album art and a waveform glyph with no filename, nothing to copy, and nothing on
+    /// screen that is the thing linked. It also has no business dictating the box's shape: the
+    /// case for shaping is that phone video is portrait and a landscape letterbox destroys it,
+    /// while cover art is square and shaping only turns a flat band into a cropped slab.
+    ///
+    /// ⚠ This is where iOS parts company with the web client's `rendersInline`, which draws the
+    /// line one kind further out and hides an mp3's address too. Deliberate, and one kind wide.
+    public var standsInForItsURL: Bool {
+        switch kind {
+        case .image: src != nil
+        case .video: thumb != nil
+        case .audio, .page, .videoEmbed: false
         }
     }
 }
