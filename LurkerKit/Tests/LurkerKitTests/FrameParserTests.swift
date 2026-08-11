@@ -70,7 +70,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","bufferId":12,"events":[],"hasMoreOlder":true}"##
         )
-        guard case let .backlog(buffer, _, _, _) = frame else {
+        guard case let .backlog(buffer, _, _, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertEqual(buffer.bufferId, 12)
@@ -82,7 +82,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true}"##
         )
-        guard case let .backlog(buffer, _, _, _) = frame else {
+        guard case let .backlog(buffer, _, _, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertNil(buffer.bufferId)
@@ -92,7 +92,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"joined":true,"unread":3,"lastReadId":42}"##
         )
-        guard case let .backlog(buffer, messages, hydrated, _) = frame else {
+        guard case let .backlog(buffer, messages, hydrated, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertFalse(hydrated, "events:[] + hasMoreOlder:true is a shell")
@@ -111,7 +111,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"joined":true}"##
         )
-        guard case let .backlog(buffer, _, _, _) = frame else {
+        guard case let .backlog(buffer, _, _, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertEqual(buffer.lastReadId, 0, "absent parses as 0…")
@@ -124,7 +124,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true,"lastReadId":0}"##
         )
-        guard case let .backlog(buffer, _, _, _) = frame else {
+        guard case let .backlog(buffer, _, _, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertEqual(buffer.lastReadId, 0)
@@ -135,7 +135,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","hasMoreOlder":false,"events":[{"id":1,"type":"message","nick":"alice","text":"hi","self":false},{"id":2,"type":"action","nick":"bob","text":"waves","self":true}]}"##
         )
-        guard case let .backlog(_, messages, hydrated, _) = frame else {
+        guard case let .backlog(_, messages, hydrated, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertTrue(hydrated)
@@ -302,7 +302,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","reset":false,"hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"x"}]}"##
         )
-        guard case let .backlog(_, _, hydrated, append) = frame else {
+        guard case let .backlog(_, _, hydrated, append, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertTrue(hydrated)
@@ -313,7 +313,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","reset":true,"hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"x"}]}"##
         )
-        guard case let .backlog(_, _, _, append) = frame else {
+        guard case let .backlog(_, _, _, append, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertFalse(append, "reset:true → replace")
@@ -323,7 +323,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"x"}]}"##
         )
-        guard case let .backlog(_, _, _, append) = frame else {
+        guard case let .backlog(_, _, _, append, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertFalse(append, "absent reset → replace, not append")
@@ -333,7 +333,9 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"before","hasMoreOlder":true,"hasMoreNewer":false,"events":[{"id":10,"type":"message","nick":"a","text":"old"}]}"##
         )
-        guard case let .history(networkId, target, events, mode, hasMoreOlder, hasMoreNewer) = frame else {
+        guard case let .history(networkId, target, events, mode, hasMoreOlder, hasMoreNewer, _)
+            = frame
+        else {
             return XCTFail("expected history, got \(frame)")
         }
         XCTAssertEqual(networkId, 1)
@@ -348,10 +350,70 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"before","hasMore":true,"events":[]}"##
         )
-        guard case let .history(_, _, _, _, hasMoreOlder, _) = frame else {
+        guard case let .history(_, _, _, _, hasMoreOlder, _, _) = frame else {
             return XCTFail("expected history, got \(frame)")
         }
         XCTAssertTrue(hasMoreOlder, "hasMore is the legacy alias for hasMoreOlder")
+    }
+
+    // MARK: - Speakers (#63)
+
+    /// `lastTime` is epoch milliseconds, not the ISO string every other timestamp on the wire
+    /// uses — so this is the one field where reading it like the others would be off by three
+    /// orders of magnitude and read as 1970.
+    func testSpeakersParseFromEpochMilliseconds() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"latest","events":[],"speakers":[{"nick":"Alice","lastTime":1784548800000}]}"##
+        )
+        guard case let .history(_, _, _, _, _, _, speakers) = frame else {
+            return XCTFail("expected history, got \(frame)")
+        }
+        XCTAssertEqual(speakers?.count, 1)
+        XCTAssertEqual(speakers?.first?.nick, "Alice", "the server's casing survives")
+        XCTAssertEqual(speakers?.first?.lastSpoke, Date(timeIntervalSince1970: 1_784_548_800))
+    }
+
+    /// Absent and empty are different answers ON THE WIRE, and the parser keeps them apart
+    /// rather than folding both to `[]` — a decode that erases the difference cannot be undone
+    /// by a later layer that wants it.
+    ///
+    /// ⚠ What the store does with them is deliberately the SAME: `seedSpeakers` merges
+    /// forward-only and never clears, so neither answer can wipe what the client already knows.
+    /// The web reaches that by merging every existing entry back over the incoming list
+    /// (`buffers.ts:1178`), which makes seeding `[]` a no-op by construction; we reach it one
+    /// step earlier with a guard. Nobody acts on the difference today, and that is not an
+    /// oversight — an empty list is what `listSpeakers` returns for a channel with no speech in
+    /// its scan window, and what `buildSystemBacklog` hardcodes for a buffer that has no
+    /// speakers at all. Neither is an assertion worth discarding known nicks over. What the
+    /// server's OMISSION buys (`wsHub.ts:927`) is not having to rely on that.
+    func testAnAbsentSpeakersFieldIsNilAndAnEmptyOneIsEmpty() {
+        let absent = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":true}"##
+        )
+        guard case let .backlog(_, _, _, _, absentSpeakers) = absent else {
+            return XCTFail("expected backlog, got \(absent)")
+        }
+        XCTAssertNil(absentSpeakers)
+
+        let empty = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"speakers":[]}"##
+        )
+        guard case let .backlog(_, _, _, _, emptySpeakers) = empty else {
+            return XCTFail("expected backlog, got \(empty)")
+        }
+        XCTAssertEqual(emptySpeakers, [])
+    }
+
+    /// A half-filled entry is dropped rather than defaulted: a speaker stamped at the epoch
+    /// reads as infinitely stale, which is the same as being absent but harder to notice.
+    func testIncompleteSpeakerEntriesAreDropped() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"speakers":[{"nick":"","lastTime":1784548800000},{"nick":"bob"},{"nick":"carol","lastTime":0},{"nick":"dave","lastTime":1784548800000}]}"##
+        )
+        guard case let .backlog(_, _, _, _, speakers) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertEqual(speakers?.map(\.nick), ["dave"])
     }
 
     func testReadStateParses() {
@@ -434,7 +496,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":null,"target":":system:","hasMoreOlder":false,"events":[]}"##
         )
-        guard case let .backlog(buffer, _, _, _) = frame else {
+        guard case let .backlog(buffer, _, _, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertEqual(buffer.kind, .system)
@@ -455,7 +517,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","hasMoreOlder":false,"events":[{"id":1,"type":"message","nick":"a","text":"plain"},{"id":2,"type":"message","nick":"a","text":"kept","bookmarked":true}]}"##
         )
-        guard case let .backlog(_, messages, _, _) = frame else {
+        guard case let .backlog(_, messages, _, _, _) = frame else {
             return XCTFail("expected backlog, got \(frame)")
         }
         XCTAssertFalse(messages[0].bookmarked, "absent reads as unsaved")

@@ -245,7 +245,7 @@ final class SystemBufferTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":null,"target":":system:","reset":false,"hasMoreOlder":false,"events":[{"id":5,"type":"system","text":"hi"}]}"##
         )
-        guard case let .backlog(_, _, _, append) = frame else { return XCTFail("expected backlog") }
+        guard case let .backlog(_, _, _, append, _) = frame else { return XCTFail("expected backlog") }
         XCTAssertFalse(append, "the system backlog is a latest slice — replace, don't append")
     }
 
@@ -254,7 +254,7 @@ final class SystemBufferTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","reset":false,"hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"hi"}]}"##
         )
-        guard case let .backlog(_, _, _, append) = frame else { return XCTFail("expected backlog") }
+        guard case let .backlog(_, _, _, append, _) = frame else { return XCTFail("expected backlog") }
         XCTAssertTrue(append, "reset:false on a network buffer IS a resume delta")
     }
 
@@ -262,7 +262,7 @@ final class SystemBufferTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":1,"target":"#lurker","reset":true,"hasMoreOlder":false,"events":[{"id":5,"type":"message","nick":"a","text":"hi"}]}"##
         )
-        guard case let .backlog(_, _, _, append) = frame else { return XCTFail("expected backlog") }
+        guard case let .backlog(_, _, _, append, _) = frame else { return XCTFail("expected backlog") }
         XCTAssertFalse(append, "reset:true means the gap overflowed — replace or splice a hole")
     }
 
@@ -331,7 +331,7 @@ final class SystemBufferTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"backlog","networkId":null,"target":":system:","hasMoreOlder":false,"events":[]}"##
         )
-        guard case let .backlog(buffer, _, _, _) = frame else { return XCTFail("expected backlog") }
+        guard case let .backlog(buffer, _, _, _, _) = frame else { return XCTFail("expected backlog") }
         XCTAssertEqual(buffer.key.id, Buffer.system.key.id)
         XCTAssertEqual(buffer.kind, Buffer.system.kind)
     }

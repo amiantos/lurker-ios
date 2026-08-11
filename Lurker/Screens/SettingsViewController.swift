@@ -71,6 +71,29 @@ final class SettingsViewController: UITableViewController {
         ("chat.show_join_account", "Show account on joins"),
     ]
 
+    /// The `smart` rung's tuning (#63): its own section under Events, because these five answer
+    /// a question the section above doesn't ask. Events is "what do I see and how is it folded",
+    /// and every row of it applies whatever the filter is set to; these apply on ONE rung, and
+    /// left in that list they read as five more general event options — a phone-sized list where
+    /// half the rows are conditional on the first one is a list you have to already understand
+    /// to scan.
+    ///
+    /// Ordered as the feature is explained rather than as the registry stores it: WHAT it hides
+    /// first, then HOW LONG it remembers someone. (The web keeps one flat Events category, so
+    /// there is no ordering to match — only the labels, which stay curated as everywhere here.)
+    ///
+    /// Greying follows the registry's `dependsOn` like everything else on this screen, which
+    /// per the note above stays live while *either* device class is on `smart`. These are shared
+    /// settings, so a phone on "Show all" can still tune the desktop's filter — which is also
+    /// why the section carries a footer instead of relying on the rows being dimmed to say it.
+    private static let smartFilterSettings: [(key: String, label: String)] = [
+        ("chat.smart_filter_join", "Filter joins"),
+        ("chat.smart_filter_quit", "Filter parts and quits"),
+        ("chat.smart_filter_nick", "Filter nick changes"),
+        ("chat.smart_filter_delay", "\"Recently spoke\" window (min)"),
+        ("chat.smart_filter_join_unmask", "Reveal join on speaking (min)"),
+    ]
+
     /// Settings that change how the conversation *looks* rather than what the app does with a
     /// message. Its own section, so the behavior list above stays a list of behaviors.
     ///
@@ -124,15 +147,6 @@ final class SettingsViewController: UITableViewController {
         }
     }
 
-    /// Suffix marking a choice this app reads but doesn't act on.
-    ///
-    /// The choice text itself comes from the registry (`SettingOption.label(forChoice:)`), so
-    /// the phone says what the web says without a second copy to keep in step. What's local
-    /// is this: `smart` renders as "no filter" here (see `EventMode.smart`), and it only ever
-    /// appears in the picker when it is already the stored value, so the row has to report
-    /// what is actually in force rather than quietly reading back as something else.
-    private static let unsupportedChoiceSuffix = " (web only)"
-
     /// A row that's ready to render: the curated label plus the registry entry describing how
     /// to edit it. Resolved once per rebuild so the table isn't doing lookups per cell.
     private struct SettingRow {
@@ -143,6 +157,7 @@ final class SettingsViewController: UITableViewController {
     private enum Section {
         case chat([SettingRow])
         case events([SettingRow])
+        case smartFilter([SettingRow])
         case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
@@ -211,6 +226,7 @@ final class SettingsViewController: UITableViewController {
         }
         let rows = resolve(Self.chatSettings)
         let eventRows = resolve(Self.eventSettings)
+        let smartFilterRows = resolve(Self.smartFilterSettings)
         let appearanceRows = resolve(Self.appearanceSettings)
         // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
         // silently rendering a Settings screen whose only contents are Sign Out and a version
@@ -221,7 +237,9 @@ final class SettingsViewController: UITableViewController {
         // legitimately not know an appearance key yet, and an empty section is worse than none.
         // Each optional section is dropped when empty rather than rendered blank — a server
         // predating the event filter knows the consolidation keys but not `chat.events`, so a
-        // partial Events section is normal and an absent one has to be too.
+        // partial Events section is normal and an absent one has to be too. Smart Filter is the
+        // sharpest case of that: a server from before #63 has every other event key and none of
+        // these, and a "Smart Filter" header over nothing would advertise a rung it can't serve.
         // The device section is unconditional — it needs no registry, and it's the one part of
         // this screen that still works on a server too old (or too unreachable) to describe
         // itself.
@@ -229,6 +247,7 @@ final class SettingsViewController: UITableViewController {
             ? [.unavailable, .device, .account, .about]
             : [.chat(rows)]
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
+                + (smartFilterRows.isEmpty ? [] : [.smartFilter(smartFilterRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
                 + [.device, .account, .about]
         tableView.reloadData()
@@ -240,7 +259,8 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         switch sections[section] {
-        case .chat(let rows), .events(let rows), .appearance(let rows): rows.count
+        case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
+            rows.count
         case .device: DeviceSetting.allCases.count
         case .unavailable, .account, .about: 1
         }
@@ -250,21 +270,32 @@ final class SettingsViewController: UITableViewController {
         switch sections[section] {
         case .chat, .unavailable: "Chat"
         case .events: "Events"
+        case .smartFilter: "Smart Filter"
         case .appearance: "Appearance"
         case .device: "This Device"
         case .account, .about: nil
         }
     }
 
-    /// One footer, on the one section that needs to explain itself: the rest of this screen
-    /// follows you between clients, and this doesn't.
+    /// Footers, on the two sections that can't be understood from their rows alone.
     ///
-    /// Phrased about this section alone rather than as "the settings above are shared" —
-    /// which reads fine under a full screen and is a lie in the no-registry branch, where the
-    /// only thing above it is the notice saying the settings couldn't be loaded.
+    /// **This Device** — the rest of this screen follows you between clients and this doesn't.
+    /// Phrased about its own section rather than as "the settings above are shared", which reads
+    /// fine under a full screen and is a lie in the no-registry branch, where the only thing
+    /// above it is the notice saying the settings couldn't be loaded.
+    ///
+    /// **Smart Filter** — ⚠ its rows do nothing on the other two rungs, and nothing on screen
+    /// says so. Dimming can't carry it: `dependsOn` is ORed across device classes, so with a
+    /// desktop on Smart these rows stay live on a phone set to Show all — correctly, since they
+    /// are shared settings and that phone is editing the desktop's filter. A section that is
+    /// live, editable, and inert on the device you are holding is exactly a section that has to
+    /// explain itself.
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        guard case .device = sections[section] else { return nil }
-        return "Applies to this device only — not shared with your other Lurker clients."
+        switch sections[section] {
+        case .device: "Applies to this device only — not shared with your other Lurker clients."
+        case .smartFilter: "Used when Event filter is set to Smart."
+        default: nil
+        }
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -275,7 +306,7 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
-        case .chat(let rows), .events(let rows), .appearance(let rows):
+        case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
             // The subtitle slot is otherwise unused, so a failed write can say why right under
@@ -381,34 +412,21 @@ final class SettingsViewController: UITableViewController {
             // what the row needs to say when nothing is being touched.
             let current = viewModel.state.settings.effective(option.key)?.stringValue
                 ?? option.default.stringValue ?? ""
-            // Choice filtering and labels are the EVENT TIER's, so they're gated on its key.
-            // This branch serves any `.enum` option; left ungated, the next enum setting
-            // added here would silently lose a choice it happened to spell `smart` and get
-            // `all`/`none` relabelled "Show all"/"Hide all".
-            let isEventTier = option.key == EventFilter.modeKey
             let button = UIButton(type: .system)
             button.showsMenuAsPrimaryAction = true
             // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
             // the write still goes through `write`, and the authoritative value arrives back
             // on the `settings` frame.
             button.changesSelectionAsPrimaryAction = true
-            // A rung this app can't deliver is offered only when it's ALREADY the value —
-            // the key is shared with the web, so a choice made at a desk has to stay visible
-            // here, but the picker must not let you newly pick something we'd then ignore.
-            let choices = option.choices.filter { choice in
-                guard isEventTier else { return true }
-                return choice == current
-                    || EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true
-            }
-            let title = { (choice: String) -> String in
-                let base = option.label(forChoice: choice)
-                let unsupported =
-                    isEventTier && !(EventMode(rawValue: choice).map(EventFilter.isSelectable) ?? true)
-                return unsupported ? base + Self.unsupportedChoiceSuffix : base
-            }
-            button.menu = UIMenu(children: choices.map { choice in
-                UIAction(title: title(choice), state: choice == current ? .on : .off) {
-                    [weak self] _ in
+            // Every choice is offered, with the registry's own wording — this app implements
+            // all three rungs of the event tier (#63 closed the last one), and nothing else
+            // here is device-specific. Choice labels come from the registry
+            // (`SettingOption.label(forChoice:)`), so the phone says what the web says without
+            // a second copy to keep in step.
+            button.menu = UIMenu(children: option.choices.map { choice in
+                UIAction(
+                    title: option.label(forChoice: choice), state: choice == current ? .on : .off
+                ) { [weak self] _ in
                     self?.write(option.key, .string(choice))
                 }
             })
@@ -417,7 +435,7 @@ final class SettingsViewController: UITableViewController {
             // configuration-update pass — after this synchronous `sizeToFit()`, which would
             // leave `accessoryView` fitted to an empty button and the control clipped on the
             // first render of this screen. Same class of trap as the stack-view sizing above.
-            button.setTitle(title(current), for: .normal)
+            button.setTitle(option.label(forChoice: current), for: .normal)
             button.isEnabled = enabled
             button.sizeToFit()
             cell.accessoryView = button

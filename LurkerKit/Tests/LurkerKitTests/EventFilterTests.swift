@@ -90,28 +90,6 @@ final class EventFilterTests: XCTestCase {
         XCTAssertEqual(HistoryCountBy.forRendering(smart), .renderable)
     }
 
-    // MARK: - The rung this client doesn't implement
-
-    /// `.smart` stays readable but unselectable. The key is shared with the web, so a value
-    /// set at a desk has to remain visible here rather than reading back as something else —
-    /// but offering it in the picker would let someone choose a rung we then ignore.
-    func testSmartIsReadableButNotSelectable() {
-        XCTAssertEqual(EventFilter.mode(settings("smart")), .smart)
-        XCTAssertFalse(EventFilter.isSelectable(.smart))
-        XCTAssertTrue(EventFilter.isSelectable(.all))
-        XCTAssertTrue(EventFilter.isSelectable(.none))
-    }
-
-    /// And it degrades to `.all` — stated, not inferred from a missing branch.
-    func testSmartRendersAsAll() {
-        XCTAssertEqual(EventFilter.rendered(.smart), .all)
-        XCTAssertEqual(EventFilter.rendered(.none), .none)
-        XCTAssertEqual(EventFilter.rendered(.all), .all)
-
-        let rows = build([message(1, .message), message(2, .join, "bob")], mode: "smart")
-        XCTAssertEqual(rows.compactMap { if case .line(let m) = $0 { m.id } else { nil } }, [2])
-    }
-
     /// It travels on the wire as its raw value, so the spelling is protocol, not an enum name.
     func testChatWireSpelling() {
         XCTAssertEqual(HistoryCountBy.chat.rawValue, "chat")
@@ -119,21 +97,37 @@ final class EventFilterTests: XCTestCase {
 
     // MARK: - What the list actually drops
 
-    private func build(_ messages: [Message], mode: String) -> [MessageRow] {
+    private func build(
+        _ messages: [Message],
+        mode: String,
+        speakers: SpeakerMap = SpeakerMap(),
+        ownNick: String? = nil
+    ) -> [MessageRow] {
         MessageRows.build(
             messages: messages, dividerAfterId: nil, hasMoreOlder: true,
-            settings: settings(mode)
+            settings: settings(mode), speakers: speakers, ownNick: ownNick
         )
     }
 
+    /// An arbitrary fixed instant. Every event and every speaker time in this file is expressed
+    /// as an offset from it, so a window test says what it means without any clock arithmetic
+    /// in the assertion.
+    private static let t0 = Date(timeIntervalSince1970: 1_784_548_800)
+
+    private static func at(_ minutes: Double) -> Date { t0.addingTimeInterval(minutes * 60) }
+
     private func message(
-        _ id: Int, _ type: EventType, _ nick: String = "alice", isSelf: Bool = false
+        _ id: Int,
+        _ type: EventType,
+        _ nick: String = "alice",
+        isSelf: Bool = false,
+        at minutes: Double = 0
     ) -> Message {
         Message(
             id: id, type: type, nick: nick,
             text: type == .message ? "hi" : nil,
             isSelf: isSelf,
-            date: Date(timeIntervalSince1970: 1_784_548_800),
+            date: Self.at(minutes),
             newNick: type == .nick ? "\(nick)_afk" : nil,
             modes: type == .mode ? [ModeChange(mode: "+o", param: nick)] : []
         )
@@ -197,12 +191,215 @@ final class EventFilterTests: XCTestCase {
             message(3, .mode, "op"), message(4, .message),
         ]
         let rows = build(messages, mode: "all")
-        let ids = rows.compactMap {
+        XCTAssertEqual(ids(of: rows), [1, 2, 3, 4])
+    }
+
+    // MARK: - The smart rung (#63)
+
+    private func ids(of rows: [MessageRow]) -> [Int] {
+        rows.compactMap {
             switch $0 {
             case .bubble(let m, _), .line(let m): m.id
             default: nil
             }
         }
-        XCTAssertEqual(ids, [1, 2, 3, 4])
+    }
+
+    /// The tier plus its five tuning keys. Consolidation is off throughout this section so the
+    /// assertions read as "which events survived" rather than "what did the summary say" — the
+    /// fold has its own tests, and pairing it with the filter here would let one hide the other.
+    private func smart(
+        delay: Int = 5, unmask: Int = 30, join: Bool = true, quit: Bool = true, nick: Bool = true
+    ) -> Settings {
+        var s = settings("smart")
+        s.apply(changes: [
+            "chat.consolidate_joins": .bool(false),
+            "chat.smart_filter_delay": .int(delay),
+            "chat.smart_filter_join_unmask": .int(unmask),
+            "chat.smart_filter_join": .bool(join),
+            "chat.smart_filter_quit": .bool(quit),
+            "chat.smart_filter_nick": .bool(nick),
+        ])
+        return s
+    }
+
+    private func rows(
+        _ messages: [Message],
+        _ settings: Settings,
+        speakers: SpeakerMap = SpeakerMap(),
+        ownNick: String? = nil
+    ) -> [Int] {
+        ids(
+            of: MessageRows.build(
+                messages: messages, dividerAfterId: nil, hasMoreOlder: true,
+                settings: settings, speakers: speakers, ownNick: ownNick
+            )
+        )
+    }
+
+    private func spoke(_ nick: String, at minutes: Double) -> SpeakerMap {
+        SpeakerMap([Speaker(nick: nick, lastSpoke: Self.at(minutes))])
+    }
+
+    /// The premise: churn from someone nobody has heard from goes away, and the same churn from
+    /// someone who was just talking stays. Both halves in one test, because either alone passes
+    /// for a filter that is simply stuck.
+    func testHidesChurnFromSilentNicksAndKeepsItFromRecentSpeakers() {
+        let messages = [
+            message(1, .message, "carol", at: 0),
+            message(2, .part, "bob", at: 1),
+            message(3, .part, "alice", at: 1),
+        ]
+        // alice spoke a minute before her part; bob hasn't spoken at all.
+        XCTAssertEqual(rows(messages, smart(), speakers: spoke("alice", at: 0)), [1, 3])
+    }
+
+    func testEveryChurnTypeIsFilterable() {
+        let churn: [EventType] = [.join, .part, .quit, .chghost, .nick]
+        for (index, type) in churn.enumerated() {
+            let messages = [message(index + 1, type, "bob", at: 1)]
+            XCTAssertEqual(rows(messages, smart()), [], "\(type) from a silent nick should hide")
+            XCTAssertEqual(
+                rows(messages, smart(), speakers: spoke("bob", at: 0)), [index + 1],
+                "\(type) from a recent speaker should render"
+            )
+        }
+    }
+
+    /// Speech *before* the event only counts inside the window. Outside it the nick is a lurker
+    /// again — which is the whole point of the window being tunable.
+    func testTheDelayWindowIsAWindow() {
+        let part = [message(1, .part, "bob", at: 10)]
+        XCTAssertEqual(rows(part, smart(delay: 5), speakers: spoke("bob", at: 6)), [1])
+        XCTAssertEqual(rows(part, smart(delay: 5), speakers: spoke("bob", at: 5)), [1], "the edge counts")
+        XCTAssertEqual(rows(part, smart(delay: 5), speakers: spoke("bob", at: 4)), [])
+    }
+
+    /// The unmask rule: someone who joins and immediately starts talking isn't retroactively
+    /// invisible. This is the half no fetch can supply — the speech happens after the frame the
+    /// speaker list was built from, so it only ever arrives as a live message.
+    func testAJoinIsRevealedBySpeakingShortlyAfterIt() {
+        let join = [message(1, .join, "bob", at: 0)]
+        XCTAssertEqual(rows(join, smart(unmask: 30), speakers: spoke("bob", at: 20)), [1])
+        XCTAssertEqual(rows(join, smart(unmask: 30), speakers: spoke("bob", at: 31)), [])
+        XCTAssertEqual(rows(join, smart(unmask: 0), speakers: spoke("bob", at: 1)), [], "0 disables it")
+    }
+
+    /// Joins only. There is nothing to reveal about a part or a rename by what the nick says
+    /// next — and a quit followed by speech is a nick that came back, which is its own join.
+    func testOnlyJoinsUnmask() {
+        for type: EventType in [.part, .quit, .nick, .chghost] {
+            let event = [message(1, type, "bob", at: 0)]
+            XCTAssertEqual(rows(event, smart(), speakers: spoke("bob", at: 1)), [], "\(type)")
+        }
+    }
+
+    /// Per-type toggles, including the one that isn't its own toggle: `chghost` rides the quit
+    /// switch rather than getting a fourth setting (lurker#591).
+    func testPerTypeTogglesOptOutOfFiltering() {
+        func surviving(_ settings: Settings) -> [Int] {
+            rows(
+                [
+                    message(1, .join, "bob", at: 0),
+                    message(2, .part, "bob", at: 0),
+                    message(3, .quit, "bob", at: 0),
+                    message(4, .chghost, "bob", at: 0),
+                    message(5, .nick, "bob", at: 0),
+                ],
+                settings
+            )
+        }
+        XCTAssertEqual(surviving(smart()), [])
+        XCTAssertEqual(surviving(smart(join: false)), [1])
+        XCTAssertEqual(surviving(smart(quit: false)), [2, 3, 4], "chghost rides the quit toggle")
+        XCTAssertEqual(surviving(smart(nick: false)), [5])
+    }
+
+    /// Your own churn is never hidden, however quiet you've been. `isSelf` alone doesn't cover
+    /// it — the server stamps that on messages you *sent*, not on the JOIN it saw you make —
+    /// so the nick has to be checked too, case-insensitively like every other nick comparison.
+    func testNeverHidesYourOwnChurn() {
+        let messages = [
+            message(1, .join, "Me", at: 0),
+            message(2, .part, "me", isSelf: true, at: 0),
+            message(3, .quit, "bob", at: 0),
+        ]
+        XCTAssertEqual(rows(messages, smart(), ownNick: "mE"), [1, 2])
+    }
+
+    /// A rename is the one event whose actor has two names, and the store carries their speaker
+    /// entry from the old to the new one *as it applies the event* — so by render time the nick
+    /// printed on the row is the one no longer in the map. Looking only there hid the rename of
+    /// somebody who had just been talking, which is exactly the churn this rung keeps.
+    func testARenameIsJudgedUnderBothOfItsNicks() {
+        let rename = [message(1, .nick, "alice", at: 1)] // → alice_afk
+        XCTAssertEqual(
+            rows(rename, smart(), speakers: spoke("alice_afk", at: 0)), [1],
+            "the carried entry counts"
+        )
+        XCTAssertEqual(
+            rows(rename, smart(), speakers: spoke("alice", at: 0)), [1],
+            "and so does an uncarried one — a backlog rename never went through the carry"
+        )
+        XCTAssertEqual(rows(rename, smart()), [], "a genuine lurker's rename still goes")
+    }
+
+    /// Our own rename straddles the change: whichever of `own-nick` and the `nick` line the
+    /// store applies first, the other name is the one `ownNick` is holding. Both are exempt, so
+    /// neither order can hide our own churn.
+    func testOurOwnRenameIsExemptUnderEitherName() {
+        let rename = [message(1, .nick, "me", at: 0)] // → me_afk
+        XCTAssertEqual(rows(rename, smart(), ownNick: "me"), [1], "own-nick hasn't landed yet")
+        XCTAssertEqual(rows(rename, smart(), ownNick: "me_afk"), [1], "own-nick landed first")
+    }
+
+    /// The rung filters churn and nothing else. Conversation, kicks, topics and mode changes are
+    /// things that happened — `.none` is the tier that hides those, and only some of them.
+    func testSmartLeavesEverythingThatIsNotChurnAlone() {
+        let messages = [
+            message(1, .message, "bob", at: 0),
+            message(2, .action, "bob", at: 0),
+            message(3, .notice, "bob", at: 0),
+            message(4, .kick, "bob", at: 0),
+            message(5, .topic, "bob", at: 0),
+            message(6, .mode, "bob", at: 0),
+            message(7, .invite, "bob", at: 0),
+        ]
+        XCTAssertEqual(rows(messages, smart()), [1, 2, 3, 4, 5, 6, 7])
+    }
+
+    /// An unseeded buffer hides every filterable event, matching the web. Worth pinning because
+    /// the alternative failure — showing everything until the map loads — looks like the filter
+    /// working intermittently rather than like a missing seed.
+    func testAnEmptySpeakerMapHidesAllChurn() {
+        XCTAssertEqual(rows([message(1, .join, "bob", at: 0)], smart()), [])
+    }
+
+    /// An event with no clock renders. There is no window to judge it against, and the web's
+    /// `Date.parse(…) || 0` reads it as the epoch — infinitely stale, therefore always hidden,
+    /// which is the wrong way to fail for a row whose only problem is a missing timestamp.
+    func testAnUndatedEventIsNotJudged() {
+        let undated = Message(id: 1, type: .join, nick: "bob", text: nil, isSelf: false, date: nil)
+        XCTAssertEqual(rows([undated], smart()), [1])
+    }
+
+    /// The filter runs *above* consolidation, so a hidden event can't be counted by a summary
+    /// it never reached. Getting this backwards is invisible in the row stream and shows up as a
+    /// summary that names people whose own lines aren't on screen.
+    func testFilteringHappensBeforeConsolidation() {
+        var folding = smart()
+        folding.apply(changes: ["chat.consolidate_joins": .bool(true)])
+        let built = MessageRows.build(
+            messages: [
+                message(1, .join, "alice", at: 1),
+                message(2, .join, "bob", at: 1),
+                message(3, .join, "carol", at: 1),
+            ],
+            dividerAfterId: nil, hasMoreOlder: true,
+            settings: folding, speakers: spoke("alice", at: 0)
+        )
+        // alice spoke, so her join survives — alone, which is a line rather than a summary.
+        XCTAssertEqual(ids(of: built), [1])
+        XCTAssertFalse(built.contains { if case .consolidated = $0 { true } else { false } })
     }
 }
