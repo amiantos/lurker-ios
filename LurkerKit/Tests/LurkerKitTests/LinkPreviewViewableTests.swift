@@ -30,10 +30,16 @@ final class LinkPreviewViewableTests: XCTestCase {
         XCTAssertTrue(preview(kind: .audio, url: "https://cdn.example.com/a.mp3").isViewable)
     }
 
-    func testPlainHttpOriginIsViewable() {
-        // A self-hosted instance on a LAN is not required to be https, and AVURLAsset opens
-        // either. Refusing http here would make the player unreachable on exactly those setups.
+    /// ⚠⚠ The line is PUBLIC cleartext, not cleartext. This test used to admit both, justified by
+    /// "a self-hosted instance on a LAN is not required to be https" — true of the `.local` host
+    /// it named, which `NSAllowsLocalNetworking` permits, and not true of the public address it
+    /// also let through, which App Transport Security refuses inside AVFoundation. Admitting that
+    /// one bought a failure the reader can't act on in place of the browser hand-off, which
+    /// works. Both halves are asserted here so neither can drift back.
+    func testHttpIsViewableOnlyWhereTheAppCanActuallyLoadIt() {
         XCTAssertTrue(preview(kind: .video, url: "http://box.local/a.mp4").isViewable)
+        XCTAssertTrue(preview(kind: .video, url: "http://192.168.1.9:8080/a.mp4").isViewable)
+        XCTAssertFalse(preview(kind: .video, url: "http://cdn.example.com/a.mp4").isViewable)
     }
 
     func testSchemeMatchIsCaseInsensitive() {

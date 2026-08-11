@@ -155,9 +155,67 @@ final class MediaViewerController: UIViewController {
         updateChrome()
     }
 
+    /// Held while a rotation (or a Stage Manager resize) is in flight — see
+    /// `scrollViewDidScroll`, which must not read a page out of a half-changed geometry.
+    private var isChangingBounds = false
+
+    /// Keep the reader on the page they were on when the device turns.
+    ///
+    /// ⚠⚠ A paging collection view does NOT preserve its page across a bounds change: the offset
+    /// is in points, so a portrait offset lands mid-page at the landscape width, and what the
+    /// reader gets is whatever that rounds to — page 0, in every case observed. The page is
+    /// therefore captured before the size changes and restored after it, with the scroll delegate
+    /// held off in between so it can't overwrite the captured page from the intermediate
+    /// geometry.
+    ///
+    /// The `invalidateLayout` is not decoration: `viewWillLayoutSubviews` only re-sizes the item
+    /// when the bounds have already changed, and the offset below has to be computed against a
+    /// layout that has taken the new size.
+    override func viewWillTransition(
+        to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        let page = index
+        isChangingBounds = true
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate { _ in
+            self.pages.collectionViewLayout.invalidateLayout()
+            self.pages.setContentOffset(
+                CGPoint(x: CGFloat(page) * size.width, y: 0), animated: false)
+        } completion: { _ in
+            self.isChangingBounds = false
+            // Restored rather than merely left alone: the suppression above keeps `index` from
+            // being overwritten during the turn, and this is what makes it true again afterwards
+            // if anything did get through.
+            self.index = page
+            self.updateChrome()
+        }
+    }
+
+    /// The page size, set BEFORE the pass that lays the pager out rather than after it.
+    ///
+    /// ⚠⚠ A privacy fix, not a layout tidy-up. Assigned in `viewDidLayoutSubviews`, this arrived
+    /// one pass too late: the first one ran at the flow layout's default 50x50, and at that size
+    /// every page fits on screen at once — so the collection view dequeued ALL of them. Each page
+    /// starts an `AVURLAsset.load` on its source, so opening a message that holds a clip beside a
+    /// picture reached out to that clip's third-party origin the instant the viewer appeared,
+    /// before the reader had swiped anywhere near it. `LinkPreview.inlinePicture` states the
+    /// opposite as this feature's rule: a clip's bytes "are fetched only on a deliberate tap".
+    /// Measured rather than reasoned — 6 pages dequeued at the default size, 1 at page size.
+    ///
+    /// From `view.bounds` rather than the screen's, because the pager is pinned to this view's
+    /// four edges and those are not the same rectangle in a split view or Stage Manager. It
+    /// tracks a rotation for the same reason the old assignment did, and is guarded on a change
+    /// because assigning `itemSize` invalidates the layout.
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        guard let layout = pages.collectionViewLayout as? UICollectionViewFlowLayout,
+            view.bounds.size != .zero, layout.itemSize != view.bounds.size
+        else { return }
+        layout.itemSize = view.bounds.size
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        (pages.collectionViewLayout as? UICollectionViewFlowLayout)?.itemSize = pages.bounds.size
         // Only before the first paint: doing it on every layout pass would fight the reader's
         // own scrolling, and a rotation is handled by the same first-run branch re-arming.
         if pages.contentOffset.x == 0, index > 0, pages.bounds.width > 0 {
@@ -260,13 +318,43 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: MediaPlayerPageCell.reuseID, for: indexPath)
             as! MediaPlayerPageCell
+        build(cell, showing: preview)
+        return cell
+    }
+
+    /// Everything a player page needs to start. Extracted because a cell can need it twice —
+    /// see `willDisplay`, which is the other place a page has to be built.
+    private func build(_ cell: MediaPlayerPageCell, showing preview: LinkPreview) {
         cell.configure(
             preview, model: model, host: self,
             openExternally: { [weak self] url in
                 self?.dismiss(animated: true) { UIApplication.shared.open(url) }
             },
             onPlayerDismissed: { [weak self] in self?.dismiss(animated: true) })
-        return cell
+    }
+
+    /// ⚠⚠ A player page can come back to the screen without coming back through
+    /// `cellForItemAt` — and it arrives torn down.
+    ///
+    /// `didEndDisplaying` calls `stop()`, which is right and is what keeps a clip's audio from
+    /// playing on under the next picture. What it assumes is that a page returning means a fresh
+    /// `cellForItemAt` to rebuild it, and a bounds change breaks that: UIKit re-displays the SAME
+    /// cell instance. Measured in a UIKit harness against the device's own sequence — after a
+    /// rotation it runs `stop(1)` … `willDisplay(1)`, with no `configure` between them. The
+    /// reader gets a black page and nothing on screen will fix it: the viewer's own chrome is
+    /// hidden on a player page, so there isn't even a spinner to explain it.
+    ///
+    /// Guarded on the cell being STOPPED rather than on the rotation, because the ordinary path
+    /// comes through here too, one call after `cellForItemAt` — where the page is already built
+    /// and this must do nothing.
+    func collectionView(
+        _ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell,
+        forItemAt indexPath: IndexPath
+    ) {
+        guard let player = cell as? MediaPlayerPageCell, player.isStopped,
+            previews.indices.contains(indexPath.item)
+        else { return }
+        build(player, showing: previews[indexPath.item])
     }
 
     /// ⚠ A page leaving the screen stops playing, and this is not politeness. Without it,
@@ -286,7 +374,13 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === pages, pages.bounds.width > 0 else { return }
+        // ⚠⚠ Not while the bounds are changing. This fires throughout a rotation, and what it
+        // reads there is a portrait offset against a landscape width — so `round(393 / 852)` is
+        // 0 and page 1 is written back as page 0. The reader is returned to the first item, and
+        // `viewWillTransition`'s restore can no longer put them back, because the page it would
+        // restore has just been overwritten by this. Measured, in that exact form:
+        // `index=0 (offset 0 / width 852)`.
+        guard scrollView === pages, pages.bounds.width > 0, !isChangingBounds else { return }
         let page = Int((scrollView.contentOffset.x / pages.bounds.width).rounded())
         guard page != index, previews.indices.contains(page) else { return }
         index = page
@@ -440,7 +534,7 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     private let fallback = UIStackView()
     private let fallbackLabel = UILabel()
     private let fallbackButton = UIButton(type: .system)
-    /// The way out while there is no player to provide one. See `showsOwnExit`.
+    /// The way out while there is no player to provide one. See `showLoading`.
     private let closeButton = UIButton(type: .system)
     private var openExternally: ((URL) -> Void)?
     private var onPlayerDismissed: (() -> Void)?
@@ -534,7 +628,22 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
             // ⚠ ASKED, not assumed. The server proxies any `video/*`, and this platform decodes
             // neither webm nor ogg — both common enough on IRC to matter. A player that spins
             // forever is a worse answer than a sentence and a button.
-            let playable = (try? await asset.load(.isPlayable)) ?? false
+            //
+            // ⚠⚠ A THROWN error is a different answer from `isPlayable == false`, and `try?`
+            // collapsed the two into one sentence about the format. Since the bytes started
+            // coming from the origin rather than from this instance, reaching them is the part
+            // that fails: a 404, a DNS or TLS failure, and — most likely of all — a host that
+            // 403s a hotlinked request. Every one of those told the reader their phone couldn't
+            // decode the file, which sends them to check a setting that isn't the problem. The
+            // distinction costs a `do`/`catch` and the string that used to be here.
+            let playable: Bool
+            do {
+                playable = try await asset.load(.isPlayable)
+            } catch {
+                guard !Task.isCancelled, self.path == source else { return }
+                self.showFallback("This couldn't be loaded.")
+                return
+            }
             guard !Task.isCancelled, self.path == source else { return }
             guard playable else {
                 self.showFallback("This format can't be played on iOS.")
@@ -563,6 +672,32 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         player.play()
     }
 
+    // MARK: - The exit a page with no player has to carry
+
+    /// ⚠⚠ A page with no player must carry its own way out.
+    ///
+    /// The viewer hides ALL of its chrome on a player page — close, counter and share — because
+    /// the system player draws its own dismiss, and the swipe stands down there because a
+    /// scrubber is a horizontal drag inside a vertically-dismissing view. That trade is sound
+    /// exactly as long as a player exists. It does not exist in three states, and each one was a
+    /// screen with no exit:
+    ///
+    ///   - the clip is still being ASKED ABOUT (nothing is downloaded any more — clips stream
+    ///     from the origin — but the `isPlayable` probe is a round trip to a stranger's host, so
+    ///     on a slow link this is still a spinner and nothing else),
+    ///   - it could not be REACHED — a 404, a TLS failure, a host that refuses a hotlink,
+    ///   - the format is one AVFoundation will not open — webm and ogg, both ordinary on IRC —
+    ///     where the only other control is "Open in Browser", which leaves the app entirely, and
+    ///     which `showFallback` itself hides when the origin URL will not parse.
+    ///
+    /// `hideOwnExit` takes it away again the moment a player attaches, so the two never both
+    /// offer an exit.
+    ///
+    /// ⚠ This is a note about `showLoading`/`showFallback`/`hideOwnExit` below, and it used to
+    /// sit one declaration further down — where it ran into the next docblock and was filed,
+    /// silently, on `configureAudioSession`. `MediaPlayerPageCell` still pointed at it as
+    /// `showsOwnExit`, which has never been the name of anything here.
+    ///
     /// Waiting on the bytes: a spinner and the way out, and nothing else.
     private func showLoading() {
         spinner.startAnimating()
@@ -585,22 +720,6 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         fallback.isHidden = false
     }
 
-    /// ⚠⚠ A page with no player must carry its own way out.
-    ///
-    /// The viewer hides ALL of its chrome on a player page — close, counter and share — because
-    /// the system player draws its own dismiss, and the swipe stands down there because a
-    /// scrubber is a horizontal drag inside a vertically-dismissing view. That trade is sound
-    /// exactly as long as a player exists. It does not exist in three states, and each one was a
-    /// screen with no exit:
-    ///
-    ///   - the clip is still DOWNLOADING (a proxy path is fetched whole before it can play, and
-    ///     the cap for video is 64 MB, so on a slow link this is a spinner and nothing else),
-    ///   - the fetch FAILED,
-    ///   - the format is one AVFoundation will not open — webm and ogg, both ordinary on IRC —
-    ///     where the only other control is "Open in Browser", which leaves the app entirely, and
-    ///     which `showFallback` itself hides when the origin URL will not parse.
-    ///
-    /// Hidden again the moment a player attaches, so the two never both offer an exit.
     /// Make this app's audio a PLAYBACK session, so a video can actually be heard.
     ///
     /// ⚠⚠ With no category set, the process default applies — and that one obeys the ring/silent
@@ -643,6 +762,11 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     /// `addChild` plus `play()` on a torn-down view controller. Audio over the message list with
     /// no control anywhere to stop it, which is the exact outcome this method exists to prevent.
     /// The Task also held the viewer alive through its captured `host`.
+    /// Whether this page has been stopped and not rebuilt since: no player, nothing in flight,
+    /// and no source held. The viewer's `willDisplay` asks, because a cell can return to the
+    /// screen in this state without a `cellForItemAt` to put it right.
+    var isStopped: Bool { path == nil && loadTask == nil && controller == nil }
+
     func stop() {
         // Hand the audio system back before tearing the player down, so whatever was playing
         // before the reader opened this can pick up again.

@@ -85,3 +85,43 @@ final class PreviewMediaRequestTests: XCTestCase {
         )
     }
 }
+
+/// The address `playableMediaURL` hands to AVFoundation.
+///
+/// ⚠⚠ `LinkPreview.isViewable` is the gate — nothing reaches a player page without passing it —
+/// and this is the backstop, asked of the same `LocalNetworking`. It is pinned because the
+/// failure it prevents is invisible from here: a public cleartext address is handed over, App
+/// Transport Security refuses it several layers down, and the page shows a sentence about the
+/// file rather than about the policy that stopped it.
+final class PlayableMediaURLTests: XCTestCase {
+
+    private func playable(_ path: String) async -> URL? {
+        await LurkerClient(onFrame: { _ in }).playableMediaURL(path: path, mime: "video/mp4")
+    }
+
+    func testHttpsIsHandedOverUnchanged() async {
+        let url = await playable("https://cdn.example.com/a.mp4")
+        XCTAssertEqual(url?.absoluteString, "https://cdn.example.com/a.mp4")
+    }
+
+    /// The scheme keeps whatever case it was written in, so this is folded rather than compared.
+    func testUppercaseSchemeIsStillRecognisedAsAbsolute() async {
+        let url = await playable("HTTPS://cdn.example.com/a.mp4")
+        XCTAssertEqual(url?.absoluteString, "HTTPS://cdn.example.com/a.mp4")
+    }
+
+    func testLocalNetworkCleartextIsHandedOver() async {
+        let url = await playable("http://box.local/a.mp4")
+        XCTAssertEqual(url?.absoluteString, "http://box.local/a.mp4")
+    }
+
+    func testPublicCleartextIsRefusedRatherThanLeftToATS() async {
+        let url = await playable("http://cdn.example.com/a.mp4")
+        XCTAssertNil(url)
+    }
+
+    func testCleartextWithNoHostIsRefused() async {
+        let url = await playable("http:///a.mp4")
+        XCTAssertNil(url)
+    }
+}

@@ -46,8 +46,25 @@ extension LinkPreview {
         case .image:
             return src != nil
         case .video, .audio:
-            guard let scheme = URL(string: url)?.scheme?.lowercased() else { return false }
-            return scheme == "https" || scheme == "http"
+            // ⚠⚠ The test is what this app can actually LOAD, not what AVURLAsset would accept.
+            // App Transport Security blocks cleartext to a public host regardless, so admitting
+            // one promised a player and delivered a failure deep inside AVFoundation — a dead end
+            // the reader can't act on, and one that reads as a broken app rather than as a
+            // policy. Refused here, it falls through to the browser hand-off, which works. The
+            // alternative was `NSAllowsArbitraryLoadsForMedia`, which buys one rare clip by
+            // weakening every load the app makes.
+            //
+            // ⚠⚠ But only the loads ATS really refuses. `Info.plist` sets
+            // `NSAllowsLocalNetworking`, so cleartext to the local network is permitted — and a
+            // self-hosted instance on a plain-http LAN posts its OWN uploads as
+            // `http://box.local/…`, which played in the viewer before and still should. See
+            // `LocalNetworking`, which mirrors that key so the refusal here and the app's actual
+            // capability can't drift apart.
+            guard let address = URL(string: url), let scheme = address.scheme?.lowercased()
+            else { return false }
+            if scheme == "https" { return true }
+            guard scheme == "http", let host = address.host else { return false }
+            return LocalNetworking.permitsCleartext(host: host)
         case .page, .videoEmbed:
             return false
         }

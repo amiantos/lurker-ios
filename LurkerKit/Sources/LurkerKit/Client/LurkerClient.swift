@@ -986,10 +986,14 @@ final class LurkerClient {
     /// an `AVAssetResourceLoaderDelegate`, and the header key that looks like a shortcut is
     /// undocumented. So the two cases are handled honestly rather than papered over:
     ///
-    ///   - **An ABSOLUTE url** is the byte cache serving from its CDN (`local`/`s3`/`dropper`
-    ///     modes mint one in `toDescriptor`). It carries no credential by design — that is the
-    ///     whole point of minting it — so it hands straight to `AVPlayer`, which then gets real
-    ///     streaming and seeking for free.
+    ///   - **An ABSOLUTE url** hands straight to `AVPlayer`, which then gets real streaming and
+    ///     seeking for free. ⚠⚠ It is a THIRD-PARTY address, not ours: the only caller passes
+    ///     `preview.url`, because the server stopped minting a `src` for video and audio and the
+    ///     bytes now stream from the origin. It was the byte cache's own CDN url when this was
+    ///     written, which is the reading to be careful of — nothing here has been vetted, so it
+    ///     must never be given a credential, a cache policy, or any trust that belonged to the
+    ///     old branch. Carrying no Authorization header stopped being a nicety and became the
+    ///     requirement.
     ///   - **A PROXY PATH** is bearer-gated, so the bytes are streamed through the authenticated
     ///     path we already have and staged to a file. No seeking until it lands.
     ///
@@ -1000,8 +1004,28 @@ final class LurkerClient {
     /// ⚠ The extension is carried over from the server's `mime`, because AVFoundation sniffs the
     /// path: a temp file called `x.tmp` fails to open as an MP4 that plays perfectly as `x.mp4`.
     func playableMediaURL(path: String, mime: String?) async -> URL? {
-        if let absolute = URL(string: path), absolute.scheme == "https" || absolute.scheme == "http"
+        // ⚠ LOWERCASED, because `URL.scheme` keeps the case it was written in (measured:
+        // `URL(string: "HTTPS://h/a.mp4")?.scheme` is `"HTTPS"`) and `isViewable` — the gate that
+        // decides this is worth opening at all — folds case before it compares. Raw, the two
+        // disagreed on exactly the addresses `LinkPreviewViewableTests.testSchemeMatchIs-
+        // CaseInsensitive` admits: into the gallery, past the tap, missed here, refused by
+        // `mediaRequest` as well, and the page dead-ended on "There's nothing to play here" for
+        // an address that plays perfectly.
+        if let absolute = URL(string: path), let scheme = absolute.scheme?.lowercased(),
+            scheme == "https" || scheme == "http"
         {
+            // ⚠⚠ The same cleartext rule `LinkPreview.isViewable` gates on, asked of the same
+            // `LocalNetworking`, because this is the function that hands an address to
+            // AVFoundation. `isViewable` is the gate — nothing reaches a player page without
+            // passing it — and this is the backstop: a second caller, or the two drifting, would
+            // otherwise put back the ATS dead end this change exists to remove. One authority,
+            // asked twice, is the only version of that which can't disagree with itself.
+            if scheme == "http" {
+                // Strict about a missing host too, the way `isViewable` is: `http:///a.mp4` has
+                // nothing to reach, so there is nothing to permit.
+                guard let host = absolute.host, LocalNetworking.permitsCleartext(host: host)
+                else { return nil }
+            }
             return absolute
         }
         guard let request = Self.mediaRequest(for: path, baseURL: baseURL, token: token) else {
