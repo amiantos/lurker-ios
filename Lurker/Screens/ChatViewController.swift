@@ -2117,6 +2117,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     if unreadableReason == nil { unreadableReason = reason }
                     continue files
                 }
+                // Cancelled while that file was being copied. A document copy can't be
+                // interrupted, so it lands anyway — and `performUpload` would then run a HEIC
+                // transcode, or start a compression pass, before its own cancellation check
+                // turned it back. Stop here instead, and delete the copy that check would
+                // otherwise have been responsible for.
+                if Task.isCancelled {
+                    try? FileManager.default.removeItem(at: item.url)
+                    cancelled = true
+                    break files
+                }
                 let outcome = await self.performUpload(
                     item,
                     token: UUID().uuidString,

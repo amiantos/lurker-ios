@@ -47,6 +47,9 @@ final class UploadStatusView: UIView {
         let count: Int
     }
 
+    /// Latched by a `.stopping` update and cleared only by `present`. See `update`.
+    private var isStopping = false
+
     private let glass = UIVisualEffectView()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let label = UILabel()
@@ -118,6 +121,13 @@ final class UploadStatusView: UIView {
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
     func update(_ phase: Phase, in batch: Batch? = nil) {
+        // `stopping` is terminal for this run. The legs still unwinding behind a cancel keep
+        // reporting — a compression pass ticks until it notices, and device-progress callbacks
+        // are already in flight to the main actor — and any one of them would otherwise repaint
+        // a live percentage over "Stopping…" and hand back the cancel button the user just
+        // pressed. Cleared by the next `present`, which is what starts a run.
+        if isStopping { return }
+        if case .stopping = phase { isStopping = true }
         // Restored on every phase but `stopping`, so the next run gets its cancel back.
         cancelButton.isHidden = false
         switch phase {
@@ -159,6 +169,8 @@ final class UploadStatusView: UIView {
     }
 
     func present(_ phase: Phase, in batch: Batch? = nil) {
+        // A new run, so whatever the last one ended as no longer applies.
+        isStopping = false
         update(phase, in: batch)
         guard isHidden || alpha < 1 else { return }
         isHidden = false
