@@ -223,7 +223,16 @@ struct MessageListRenderer {
 
         // ⚠ Only MEDIA may take its address away. A card keeps its URL — its heading is different
         // text from the address, and the address is what you copy.
-        let media = Set(resolved.filter { $0.kind.isDirectMedia }.map(\.url))
+        //
+        // ⚠⚠ And only media that actually DREW SOMETHING: nothing is ever hidden without
+        // something rendered in its place. A posterless clip is a grey box with a glyph in it,
+        // and taking the address out of the message left an unnamed rectangle with no way to
+        // tell what it was, copy it, or reach it — the reader lost the link and gained nothing.
+        // With a poster the picture IS the thing, exactly like an image, and the address below
+        // it is a machine-readable duplicate of what they are looking at. The line moved WITH
+        // the rendering, which is the same correction the web client made when posters landed
+        // there (`rendersInline` in MessageBody.vue).
+        let media = Set(resolved.filter { $0.inlinePicture != nil }.map(\.url))
         let hidden =
             media.isEmpty ? [] : PreviewHiding.hideableUrls(in: message.text, candidates: media)
         return PreviewPlan(hidden: hidden, resolved: resolved)

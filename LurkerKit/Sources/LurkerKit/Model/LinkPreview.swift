@@ -66,10 +66,18 @@ extension LinkPreview {
     /// `MediaPlayerPageCell` documents. A descriptor minted before the server stopped relaying
     /// video can still be sitting in a running client's store, and its token now answers 404, so
     /// the defensive-looking "prefer src if we have it" spelling is the one that reliably fails.
+    ///
+    /// ⚠⚠ A CARD'S PICTURE IS NOT ONE OF THESE, though a page's `thumb` is a perfectly real
+    /// image. The question this answers is "is the thing itself on screen", not "is there a
+    /// picture anywhere" — a card is a note ABOUT something, and the rules that read this
+    /// (whether the address may be taken out of the message) give exactly the wrong answer for
+    /// one. It is the counterpart of the web client's `rendersInline`, and it is deliberately
+    /// nil-for-cards there too.
     public var inlinePicture: String? {
         switch kind {
         case .image: src
-        case .video, .audio, .page, .videoEmbed: thumb
+        case .video, .audio: thumb
+        case .page, .videoEmbed: nil
         }
     }
 }

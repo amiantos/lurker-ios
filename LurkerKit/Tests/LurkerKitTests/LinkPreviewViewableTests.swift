@@ -119,4 +119,16 @@ final class LinkPreviewViewableTests: XCTestCase {
                     thumb: "/api/never").inlinePicture,
             "/api/x")
     }
+
+    /// ⚠⚠ A card's thumbnail is a real picture and still not one of these. The callers ask "is
+    /// the thing itself on screen" — the one that hides a message's URL text most of all — and a
+    /// card is a note about something, so it keeps its address. This is the test that stops the
+    /// property from being read as "any picture we have".
+    func testACardsThumbnailIsNotAnInlinePicture() {
+        for kind in [PreviewKind.page, .videoEmbed] {
+            XCTAssertNil(
+                preview(kind: kind, url: "https://example.com/post", thumb: "/api/x").inlinePicture,
+                "a \(kind.rawValue) card must keep its URL")
+        }
+    }
 }
