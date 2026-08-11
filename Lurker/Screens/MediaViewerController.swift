@@ -155,6 +155,42 @@ final class MediaViewerController: UIViewController {
         updateChrome()
     }
 
+    /// Held while a rotation (or a Stage Manager resize) is in flight — see
+    /// `scrollViewDidScroll`, which must not read a page out of a half-changed geometry.
+    private var isChangingBounds = false
+
+    /// Keep the reader on the page they were on when the device turns.
+    ///
+    /// ⚠⚠ A paging collection view does NOT preserve its page across a bounds change: the offset
+    /// is in points, so a portrait offset lands mid-page at the landscape width, and what the
+    /// reader gets is whatever that rounds to — page 0, in every case observed. The page is
+    /// therefore captured before the size changes and restored after it, with the scroll delegate
+    /// held off in between so it can't overwrite the captured page from the intermediate
+    /// geometry.
+    ///
+    /// The `invalidateLayout` is not decoration: `viewWillLayoutSubviews` only re-sizes the item
+    /// when the bounds have already changed, and the offset below has to be computed against a
+    /// layout that has taken the new size.
+    override func viewWillTransition(
+        to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        let page = index
+        isChangingBounds = true
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate { _ in
+            self.pages.collectionViewLayout.invalidateLayout()
+            self.pages.setContentOffset(
+                CGPoint(x: CGFloat(page) * size.width, y: 0), animated: false)
+        } completion: { _ in
+            self.isChangingBounds = false
+            // Restored rather than merely left alone: the suppression above keeps `index` from
+            // being overwritten during the turn, and this is what makes it true again afterwards
+            // if anything did get through.
+            self.index = page
+            self.updateChrome()
+        }
+    }
+
     /// The page size, set BEFORE the pass that lays the pager out rather than after it.
     ///
     /// ⚠⚠ A privacy fix, not a layout tidy-up. Assigned in `viewDidLayoutSubviews`, this arrived
@@ -282,13 +318,43 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
         let cell = collectionView.dequeueReusableCell(
             withReuseIdentifier: MediaPlayerPageCell.reuseID, for: indexPath)
             as! MediaPlayerPageCell
+        build(cell, showing: preview)
+        return cell
+    }
+
+    /// Everything a player page needs to start. Extracted because a cell can need it twice —
+    /// see `willDisplay`, which is the other place a page has to be built.
+    private func build(_ cell: MediaPlayerPageCell, showing preview: LinkPreview) {
         cell.configure(
             preview, model: model, host: self,
             openExternally: { [weak self] url in
                 self?.dismiss(animated: true) { UIApplication.shared.open(url) }
             },
             onPlayerDismissed: { [weak self] in self?.dismiss(animated: true) })
-        return cell
+    }
+
+    /// ⚠⚠ A player page can come back to the screen without coming back through
+    /// `cellForItemAt` — and it arrives torn down.
+    ///
+    /// `didEndDisplaying` calls `stop()`, which is right and is what keeps a clip's audio from
+    /// playing on under the next picture. What it assumes is that a page returning means a fresh
+    /// `cellForItemAt` to rebuild it, and a bounds change breaks that: UIKit re-displays the SAME
+    /// cell instance. Measured in a UIKit harness against the device's own sequence — after a
+    /// rotation it runs `stop(1)` … `willDisplay(1)`, with no `configure` between them. The
+    /// reader gets a black page and nothing on screen will fix it: the viewer's own chrome is
+    /// hidden on a player page, so there isn't even a spinner to explain it.
+    ///
+    /// Guarded on the cell being STOPPED rather than on the rotation, because the ordinary path
+    /// comes through here too, one call after `cellForItemAt` — where the page is already built
+    /// and this must do nothing.
+    func collectionView(
+        _ collectionView: UICollectionView, willDisplay cell: UICollectionViewCell,
+        forItemAt indexPath: IndexPath
+    ) {
+        guard let player = cell as? MediaPlayerPageCell, player.isStopped,
+            previews.indices.contains(indexPath.item)
+        else { return }
+        build(player, showing: previews[indexPath.item])
     }
 
     /// ⚠ A page leaving the screen stops playing, and this is not politeness. Without it,
@@ -308,7 +374,13 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard scrollView === pages, pages.bounds.width > 0 else { return }
+        // ⚠⚠ Not while the bounds are changing. This fires throughout a rotation, and what it
+        // reads there is a portrait offset against a landscape width — so `round(393 / 852)` is
+        // 0 and page 1 is written back as page 0. The reader is returned to the first item, and
+        // `viewWillTransition`'s restore can no longer put them back, because the page it would
+        // restore has just been overwritten by this. Measured, in that exact form:
+        // `index=0 (offset 0 / width 852)`.
+        guard scrollView === pages, pages.bounds.width > 0, !isChangingBounds else { return }
         let page = Int((scrollView.contentOffset.x / pages.bounds.width).rounded())
         guard page != index, previews.indices.contains(page) else { return }
         index = page
@@ -690,6 +762,11 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
     /// `addChild` plus `play()` on a torn-down view controller. Audio over the message list with
     /// no control anywhere to stop it, which is the exact outcome this method exists to prevent.
     /// The Task also held the viewer alive through its captured `host`.
+    /// Whether this page has been stopped and not rebuilt since: no player, nothing in flight,
+    /// and no source held. The viewer's `willDisplay` asks, because a cell can return to the
+    /// screen in this state without a `cellForItemAt` to put it right.
+    var isStopped: Bool { path == nil && loadTask == nil && controller == nil }
+
     func stop() {
         // Hand the audio system back before tearing the player down, so whatever was playing
         // before the reader opened this can pick up again.
