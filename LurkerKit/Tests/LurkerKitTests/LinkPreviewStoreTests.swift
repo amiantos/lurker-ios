@@ -31,8 +31,32 @@ struct LinkPreviewStoreTests {
     }
 
     /// The store coalesces on a short timer, so tests have to let it fire.
+    ///
+    /// ⚠ Right for asserting that something did NOT happen — there is no event to wait for, so a
+    /// duration is the only thing to wait. For the opposite case use `eventually`: a fixed sleep
+    /// there is a bet on how fast the machine is, and CI is slower and more contended than the
+    /// one these were written on.
     private func settle() async {
         try? await Task.sleep(for: .milliseconds(120))
+    }
+
+    /// Wait until something is true, rather than for long enough that it probably is.
+    ///
+    /// ⚠⚠ `failureIsRetryable` failed on CI and passed everywhere else: the store's work is paced
+    /// by real sleeps (a 24ms coalesce, then a resolve), and this suite runs on the main actor
+    /// with every other suite in parallel — so the 120ms `settle()` it was betting on ran out
+    /// before a flush that takes ~24ms on an idle laptop. The assertion was about a rule and it
+    /// was measuring a stopwatch. Polling costs nothing when the condition already holds, and the
+    /// timeout is long enough that reaching it means something is genuinely wrong.
+    private func eventually(
+        within limit: Duration = .seconds(5), _ condition: () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: limit)
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
     }
 
     @Test("resolves what it's asked for and serves it back")
@@ -86,8 +110,7 @@ struct LinkPreviewStoreTests {
         }
 
         store.request(["https://e.test/a", "https://e.test/b"])
-        await settle()
-        #expect(stub.batches.count == 1)
+        #expect(await eventually { stub.batches.count == 1 })
         #expect(store.preview(for: "https://e.test/a") == nil)
 
         // Server recovers — but the ladder still holds, so priming must NOT ask yet.
@@ -95,15 +118,17 @@ struct LinkPreviewStoreTests {
             urls.map { LinkPreview(url: $0, status: .ok, kind: .page, title: "T") }
         }
         store.request(["https://e.test/a", "https://e.test/b"])
-        await settle()
+        await settle()  // a non-event: there is nothing to wait FOR
         #expect(stub.batches.count == 1, "still inside the backoff")
 
         // Past the deadline, the next priming pass gets through.
         clock.date.addTimeInterval(PreviewReask.floor + 1)
         store.request(["https://e.test/a", "https://e.test/b"])
-        await settle()
+        // ⚠ Waits on the VALUE, not on the batch count. The stub records its call before it
+        // returns, so `batches.count == 2` is observable a moment before the answer has been
+        // written into the cache — which would make the title assertion below the flake instead.
+        #expect(await eventually { store.preview(for: "https://e.test/a")?.title == "T" })
         #expect(stub.batches.count == 2)
-        #expect(store.preview(for: "https://e.test/a")?.title == "T")
     }
 
     @Test("an `unavailable` with no stated expiry is a VERDICT, not an invitation")

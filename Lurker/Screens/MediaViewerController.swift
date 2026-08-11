@@ -618,6 +618,17 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
             // as the success condition, a completion arriving for a page that had already moved
             // on took the failure branch and painted "couldn't be loaded" over whatever the cell
             // had become. A stale answer is not a failed one; it is nobody's answer.
+            //
+            // ⚠⚠ AND IT IS LOAD-BEARING FOR THE MEDIA POLICY, which is the reason not to move
+            // anything above it. Opening the gallery on a later item dequeues page 0 first — the
+            // pager starts at offset 0 and the opening page is restored in `viewDidLayoutSubviews`
+            // — so if page 0 is a clip, `configure` runs for it and this task is created. Nothing
+            // reaches that clip's origin only because `stop()` — called from the
+            // `didEndDisplaying` that the same layout commit produces — cancels the task and nils
+            // `path` before it ever yields, so this line returns twice over. Measured. Do work
+            // before this guard — build the asset, await anything — and a message's clip is
+            // fetched from a stranger's host because the reader opened a picture posted beside
+            // it, silently, with nothing on screen and no test to say so.
             guard !Task.isCancelled, self.path == source else { return }
             guard let url = await model.playableMediaURL(path: source, mime: preview.mime) else {
                 self.showFallback("There's nothing to play here.")
