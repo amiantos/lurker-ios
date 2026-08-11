@@ -197,7 +197,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// asks once, is ignored, and nothing changes afterwards to ask again. And the first
     /// `apply` is not enough either, because the backlog can just as easily arrive *after*
     /// the first layout pass. So both paths ask and this makes it happen exactly once.
-    private var needsInitialScroll = true
+    /// Re-arming it (a jump to latest, a re-attach) starts a fresh landing, so its pass count
+    /// goes with it — here rather than at each assignment, which is one more thing a new landing
+    /// path would have to remember.
+    private var needsInitialScroll = true {
+        didSet { if needsInitialScroll { landingPasses = 0 } }
+    }
+
+    /// How many times the landing has re-scrolled while the geometry settled — see
+    /// `landInitialIfNeeded`. Reset with the rest of the one-shot state by `resetJumpState`'s
+    /// callers, since a re-arm (`jumpToLatest`) is a new landing.
+    private var landingPasses = 0
+    /// The bound on that. Two or three is the real number — a pre-window pass, the pass that
+    /// brings the safe area, and the one that brings the composer's reservation — so this is
+    /// slack, not a target.
+    private static let landingPasses = 8
 
     /// The message to open *at* rather than the bottom (#42) — a tapped highlight (later a
     /// notification, a search hit). The initial landing scrolls to it instead of the tail, and
@@ -983,18 +997,44 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         topUpIfUnscrollable()
     }
 
-    /// The one-shot landing. Needs both rows to scroll to and a height to scroll within, which
-    /// arrive in either order. Lands at the bottom normally, or — for a jump (#42) — on the
-    /// target message.
+    /// The landing. Needs both rows to scroll to and a viewport to scroll within, which arrive
+    /// in either order. Lands at the bottom normally, or — for a jump (#42) — on the target
+    /// message.
+    ///
+    /// ⚠⚠ A HEIGHT IS NOT A VIEWPORT. The table gets its `bounds` from the first layout pass,
+    /// which for a pushed screen happens before it is in a window — so the safe area is zero and
+    /// `updateBottomInset` has not run, and `scrollToRow(.bottom)` there parks the tail at the
+    /// bottom of a viewport ~200pt taller than the real one. It measures as a perfect landing
+    /// (`distanceFromBottom == 0`) and then the real insets arrive underneath it: the top
+    /// adjustment shifts the offset up by its own height, the composer's reservation takes the
+    /// rest, and the reader opens the buffer parked a couple of hundred points above the newest
+    /// message with nothing scheduled to notice. `apply`'s follow-the-tail path can't repair it
+    /// either — that far out, `isNearBottom` is false, so it preserves the wrong position instead.
+    ///
+    /// The window guard alone isn't enough, which is why this no longer lands ONCE. The insets
+    /// keep moving for a pass or two after that (the composer is only measured once it has been
+    /// laid out), and the rows themselves are self-sizing, so the content grows as the tall ones
+    /// are realized. So the landing holds until a *fresh* pass finds the table already at the
+    /// bottom — the only evidence that the geometry it was computed against has stopped moving.
     private func landInitialIfNeeded() {
-        guard needsInitialScroll, tableView.bounds.height > 0 else { return }
+        guard needsInitialScroll, view.window != nil, tableView.bounds.height > 0 else { return }
         if pendingJumpId != nil {
             beginJumpLanding()
             return
         }
         guard !rows.isEmpty else { return }
-        needsInitialScroll = false
+        // Already there — the previous pass's landing survived this one's geometry, so it was
+        // computed against the real thing and the screen is parked. Anything below the bottom
+        // (a buffer too short to scroll) settles here too.
+        guard distanceFromBottom > 0.5 else {
+            needsInitialScroll = false
+            return
+        }
         scrollToBottom()
+        landingPasses += 1
+        // Bounded, for the same reason the jump's convergence is: a screen whose content somehow
+        // never settles must stop stealing the scroll rather than fight the reader forever.
+        if landingPasses >= Self.landingPasses { needsInitialScroll = false }
     }
 
     /// The row a converging jump scrolls to and flashes: the first unread (just below the
@@ -1475,6 +1515,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var isNearBottom: Bool { distanceFromBottom < 80 }
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
+
+    /// The reader has taken hold of the list, so nothing is owed a landing any more.
+    ///
+    /// The landing holds across several layout passes now (see `landInitialIfNeeded`), and a
+    /// buffer whose rows arrive late can still be waiting for one when a finger arrives first.
+    /// Without this, the next pass — a keyboard, a rotation, a composer growing a line — would
+    /// answer a deliberate scroll by pulling the reader back to the bottom.
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        needsInitialScroll = false
+    }
 
     /// A drag that ends without a fling settles here; one with a fling settles in
     /// `scrollViewDidEndDecelerating`. Both have to flush, or a preview that arrived mid-gesture
