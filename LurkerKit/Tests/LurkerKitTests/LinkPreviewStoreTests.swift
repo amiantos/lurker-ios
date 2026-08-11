@@ -127,7 +127,7 @@ struct LinkPreviewStoreTests {
         await settle()
         #expect(stub.batches.count == 1)
         #expect(store.retry["https://e.test/gone"] == nil, "nothing armed, so nothing polls")
-        #expect(store.runDueReasks().isEmpty, "and nothing ever comes due")
+        #expect(!store.runDueReasks(), "and nothing ever comes due")
 
         store.request(["https://e.test/gone"])
         await settle()
@@ -210,11 +210,11 @@ struct LinkPreviewStoreTests {
 
         // Not yet due: the floor is 15s and the deadline is jittered around it.
         clock.date.addTimeInterval(5)
-        #expect(store.runDueReasks().isEmpty)
+        #expect(!store.runDueReasks())
         #expect(stub.batches.count == 1)
 
         clock.date.addTimeInterval(60)
-        #expect(!store.runDueReasks().isEmpty)
+        #expect(store.runDueReasks())
         await settle()
         #expect(stub.batches.count == 2, "the URL is asked about a second time")
     }
@@ -244,7 +244,7 @@ struct LinkPreviewStoreTests {
         #expect(store.retry["https://e.test/dead"] == nil, "a verdict arms nothing")
 
         clock.date.addTimeInterval(600)
-        #expect(store.runDueReasks().isEmpty)
+        #expect(!store.runDueReasks())
         #expect(stub.batches.count == 1)
     }
 
@@ -377,6 +377,31 @@ struct LinkPreviewStoreTests {
         #expect(reported.first == ["https://e.test/a", "https://e.test/b"])
     }
 
+    @Test("a re-ask tells the list nothing, because it changes nothing on screen")
+    func reaskIsSilent() async {
+        // ⚠⚠ A re-ask re-queues a URL but KEEPS its retry entry (parked), and `isPending` reads
+        // anything holding one as settled — so the message's gate was settled before and is
+        // settled after, and no row can draw differently. Announcing it spent a full reload of
+        // every visible cell per rung of the ladder: six of them for a link the server can't
+        // resolve, each one discarding and rebuilding the screen to redraw nothing. The ANSWER
+        // is what gets announced, from the flush that follows.
+        let clock = TestClock()
+        let stub = Stub()
+        stub.answer = { _ in [] }  // a transport failure: arms the ladder
+        let store = LinkPreviewStore(now: { clock.date }, jitter: { 0.5 }) { urls in
+            stub.batches.append(urls)
+            return stub.answer(urls)
+        }
+        store.request(["https://e.test/dead"])
+        await settle()
+
+        var reported: [Set<String>] = []
+        store.onUpdate = { reported.append($0) }
+        clock.date.addTimeInterval(PreviewReask.floor + 1)
+        #expect(store.runDueReasks(), "the rung is due")
+        #expect(reported.isEmpty, "and it is nobody's business but the store's")
+    }
+
     @Test("a url the server never mentioned still counts as moved")
     func reportsOmittedUrlsToo() async {
         // ⚠ The set is what MOVED, not what was answered. An omission goes onto the retry
@@ -438,7 +463,7 @@ struct LinkPreviewStoreTests {
         store.request(["https://e.test/skewed"])
         await settle()
         #expect(store.retry["https://e.test/skewed"] == nil)
-        #expect(store.runDueReasks().isEmpty)
+        #expect(!store.runDueReasks())
     }
 
     @Test("a URL nobody ever answers is chased a bounded number of times, then let go")
@@ -522,7 +547,7 @@ struct LinkPreviewStoreTests {
         #expect(store.preview(for: "https://e.test/busy") == nil, "no value to short-circuit on")
 
         clock.date.addTimeInterval(60)
-        #expect(!store.runDueReasks().isEmpty, "the URL is now queued for a second ask")
+        #expect(store.runDueReasks(), "the URL is now queued for a second ask")
         #expect(store.retry["https://e.test/busy"] != nil, "and still carries its retry entry")
         #expect(!store.isPending("https://e.test/busy"))
         #expect(store.allSettled(["https://e.test/busy"]))
@@ -550,7 +575,7 @@ struct LinkPreviewStoreTests {
                 == PreviewReask.floor)
 
         clock.date.addTimeInterval(60)
-        #expect(!store.runDueReasks().isEmpty)
+        #expect(store.runDueReasks())
         await settle()
 
         #expect(store.retry["https://e.test/flaky"]?.tries == 2, "the count carried across")

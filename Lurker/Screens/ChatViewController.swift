@@ -2737,10 +2737,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // remade, a touch in progress on a link or an image cancelled, and the reader re-pinned
         // to the bottom, once per batch for the length of a connect burst. Parsing the URLs out
         // of a dozen visible rows costs a great deal less than rebuilding them.
+        //
+        // ⚠ And then only the rows that matched, not the screenful they sit in. A row nobody
+        // resolved anything for cannot change height, so rebuilding it is the same waste at
+        // smaller scale — and it is the scale that actually reaches the reader, since priming
+        // runs outward from the frame they are looking at: their own buffer is what matches on
+        // batch 1 of a burst, and a finger resting on one of its images would be thrown off by a
+        // link resolving three rows away.
         let moved = movedPreviewUrls
         movedPreviewUrls = []
-        guard !moved.isEmpty, visible.contains(where: { mentionsAny(of: moved, at: $0.row) })
-        else { return }
+        guard !moved.isEmpty else { return }
+        let affected = visible.filter { mentionsAny(of: moved, at: $0.row) }
+        guard !affected.isEmpty else { return }
 
         // Two ways to stay where you are, and which one applies is the reader's position.
         //
@@ -2754,7 +2762,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let wasNearBottom = isNearBottom
         let anchors = wasNearBottom ? [] : visibleAnchors()
         UIView.performWithoutAnimation {
-            tableView.reloadRows(at: visible, with: .none)
+            tableView.reloadRows(at: affected, with: .none)
             tableView.layoutIfNeeded()
             if !wasNearBottom { restorePosition(anchoredTo: anchors) }
         }
@@ -2767,16 +2775,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Reads the addresses out of the message the same way the renderer does, through
     /// `PreviewSelection`, so the two can't disagree about what a row mentions. Rows that aren't
     /// messages, and every row at all when the feature is off, answer no for free.
+    ///
+    /// ⚠ Through `MessageRow.message`, which is exhaustive over the enum, rather than a switch of
+    /// its own with a `default`. A new message-bearing row case would compile clean against the
+    /// default and quietly answer "mentions nothing" — so its previews would never repaint while
+    /// it was on screen, only once it had left the viewport and come back, which is the exact bug
+    /// `flushPendingPreviewReload` exists to close.
     private func mentionsAny(of urls: Set<String>, at index: Int) -> Bool {
         guard let previews = previewContext, previews.isEnabled, rows.indices.contains(index)
         else { return false }
-        let message: Message? =
-            switch rows[index] {
-            case .bubble(let message, _): message
-            case .line(let message): message
-            default: nil
-            }
-        guard let message, PreviewSelection.isPreviewable(message.type) else { return false }
+        guard let message = rows[index].message, PreviewSelection.isPreviewable(message.type)
+        else { return false }
         return PreviewSelection.urls(
             in: message.text,
             inlineMedia: previews.inlineMedia,

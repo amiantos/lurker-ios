@@ -86,8 +86,12 @@ public final class LinkPreviewStore {
     /// those, 600ms apart.
     ///
     /// ⚠ The set is every URL whose state MOVED, not only the ones that got a value. A URL the
-    /// server omitted, or one put back on the retry ladder, moves a message's reveal gate exactly
-    /// as an answer does — see `allSettled`, which is why this used to fire unconditionally.
+    /// server omitted moves a message's reveal gate exactly as an answer does: `forgetForRetry`
+    /// arms its ladder, and `isPending` reads anything holding a retry entry as settled — so the
+    /// omission can be the event that completes a gate. That is why this fires for the whole
+    /// batch that was sent.
+    ///
+    /// ⚠⚠ A RE-ASK is not such an event and does not come through here — see `runDueReasks`.
     public var onUpdate: ((Set<String>) -> Void)?
 
     private let resolve: ([String]) async -> [LinkPreview]
@@ -346,20 +350,23 @@ public final class LinkPreviewStore {
         asked.remove(url)
     }
 
-    /// Re-queue everything whose re-ask has come due. Returns WHICH URLs were queued — empty
-    /// when nothing was due.
+    /// Re-queue everything whose re-ask has come due. Returns whether anything was queued.
     ///
-    /// ⚠ The set rather than a bool because `onUpdate` carries it now: a re-ask puts a URL back
-    /// in play, which un-settles its message's gate, and a consumer deciding whether that touches
-    /// anything on screen needs to know which message.
+    /// ⚠⚠ It notifies NOBODY, and that is not an oversight. A re-ask changes no rendering: the
+    /// `retry` entry stays (parked at `.distantFuture` below), and `isPending` answers `false`
+    /// for anything holding one — so the message's gate was settled before this ran and is
+    /// settled after. What the reader eventually sees is the ANSWER, which comes back through
+    /// `flush` and is announced there. Telling the list about the re-queue instead spent a full
+    /// visible-rows reload per rung of the ladder — six of them for a link the server can't
+    /// resolve, each rebuilding every cell on screen to redraw nothing.
     ///
     /// Internal rather than private so a test can drive it directly: the decision is the part
     /// worth asserting, and reaching it through `reaskTask` would mean sleeping out a real
     /// backoff to see it.
     @discardableResult
-    func runDueReasks() -> Set<String> {
+    func runDueReasks() -> Bool {
         let moment = now()
-        var queued: Set<String> = []
+        var queued = false
         for (url, state) in retry where state.at <= moment {
             // Parked as in-flight rather than deleted, and the difference IS the backoff: the
             // `tries` count lives in this entry, so removing it re-armed at tries = 1 every time
@@ -376,9 +383,9 @@ public final class LinkPreviewStore {
             // anything today.
             asked.insert(url)
             enqueue(url)
-            queued.insert(url)
+            queued = true
         }
-        if !queued.isEmpty { scheduleFlush() }
+        if queued { scheduleFlush() }
         return queued
     }
 
@@ -394,8 +401,7 @@ public final class LinkPreviewStore {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
             self.reaskTask = nil
-            let requeued = self.runDueReasks()
-            if !requeued.isEmpty { self.onUpdate?(requeued) }
+            self.runDueReasks()
             self.scheduleReask()
         }
     }
