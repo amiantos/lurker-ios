@@ -208,6 +208,86 @@ final class UploadProgressTests: XCTestCase {
         XCTAssertEqual(progress.sentFraction, 1)
     }
 
+    // MARK: - Batch policy
+
+    func testConnectionLevelErrorsStopABatchAndFileLevelOnesDoNot() {
+        // The split is "about the pipe" vs "about the file". Getting it backwards means either
+        // four good uploads stranded behind one oversized photo, or nine more files each
+        // waiting out a 300-second timeout on a connection that is already gone.
+        XCTAssertTrue(UploadError.notSignedIn.stopsABatch)
+        XCTAssertTrue(UploadError.unauthorized.stopsABatch)
+        XCTAssertTrue(UploadError.transport("offline").stopsABatch)
+        XCTAssertFalse(UploadError.tooLarge.stopsABatch)
+        XCTAssertFalse(UploadError.cannotCompressEnough.stopsABatch)
+        XCTAssertFalse(UploadError.compressionFailed("bad codec").stopsABatch)
+        // The server ANSWERED, so the pipe works and it was this file it refused.
+        XCTAssertFalse(UploadError.server("unsupported type").stopsABatch)
+    }
+
+    // MARK: - What to say afterwards
+
+    func testACleanBatchSaysNothing() {
+        XCTAssertNil(
+            UploadBatch.summary(picked: 4, uploaded: 4, failures: [], unreadable: 0, cancelled: false)
+        )
+    }
+
+    func testACancelledBatchSaysNothing() {
+        // The user stopped it; they know. An alert confirming what someone just asked for is a
+        // dialog to dismiss, not information.
+        XCTAssertNil(
+            UploadBatch.summary(
+                picked: 5, uploaded: 2, failures: [.tooLarge], unreadable: 0, cancelled: true
+            )
+        )
+    }
+
+    func testOneFileFailingAloneReadsAsAPlainError() {
+        // Unchanged from before batches existed: "Uploaded 0 of 1" is a statistic where a
+        // sentence will do.
+        XCTAssertEqual(
+            UploadBatch.summary(picked: 1, uploaded: 0, failures: [.tooLarge], unreadable: 0, cancelled: false),
+            UploadError.tooLarge.userMessage
+        )
+    }
+
+    func testAPartialBatchCountsWhatLanded() {
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 4, failures: [.tooLarge], unreadable: 0, cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 4 of 5. \(UploadError.tooLarge.userMessage)")
+    }
+
+    func testUnreadableFilesAreCountedRatherThanVanishing() {
+        // The whole reason the picker reports its own failures: three of five uploading with
+        // no mention of the other two reads as data loss.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 3, failures: [], unreadable: 2, cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 3 of 5. 2 couldn't be read.")
+    }
+
+    func testManyFailuresLeadWithACountAndOneExample() {
+        let summary = UploadBatch.summary(
+            picked: 4, uploaded: 1, failures: [.tooLarge, .cannotCompressEnough, .server("nope")],
+            unreadable: 0, cancelled: false
+        )
+        XCTAssertEqual(
+            summary,
+            "Uploaded 1 of 4. 3 failed — first error: \(UploadError.tooLarge.userMessage)"
+        )
+    }
+
+    func testFilesNeverAttemptedAreCountedNotInvented() {
+        // A `stopsABatch` error cuts the run short, so there are fewer errors than missing
+        // files. The gap is accounted for by "1 of 5" rather than by attributing a reason to
+        // files that were never tried.
+        let summary = UploadBatch.summary(
+            picked: 5, uploaded: 1, failures: [.unauthorized], unreadable: 0, cancelled: false
+        )
+        XCTAssertEqual(summary, "Uploaded 1 of 5. \(UploadError.unauthorized.userMessage)")
+    }
+
     func testTheWholeHappyPathInOrder() {
         var progress = UploadProgress()
         progress.apply(deviceFraction: 0.5)

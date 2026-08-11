@@ -1996,22 +1996,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// (Cancel, or an iPad outside-tap that fires no handler) never leaves `attachmentPicker`
     /// set — which would wedge `isUploadBusy` true and disable the paperclip for the session.
     private func pick(
-        _ start: (AttachmentPicker, @escaping (Result<AttachmentPicker.Picked, AttachmentPicker.PickError>) -> Void) -> Void
+        _ start: (AttachmentPicker, @escaping (Result<AttachmentPicker.Batch, AttachmentPicker.PickError>) -> Void) -> Void
     ) {
         guard !isUploadBusy else { return }
         let picker = AttachmentPicker(presenter: self)
         // The export/copy is a silent multi-second stretch for a large or iCloud video —
-        // raise the readout the moment an item is committed so it isn't a dead pause.
-        picker.onPreparing = { [weak self] in self?.uploadStatus.present(.preparing) }
+        // raise the readout the moment an item is committed so it isn't a dead pause. For a
+        // batch it also has to keep moving, or ten iCloud videos are one frozen "Preparing…".
+        picker.onPreparing = { [weak self] index, total in
+            self?.uploadStatus.present(.preparing, in: .init(index: index, count: total))
+        }
         attachmentPicker = picker
         start(picker) { [weak self] in self?.handlePick($0) }
     }
 
-    private func handlePick(_ result: Result<AttachmentPicker.Picked, AttachmentPicker.PickError>) {
+    private func handlePick(_ result: Result<AttachmentPicker.Batch, AttachmentPicker.PickError>) {
         attachmentPicker = nil
         switch result {
-        case .success(let picked):
-            beginUpload(picked)
+        case .success(let batch):
+            beginUpload(batch.items, unreadable: batch.failed)
         case .failure(.cancelled):
             // A cancel never raised the "Preparing…" readout (it's shown only once an item is
             // committed), but dismiss defensively in case staging began then bailed.
@@ -2036,7 +2039,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             presentUploadAlert("Couldn't read the pasted image.")
             return
         }
-        beginUpload(AttachmentPicker.Picked(url: url, filename: filename, mime: mime, isVideo: false))
+        beginUpload([AttachmentPicker.Picked(url: url, filename: filename, mime: mime, isVideo: false)])
     }
 
     /// A mutable `UploadProgress` the upload's two progress callbacks share. They fire from
@@ -2061,35 +2064,112 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case cancelled
     }
 
-    private func beginUpload(_ picked: AttachmentPicker.Picked) {
-        uploadStatus.present(picked.isVideo ? .compressing(0) : .uploading(0))
-        let token = UUID().uuidString
+    /// Upload a pick, one file at a time, inserting each URL as it lands.
+    ///
+    /// Sequential rather than concurrent: each upload is its own request (the server takes one
+    /// file per `POST`), the readout can only narrate one at a time, and a phone pushing five
+    /// videos at once would just make all five slower. `unreadable` counts files that never
+    /// made it out of the picker — they're reported here so a partial pick isn't silently
+    /// smaller than what the user chose.
+    private func beginUpload(_ items: [AttachmentPicker.Picked], unreadable: Int = 0) {
+        guard !items.isEmpty else {
+            // Everything the user picked failed to stage. Nothing to upload, but something to
+            // say — otherwise the pick simply evaporates.
+            if unreadable > 0 {
+                presentUploadAlert(
+                    UploadBatch.summary(
+                        picked: unreadable, uploaded: 0, failures: [], unreadable: unreadable, cancelled: false
+                    ) ?? "Those files couldn't be read."
+                )
+            }
+            return
+        }
+        let picked = items.count + unreadable
+        uploadStatus.present(
+            items[0].isVideo ? .compressing(0) : .uploading(0),
+            in: .init(index: 1, count: picked)
+        )
         // Strong `self`: the upload must run to completion even if the user leaves this buffer
         // mid-flight (which replaces the root VC). Setting `uploadTask = nil` below breaks the
         // resulting retain cycle, so this VC is released the moment the upload ends.
         uploadTask = Task {
-            let outcome = await self.performUpload(picked, token: token)
+            // Every staged copy is ours to delete, including the ones a cancel or an aborting
+            // failure means we never process. `performUpload` also removes the file it handled,
+            // which is why these are `try?` — a sweep that is idempotent rather than conditional.
+            defer { for item in items { try? FileManager.default.removeItem(at: item.url) } }
+
+            var uploaded = 0
+            var failures: [UploadError] = []
+            var orphaned: [String] = []
+            var cancelled = false
+            var aborted = false
+
+            for (index, item) in items.enumerated() {
+                // Positioned against the files being uploaded, not against everything picked:
+                // a readout that counts up to a total including files that never staged would
+                // stop short of its own total and read as a stall. The picked-vs-uploaded
+                // accounting is the summary's job.
+                let outcome = await self.performUpload(
+                    item,
+                    token: UUID().uuidString,
+                    batch: .init(index: index + 1, count: items.count)
+                )
+                switch outcome {
+                case .inserted(let url):
+                    uploaded += 1
+                    // Deliver to whatever buffer is on screen NOW: the user may have switched
+                    // away since starting the upload, and the link should land where their
+                    // cursor is, not in a torn-down composer (this is what the web client does
+                    // too). Inserted as each one lands rather than in a batch at the end, so a
+                    // long pick fills the composer as it goes instead of all at once.
+                    //
+                    // There may be no buffer on screen at all now that the list is a place you
+                    // can back out to (#49) — and a successful upload whose link goes nowhere,
+                    // silently, is the worst of the outcomes. Hold it for the clipboard below.
+                    if let chat = Self.activeChat() {
+                        chat.composer.insert(url)
+                    } else {
+                        orphaned.append(url)
+                    }
+                case .failed(let error):
+                    failures.append(error)
+                    // One bad file doesn't condemn the rest — but a dead session or a broken
+                    // transport will fail every remaining one identically, and slowly.
+                    aborted = error.stopsABatch
+                case .cancelled:
+                    cancelled = true
+                }
+                if cancelled || aborted { break }
+            }
+
             self.uploadTask = nil
             self.uploadStatus.dismiss()
-            switch outcome {
-            case .inserted(let url):
-                // Deliver to whatever buffer is on screen NOW: the user may have switched away
-                // since starting the upload, and the link should land where their cursor is,
-                // not in a torn-down composer (this is what the web client does too).
-                //
-                // There may be no buffer on screen at all now that the list is a place you can
-                // back out to (#49) — and a successful upload whose link goes nowhere, silently,
-                // is the worst of the three outcomes. Hand it over instead of dropping it.
-                if let chat = Self.activeChat() {
-                    chat.composer.insert(url)
-                } else {
-                    UIPasteboard.general.string = url
-                    Self.presentAlert(title: "Upload finished", message: "The link is on your clipboard.")
-                }
-            case .failed(let error):
-                self.presentUploadAlert(error.userMessage)
-            case .cancelled:
-                break
+
+            // ONE alert for the whole run, assembled from whatever it has to say. Presenting
+            // two in a row would silently lose the second — UIKit refuses a presentation while
+            // one is already in progress — and a stack of them over a buffer list would be a
+            // wall to dismiss either way.
+            var title = "Upload finished"
+            var sentences: [String] = []
+            if let summary = UploadBatch.summary(
+                picked: picked, uploaded: uploaded, failures: failures,
+                unreadable: unreadable, cancelled: cancelled
+            ) {
+                // "Upload failed" is a lie when four of five worked.
+                title = uploaded > 0 ? "Upload incomplete" : "Upload failed"
+                sentences.append(summary)
+            }
+            if !orphaned.isEmpty {
+                // One clipboard write too: each would clobber the last.
+                UIPasteboard.general.string = orphaned.joined(separator: " ")
+                sentences.append(
+                    orphaned.count == 1
+                        ? "The link is on your clipboard."
+                        : "\(orphaned.count) links are on your clipboard."
+                )
+            }
+            if !sentences.isEmpty {
+                Self.presentAlert(title: title, message: sentences.joined(separator: " "))
             }
         }
     }
@@ -2121,7 +2201,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Compress (video only) then upload, reporting each phase to the status view. Returns an
     /// outcome rather than throwing so `beginUpload`'s completion stays a flat switch, and
     /// treats a cancel as its own case so a user-initiated stop never pops an error alert.
-    private func performUpload(_ picked: AttachmentPicker.Picked, token: String) async -> UploadOutcome {
+    private func performUpload(
+        _ picked: AttachmentPicker.Picked,
+        token: String,
+        batch: UploadStatusView.Batch
+    ) async -> UploadOutcome {
         // The picker's copy and any on-device derivative (transcode / HEIC→JPEG) are ours to
         // clean up on every exit.
         defer { try? FileManager.default.removeItem(at: picked.url) }
@@ -2132,10 +2216,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         defer { if let derivedTemp { try? FileManager.default.removeItem(at: derivedTemp) } }
 
         if picked.isVideo {
-            uploadStatus.update(.compressing(0))
+            uploadStatus.update(.compressing(0), in: batch)
             do {
                 let prepared = try await VideoCompressor.prepare(source: picked.url) { fraction in
-                    Task { @MainActor [weak self] in self?.uploadStatus.update(.compressing(fraction)) }
+                    Task { @MainActor [weak self] in self?.uploadStatus.update(.compressing(fraction), in: batch) }
                 }
                 if prepared.isTemporary {
                     derivedTemp = prepared.url
@@ -2159,7 +2243,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
 
         if Task.isCancelled { return .cancelled }
-        uploadStatus.update(.uploading(0))
+        uploadStatus.update(.uploading(0), in: batch)
         // Both legs fold into one value, on the main actor, because they arrive from two
         // different places — `URLSession`'s delegate queue and the WS — and only their
         // combination knows which leg the readout should be naming.
@@ -2172,13 +2256,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             onProgress: { fraction in
                 Task { @MainActor [weak self] in
                     progress.value.apply(deviceFraction: fraction)
-                    self?.uploadStatus.update(UploadStatusView.Phase(progress.value))
+                    self?.uploadStatus.update(UploadStatusView.Phase(progress.value), in: batch)
                 }
             },
             onServerProgress: { frame in
                 Task { @MainActor [weak self] in
                     progress.value.apply(server: frame)
-                    self?.uploadStatus.update(UploadStatusView.Phase(progress.value))
+                    self?.uploadStatus.update(UploadStatusView.Phase(progress.value), in: batch)
                 }
             }
         )

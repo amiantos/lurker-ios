@@ -79,6 +79,69 @@ public enum UploadError: Error, Sendable, Equatable {
             return "Upload failed: \(why)"
         }
     }
+
+    /// Whether this condemns a whole batch, or only the file that hit it.
+    ///
+    /// The split is *is this about the file, or about the pipe?* A file the server refused —
+    /// too large, undecodable — says nothing about the next one, and stopping there would
+    /// strand four good uploads behind one bad photo. A dead session or a broken transport
+    /// will fail every remaining file identically, and each one costs another bounce to
+    /// sign-in or another 300-second timeout before it says so.
+    ///
+    /// `.server` sits on the continue side deliberately: the server answered, so the pipe
+    /// works, and what it refused was this file.
+    public var stopsABatch: Bool {
+        switch self {
+        case .notSignedIn, .unauthorized, .transport:
+            return true
+        case .tooLarge, .cannotCompressEnough, .compressionFailed, .server:
+            return false
+        }
+    }
+}
+
+/// What to tell the user after a multi-file upload. Pure, so the wording of a half-failed
+/// batch is decided somewhere it can be tested rather than inside a view controller.
+public enum UploadBatch {
+    /// The sentence for a batch that didn't fully succeed, or nil when there is nothing worth
+    /// interrupting for.
+    ///
+    /// - `picked`: everything the user selected, including files that never staged.
+    /// - `uploaded`: how many produced a URL.
+    /// - `failures`: the per-file errors actually hit. Shorter than `picked - uploaded` when a
+    ///   `stopsABatch` error cut the run short — the files never attempted have no error of
+    ///   their own, and are accounted for by the count rather than invented reasons.
+    /// - `unreadable`: picked files that couldn't even be staged off the picker.
+    /// - `cancelled`: the user stopped it. Silent by design — they know; an alert confirming
+    ///   what someone just asked for is a dialog to dismiss, not information.
+    public static func summary(
+        picked: Int,
+        uploaded: Int,
+        failures: [UploadError],
+        unreadable: Int,
+        cancelled: Bool
+    ) -> String? {
+        if cancelled { return nil }
+        if failures.isEmpty && unreadable == 0 { return nil }
+
+        // A single file that failed on its own reads as a plain error, exactly as it did
+        // before batches existed. "Uploaded 0 of 1" is a statistic where a sentence will do.
+        if picked == 1, unreadable == 0, let only = failures.first { return only.userMessage }
+        if picked == 1, unreadable == 1 { return "That file couldn't be read." }
+
+        var parts = ["Uploaded \(uploaded) of \(picked)."]
+        if unreadable > 0 {
+            parts.append(unreadable == 1 ? "1 couldn't be read." : "\(unreadable) couldn't be read.")
+        }
+        if let first = failures.first {
+            parts.append(
+                failures.count == 1
+                    ? first.userMessage
+                    : "\(failures.count) failed — first error: \(first.userMessage)"
+            )
+        }
+        return parts.joined(separator: " ")
+    }
 }
 
 /// One `upload-progress` frame: the server narrating the half of an upload this device

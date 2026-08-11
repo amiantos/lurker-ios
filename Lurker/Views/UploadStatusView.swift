@@ -33,6 +33,15 @@ final class UploadStatusView: UIView {
         case sending(fraction: Double?, destination: String?)
     }
 
+    /// Which file of how many, when a pick produced more than one. Shown as a prefix rather
+    /// than folded into each phase's wording, because it's true of every phase and the
+    /// alternative is five labels that each have to remember to say it.
+    struct Batch {
+        /// 1-based, to be read aloud ("2 of 4"), not indexed with.
+        let index: Int
+        let count: Int
+    }
+
     private let glass = UIVisualEffectView()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let label = UILabel()
@@ -103,7 +112,7 @@ final class UploadStatusView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    func update(_ phase: Phase) {
+    func update(_ phase: Phase, in batch: Batch? = nil) {
         switch phase {
         case .preparing:
             label.text = "Preparing…"
@@ -119,11 +128,27 @@ final class UploadStatusView: UIView {
             let sendingTo = destination.map { "Sending to \($0)" } ?? "Sending"
             label.text = fraction.map { "\(sendingTo)… \(percent($0))" } ?? "\(sendingTo)…"
         }
-        label.accessibilityLabel = label.text
+        // Only when there is genuinely more than one — a lone "1/1" on every single-file
+        // upload would be noise dressed as information.
+        if let batch, batch.count > 1 {
+            label.text = "\(batch.index)/\(batch.count) · \(label.text ?? "")"
+            // Spoken in full: "1/4" reads as a fraction or a date, and the slash is a visual
+            // shorthand that shouldn't survive into speech.
+            label.accessibilityLabel = "File \(batch.index) of \(batch.count). \(spokenPhase(label.text))"
+        } else {
+            label.accessibilityLabel = label.text
+        }
     }
 
-    func present(_ phase: Phase) {
-        update(phase)
+    /// The label minus the batch prefix, for VoiceOver — which gets the position as a sentence
+    /// of its own rather than hearing the glyph.
+    private func spokenPhase(_ text: String?) -> String {
+        guard let text, let separator = text.range(of: " · ") else { return text ?? "" }
+        return String(text[separator.upperBound...])
+    }
+
+    func present(_ phase: Phase, in batch: Batch? = nil) {
+        update(phase, in: batch)
         guard isHidden || alpha < 1 else { return }
         isHidden = false
         UIView.animate(
