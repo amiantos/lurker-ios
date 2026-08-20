@@ -116,14 +116,21 @@ public final class RelayBotSet: Sendable {
                   let nick = message.nick,
                   let bot = bots[nick.lowercased()]
             else { return message }
-            let templates: [RelayTemplate]
-            if let cached = compiled[bot.pattern] {
-                templates = cached
-            } else {
-                templates = RelayEnvelope.templates(for: bot.pattern)
-                compiled[bot.pattern] = templates
+            func templates(for pattern: String) -> [RelayTemplate] {
+                if let cached = compiled[pattern] { return cached }
+                let built = RelayEnvelope.templates(for: pattern)
+                compiled[pattern] = built
+                return built
             }
-            guard let parsed = RelayEnvelope.parse(message.text, templates: templates) else { return message }
+            // Chained bridges (#801): keep unwrapping while the speaker a hop reveals is itself
+            // marked, so a relay of a relay lands on the person who spoke rather than on the
+            // bridge in between. `via` stays the OUTER bot — that's the only real IRC entity in
+            // the chain, and it's what View Profile and the sheet's "via" line need.
+            guard let parsed = RelayEnvelope.parseChain(
+                message.text,
+                templates: templates(for: bot.pattern),
+                nextHop: { nick in bots[nick.lowercased()].map { templates(for: $0.pattern) } }
+            ) else { return message }
             return message.relayed(
                 to: parsed.nick, text: parsed.text, via: bot.nick, source: parsed.source
             )

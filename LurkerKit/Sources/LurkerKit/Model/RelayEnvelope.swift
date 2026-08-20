@@ -226,6 +226,55 @@ public enum RelayEnvelope {
         return nil
     }
 
+    /// How many envelopes deep a chain of marked bots is followed. Two hops is the deepest chain
+    /// seen in a real corpus; the cap is a backstop against a pathological body, not a limit
+    /// anyone should reach. Mirrors `MAX_RELAY_DEPTH` in the web's `shared/parseRelay.ts`.
+    static let maxDepth = 4
+
+    /// Parse an envelope, then keep parsing while the speaker it reveals is *itself* a marked
+    /// relay bot (#801). Port of the web's `parseRelayChain` — keep the two in step.
+    ///
+    /// Bridges chain: a bot bridging network A relays network B's bridge bot, which is itself
+    /// bridging Matrix — `[IRC-nERDs] <~|> <alice[m]/OFTC> hi`. Unwrapping once attributes the
+    /// line to `|`, an intermediate robot rather than a speaker.
+    ///
+    /// ⚠ Every hop past the first is gated on a mark, and that gate is the design, not caution:
+    /// `<nick> …` inside a relayed line is *also* how people quote each other on IRC, and the two
+    /// are structurally identical. Nothing in `[efnet] <+raah> <ultros> heretic!` says whether
+    /// `ultros` is a bridge or someone raah is quoting — only the user knows, and a mark is them
+    /// saying so. Unwrapping on shape alone puts words in the quoted person's mouth.
+    ///
+    /// ⚠ A hop past the first is keyed on a nick that came out of the *bot's text* — on most
+    /// bridges a user-settable Discord/Matrix display name, not a nick any server enforced. So
+    /// once a bridge is marked, anyone in the room it carries can rename themselves to that
+    /// bridge's name and hand us a second envelope to unwrap: `<admin> everyone leave now`,
+    /// attributed to `admin` with no bot chrome left. The first hop can't be spoofed that way,
+    /// since the outer nick is a real IRC nick. Accepted rather than defended against — this is
+    /// the trusted-friends threat model, marking a bridge is opting into what it says, and the
+    /// defences available (demanding a `[source]` tag on every hop, say) would break the plain
+    /// `<nick> message` bridges this exists to read.
+    ///
+    /// `nextHop` answers for a revealed nick: nil when it carries no mark, otherwise the templates
+    /// of the mark it carries. The innermost speaker wins, as does the innermost `[source]` tag
+    /// actually present, so a chain that names the platform only on an outer hop keeps that name.
+    public static func parseChain(
+        _ body: String?,
+        templates: [RelayTemplate],
+        nextHop: (String) -> [RelayTemplate]?
+    ) -> RelayParse? {
+        guard var parsed = parse(body, templates: templates) else { return nil }
+        for _ in 1 ..< maxDepth {
+            // A marked hop whose line doesn't parse ends the chain where it stands: the bot said
+            // something in its own voice, and that is still correctly attributed to it.
+            guard let hop = nextHop(parsed.nick), let next = parse(parsed.text, templates: hop)
+            else { break }
+            parsed = RelayParse(
+                source: next.source ?? parsed.source, nick: next.nick, text: next.text
+            )
+        }
+        return parsed
+    }
+
     /// Convenience for a single stored pattern — what a test or a one-off lookup wants. The
     /// render path goes through `RelayBotSet.reattributing`, which compiles once per list instead.
     public static func parse(_ body: String?, pattern: String? = nil) -> RelayParse? {

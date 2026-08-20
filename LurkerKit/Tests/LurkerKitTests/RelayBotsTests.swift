@@ -128,6 +128,112 @@ final class RelayBotsTests: XCTestCase {
         XCTAssertEqual(rows.map(\.nick), ["alice", "bob", "b"])
     }
 
+    // MARK: - Chained bridges (#801)
+
+    /// The reported line, verbatim from a real corpus: `nR` bridges the IRC-nERDs network, where
+    /// a bot nicked `|` is itself bridging Matrix/OFTC.
+    private static let nested =
+        "\u{2}[IRC-nERDs]\u{2} <~\u{3}06|\u{3}> \u{3}13<yrdsb3222[m]/OFTC> \u{f}Is their a discord"
+
+    func testStopsAtTheIntermediateBridgeWhenOnlyTheOuterBotIsMarked() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "nR")]])
+        let rows = set.reattributing([message(1, nick: "nR", text: Self.nested)], networkId: 1)
+        XCTAssertEqual(rows[0].nick, "|")
+        XCTAssertEqual(rows[0].relaySource, "IRC-nERDs")
+        XCTAssertEqual(rows[0].text, "\u{3}13<yrdsb3222[m]/OFTC> \u{f}Is their a discord")
+    }
+
+    func testReachesTheRealSpeakerOnceTheIntermediateBridgeIsMarkedToo() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "nR"), RelayBot(nick: "|")]])
+        let rows = set.reattributing([message(1, nick: "nR", text: Self.nested)], networkId: 1)
+        XCTAssertEqual(rows[0].nick, "yrdsb3222[m]/OFTC")
+        XCTAssertEqual(rows[0].text, "\u{f}Is their a discord")
+        // The outer tag survives the hops inside it, and `via` stays the real IRC entity.
+        XCTAssertEqual(rows[0].relaySource, "IRC-nERDs")
+        XCTAssertEqual(rows[0].relayBot, "nR")
+    }
+
+    /// Quoting looks exactly like an envelope, which is why every hop needs a mark of its own.
+    /// Real line: raah, on efnet, quoting ultros.
+    func testLeavesAQuotedNickAlone() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "nR"), RelayBot(nick: "|")]])
+        let quote = "\u{2}[efnet]\u{2} <+\u{3}03raah\u{3}> <\u{3}10ultros\u{3}> blasphemer! and a heretic!"
+        let rows = set.reattributing([message(1, nick: "nR", text: quote)], networkId: 1)
+        XCTAssertEqual(rows[0].nick, "raah")
+    }
+
+    func testFollowsAThreeDeepChainAndPrefersTheInnermostSourceTag() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "DeltaCharlie"), RelayBot(nick: "nR")]])
+        let rows = set.reattributing(
+            [message(1, nick: "DeltaCharlie", text: "<nR> [rizon] <Nsane> Looks like the sequel bombed")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "Nsane")
+        XCTAssertEqual(rows[0].relaySource, "rizon")
+        XCTAssertEqual(rows[0].text, "Looks like the sequel bombed")
+    }
+
+    /// Load-bearing rather than incidental: the next hop is looked up by the nick the last one
+    /// returned, so a prefix left on it would miss the marks and stop the chain a hop short.
+    func testStripsAMembershipPrefixOnAnInnerHopToo() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "sscout"), RelayBot(nick: "DOMF")]])
+        let rows = set.reattributing(
+            [message(1, nick: "sscout", text: "<+DOMF> <+Nelluk> many ghosts living and dead abound")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "Nelluk")
+        XCTAssertEqual(rows[0].text, "many ghosts living and dead abound")
+    }
+
+    /// The case that actually pins the direction of the coalesce: the tests either side of it
+    /// carry a tag on one hop only, and pass whichever way it's written.
+    func testPrefersTheInnermostSourceWhenEveryHopCarriesOne() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "outer"), RelayBot(nick: "bridge")]])
+        let rows = set.reattributing(
+            [message(1, nick: "outer", text: "[A] <bridge> [B] <alice> hi")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "alice")
+        XCTAssertEqual(rows[0].relaySource, "B")
+    }
+
+    func testAnInnerHopUsesItsOwnCustomTemplate() {
+        let set = RelayBotSet(byNetwork: [1: [
+            RelayBot(nick: "outer"),
+            RelayBot(nick: "bridge", pattern: "{source} » {nick} » {message}"),
+        ]])
+        let rows = set.reattributing(
+            [message(1, nick: "outer", text: "[net] <bridge> matrix » alice » hey")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "alice")
+        XCTAssertEqual(rows[0].relaySource, "matrix")
+        XCTAssertEqual(rows[0].text, "hey")
+    }
+
+    /// A marked hop speaking in its own voice ends the chain where it stands, still attributed.
+    func testEndsTheChainWhenAMarkedHopSaysSomethingOfItsOwn() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "outer"), RelayBot(nick: "bridge")]])
+        let rows = set.reattributing(
+            [message(1, nick: "outer", text: "[net] <bridge> reconnected to matrix")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "bridge")
+        XCTAssertEqual(rows[0].relaySource, "net")
+        XCTAssertEqual(rows[0].text, "reconnected to matrix")
+    }
+
+    func testTerminatesOnABotWhoseEnvelopeNamesItself() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "loop")]])
+        let rows = set.reattributing(
+            [message(1, nick: "loop", text: "<loop> <loop> <loop> <loop> <loop> <loop> <loop> done")],
+            networkId: 1
+        )
+        // Depth-capped rather than looping — it stops mid-chain, still attributed.
+        XCTAssertEqual(rows[0].nick, "loop")
+        XCTAssertEqual(rows[0].text, "<loop> <loop> <loop> done")
+    }
+
     // MARK: - The wire
 
     func testTheSnapshotSeedsMarksAndReplacesThemWholesale() {
