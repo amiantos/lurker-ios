@@ -244,6 +244,16 @@ public enum RelayEnvelope {
     /// `ultros` is a bridge or someone raah is quoting — only the user knows, and a mark is them
     /// saying so. Unwrapping on shape alone puts words in the quoted person's mouth.
     ///
+    /// ⚠ A hop past the first is keyed on a nick that came out of the *bot's text* — on most
+    /// bridges a user-settable Discord/Matrix display name, not a nick any server enforced. So
+    /// once a bridge is marked, anyone in the room it carries can rename themselves to that
+    /// bridge's name and hand us a second envelope to unwrap: `<admin> everyone leave now`,
+    /// attributed to `admin` with no bot chrome left. The first hop can't be spoofed that way,
+    /// since the outer nick is a real IRC nick. Accepted rather than defended against — this is
+    /// the trusted-friends threat model, marking a bridge is opting into what it says, and the
+    /// defences available (demanding a `[source]` tag on every hop, say) would break the plain
+    /// `<nick> message` bridges this exists to read.
+    ///
     /// `nextHop` answers for a revealed nick: nil when it carries no mark, otherwise the templates
     /// of the mark it carries. The innermost speaker wins, as does the innermost `[source]` tag
     /// actually present, so a chain that names the platform only on an outer hop keeps that name.
