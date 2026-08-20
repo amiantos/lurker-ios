@@ -173,6 +173,30 @@ final class RelayBotsTests: XCTestCase {
         XCTAssertEqual(rows[0].text, "Looks like the sequel bombed")
     }
 
+    /// Load-bearing rather than incidental: the next hop is looked up by the nick the last one
+    /// returned, so a prefix left on it would miss the marks and stop the chain a hop short.
+    func testStripsAMembershipPrefixOnAnInnerHopToo() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "sscout"), RelayBot(nick: "DOMF")]])
+        let rows = set.reattributing(
+            [message(1, nick: "sscout", text: "<+DOMF> <+Nelluk> many ghosts living and dead abound")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "Nelluk")
+        XCTAssertEqual(rows[0].text, "many ghosts living and dead abound")
+    }
+
+    /// The case that actually pins the direction of the coalesce: the tests either side of it
+    /// carry a tag on one hop only, and pass whichever way it's written.
+    func testPrefersTheInnermostSourceWhenEveryHopCarriesOne() {
+        let set = RelayBotSet(byNetwork: [1: [RelayBot(nick: "outer"), RelayBot(nick: "bridge")]])
+        let rows = set.reattributing(
+            [message(1, nick: "outer", text: "[A] <bridge> [B] <alice> hi")],
+            networkId: 1
+        )
+        XCTAssertEqual(rows[0].nick, "alice")
+        XCTAssertEqual(rows[0].relaySource, "B")
+    }
+
     func testAnInnerHopUsesItsOwnCustomTemplate() {
         let set = RelayBotSet(byNetwork: [1: [
             RelayBot(nick: "outer"),
