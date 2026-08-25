@@ -39,14 +39,18 @@ public enum EventFilter {
 
     /// The row types `.none` hides: everything consolidation folds, plus `mode`.
     ///
-    /// `mode` is excluded from `Consolidation.consolidatableTypes` on purpose — being opped
-    /// or banned is worth its own line, and it has no per-nick net effect to summarize. But a
-    /// reader who asked for *no* event noise means op/voice/ban churn too, so the strictest
-    /// rung takes it as well.
+    /// `mode` is excluded from `Consolidation.consolidatableTypes` for a reason that is about
+    /// page sizing rather than about modes: that set also defines the `.renderable` unit, so
+    /// moving `mode` into it would change what a page contains for every client. Mode rows
+    /// DO fold — see `Consolidation.foldsIntoRun`. And a reader who asked for *no* event
+    /// noise means op/voice/ban churn too, so the strictest rung takes all of it.
     ///
-    /// Deliberately absent, because they are things that happened rather than churn: `kick`
-    /// (someone was removed, and by whom), `topic`, `invite`, `error`. Hiding those would make
-    /// the buffer lie about what happened rather than merely be quieter.
+    /// ⚠ `kick`, `topic`, `invite` and `error` are absent here, and that is an
+    /// **undocumented default rather than a decision anyone made** — they were simply never
+    /// brought into the filters, and nobody has revisited it. Earlier revisions of this
+    /// comment asserted a principle ("things that happened, not churn") as though it were
+    /// settled; it wasn't. Don't cite it as a reason for anything. If someone asks for these
+    /// to be hidden, that is a live question, not a closed one.
     public static let noiseTypes: Set<EventType> = Consolidation.consolidatableTypes.union([.mode])
 
     /// Whether a message is event noise, i.e. hidden entirely at `.none`.
