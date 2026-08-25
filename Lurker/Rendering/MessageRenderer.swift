@@ -109,8 +109,16 @@ enum MessageRenderer {
             appendReason(message.text, to: line, base: base)
         case .mode:
             line.append(actor)
-            line.append(muted(" set ", base: base))
-            line.append(muted(modeDescription(message), base: base))
+            for segment in ModeNarration.describe(message.modes, rawText: message.text) {
+                switch segment {
+                case .text(let t), .arg(let t):
+                    line.append(muted(t, base: base))
+                case .nick(let n):
+                    // Only ever emitted for a `prefix` change, so this is a real member and
+                    // never a mask — a ban's target must not get a nick's colour and menu.
+                    line.append(nickToken(n, base: base))
+                }
+            }
         case .chghost:
             // The suffix here is the mask *before* the change — the new one is the body of
             // the line — which is what makes weechat's "nick (old) has changed host to new"
@@ -543,13 +551,6 @@ enum MessageRenderer {
 
     /// The change list of a mode event as text — "+o alice", or "+o alice +nt". Prefers the
     /// structured `modes` (so it stays clean); falls back to the raw `text` the server sends.
-    private static func modeDescription(_ message: Message) -> String {
-        guard !message.modes.isEmpty else { return message.text ?? "" }
-        return message.modes
-            .map { change in change.param.map { "\(change.mode) \($0)" } ?? change.mode }
-            .joined(separator: " ")
-    }
-
     private static func identityClause(
         _ group: ConsolidationSummary.IdentityGroup, base: UIFont
     ) -> NSAttributedString {
@@ -566,7 +567,7 @@ enum MessageRenderer {
         if group.hidden > 0 {
             clause.append(muted(", and \(group.hidden) other\(group.hidden == 1 ? "" : "s")", base: base))
         }
-        clause.append(muted(verb(group.kind), base: base))
+        clause.append(muted(verb(group), base: base))
         return clause
     }
 
@@ -583,14 +584,48 @@ enum MessageRenderer {
         }
     }
 
-    private static func verb(_ kind: ConsolidationSummary.IdentityGroup.Kind) -> String {
-        switch kind {
-        case .joined: " joined"
-        case .left: " left"
-        case .reconnected: " reconnected"
-        case .joinedAndLeft: " joined briefly"
-        case .renamed: "" // the → in the name conveys it
-        case .rehosted: " changed host"
+    private static func verb(_ group: ConsolidationSummary.IdentityGroup) -> String {
+        switch group.kind {
+        case .joined: return " joined"
+        case .left: return " left"
+        case .reconnected: return " reconnected"
+        case .joinedAndLeft: return " joined briefly"
+        case .renamed: return "" // the → in the name conveys it
+        case .rehosted: return " changed host"
+        default: return modeVerb(group)
+        }
+    }
+
+    /// What a member-prefix letter grants, for the summary's "were opped" phrasing.
+    ///
+    /// Only the LETTER travels on the group — the words are each client's own business, the
+    /// same way "joined" and "changed host" are — so this table lives here rather than in
+    /// LurkerKit, mirroring how the web client does it.
+    ///
+    /// `o` and `v` are effectively all real traffic and get proper verbs. Anything else falls
+    /// back to the token: inventing English for `+a` on an ircd nobody in the room runs would
+    /// be guessing, and "was given +a" is honest and readable.
+    private static let modeVerbs: [String: (on: String, off: String)] = [
+        "o": (on: "opped", off: "deopped"),
+        "v": (on: "voiced", off: "devoiced"),
+    ]
+
+    private static func modeVerb(_ group: ConsolidationSummary.IdentityGroup) -> String {
+        guard let letter = group.kind.modeLetter else { return "" }
+        let be = group.visible.count + group.hidden == 1 ? " was " : " were "
+        if let verb = modeVerbs[letter] {
+            switch group.kind {
+            case .modeGranted: return "\(be)\(verb.on)"
+            case .modeRevoked: return "\(be)\(verb.off)"
+            case .modeBriefly: return "\(be)briefly \(verb.on)"
+            default: return "\(be)\(verb.on) again"
+            }
+        }
+        switch group.kind {
+        case .modeGranted: return "\(be)given +\(letter)"
+        case .modeRevoked: return " lost +\(letter)"
+        case .modeBriefly: return " briefly had +\(letter)"
+        default: return "\(be)given +\(letter) again"
         }
     }
 

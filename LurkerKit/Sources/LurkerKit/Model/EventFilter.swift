@@ -91,9 +91,11 @@ public enum EventFilter {
 /// recently, so membership churn from silent lurkers stops threading through the conversation.
 /// A port of the web's `MessageList.vue` filter (#63), reading the same five tuning keys.
 ///
-/// Only churn is ever hidden. This never touches conversation, and never touches `mode`, `kick`,
-/// `topic` or `invite` — a quiet user being opped or kicked is a thing that happened, and the
-/// question this rung asks ("did anyone care about this person's presence?") doesn't apply to it.
+/// Only churn is ever hidden. This never touches conversation, `kick`, `topic` or `invite`.
+///
+/// `mode` DOES take part, but on different terms: a mode row is judged on the nicks it acted
+/// ON rather than on its author (see `Modes.smartHides`), and only when every change in it
+/// grants or revokes member status. Bans, keys, limits and channel flags always show.
 public struct SmartFilter: Sendable {
 
     /// How long before an event a nick's last message still counts as "recently spoke".
@@ -110,6 +112,8 @@ public struct SmartFilter: Sendable {
     /// for the same reason (lurker#591).
     public let filtersQuit: Bool
     public let filtersNick: Bool
+    /// Covers channel MODE rows that only grant or revoke member status.
+    public let filtersMode: Bool
 
     /// Read the five tuning keys. All server-side (#65) and shared across devices — only the
     /// tier above them is split by device class. The fallbacks match the registry's own defaults
@@ -122,10 +126,25 @@ public struct SmartFilter: Sendable {
         filtersJoin = settings.bool("chat.smart_filter_join", default: true)
         filtersQuit = settings.bool("chat.smart_filter_quit", default: true)
         filtersNick = settings.bool("chat.smart_filter_nick", default: true)
+        filtersMode = settings.bool("chat.smart_filter_mode", default: true)
     }
 
     /// Whether this row is churn from someone nobody was talking to.
     public func hides(_ message: Message, speakers: SpeakerMap, ownNick: String?) -> Bool {
+        // A mode row asks a different question of a different subject, so it takes its own
+        // path rather than being squeezed through the actor-keyed one below.
+        if message.type == .mode {
+            guard filtersMode, !message.isSelf, let at = message.date else { return false }
+            return Modes.smartHides(
+                message.modes,
+                actorNick: message.nick,
+                ownNick: ownNick,
+                spokeRecently: { nick in
+                    guard let spoke = speakers[nick] else { return false }
+                    return spoke <= at && at.timeIntervalSince(spoke) <= delay
+                }
+            )
+        }
         guard filters(message.type), !message.isSelf,
               let nick = message.nick, !nick.isEmpty,
               !isOurs(message, ownNick: ownNick)

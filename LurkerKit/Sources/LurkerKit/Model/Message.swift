@@ -227,17 +227,50 @@ public struct Message: Equatable, Sendable {
 
 /// One entry from a `mode` event's change list, e.g. `+o` on `alice`. `param` is nil for
 /// paramless channel flags like `+n`/`+t`.
+/// What class of thing a single mode change is, as classified by the SERVER.
+///
+/// Telling `+o alice` (op churn) from `+b alice` (a ban whose mask happens to look like a
+/// nick) needs the network's ISUPPORT `PREFIX` and `CHANMODES`, which no client is sent. So
+/// the server classifies each change at publish time and stamps it; the stamp rides
+/// `extra.modes` into storage, so a backlog row answers the same way a live one does.
+///
+/// ⚠ Never derive this locally from a hardcoded `q a o h v` set. That was tried on the web
+/// and disagreed with solanum, where `+q` is a *quiet* — a list mode whose mask is often a
+/// bare nick (lurker#486). The member `modes` letters elsewhere in this file are a display
+/// ordering, not a classification set.
+public enum ModeChangeKind: String, Equatable, Sendable {
+    /// A member's status changed; `param` is a nick. The churn the filters care about.
+    case prefix
+    /// A mask went onto or off a list mode — a ban, exemption or quiet.
+    case list
+    /// A channel flag or parameter mode: `+m`, `+k`, `+l`.
+    case chan
+}
+
 public struct ModeChange: Equatable, Sendable {
     /// The signed mode token, e.g. `"+o"` or `"-v"`.
     public let mode: String
     /// The argument the mode applies to, when it takes one (a nick for `+o`, a mask for
     /// `+b`, a key for `+k`). Nil for a bare channel flag.
     public let param: String?
+    /// The server's classification. Nil on rows stored before the stamp existed — treat
+    /// missing as "not prefix", which is the fail-visible direction: an unclassified row
+    /// shows and never folds.
+    public let kind: ModeChangeKind?
 
-    public init(mode: String, param: String?) {
+    public init(mode: String, param: String?, kind: ModeChangeKind? = nil) {
         self.mode = mode
         self.param = param
+        self.kind = kind
     }
+
+    /// The letter of the signed token, i.e. `+o` → `o`.
+    public var letter: String {
+        (mode.hasPrefix("+") || mode.hasPrefix("-")) ? String(mode.dropFirst()) : mode
+    }
+
+    /// Whether the change is a member-status grant (`+`) rather than a revocation.
+    public var isGrant: Bool { !mode.hasPrefix("-") }
 }
 
 /// Severity of a system-buffer line. Absent/unrecognized → `info`, matching the server's
