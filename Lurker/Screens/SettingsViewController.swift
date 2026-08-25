@@ -74,7 +74,7 @@ final class SettingsViewController: UITableViewController {
     /// The `smart` rung's tuning (#63): its own section under Events, because these answer
     /// a question the section above doesn't ask. Events is "what do I see and how is it folded",
     /// and every row of it applies whatever the filter is set to; these apply on ONE rung, and
-    /// left in that list they read as five more general event options — a phone-sized list where
+    /// left in that list they read as more general event options — a phone-sized list where
     /// half the rows are conditional on the first one is a list you have to already understand
     /// to scan.
     ///

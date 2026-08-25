@@ -89,7 +89,7 @@ public enum EventFilter {
 
 /// The `.smart` rung: hide a join / part / quit / chghost / nick when its actor hasn't spoken
 /// recently, so membership churn from silent lurkers stops threading through the conversation.
-/// A port of the web's `MessageList.vue` filter (#63), reading the same five tuning keys.
+/// A port of the web's `MessageList.vue` filter (#63), reading the same tuning keys.
 ///
 /// Only churn is ever hidden. This never touches conversation, `kick`, `topic` or `invite`.
 ///
@@ -115,7 +115,7 @@ public struct SmartFilter: Sendable {
     /// Covers channel MODE rows that only grant or revoke member status.
     public let filtersMode: Bool
 
-    /// Read the five tuning keys. All server-side (#65) and shared across devices — only the
+    /// Read the tuning keys. All server-side (#65) and shared across devices — only the
     /// tier above them is split by device class. The fallbacks match the registry's own defaults
     /// so behavior doesn't shift under the reader when bootstrap lands a moment after launch.
     ///
@@ -134,10 +134,17 @@ public struct SmartFilter: Sendable {
         // A mode row asks a different question of a different subject, so it takes its own
         // path rather than being squeezed through the actor-keyed one below.
         if message.type == .mode {
-            guard filtersMode, !message.isSelf, let at = message.date else { return false }
+            // The nick guard matches the web, which gates its whole smart walk on
+            // `m.nick` being present. A channel MODE from the server itself — services or
+            // the ircd restoring modes on a netjoin — arrives with no nick at all, and
+            // those must show rather than be judged against a speaker map they can never
+            // appear in.
+            guard filtersMode, !message.isSelf, let nick = message.nick, !nick.isEmpty,
+                  let at = message.date
+            else { return false }
             return Modes.smartHides(
                 message.modes,
-                actorNick: message.nick,
+                actorNick: nick,
                 ownNick: ownNick,
                 spokeRecently: { nick in
                     guard let spoke = speakers[nick] else { return false }

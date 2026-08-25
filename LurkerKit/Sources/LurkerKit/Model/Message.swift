@@ -225,8 +225,6 @@ public struct Message: Equatable, Sendable {
     private var hasText: Bool { !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 }
 
-/// One entry from a `mode` event's change list, e.g. `+o` on `alice`. `param` is nil for
-/// paramless channel flags like `+n`/`+t`.
 /// What class of thing a single mode change is, as classified by the SERVER.
 ///
 /// Telling `+o alice` (op churn) from `+b alice` (a ban whose mask happens to look like a
@@ -247,6 +245,8 @@ public enum ModeChangeKind: String, Equatable, Sendable {
     case chan
 }
 
+/// One entry from a `mode` event's change list, e.g. `+o` on `alice`. `param` is nil for
+/// paramless channel flags like `+n`/`+t`.
 public struct ModeChange: Equatable, Sendable {
     /// The signed mode token, e.g. `"+o"` or `"-v"`.
     public let mode: String

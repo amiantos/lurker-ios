@@ -470,6 +470,18 @@ final class EventFilterTests: XCTestCase {
         XCTAssertEqual(rows(unstamped, smart()), [1])
     }
 
+    func testShowsAServerSetModeThatHasNoNick() {
+        // Services or the ircd restoring modes on a netjoin sends a channel MODE with no
+        // nick at all. The web gates its whole smart walk on the actor being present, so
+        // those always show there; judging them against a speaker map they can never appear
+        // in would hide them here and split the two clients on the same row.
+        let serverSet = Message(
+            id: 1, type: .mode, nick: nil, text: nil, isSelf: false, date: Self.at(1),
+            modes: [ModeChange(mode: "+o", param: "lurker", kind: .prefix)]
+        )
+        XCTAssertEqual(rows([serverSet], smart()), [1])
+    }
+
     func testTheModeToggleGatesIt() {
         let opAlice = [modeMessage(1, "ChanServ", "+o", ["lurker"], at: 1)]
         XCTAssertEqual(rows(opAlice, smart(mode: true)), [])

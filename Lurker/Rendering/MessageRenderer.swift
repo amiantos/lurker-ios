@@ -549,8 +549,8 @@ enum MessageRenderer {
         line.append(muted(" (" + text + ")", base: base))
     }
 
-    /// The change list of a mode event as text — "+o alice", or "+o alice +nt". Prefers the
-    /// structured `modes` (so it stays clean); falls back to the raw `text` the server sends.
+    /// One summary category as "alice, bob and carol joined" — the names as nick tokens, the
+    /// separators and the verb muted.
     private static func identityClause(
         _ group: ConsolidationSummary.IdentityGroup, base: UIFont
     ) -> NSAttributedString {
@@ -592,7 +592,10 @@ enum MessageRenderer {
         case .joinedAndLeft: return " joined briefly"
         case .renamed: return "" // the → in the name conveys it
         case .rehosted: return " changed host"
-        default: return modeVerb(group)
+        // Listed rather than defaulted, so adding a presence kind to `Kind` fails to
+        // compile here instead of silently falling into modeVerb — whose letter is nil for
+        // a presence case, which would render the names with no verb at all.
+        case .modeGranted, .modeRevoked, .modeBriefly, .modeRegranted: return modeVerb(group)
         }
     }
 
