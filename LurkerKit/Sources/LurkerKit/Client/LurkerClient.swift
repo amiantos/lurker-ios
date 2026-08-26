@@ -41,9 +41,6 @@ final class LurkerClient {
     /// `enterForeground` reports the truth within milliseconds of the app actually
     /// appearing, so the assumption buys nothing.
     private var presenceVisible = false
-    /// matched to the call that's awaiting it. Deliberately not reset per socket: a token that
-    /// outlives its connection must not be reused, or a late reply from the old one could
-    /// answer a new question.
     /// Uploads currently in flight, by the `progressToken` each one put in its multipart body
     /// — the sink for that upload's server-side progress (#47).
     ///
@@ -722,19 +719,18 @@ final class LurkerClient {
         do {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 401 {
+            // ⚠⚠ `scoped:` is what makes a 404 readable here — see `SearchRequest.outcome`,
+            // where the rule lives so it can be tested. Reading every 404 as an empty page turns
+            // search into a silent lie on any server without the route.
+            switch SearchRequest.outcome(status: code, scoped: networkId != nil) {
+            case .unauthorized:
                 onFrame(.unauthorized)
                 return nil
+            case .emptyPage: return HighlightsPage(items: [], nextBefore: nil)
+            case .failed: return nil
+            case .page: break
             }
-            // ⚠⚠ An unowned or unknown `networkId` is a 404 here where the WS verb returned an
-            // empty result. It is the empty PAGE, not a failure: the user narrowed a search to a
-            // network that holds nothing of theirs, and "no matches" is the honest answer.
-            // Reporting it as an error would put a retry button in front of a question that was
-            // answered.
-            if code == 404 { return HighlightsPage(items: [], nextBefore: nil) }
-            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else {
-                return nil
-            }
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
             // Same `{items, nextBefore}` envelope as highlights and bookmarks, and the same
             // decorated rows — the route and the WS verb call the same `search_messages`. The
             // cursor is now the server's rather than one synthesized from `hasMore` plus the last

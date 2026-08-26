@@ -82,4 +82,37 @@ struct SearchRequestTests {
         #expect(out.contains("networkId=3"))
         #expect(out.contains("before=412"))
     }
+
+    // MARK: - Reading the response status
+
+    @Test("an unscoped 404 is a FAILURE, because it means the route isn't there")
+    func unscoped404Fails() {
+        // ⚠⚠ The finding that makes this rule worth a test. The route answers 404 for an unowned
+        // network, and this client first read every 404 as the empty page on that basis. But it
+        // only ever sends a networkId it resolved from its own roster, so that case is nearly
+        // unreachable — while the REACHABLE 404 is a server with no `/api/search` at all, which
+        // is every self-hosted instance older than lurker#676. Reading that as "no matches" means
+        // search answers "No matches" to every query forever, with no error and nothing to retry.
+        // Nothing in this client gates on a server version, so the status is the only signal.
+        #expect(SearchRequest.outcome(status: 404, scoped: false) == .failed)
+    }
+
+    @Test("a scoped 404 is a question that was answered, with nothing in it")
+    func scoped404IsEmpty() {
+        // The case the route actually documents: narrowed to a network holding nothing of yours.
+        // An error here would put a retry in front of a question that was answered.
+        #expect(SearchRequest.outcome(status: 404, scoped: true) == .emptyPage)
+    }
+
+    @Test("the ordinary statuses read the way they look")
+    func ordinaryStatuses() {
+        #expect(SearchRequest.outcome(status: 200, scoped: false) == .page)
+        #expect(SearchRequest.outcome(status: 204, scoped: true) == .page)
+        #expect(SearchRequest.outcome(status: 401, scoped: false) == .unauthorized)
+        // ⚠ 400 is the route's answer to a malformed filter, and 500 to a broken server. Both are
+        // failures rather than empty pages: "nothing matched" is the one wrong thing to say when
+        // the truth is that nobody looked.
+        #expect(SearchRequest.outcome(status: 400, scoped: true) == .failed)
+        #expect(SearchRequest.outcome(status: 500, scoped: true) == .failed)
+    }
 }

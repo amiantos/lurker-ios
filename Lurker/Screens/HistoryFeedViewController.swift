@@ -172,8 +172,10 @@ class HistoryFeedViewController: UITableViewController {
         // refresh control is already spinning, so end it here or it spins forever. Feeds whose
         // reloads differ from one another supersede instead; see `reloadSupersedes`.
         guard !isLoading || reloadSupersedes else { refreshControl?.endRefreshing(); return }
-        // Before bumping the generation, so the cancelled task's own guard still reads the
-        // generation it was started under rather than racing this one.
+        // ⚠ Order relative to the generation bump does not matter, and an earlier version of
+        // this comment claimed it did. `cancel()` only sets a flag and `reload()` runs to
+        // completion on the main actor, so no suspended task can observe a state between the two.
+        // The generation check remains the correctness mechanism; this is the cost saving.
         loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
@@ -192,6 +194,23 @@ class HistoryFeedViewController: UITableViewController {
             guard !Task.isCancelled else { return }
             handleFirstPage(page, generation: generation)
         }
+    }
+
+    /// Give up on the page in flight, because nobody is waiting for it any more.
+    ///
+    /// ⚠⚠ For the "user left" case, which a superseding `reload()` does not cover — and which is
+    /// at least as common as "user typed another character". A search results screen is built
+    /// once and reused (`BufferListViewController.searchResults`), so it is never deallocated and
+    /// nothing else would stop the request. Since the whole argument for the REST move is that an
+    /// FTS query runs on the event loop servicing every IRC connection on the cell, a query
+    /// nobody will read is exactly the one worth not running.
+    ///
+    /// ⚠ `isLoading` is deliberately left set. A cancelled task reports nothing, so clearing it
+    /// here would let a scroll start paging against a cursor whose page never landed; the next
+    /// `reload()` sets it honestly on the way past. Feeds that supersede are the only ones that
+    /// call this, and they always reload before they show anything again.
+    func cancelLoad() {
+        loadTask?.cancel()
     }
 
     /// Fetch the next older page, if there is one and we're not already fetching.

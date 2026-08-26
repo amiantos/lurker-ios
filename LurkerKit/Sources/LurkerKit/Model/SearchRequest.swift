@@ -50,4 +50,37 @@ public enum SearchRequest {
             .replacingOccurrences(of: "+", with: "%2B")
         return components.url
     }
+
+    /// What a response status means for a search.
+    public enum Outcome: Equatable {
+        /// Read the body as a page of matches.
+        case page
+        /// A question that was answered, with nothing in it. Distinct from `failed`: the caller
+        /// says "no matches" rather than putting an error and a retry in front of the user.
+        case emptyPage
+        /// The session is gone.
+        case unauthorized
+        /// We could not ask, or could not read the answer. NEVER rendered as "no matches".
+        case failed
+    }
+
+    /// ⚠⚠ `scoped` — whether the request carried a `networkId` — is what makes a 404 readable, and
+    /// getting this wrong turns search into a silent lie rather than an error.
+    ///
+    /// The route answers 404 for an unowned or unknown network, and for THAT a 404 is the empty
+    /// page: the user narrowed to a network holding nothing of theirs, and "no matches" is the
+    /// honest answer. But this client only ever sends an id it resolved from its own roster, so
+    /// that case is nearly unreachable — while the reachable 404 is a server with no
+    /// `/api/search` at all, which is every self-hosted instance older than lurker#676. Reading
+    /// that as an empty page means every query on such a server answers "No matches" forever,
+    /// with no error and nothing to retry. Nothing in this client gates on a server version, so
+    /// the status code is the only signal there is.
+    public static func outcome(status: Int, scoped: Bool) -> Outcome {
+        switch status {
+        case 200..<300: .page
+        case 401: .unauthorized
+        case 404: scoped ? .emptyPage : .failed
+        default: .failed
+        }
+    }
 }

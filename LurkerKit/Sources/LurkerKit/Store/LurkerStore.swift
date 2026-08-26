@@ -838,13 +838,13 @@ final class LurkerStore {
             // Session-level / no-op; the view model intercepts `.unauthorized` first.
             return state
         case .uploadProgress:
-            // Neither reaches here — `LurkerClient` consumes both: a search reply resumes the
-            // awaiting `search(_:)` call, and an upload's progress drives the readout of the
-            // upload that minted its token. Handled explicitly rather than folded into the
-            // no-op case above so that "these are replies, not state" stays a stated rule
-            // instead of a silent one. Search matches span every buffer at once and belong to
-            // none; an upload's progress belongs to one transfer on one device, and the
-            // account owns neither.
+            // Doesn't reach here — `LurkerClient` consumes it: an upload's progress drives the
+            // readout of the upload that minted its token. Handled explicitly rather than folded
+            // into the no-op case above so that "this is a reply, not state" stays a stated rule
+            // instead of a silent one.
+            //
+            // ⚠ It used to be one of two, alongside a WS `search-result` that resumed the call
+            // awaiting it. Search is a REST read now (#123).
             return state
         }
     }

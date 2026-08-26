@@ -184,10 +184,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         }
     }
 
-    /// The search half deliberately does not say "pull to try again" the way Highlights and
-    /// Bookmarks do: search rides the socket, so offline means there is nothing to retry
-    /// against, and the field is right there — the more natural thing to reach for anyway.
-    /// The landing view is an ordinary REST read, so it gets the ordinary advice.
+    /// ⚠ Both halves are ordinary REST reads now (#123), so both get the ordinary advice. Search
+    /// used to ride the socket, and the copy said so — "your connection to the server dropped" —
+    /// which was reasonable when the only way to fail was a dead socket and is simply wrong for a
+    /// 500, a timeout, or a body we couldn't read over a perfectly healthy connection. It also
+    /// withheld "pull to try again" on the grounds that there was nothing to retry against, while
+    /// this screen has had a working refresh control the whole time.
     override var errorModel: StateView.Model {
         showing == .landing
             ? StateView.Model(
@@ -198,7 +200,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
             : StateView.Model(
                 symbol: "exclamationmark.triangle",
                 title: "Couldn't search",
-                subtitle: "Your connection to the server dropped. Try again once it's back."
+                subtitle: "Pull to try again, or edit your search."
             )
     }
 
@@ -276,6 +278,11 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Whatever is still being searched for, nobody is going to read it — see `cancelLoad`.
+        // The debounce goes too, or a query scheduled by the last keystroke before dismissal
+        // fires into a screen that has gone.
+        debounce?.cancel()
+        cancelLoad()
         if presentation == .standalone {
             navigationController?.setToolbarHidden(true, animated: animated)
         }
