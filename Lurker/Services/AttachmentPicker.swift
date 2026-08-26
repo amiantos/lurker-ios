@@ -197,8 +197,19 @@ final class AttachmentPicker: NSObject {
         } catch {
             return .failure(.failed(error.localizedDescription))
         }
-        let mime = (ext.isEmpty ? nil : UTType(filenameExtension: ext)?.preferredMIMEType)
-            ?? (isVideo ? "video/mp4" : "application/octet-stream")
+        let type = ext.isEmpty ? nil : UTType(filenameExtension: ext)
+        // ⚠⚠ A text type with no registered mime claims `text/plain`, NOT octet-stream, and the
+        // difference is a misclassification with teeth. Plenty of what `.text` offers has no
+        // `preferredMIMEType` at all — `.log`, `.sh`, `.c`, `.swift` all return nil — and the
+        // server exempts a claim from its SVG probe only when the claim is already a text dialect.
+        // So an octet-stream claim on a shell script that happens to contain `<svg ` in its first
+        // kilobyte is classified `image/svg+xml`: a 415 on hosted, and on self-host a file stored
+        // and served as an ACTIVE SVG rather than as the text it is. Claiming `text/plain` keeps
+        // it on the text path, where `dialectFromFilename` still gets the last word.
+        let mime = type?.preferredMIMEType
+            ?? (type?.conforms(to: .text) == true
+                ? "text/plain"
+                : (isVideo ? "video/mp4" : "application/octet-stream"))
         return .success(Picked(url: dest, filename: source.lastPathComponent, mime: mime, isVideo: isVideo))
     }
 

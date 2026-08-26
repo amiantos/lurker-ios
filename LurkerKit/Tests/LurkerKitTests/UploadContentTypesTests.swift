@@ -9,60 +9,76 @@ import UniformTypeIdentifiers
 /// What Files will let you pick (#125).
 ///
 /// ⚠⚠ Worth testing at all because the failure is INVISIBLE from the code: a missing type doesn't
-/// error, it greys the file out in someone else's app. The assertions below are about conformance
-/// facts the picker relies on, which are easy to get wrong by reasoning and cheap to just ask.
+/// error, it greys the file out in somebody else's app.
+///
+/// ⚠⚠ These settle the **host** UTI database — CI runs `swift test` on macOS — and iOS declares its
+/// own. That is close to the same database in practice, and every identifier below is
+/// system-declared rather than app-declared, but it is not proof about the device: the one thing
+/// #125 explicitly asked to confirm on-device (what `.md` reports as its mime) is exactly the kind
+/// of thing that could differ and leave this suite green. Treated as a floor, with the device check
+/// on the QA list.
 @Suite("Upload content types")
 struct UploadContentTypesTests {
 
-    @Test("offers the text dialects lurker#788 added, and the plain text that predates them")
-    func offersText() {
+    @Test("offers text as a family, not a hand-picked set of dialects")
+    func offersTheTextFamily() {
         let types = UploadContentTypes.forOpening
-        #expect(types.contains(.plainText), ".txt has always been uploadable and was never offered")
-        #expect(types.contains(.json))
+        #expect(types.contains(.text))
         #expect(types.contains(.image))
         #expect(types.contains(.movie))
     }
 
-    @Test("markdown resolves, and is carried as an optional in case it ever does not")
-    func markdownResolves() {
-        // ⚠ The reason it is optional: no SDK constant, so it is built from an extension and the
-        // initialiser is failable. If this ever stops resolving the picker must lose markdown, not
-        // crash on the line that opens it.
-        #expect(UploadContentTypes.markdown?.identifier == "net.daringfireball.markdown")
-        #expect(UploadContentTypes.forOpening.contains { $0 == UploadContentTypes.markdown })
+    @Test("naming the parent covers every dialect, including the ones a hand-written list missed")
+    func textCoversTheDialects() {
+        // ⚠⚠ The bug this list started with. `[.plainText, .json]` reads as complete and is not:
+        // `public.json` conforms to `public.text` but NOT to `public.plain-text` — siblings, not
+        // parent and child — so plain text alone greys out every `.json`, and `.yaml` (also a
+        // sibling) stays greyed out even with `.json` added by hand. The picker matches by
+        // conformance, so a wrong guess about the hierarchy is invisible until somebody cannot
+        // select a file.
+        #expect(!UTType.json.conforms(to: .plainText), "the trap: json is not a plain-text subtype")
+        #expect(!UTType.yaml.conforms(to: .plainText))
+        for dialect in [UTType.plainText, .json, .yaml, .commaSeparatedText] {
+            #expect(dialect.conforms(to: .text), "\(dialect.identifier) must be offered")
+        }
+        #expect(UTType(filenameExtension: "md")?.conforms(to: .text) == true)
     }
 
-    @Test("JSON is not covered by plain text, so both have to be listed")
-    func jsonIsNotAPlainTextSubtype() {
-        // ⚠⚠ The assumption that would have quietly greyed out every `.json`. `public.json`
-        // conforms to `public.text`, which `public.plain-text` also conforms to — siblings, not
-        // parent and child. The picker matches by conformance, so listing only `.plainText` would
-        // have shipped a half-fix that looked complete.
-        #expect(!UTType.json.conforms(to: .plainText))
-        #expect(UTType.json.conforms(to: .text))
-    }
-
-    @Test("each dialect carries the mime the server wants, so the octet-stream fallback never fires")
+    @Test("the dialects lurker#788 named carry the mime the server keys on")
     func dialectsDeriveTheRightMime() {
-        // ⚠⚠ #125 flagged this as unknown — "worth confirming on-device what iOS actually returns
-        // for `.md`, and if `preferredMIMEType` is nil there the fallback sends
-        // `application/octet-stream`". It is not nil, so `AttachmentPicker.copy` derives the right
-        // claim for all three and that fallback is unreachable for a Files pick.
-        //
-        // ⚠ Not that it would have mattered much: `classifyUpload` decides the CLASS from the
-        // bytes and never from the claim, and the dialect LABEL is read from the filename first —
-        // precisely because platforms disagree about `.md`. This one doesn't, which is worth
-        // knowing rather than assuming.
-        #expect(UploadContentTypes.markdown?.preferredMIMEType == "text/markdown")
+        // #125 asked what iOS returns for `.md`, noting a nil would mean claiming octet-stream.
+        // It is not nil here, so `AttachmentPicker.copy` derives the right claim and the server's
+        // `TEXT_DIALECT_BY_MIME` matches it directly.
+        #expect(UTType(filenameExtension: "md")?.preferredMIMEType == "text/markdown")
         #expect(UTType.json.preferredMIMEType == "application/json")
         #expect(UTType.plainText.preferredMIMEType == "text/plain")
     }
 
-    @Test("markdown IS plain text, so its entry is belt-and-braces rather than load-bearing")
-    func markdownConformsToPlainText() {
-        // Recorded rather than assumed: the entry stays (explicit beats inherited for something a
-        // user notices only when it fails), but this says plainly that it is not what makes `.md`
-        // pickable — so nobody later "simplifies" the list by deleting `.plainText` instead.
-        #expect(UploadContentTypes.markdown?.conforms(to: .plainText) == true)
+    @Test("plenty of offered text has NO registered mime, which is why the fallback matters")
+    func muchOfferedTextHasNoMime() {
+        // ⚠⚠ The finding that made the octet-stream fallback load-bearing rather than unreachable.
+        // Each of these is offered by `.text` and reports no `preferredMIMEType`, so without
+        // `AttachmentPicker.copy`'s text-aware fallback each would be claimed as
+        // `application/octet-stream` — which the server does NOT exempt from its SVG probe. A
+        // shell script or build log containing `<svg ` in its first kilobyte is then classified
+        // `image/svg+xml`: a 415 on hosted, and on self-host stored and served as active SVG.
+        //
+        // Asserted as an existence proof rather than a fixed list, so a future SDK registering
+        // mimes for some of them doesn't fail the suite for the wrong reason.
+        let mimeless = ["log", "sh", "c", "h", "swift"].filter { ext in
+            guard let t = UTType(filenameExtension: ext) else { return false }
+            return t.conforms(to: .text) && t.preferredMIMEType == nil
+        }
+        #expect(!mimeless.isEmpty, "if this is ever empty the fallback stopped being reachable")
+    }
+
+    @Test("SVG is offered by .image regardless, so naming .text admits nothing new")
+    func svgIsNotWidenedByText() {
+        // ⚠ `.text` sounds like it would newly admit SVG — the one text-conforming type the server
+        // treats as an image. It does conform, and it was already offered by `.image`, so this
+        // change moves nothing. Recorded because "did we just start allowing SVG?" is the first
+        // fair question to ask of widening a picker.
+        #expect(UTType.svg.conforms(to: .text))
+        #expect(UTType.svg.conforms(to: .image))
     }
 }

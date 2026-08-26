@@ -11,29 +11,26 @@ import UniformTypeIdentifiers
 /// `accept` attribute had the same trap.
 ///
 /// Lives here rather than beside the picker because `AttachmentPicker` is in the app target, which
-/// has no test bundle — and the one genuinely uncertain thing about this list (markdown has no SDK
-/// constant and has to be constructed by extension, which can fail) is exactly the sort of fact
-/// worth pinning rather than assuming.
+/// has no test bundle.
 public enum UploadContentTypes {
-
-    /// Markdown, which the SDK has no constant for.
-    ///
-    /// ⚠ `net.daringfireball.markdown` is a system-declared type, so this resolves in practice —
-    /// but `UTType(filenameExtension:)` is failable and a nil here would be a crash on the one
-    /// line that opens the picker. Optional all the way through instead.
-    static let markdown = UTType(filenameExtension: "md")
 
     /// The `forOpeningContentTypes` list for `UIDocumentPickerViewController`.
     ///
-    /// ⚠⚠ `.plainText` and `.json` are siblings, not parent and child: `public.json` conforms to
-    /// `public.text`, NOT to `public.plain-text`, so listing plain text alone leaves every `.json`
-    /// greyed out. The picker matches by conformance, so a wrong guess about this hierarchy is
-    /// invisible until somebody cannot pick a file.
+    /// ⚠⚠ `.text`, not `.plainText` — and not a hand-written list of dialects, which is what this
+    /// started as and got wrong. `public.json` does NOT conform to `public.plain-text`: they are
+    /// siblings under `public.text`, so `[.plainText, .json]` looked complete and would have left
+    /// `.yaml` and every other text sibling greyed out. Naming the parent is both smaller and
+    /// strictly wider, and it removes the need to be right about the hierarchy at all.
+    ///
+    /// ⚠ Nothing here becomes active content by being offered. The server classifies from the
+    /// BYTES, and any text file that is not one of its three dialects is normalised to
+    /// `text/plain` (`contentClass.ts`: `dialectFromFilename(...) ?? claimed ?? PLAIN_TEXT`) — so
+    /// an `.html` or `.xml` picked here is stored and served as inert text, not as itself. SVG is
+    /// the one text-conforming type that is treated as an image, and it is already offered by
+    /// `.image` regardless of this entry.
     ///
     /// ⚠ Text was missing entirely before #125 — not just the `.md`/`.json` dialects lurker#788
     /// added, but `.txt`, which the upload route has accepted the whole time. The dialects are the
     /// reason to touch this; plain text was already broken.
-    public static var forOpening: [UTType] {
-        [.image, .movie, .plainText, .json] + [markdown].compactMap { $0 }
-    }
+    public static var forOpening: [UTType] { [.image, .movie, .text] }
 }
