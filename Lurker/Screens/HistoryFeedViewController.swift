@@ -66,6 +66,12 @@ class HistoryFeedViewController: UITableViewController {
     /// ⚠ Only ever non-nil for one load: `isLoading` keeps `loadMore` and a non-superseding
     /// `reload` from overlapping, so this never orphans a task it should have cancelled.
     private var loadTask: Task<Void, Never>?
+    /// A load was abandoned before it landed, so whatever is on screen answers nothing.
+    ///
+    /// Read by the screens that cancel — the ones whose reload is a different question each time
+    /// — to decide whether coming back has to ask again. Cleared by any reload that commits, so
+    /// it does not matter whether the reopen path or the appear path gets there first.
+    private(set) var loadWasCancelled = false
     /// The first fetch failed with nothing to show — distinct from an empty result, so the
     /// placeholder can offer a retry rather than claim the feed is empty.
     private var loadFailed = false
@@ -177,6 +183,7 @@ class HistoryFeedViewController: UITableViewController {
         // completion on the main actor, so no suspended task can observe a state between the two.
         // The generation check remains the correctness mechanism; this is the cost saving.
         loadTask?.cancel()
+        loadWasCancelled = false
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
@@ -205,12 +212,25 @@ class HistoryFeedViewController: UITableViewController {
     /// FTS query runs on the event loop servicing every IRC connection on the cell, a query
     /// nobody will read is exactly the one worth not running.
     ///
-    /// ⚠ `isLoading` is deliberately left set. A cancelled task reports nothing, so clearing it
-    /// here would let a scroll start paging against a cursor whose page never landed; the next
-    /// `reload()` sets it honestly on the way past. Feeds that supersede are the only ones that
-    /// call this, and they always reload before they show anything again.
+    /// ⚠⚠ Clears the in-flight bookkeeping, and an earlier version of this did not — it left
+    /// `isLoading` set on the theory that "the next `reload()` sets it honestly on the way past".
+    /// There isn't always a next reload. `MessageSearchViewController.syncToField` deliberately
+    /// does nothing when the field still holds the committed query, which is exactly the state a
+    /// screen dismissed mid-search comes back in: `commit` assigns `query` before it reloads. So
+    /// reopening showed a spinner nothing would ever resolve, over a list that `isLoading` had
+    /// frozen against paging.
+    ///
+    /// ⚠ `loadWasCancelled` is what gets it out of that, rather than clearing the flags alone: a
+    /// cancelled load leaves a question on screen with no answer under it, so somebody has to ask
+    /// again. The placeholder is left as it is — this runs on the way out, so nobody sees it, and
+    /// an error placeholder would claim a failure when the user simply left.
     func cancelLoad() {
+        guard loadTask != nil else { return }
         loadTask?.cancel()
+        loadTask = nil
+        isLoading = false
+        refreshControl?.endRefreshing()
+        loadWasCancelled = true
     }
 
     /// Fetch the next older page, if there is one and we're not already fetching.

@@ -268,6 +268,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // A search dismissed while it was still running left its question on screen with nothing
+        // under it — ask again. Not covered by `syncToField`, which deliberately does nothing when
+        // the field still holds the committed query, and that is precisely this case. Guarded on
+        // the flag rather than on the state of the list, so whichever of the two paths runs first
+        // wins and the other is a no-op (any reload clears it).
+        if loadWasCancelled { reload() }
         // The toolbar belongs to the navigation controller, not to this screen, so it has to
         // be asked for on the way in — and put back on the way out, since the sheet this sits
         // in may show other screens that have no business with a bottom bar.
