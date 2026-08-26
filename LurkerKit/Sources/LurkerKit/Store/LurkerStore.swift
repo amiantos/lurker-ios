@@ -837,7 +837,7 @@ final class LurkerStore {
         case .unauthorized, .ignored:
             // Session-level / no-op; the view model intercepts `.unauthorized` first.
             return state
-        case .searchResult, .uploadProgress:
+        case .uploadProgress:
             // Neither reaches here — `LurkerClient` consumes both: a search reply resumes the
             // awaiting `search(_:)` call, and an upload's progress drives the readout of the
             // upload that minted its token. Handled explicitly rather than folded into the

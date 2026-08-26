@@ -52,6 +52,20 @@ class HistoryFeedViewController: UITableViewController {
     /// pull-to-refresh landing while a `loadMore` was in flight would otherwise append the old
     /// list's next page onto the new list.
     private var loadGeneration = 0
+    /// The page fetch in flight, held so a superseding `reload()` can CANCEL it rather than
+    /// merely out-generation it.
+    ///
+    /// ⚠⚠ The generation counter below is still the correctness mechanism — cancellation is
+    /// cooperative, and a request that has already returned cannot be recalled — but it only ever
+    /// discarded an answer that had already been paid for. Since search became a REST read (#123)
+    /// the request itself can be stopped: cancelling this cancels the URLSession task, and the
+    /// route checks `req.destroyed` before spending the query. That is the difference between the
+    /// server doing the work and throwing it away, and the server never doing it — and an FTS
+    /// query runs on the same event loop that services every IRC connection on the cell.
+    ///
+    /// ⚠ Only ever non-nil for one load: `isLoading` keeps `loadMore` and a non-superseding
+    /// `reload` from overlapping, so this never orphans a task it should have cancelled.
+    private var loadTask: Task<Void, Never>?
     /// The first fetch failed with nothing to show — distinct from an empty result, so the
     /// placeholder can offer a retry rather than claim the feed is empty.
     private var loadFailed = false
@@ -158,6 +172,9 @@ class HistoryFeedViewController: UITableViewController {
         // refresh control is already spinning, so end it here or it spins forever. Feeds whose
         // reloads differ from one another supersede instead; see `reloadSupersedes`.
         guard !isLoading || reloadSupersedes else { refreshControl?.endRefreshing(); return }
+        // Before bumping the generation, so the cancelled task's own guard still reads the
+        // generation it was started under rather than racing this one.
+        loadTask?.cancel()
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
@@ -165,9 +182,14 @@ class HistoryFeedViewController: UITableViewController {
         // Only show the full-screen spinner on a cold load; a refresh keeps the list up with
         // the refresh control's own spinner rather than blanking what's already there.
         if items.isEmpty { renderPlaceholder(.loading) }
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             guard let self, generation == loadGeneration else { return }
             let page = await fetchPage(before: nil)
+            // ⚠ A cancelled fetch reports nil, which is indistinguishable here from a failure —
+            // and `handleFirstPage` would put an error placeholder up for a request the user
+            // superseded by typing. The generation check inside it catches this too; this says so
+            // where the cancelling happens.
+            guard !Task.isCancelled else { return }
             handleFirstPage(page, generation: generation)
         }
     }
@@ -190,9 +212,10 @@ class HistoryFeedViewController: UITableViewController {
         // `reload()` superseded this, and that reload set the flag itself and clears it when its
         // own page lands. (A feed that doesn't supersede never gets here — its `reload()` is
         // dropped while a page is in flight, so the generation can't move under it.)
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             guard let self, generation == loadGeneration else { return }
             let page = await fetchPage(before: cursor)
+            guard !Task.isCancelled else { return }
             appendPage(page, generation: generation)
         }
     }
