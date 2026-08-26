@@ -53,6 +53,161 @@ final class ConsolidationTests: XCTestCase {
         }
     }
 
+    /// A mode row carrying member-status changes — the shape the server publishes.
+    private func modeMsg(
+        _ signedLetter: String, _ nicks: String..., at offset: TimeInterval = 0
+    ) -> Message {
+        msg(
+            .mode, "ChanServ",
+            modes: nicks.map { ModeChange(mode: signedLetter, param: $0, kind: .prefix) },
+            at: offset
+        )
+    }
+
+    // MARK: - Mode consolidation (lurker#673)
+
+    func testModeRowNoLongerBreaksTheRun() {
+        // The case that motivated this: a netsplit rejoin on an auto-op channel used to come
+        // out as summary, mode, summary, mode, summary.
+        let summary = onlySummary(Consolidation.consolidate([
+            msg(.join, "alice"),
+            modeMsg("+o", "alice", at: 1),
+            msg(.join, "bob", at: 2),
+            modeMsg("+o", "bob", at: 3),
+            msg(.join, "carol", at: 4),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .joined)), ["alice", "bob", "carol"])
+        XCTAssertEqual(nicks(group(summary, .modeGranted("o"))), ["alice", "bob"])
+    }
+
+    func testPresenceGroupsComeBeforeModeGroups() {
+        let summary = onlySummary(Consolidation.consolidate([
+            msg(.join, "alice"), modeMsg("+o", "alice", at: 1),
+        ]))
+        XCTAssertEqual(summary?.groups.map(\.kind), [.joined, .modeGranted("o")])
+    }
+
+    func testModesGroupByLetterAndDirection() {
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("+o", "alice"), modeMsg("+v", "bob", at: 1), modeMsg("-v", "carol", at: 2),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .modeGranted("o"))), ["alice"])
+        XCTAssertEqual(nicks(group(summary, .modeGranted("v"))), ["bob"])
+        XCTAssertEqual(nicks(group(summary, .modeRevoked("v"))), ["carol"])
+    }
+
+    func testCancelledPairReadsAsBriefly() {
+        // The first change implies the prior state, exactly as in the presence walk: an
+        // opening `+o` means they did not hold it before, so `+o` then `-o` is the mode-side
+        // of joined-and-left rather than a plain deop.
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("+o", "alice"), modeMsg("-o", "alice", at: 1), msg(.join, "bob", at: 2),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .modeBriefly("o"))), ["alice"])
+        XCTAssertNil(group(summary, .modeRevoked("o")))
+    }
+
+    func testRegainedModeReadsAsAgain() {
+        // An opening `-o` means they DID hold it before the run.
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("-o", "alice"), modeMsg("+o", "alice", at: 1), msg(.join, "bob", at: 2),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .modeRegranted("o"))), ["alice"])
+    }
+
+    func testEveryLetterClassifiesTheSameWayNotJustOp() {
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("+v", "alice"), modeMsg("-v", "alice", at: 1),
+            modeMsg("-v", "bob", at: 2), modeMsg("+v", "bob", at: 3),
+            modeMsg("+h", "carol", at: 4), modeMsg("-q", "dave", at: 5),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .modeBriefly("v"))), ["alice"])
+        XCTAssertEqual(nicks(group(summary, .modeRegranted("v"))), ["bob"])
+        XCTAssertEqual(nicks(group(summary, .modeGranted("h"))), ["carol"])
+        XCTAssertEqual(nicks(group(summary, .modeRevoked("q"))), ["dave"])
+    }
+
+    func testChurnBetweenFirstAndLastIsIgnored() {
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("+o", "alice"), modeMsg("-o", "alice", at: 1),
+            modeMsg("+o", "alice", at: 2), modeMsg("-o", "alice", at: 3),
+            msg(.join, "bob", at: 4),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .modeBriefly("o"))), ["alice"])
+    }
+
+    func testMultiTargetMessageFoldsEveryTarget() {
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("+o", "alice", "bob", "carol"), msg(.join, "dave", at: 1),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .modeGranted("o"))), ["alice", "bob", "carol"])
+    }
+
+    func testModeTargetDoesNotReachTheIdentityPass() {
+        // alice never joined inside the run; being opped must not invent a presence verdict.
+        let summary = onlySummary(Consolidation.consolidate([
+            modeMsg("+o", "alice"), msg(.join, "bob", at: 1),
+        ]))
+        XCTAssertEqual(nicks(group(summary, .joined)), ["bob"])
+        XCTAssertNil(group(summary, .joinedAndLeft))
+    }
+
+    func testModeGroupsAreCappedLikeAnyOther() {
+        let summary = onlySummary(Consolidation.consolidate(
+            [modeMsg("+o", "a", "b", "c", "d"), msg(.join, "z", at: 1)], maxNames: 2
+        ))
+        let modeGroup = group(summary, .modeGranted("o"))
+        XCTAssertEqual(modeGroup?.visible.count, 2)
+        XCTAssertEqual(modeGroup?.hidden, 2)
+    }
+
+    func testALoneModeRowPassesThroughUnconsolidated() {
+        // A run of one passes through, so a solitary `+o alice` keeps its narrated line
+        // rather than becoming a one-name summary.
+        let rows = Consolidation.consolidate([modeMsg("+o", "alice")])
+        XCTAssertEqual(rows.count, 1)
+        guard case .passthrough = rows[0] else { return XCTFail("a single mode must not consolidate") }
+    }
+
+    // MARK: - Mode rows that must NOT fold
+
+    func testABanBreaksTheRun() {
+        let ban = msg(.mode, "op", modes: [ModeChange(mode: "+b", param: "*!*@host", kind: .list)], at: 1)
+        let rows = Consolidation.consolidate([msg(.join, "alice"), ban, msg(.join, "bob", at: 2)])
+        XCTAssertEqual(rows.count, 3)
+    }
+
+    func testAChannelFlagBreaksTheRun() {
+        let flag = msg(.mode, "op", modes: [ModeChange(mode: "+m", param: nil, kind: .chan)], at: 1)
+        let rows = Consolidation.consolidate([msg(.join, "alice"), flag, msg(.join, "bob", at: 2)])
+        XCTAssertEqual(rows.count, 3)
+    }
+
+    func testAMixedMessageBreaksTheRun() {
+        // The whole-message gate: one non-prefix change anywhere and the row stands alone, so
+        // a ban can never be folded away behind "alice was opped".
+        let mixed = msg(.mode, "op", modes: [
+            ModeChange(mode: "+o", param: "alice", kind: .prefix),
+            ModeChange(mode: "-b", param: "*!*@host", kind: .list),
+        ], at: 1)
+        let rows = Consolidation.consolidate([msg(.join, "alice"), mixed, msg(.join, "bob", at: 2)])
+        XCTAssertEqual(rows.count, 3)
+    }
+
+    func testAnUnstampedModeRowBreaksTheRun() {
+        // Backlog older than the server-side `kind` stamp. Without the class there is no way
+        // to know whether `+q alice` grants ownership or quiets a mask.
+        let unstamped = msg(.mode, "op", modes: [ModeChange(mode: "+o", param: "alice")], at: 1)
+        let rows = Consolidation.consolidate([msg(.join, "alice"), unstamped, msg(.join, "bob", at: 2)])
+        XCTAssertEqual(rows.count, 3)
+    }
+
+    func testAModeRowWithNoChangesBreaksTheRun() {
+        let empty = msg(.mode, "op", at: 1)
+        let rows = Consolidation.consolidate([msg(.join, "alice"), empty, msg(.join, "bob", at: 2)])
+        XCTAssertEqual(rows.count, 3)
+    }
+
     // MARK: - Run detection
 
     func testALoneJoinPassesThroughUnconsolidated() {

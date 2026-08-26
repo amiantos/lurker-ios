@@ -209,7 +209,8 @@ final class EventFilterTests: XCTestCase {
     /// assertions read as "which events survived" rather than "what did the summary say" — the
     /// fold has its own tests, and pairing it with the filter here would let one hide the other.
     private func smart(
-        delay: Int = 5, unmask: Int = 30, join: Bool = true, quit: Bool = true, nick: Bool = true
+        delay: Int = 5, unmask: Int = 30, join: Bool = true, quit: Bool = true,
+        nick: Bool = true, mode: Bool = true
     ) -> Settings {
         var s = settings("smart")
         s.apply(changes: [
@@ -219,8 +220,21 @@ final class EventFilterTests: XCTestCase {
             "chat.smart_filter_join": .bool(join),
             "chat.smart_filter_quit": .bool(quit),
             "chat.smart_filter_nick": .bool(nick),
+            "chat.smart_filter_mode": .bool(mode),
         ])
         return s
+    }
+
+    /// A channel MODE row: `nick` is the SETTER, the targets ride in `modes`.
+    private func modeMessage(
+        _ id: Int, _ setter: String, _ signedLetter: String, _ targets: [String],
+        kind: ModeChangeKind? = .prefix, at minutes: Double = 0
+    ) -> Message {
+        Message(
+            id: id, type: .mode, nick: setter, text: nil, isSelf: false,
+            date: Self.at(minutes),
+            modes: targets.map { ModeChange(mode: signedLetter, param: $0, kind: kind) }
+        )
     }
 
     private func rows(
@@ -353,8 +367,10 @@ final class EventFilterTests: XCTestCase {
         XCTAssertEqual(rows(rename, smart(), ownNick: "me_afk"), [1], "own-nick landed first")
     }
 
-    /// The rung filters churn and nothing else. Conversation, kicks, topics and mode changes are
-    /// things that happened — `.none` is the tier that hides those, and only some of them.
+    /// The rung filters churn and nothing else. Conversation, kicks, topics and invites are
+    /// never touched. The `.mode` row here is UNSTAMPED, which is why it survives: without a
+    /// `kind` there is no way to tell op churn from a ban, so it is shown rather than guessed
+    /// at. Stamped mode rows do take part — see the mode tests below.
     func testSmartLeavesEverythingThatIsNotChurnAlone() {
         let messages = [
             message(1, .message, "bob", at: 0),
@@ -401,5 +417,74 @@ final class EventFilterTests: XCTestCase {
         // alice spoke, so her join survives — alone, which is a line rather than a summary.
         XCTAssertEqual(ids(of: built), [1])
         XCTAssertFalse(built.contains { if case .consolidated = $0 { true } else { false } })
+    }
+
+    // MARK: - Mode rows in the smart rung (lurker#825)
+
+    /// The premise, and the reason it keys on the target: ChanServ never speaks in the
+    /// channel, so an author-keyed rule would hide every mode change there is.
+    func testJudgesTheTargetNotTheAuthor() {
+        let opAlice = [modeMessage(1, "ChanServ", "+o", ["alice"], at: 1)]
+        // alice spoke a minute before: shown.
+        XCTAssertEqual(rows(opAlice, smart(), speakers: spoke("alice", at: 0)), [1])
+        // Nobody spoke: hidden.
+        XCTAssertEqual(rows(opAlice, smart()), [])
+        // The AUTHOR speaking is not what saves it. This is the assertion that would have
+        // caught halloy's shape.
+        XCTAssertEqual(rows(opAlice, smart(), speakers: spoke("ChanServ", at: 0)), [])
+    }
+
+    func testShowsAModeSetOnUsOrByUs() {
+        let onMe = [modeMessage(1, "ChanServ", "+o", ["me"], at: 1)]
+        XCTAssertEqual(rows(onMe, smart(), ownNick: "me"), [1])
+        let byMe = [modeMessage(1, "me", "+o", ["lurker"], at: 1)]
+        XCTAssertEqual(rows(byMe, smart(), ownNick: "me"), [1])
+        // Case-folded, like every other nick comparison.
+        XCTAssertEqual(rows(onMe, smart(), ownNick: "ME"), [1])
+    }
+
+    func testAnyOneRecentTargetShowsAMultiTargetRow() {
+        // `+ooo a b c` where only b spoke. Hiding it would drop a and c's grants on the floor.
+        let burst = [modeMessage(1, "ChanServ", "+o", ["a", "b", "c"], at: 1)]
+        XCTAssertEqual(rows(burst, smart(), speakers: spoke("b", at: 0)), [1])
+        XCTAssertEqual(rows(burst, smart()), [])
+    }
+
+    func testNeverHidesAModeCarryingAnythingButMemberStatus() {
+        // The whole-message gate. A ban alone, and a ban riding along with an op change.
+        let ban = [modeMessage(1, "op", "+b", ["*!*@host"], kind: .list, at: 1)]
+        XCTAssertEqual(rows(ban, smart()), [1])
+
+        let mixed = [Message(
+            id: 1, type: .mode, nick: "op", text: nil, isSelf: false, date: Self.at(1),
+            modes: [
+                ModeChange(mode: "+o", param: "alice", kind: .prefix),
+                ModeChange(mode: "-b", param: "*!*@host", kind: .list),
+            ]
+        )]
+        XCTAssertEqual(rows(mixed, smart()), [1])
+    }
+
+    func testNeverHidesAnUnstampedModeRow() {
+        let unstamped = [modeMessage(1, "ChanServ", "+o", ["lurker"], kind: nil, at: 1)]
+        XCTAssertEqual(rows(unstamped, smart()), [1])
+    }
+
+    func testShowsAServerSetModeThatHasNoNick() {
+        // Services or the ircd restoring modes on a netjoin sends a channel MODE with no
+        // nick at all. The web gates its whole smart walk on the actor being present, so
+        // those always show there; judging them against a speaker map they can never appear
+        // in would hide them here and split the two clients on the same row.
+        let serverSet = Message(
+            id: 1, type: .mode, nick: nil, text: nil, isSelf: false, date: Self.at(1),
+            modes: [ModeChange(mode: "+o", param: "lurker", kind: .prefix)]
+        )
+        XCTAssertEqual(rows([serverSet], smart()), [1])
+    }
+
+    func testTheModeToggleGatesIt() {
+        let opAlice = [modeMessage(1, "ChanServ", "+o", ["lurker"], at: 1)]
+        XCTAssertEqual(rows(opAlice, smart(mode: true)), [])
+        XCTAssertEqual(rows(opAlice, smart(mode: false)), [1], "off means never filtered")
     }
 }

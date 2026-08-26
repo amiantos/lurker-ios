@@ -27,14 +27,26 @@ public enum Consolidation {
     /// The event types that fold into a summary — the web's `CONSOLIDATABLE_TYPES`
     /// (`shared/consolidate.ts:121`).
     ///
-    /// `mode` is deliberately *not* here, matching the web. It was included once, on the
-    /// reasoning that a netsplit rejoin with auto-opping (`join join +o join +o …`) reads
-    /// better as one line than as a string of tiny summaries broken up by mode lines. That
-    /// bought a tidier netsplit at the cost of a second summary vocabulary — a whole parallel
-    /// mode-folding pass and its own group type — and of hiding mode changes, which are
-    /// consequential in a way join churn isn't: being opped or banned is worth its own line.
-    /// `kick`, `topic`, and `invite` stay standalone for the same reason.
+    /// `mode` is deliberately *not* here, matching the web — but that no longer means mode
+    /// rows never fold. They do, when every change in them grants or revokes member status
+    /// (`foldsIntoRun`), through a second pass with its own vocabulary. That second
+    /// vocabulary is exactly the cost this comment used to cite as the reason not to; it is
+    /// also the thing being asked for, so it is paid deliberately now (lurker#673).
+    ///
+    /// What this set still is: the per-identity fold set, AND the definition of the
+    /// `.renderable` page unit. `mode` staying out of it is what keeps that unit meaning the
+    /// same thing for every client. `kick`, `topic` and `invite` stay standalone outright.
     static let consolidatableTypes: Set<EventType> = [.join, .part, .quit, .nick, .chghost]
+
+    /// Whether a message can sit inside a run.
+    ///
+    /// Wider than `consolidatableTypes`, and deliberately a separate question — see the note
+    /// there. A mode row that carries anything but member-status changes still breaks the
+    /// run, so a ban is never folded away behind "alice was opped".
+    static func foldsIntoRun(_ message: Message) -> Bool {
+        if consolidatableTypes.contains(message.type) { return true }
+        return message.type == .mode && Modes.isChurn(message.modes)
+    }
 
     /// A row in the consolidated stream.
     public enum Row: Equatable, Sendable {
@@ -79,7 +91,7 @@ public enum Consolidation {
         }
 
         for message in messages {
-            if consolidatableTypes.contains(message.type) {
+            if foldsIntoRun(message) {
                 run.append(message)
             } else {
                 flush()
@@ -97,12 +109,108 @@ public enum Consolidation {
         maxNames: Int,
         recentSpeakers: Set<String>
     ) -> ConsolidationSummary {
-        ConsolidationSummary(
-            groups: identityGroups(events, maxNames: max(1, maxNames), recentSpeakers: recentSpeakers),
+        // The two passes read disjoint slices of the run. Mode groups trail the presence
+        // ones: who is here reads first, what they were given second.
+        let modeEvents = events.filter { $0.type == .mode }
+        let presence = modeEvents.isEmpty ? events : events.filter { $0.type != .mode }
+        return ConsolidationSummary(
+            groups: identityGroups(presence, maxNames: max(1, maxNames), recentSpeakers: recentSpeakers)
+                + modeGroups(modeEvents, maxNames: max(1, maxNames), recentSpeakers: recentSpeakers),
             date: events.last?.date,
             firstId: events.first?.id ?? 0,
             lastId: events.last?.id ?? 0
         )
+    }
+
+    // MARK: - Member-status net effect (+o / -v / …)
+
+    /// Mutable per-(nick, letter) bookkeeping while walking a run's mode changes.
+    private struct ModeState {
+        var nick: String
+        var letter: String
+        /// The run's first change to this pair — which implies the state BEFORE it.
+        var first: Bool
+        /// The run's last change, i.e. the state after.
+        var last: Bool
+        var seenIndex: Int
+    }
+
+    /// Fold a run's member-status changes into per-(nick, letter) net effects.
+    ///
+    /// A SEPARATE pass from the identity walk, and it has to be: that walk is keyed on
+    /// identity and classifies by a join/leave sequence, while a mode change's subject is a
+    /// (nick, letter) pair, its verdict is a sign, and its target need never have joined
+    /// inside the run at all.
+    ///
+    /// Classified by first and last, the same first/last reading `classify` gives a presence
+    /// identity and for the same reason — the FIRST change implies the prior state, so an
+    /// opening `-o` means they held op before the run started:
+    ///
+    ///   `+…+`  didn't have it, does now         → granted    "was opped"
+    ///   `-…-`  had it, doesn't now              → revoked    "was deopped"
+    ///   `+…-`  didn't have it, blipped          → briefly    "was briefly opped"
+    ///   `-…+`  had it, lost it, has it again    → regranted  "was opped again"
+    ///
+    /// Nothing is ever dropped: the summary row has no expand affordance, so a nick dropped
+    /// here would be information deleted with no way to get it back.
+    ///
+    /// Renames are NOT followed. The identity walk migrates a nick across an `R` action;
+    /// this keys on the parameter as written, so alice→bob opped as bob is reported as bob.
+    private static func modeGroups(
+        _ events: [Message],
+        maxNames: Int,
+        recentSpeakers: Set<String>
+    ) -> [ConsolidationSummary.IdentityGroup] {
+        var net: [String: ModeState] = [:]
+        var seen = 0
+        for event in events {
+            for change in event.modes {
+                // A run can only hold mode rows that passed `Modes.isChurn`, so this is a
+                // narrowing rather than a second filter.
+                guard change.kind == .prefix, let param = change.param, !param.isEmpty else { continue }
+                let letter = change.letter
+                guard !letter.isEmpty else { continue }
+                let key = "\(param.lowercased())\u{0}\(letter)"
+                if var existing = net[key] {
+                    // `first` is captured once and never overwritten — it is what says
+                    // whether they held the mode before the run.
+                    existing.last = change.isGrant
+                    existing.nick = param
+                    net[key] = existing
+                } else {
+                    net[key] = ModeState(
+                        nick: param, letter: letter,
+                        first: change.isGrant, last: change.isGrant,
+                        seenIndex: seen
+                    )
+                    seen += 1
+                }
+            }
+        }
+
+        var buckets: [ConsolidationSummary.IdentityGroup.Kind: [ConsolidationSummary.Entry]] = [:]
+        var bucketOrder: [ConsolidationSummary.IdentityGroup.Kind] = []
+        for state in net.values.sorted(by: { $0.seenIndex < $1.seenIndex }) {
+            let kind = classifyMode(first: state.first, last: state.last, letter: state.letter)
+            if buckets[kind] == nil { bucketOrder.append(kind) }
+            buckets[kind, default: []].append(.nick(state.nick))
+        }
+
+        let speakersLc = Set(recentSpeakers.map { $0.lowercased() })
+        return bucketOrder.compactMap { kind in
+            guard let entries = buckets[kind], !entries.isEmpty else { return nil }
+            let capped = cap(entries, maxNames: maxNames, recentSpeakers: speakersLc)
+            return ConsolidationSummary.IdentityGroup(
+                kind: kind, visible: capped.visible, hidden: capped.hidden
+            )
+        }
+    }
+
+    private static func classifyMode(
+        first: Bool, last: Bool, letter: String
+    ) -> ConsolidationSummary.IdentityGroup.Kind {
+        if first { return last ? .modeGranted(letter) : .modeBriefly(letter) }
+        return last ? .modeRegranted(letter) : .modeRevoked(letter)
     }
 
     // MARK: - Identity net effect (join / part / quit / nick / chghost)
@@ -280,8 +388,26 @@ public struct ConsolidationSummary: Equatable, Sendable {
 
     /// One net-effect category and its (possibly truncated) member list.
     public struct IdentityGroup: Equatable, Sendable {
-        public enum Kind: Equatable, Sendable {
+        public enum Kind: Equatable, Hashable, Sendable {
             case joined, left, reconnected, joinedAndLeft, renamed, rehosted
+            /// A member-status mode, by letter. The four mirror the presence cases exactly:
+            /// granted↔joined, revoked↔left, briefly↔joinedAndLeft, regranted↔reconnected —
+            /// because a mode pair cancels the same way a join/part pair does, and the
+            /// presence half has always had a category for that rather than dropping it.
+            case modeGranted(String)
+            case modeRevoked(String)
+            case modeBriefly(String)
+            case modeRegranted(String)
+
+            /// The mode letter, for the four mode cases; nil for the presence ones.
+            public var modeLetter: String? {
+                switch self {
+                case .modeGranted(let l), .modeRevoked(let l),
+                     .modeBriefly(let l), .modeRegranted(let l):
+                    l
+                default: nil
+                }
+            }
         }
 
         public let kind: Kind

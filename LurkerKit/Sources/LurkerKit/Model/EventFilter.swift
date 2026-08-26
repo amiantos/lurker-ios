@@ -39,14 +39,18 @@ public enum EventFilter {
 
     /// The row types `.none` hides: everything consolidation folds, plus `mode`.
     ///
-    /// `mode` is excluded from `Consolidation.consolidatableTypes` on purpose — being opped
-    /// or banned is worth its own line, and it has no per-nick net effect to summarize. But a
-    /// reader who asked for *no* event noise means op/voice/ban churn too, so the strictest
-    /// rung takes it as well.
+    /// `mode` is excluded from `Consolidation.consolidatableTypes` for a reason that is about
+    /// page sizing rather than about modes: that set also defines the `.renderable` unit, so
+    /// moving `mode` into it would change what a page contains for every client. Mode rows
+    /// DO fold — see `Consolidation.foldsIntoRun`. And a reader who asked for *no* event
+    /// noise means op/voice/ban churn too, so the strictest rung takes all of it.
     ///
-    /// Deliberately absent, because they are things that happened rather than churn: `kick`
-    /// (someone was removed, and by whom), `topic`, `invite`, `error`. Hiding those would make
-    /// the buffer lie about what happened rather than merely be quieter.
+    /// ⚠ `kick`, `topic`, `invite` and `error` are absent here, and that is an
+    /// **undocumented default rather than a decision anyone made** — they were simply never
+    /// brought into the filters, and nobody has revisited it. Earlier revisions of this
+    /// comment asserted a principle ("things that happened, not churn") as though it were
+    /// settled; it wasn't. Don't cite it as a reason for anything. If someone asks for these
+    /// to be hidden, that is a live question, not a closed one.
     public static let noiseTypes: Set<EventType> = Consolidation.consolidatableTypes.union([.mode])
 
     /// Whether a message is event noise, i.e. hidden entirely at `.none`.
@@ -89,11 +93,13 @@ public enum EventFilter {
 
 /// The `.smart` rung: hide a join / part / quit / chghost / nick when its actor hasn't spoken
 /// recently, so membership churn from silent lurkers stops threading through the conversation.
-/// A port of the web's `MessageList.vue` filter (#63), reading the same five tuning keys.
+/// A port of the web's `MessageList.vue` filter (#63), reading the same tuning keys.
 ///
-/// Only churn is ever hidden. This never touches conversation, and never touches `mode`, `kick`,
-/// `topic` or `invite` — a quiet user being opped or kicked is a thing that happened, and the
-/// question this rung asks ("did anyone care about this person's presence?") doesn't apply to it.
+/// Only churn is ever hidden. This never touches conversation, `kick`, `topic` or `invite`.
+///
+/// `mode` DOES take part, but on different terms: a mode row is judged on the nicks it acted
+/// ON rather than on its author (see `Modes.smartHides`), and only when every change in it
+/// grants or revokes member status. Bans, keys, limits and channel flags always show.
 public struct SmartFilter: Sendable {
 
     /// How long before an event a nick's last message still counts as "recently spoke".
@@ -110,8 +116,10 @@ public struct SmartFilter: Sendable {
     /// for the same reason (lurker#591).
     public let filtersQuit: Bool
     public let filtersNick: Bool
+    /// Covers channel MODE rows that only grant or revoke member status.
+    public let filtersMode: Bool
 
-    /// Read the five tuning keys. All server-side (#65) and shared across devices — only the
+    /// Read the tuning keys. All server-side (#65) and shared across devices — only the
     /// tier above them is split by device class. The fallbacks match the registry's own defaults
     /// so behavior doesn't shift under the reader when bootstrap lands a moment after launch.
     ///
@@ -122,10 +130,32 @@ public struct SmartFilter: Sendable {
         filtersJoin = settings.bool("chat.smart_filter_join", default: true)
         filtersQuit = settings.bool("chat.smart_filter_quit", default: true)
         filtersNick = settings.bool("chat.smart_filter_nick", default: true)
+        filtersMode = settings.bool("chat.smart_filter_mode", default: true)
     }
 
     /// Whether this row is churn from someone nobody was talking to.
     public func hides(_ message: Message, speakers: SpeakerMap, ownNick: String?) -> Bool {
+        // A mode row asks a different question of a different subject, so it takes its own
+        // path rather than being squeezed through the actor-keyed one below.
+        if message.type == .mode {
+            // The nick guard matches the web, which gates its whole smart walk on
+            // `m.nick` being present. A channel MODE from the server itself — services or
+            // the ircd restoring modes on a netjoin — arrives with no nick at all, and
+            // those must show rather than be judged against a speaker map they can never
+            // appear in.
+            guard filtersMode, !message.isSelf, let nick = message.nick, !nick.isEmpty,
+                  let at = message.date
+            else { return false }
+            return Modes.smartHides(
+                message.modes,
+                actorNick: nick,
+                ownNick: ownNick,
+                spokeRecently: { nick in
+                    guard let spoke = speakers[nick] else { return false }
+                    return spoke <= at && at.timeIntervalSince(spoke) <= delay
+                }
+            )
+        }
         guard filters(message.type), !message.isSelf,
               let nick = message.nick, !nick.isEmpty,
               !isOurs(message, ownNick: ownNick)

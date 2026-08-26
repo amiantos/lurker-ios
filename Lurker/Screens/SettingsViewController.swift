@@ -71,10 +71,10 @@ final class SettingsViewController: UITableViewController {
         ("chat.show_join_account", "Show account on joins"),
     ]
 
-    /// The `smart` rung's tuning (#63): its own section under Events, because these five answer
+    /// The `smart` rung's tuning (#63): its own section under Events, because these answer
     /// a question the section above doesn't ask. Events is "what do I see and how is it folded",
     /// and every row of it applies whatever the filter is set to; these apply on ONE rung, and
-    /// left in that list they read as five more general event options — a phone-sized list where
+    /// left in that list they read as more general event options — a phone-sized list where
     /// half the rows are conditional on the first one is a list you have to already understand
     /// to scan.
     ///
@@ -90,6 +90,10 @@ final class SettingsViewController: UITableViewController {
         ("chat.smart_filter_join", "Filter joins"),
         ("chat.smart_filter_quit", "Filter parts and quits"),
         ("chat.smart_filter_nick", "Filter nick changes"),
+        // Reads as one of the "what does it hide" rows, so it sits with them rather than
+        // with the two windows below. Its shorter label is deliberate: the registry's
+        // description carries the rule that a ban riding along shows the whole line.
+        ("chat.smart_filter_mode", "Filter op and voice changes"),
         ("chat.smart_filter_delay", "\"Recently spoke\" window (min)"),
         ("chat.smart_filter_join_unmask", "Reveal join on speaking (min)"),
     ]

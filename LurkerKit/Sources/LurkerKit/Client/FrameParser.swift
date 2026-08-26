@@ -607,7 +607,16 @@ enum FrameParser {
             newNick: event.stringOrNull("newNick"),
             kicked: event.stringOrNull("kicked"),
             invited: event.stringOrNull("invited"),
-            modes: event.objects("modes").map { ModeChange(mode: $0.string("mode"), param: $0.stringOrNull("param")) },
+            modes: event.objects("modes").map {
+                ModeChange(
+                    mode: $0.string("mode"),
+                    param: $0.stringOrNull("param"),
+                    // Absent on rows older than the server-side stamp, and on any server
+                    // that doesn't send it. Unknown values decode to nil for the same
+                    // reason: an unclassified change is shown, never guessed at.
+                    kind: $0.stringOrNull("kind").flatMap(ModeChangeKind.init(rawValue:))
+                )
+            },
             newIdent: event.stringOrNull("newIdent"),
             newHost: event.stringOrNull("newHost"),
             // Not an extra — a real column on the messages table, so it survives backlog for
