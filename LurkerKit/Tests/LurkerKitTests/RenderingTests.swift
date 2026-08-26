@@ -156,15 +156,16 @@ final class RenderingTests: XCTestCase {
         XCTAssertNotNil(URLMatcher.matches(in: "<mailto:a@b.co>").first?.delimiters)
     }
 
-    /// ⚠⚠ `raw` is the UNTRIMMED match, and the hidden-URL deletion uses it rather than `range`.
-    /// `PreviewText` measures a span's end the same way when deciding whether a URL sits against
-    /// the edge, so deleting only the trimmed span orphans the punctuation the rule had already
-    /// counted as part of the address — `look at this <url>.` became `look at this .`.
-    func testRawRangeCoversTheTrailingPunctuationTheTrimDropped() {
+    /// ⚠⚠ `range` is the TRIMMED address and it is the only span on offer — the untrimmed match
+    /// is deliberately no longer returned beside it (#126). It used to be, for the hidden-URL
+    /// deletion, and having both within reach is what let that deletion take a closing delimiter
+    /// whose partner sat in the prose: `look at this (<url>)` rendered as `look at this (`.
+    /// Reaching past the address for the punctuation it may absorb is `PreviewText.absorbing`'s
+    /// job now, because that question has an answer this trimmer does not know.
+    func testRangeIsTheTrimmedAddressAndNothingElse() {
         let text = "look at this https://e.test/a.png."
         let match = URLMatcher.matches(in: text).first
         XCTAssertEqual(match?.href, "https://e.test/a.png")
-        XCTAssertEqual(match?.raw.length, ("https://e.test/a.png." as NSString).length)
         XCTAssertEqual(match?.range.length, ("https://e.test/a.png" as NSString).length)
     }
 

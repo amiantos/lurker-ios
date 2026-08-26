@@ -778,17 +778,30 @@ enum MessageRenderer {
         //    matches the web: the convention is about how a person writes a link.
         //
         // 2. Addresses whose picture is about to stand in for them come out entirely.
-        for match in URLMatcher.matches(in: attributed.string).reversed() {
+        // ⚠ One snapshot, taken before the first deletion, and every range in this loop is an
+        // offset into it — the matches already were, and the absorption below has to be too.
+        // Asking the live `attributed.string` mid-loop measures against a string the earlier
+        // (higher-offset) deletions have already shortened, which is a different document from
+        // the one `PreviewText.urlSpans` measured when it decided what was hideable.
+        let source = attributed.string
+        for match in URLMatcher.matches(in: source).reversed() {
             if hiddenUrls.contains(match.href) {
-                // ⚠⚠ The RAW match, not the trimmed one. `PreviewText.UrlSpan.end` deliberately
-                // measures the untrimmed match, so the hiding rule counted a trailing `.` or `)`
-                // as part of the address when it decided the URL sat against the edge — and
-                // deleting only the trimmed span orphans exactly that punctuation. `look at this
-                // https://e.test/a.png.` became `look at this .`; a message that was ONLY
-                // `https://e.test/shot.png.` collapsed to a body of one full stop, which is not
-                // empty, so the blank-body collapse never fired and a line holding a lone `.`
-                // was painted above the picture. Delete what the rule measured.
-                attributed.deleteCharacters(in: match.delimiters ?? match.raw)
+                // ⚠⚠ Exactly what the hiding rule MEASURED — `PreviewText.absorbing`, the same
+                // call `UrlSpan.end` makes — and neither of the two obvious ranges beside it.
+                //
+                // Deleting the trimmed `match.range` orphans the punctuation the span counted as
+                // part of the address: `look at this https://e.test/a.png.` became `look at this
+                // .`, and a message that was ONLY `https://e.test/shot.png.` collapsed to a body
+                // of one full stop — which is not empty, so the end-trim below (whitespace only)
+                // left it and a line holding a lone `.` was painted above the picture.
+                //
+                // Deleting the raw `match.raw` is the same orphan at the other end. The trimmer
+                // discards a closing delimiter whose partner sits in the PROSE, so taking the
+                // whole match ate the `)` and left `look at this (` (#126). The span stops at
+                // anything paired, so such a URL is not hideable and never reaches this line —
+                // but only while both sides ask the same function.
+                attributed.deleteCharacters(
+                    in: match.delimiters ?? PreviewText.absorbing(match.range, in: source))
                 continue
             }
             guard let delimiters = match.delimiters,

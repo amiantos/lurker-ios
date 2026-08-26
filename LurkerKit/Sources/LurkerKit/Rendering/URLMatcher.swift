@@ -66,8 +66,15 @@ public enum URLMatcher {
     /// `<https://en.wikipedia.org/wiki/Foo.>` keeps its full stop instead of having it guessed
     /// away. Trimming there would also break `isBracketedUrl`, which measures the untrimmed
     /// match — see its note.
+    ///
+    /// ⚠⚠ `range` is the ONLY span of the address on offer, and the untrimmed match is
+    /// deliberately not handed back beside it. It used to be, for the preview-hiding deletion,
+    /// and having both within reach is what let that deletion take a closing delimiter whose
+    /// partner sat in the prose — `look at this (…a.png)` rendering as `look at this (` (#126).
+    /// Anything that needs to reach past the address for punctuation asks
+    /// `PreviewText.absorbing`, which knows which characters are safe to take.
     public static func matches(in text: String)
-        -> [(range: NSRange, href: String, delimiters: NSRange?, raw: NSRange)]
+        -> [(range: NSRange, href: String, delimiters: NSRange?)]
     {
         let ns = text as NSString
         return rawRanges(in: text).compactMap { range in
@@ -75,8 +82,7 @@ public enum URLMatcher {
             if isBracketedUrl(text, at: range), carriesAScheme(matched) {
                 return (
                     range, href(for: matched),
-                    NSRange(location: range.location - 1, length: range.length + 2),
-                    range
+                    NSRange(location: range.location - 1, length: range.length + 2)
                 )
             }
             let trimmed = trimTrailingPunctuation(matched)
@@ -84,8 +90,7 @@ public enum URLMatcher {
             return (
                 NSRange(location: range.location, length: (trimmed as NSString).length),
                 href(for: trimmed),
-                nil,
-                range
+                nil
             )
         }
     }

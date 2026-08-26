@@ -35,14 +35,21 @@ public enum PreviewText {
         public let url: String
         /// UTF-16 offset of the match in the visible body.
         public let start: Int
-        /// UTF-16 offset of the END OF THE MATCH — **not** of `url`.
+        /// UTF-16 offset of the end of `url` PLUS the sentence punctuation that reads as
+        /// belonging to it — see `PreviewText.absorbing(_:in:)`.
         ///
-        /// ⚠⚠ Untrimmed deliberately. Measuring to the end of the trimmed address leaves the
-        /// punctuation the trimmer just discarded sitting between the span and the end of the
+        /// ⚠⚠ Not `start + url.utf16.count`. Measuring to the end of the trimmed address leaves
+        /// the punctuation the trimmer just discarded sitting between the span and the end of the
         /// message, so `look at this https://e.test/a.png.` failed the "nothing but whitespace
         /// after it" test and kept its address, while the same URL at the FRONT hid — the
         /// leading check being vacuously true at offset zero. Identical punctuation, opposite
         /// verdicts, decided by which end the URL sat at.
+        ///
+        /// ⚠⚠ And not the end of the raw MATCH either, which is where the first version of this
+        /// went. The trimmer also discards a closing delimiter whose partner sits BEFORE the
+        /// address, so absorbing everything it dropped made `look at this (https://e.test/a.png)`
+        /// hideable — and the renderer, deleting the same span, left a line holding a lone `(`
+        /// above the picture. The same orphan this rule exists to remove, moved to the other end.
         public let end: Int
     }
 
@@ -86,9 +93,53 @@ public enum PreviewText {
 
             let url = URLMatcher.trimTrailingPunctuation(raw)
             guard !url.isEmpty else { continue }
+            let trimmed = NSRange(location: range.location, length: (url as NSString).length)
             out.append(
-                UrlSpan(url: url, start: range.location, end: range.location + range.length))
+                UrlSpan(
+                    url: url, start: range.location,
+                    end: NSMaxRange(absorbing(trimmed, in: visible))))
         }
         return (visible, out)
+    }
+
+    /// The punctuation a URL may absorb.
+    ///
+    /// ⚠⚠ Narrower than `URLMatcher.trimTrailingPunctuation`'s class, deliberately, and the two
+    /// characters left out are the whole point: `'` and `"` are PAIRED, as are the brackets that
+    /// function handles by balance. A closing delimiter has a partner sitting before the address,
+    /// so absorbing it deletes half a pair and strands the other half — `he said "check <url>"`
+    /// became `he said "check`. Sentence punctuation has no partner, so taking it with the
+    /// address is safe and reads correctly: a message ending `…shot.png.` ends with the picture.
+    ///
+    /// The cost of the narrowness is that a wrapped URL is simply not hideable — its address
+    /// stays on screen beside its own preview, which is redundant rather than broken. That is the
+    /// right way to be wrong here.
+    public static let absorbable: Set<Character> = [".", ",", ";", ":", "!", "?"]
+
+    /// `range` — a URL's TRIMMED span in `text` — extended across the sentence punctuation that
+    /// reads as part of the address.
+    ///
+    /// ⚠⚠ The one definition, called by both sides on purpose. `UrlSpan.end` counts this
+    /// punctuation as part of the address when it decides whether the URL sits against an edge,
+    /// and `MessageRenderer` deletes what that decision measured. Two answers here means one of
+    /// them orphans something: measure wide and delete narrow and the full stop is left behind
+    /// (`look at this .`); measure narrow and delete wide and the peel never fires while the
+    /// deletion eats a character it was not licensed to.
+    ///
+    /// ⚠ Measured on the ASSEMBLED body, not on the regex match, and that closes a case the match
+    /// cannot see. `look at this \u{2}https://e.test/a.png\u{2}.` puts the full stop outside the
+    /// match — a common bot-output shape — and adjacency in the assembled text is adjacency ON
+    /// SCREEN, which is the domain this rule is about. (iOS gets this for free where the web had
+    /// to reach for it: `urlSpans` already scans what `MessageRenderer` assembled.)
+    public static func absorbing(_ range: NSRange, in text: String) -> NSRange {
+        let ns = text as NSString
+        var end = NSMaxRange(range)
+        while end < ns.length,
+            let scalar = Unicode.Scalar(ns.character(at: end)),
+            absorbable.contains(Character(scalar))
+        {
+            end += 1
+        }
+        return NSRange(location: range.location, length: end - range.location)
     }
 }

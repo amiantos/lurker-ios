@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Foundation
 import Testing
 
 @testable import LurkerKit
@@ -101,9 +102,44 @@ struct PreviewHidingTests {
         // produced opposite verdicts depending only on which end the URL sat at.
         #expect(hidden("look at this \(a).", a) == [a])
         #expect(hidden("look at this \(a)!", a) == [a])
-        #expect(hidden("look at this (\(a))", a) == [a])
+        #expect(hidden("look at this \(a)?!", a) == [a])
+        #expect(hidden("look at this \(a),", a) == [a])
         // ...and prose still wins over punctuation, which is the rule the fix must not soften.
         #expect(hidden("I read \(a). this morning", a).isEmpty)
+    }
+
+    @Test("will not absorb a delimiter whose partner is in the prose")
+    func pairedDelimitersAreNotAbsorbed() {
+        // ⚠⚠ This is #126, and the assertion here used to say the opposite: `(\(a))` was
+        // expected to hide. The span measured to the end of the raw MATCH, which swallowed the
+        // `)` — so the URL looked flush against the end of the message, and the renderer, deleting
+        // the same span, took the closer and left `look at this (` painted above the picture. A
+        // lone bracket is not whitespace, so the blank-body collapse never fired either.
+        //
+        // The rule now stops at anything PAIRED. Its partner sits in the prose, and taking half a
+        // pair is the same orphan this whole rule exists to prevent — merely moved to the other
+        // end. So a wrapped URL is simply not hideable: its address stays on screen beside its own
+        // preview, which is redundant rather than broken.
+        #expect(hidden("look at this (\(a))", a).isEmpty)
+        #expect(hidden("look at this [\(a)]", a).isEmpty)
+        #expect(hidden("he said \"check \(a)\"", a).isEmpty)
+        #expect(hidden("he said 'check \(a)'", a).isEmpty)
+
+        // ⚠ The same address with nothing wrapping it still hides, so the assertions above are
+        // about the delimiters rather than about the fixture.
+        #expect(hidden("look at this \(a)", a) == [a])
+    }
+
+    @Test("a formatting code between the address and its full stop changes nothing")
+    func punctuationAcrossAFormattingBoundary() {
+        // ⚠⚠ A common bot-output shape: the URL is bolded and the sentence's full stop is not, so
+        // the regex match stops at the run boundary and the `.` sits outside it. The web had to
+        // reach for its VISIBLE body to see this; iOS gets it free, because `urlSpans` already
+        // scans what `MessageRenderer` assembled — but only while the absorption is measured
+        // there too, which is what this guards.
+        #expect(hidden("look at this \u{2}\(a)\u{2}.", a) == [a])
+        // And the paired case stays paired across the boundary for the same reason.
+        #expect(hidden("look at this (\u{2}\(a)\u{2})", a).isEmpty)
     }
 
     @Test("hides nothing when there are no candidates")
@@ -132,5 +168,85 @@ struct PreviewHidingTests {
         // the brackets rather than about the fixture.
         let bare = Set(PreviewSelection.urls(in: a, inlineMedia: true, linkPreviews: true))
         #expect(PreviewHiding.hideableUrls(in: a, candidates: bare) == [a])
+    }
+}
+
+/// The other half of the hiding rule: what actually comes out of the body.
+///
+/// ⚠⚠ `MessageRenderer` lives in the app target, which has no test bundle, so the deletion cannot
+/// be driven end to end from here. What CAN be pinned is the thing the deletion is made of —
+/// `PreviewText.absorbing`, the single call both sides make — and the property that the renderer's
+/// starting range agrees with the span the rule measured. That agreement is the whole defect class:
+/// #126 was a disagreement of one character, and so was the bug before it.
+@Suite("PreviewHiding/absorption")
+struct PreviewAbsorptionTests {
+
+    private let a = "https://e.test/a.png"
+
+    private func absorbed(_ text: String) -> String {
+        let ns = text as NSString
+        guard let match = URLMatcher.matches(in: text).first else { return "" }
+        let span = PreviewText.absorbing(match.range, in: text)
+        return ns.substring(with: NSRange(
+            location: NSMaxRange(match.range),
+            length: NSMaxRange(span) - NSMaxRange(match.range)))
+    }
+
+    @Test("takes sentence punctuation, which has no partner")
+    func takesSentencePunctuation() {
+        #expect(absorbed("look at this \(a).") == ".")
+        #expect(absorbed("look at this \(a)?!") == "?!")
+        #expect(absorbed("look at this \(a)...") == "...")
+        #expect(absorbed("look at this \(a),") == ",")
+        #expect(absorbed("look at this \(a); and more") == ";")
+    }
+
+    @Test("leaves a closing delimiter alone, because its partner is not the URL's to take")
+    func leavesPairedDelimiters() {
+        // ⚠⚠ Every one of these is trimmed OFF the address by `URLMatcher.trimTrailingPunctuation`
+        // — that is why reaching for "everything the trimmer dropped" looked like the fix and was
+        // not. The trimmer answers "where does the address end"; this answers "what may the
+        // address take with it", and they are different questions with different answers.
+        #expect(absorbed("look at this (\(a))").isEmpty)
+        #expect(absorbed("look at this [\(a)]").isEmpty)
+        #expect(absorbed("he said \"check \(a)\"").isEmpty)
+        #expect(absorbed("he said 'check \(a)'").isEmpty)
+    }
+
+    @Test("takes nothing when the address runs to the end, or into whitespace")
+    func nothingToAbsorb() {
+        #expect(absorbed(a).isEmpty)
+        #expect(absorbed("look at this \(a) and more").isEmpty)
+    }
+
+    @Test("what the rule measured is what the renderer would delete")
+    func theTwoSidesAgree() {
+        // ⚠⚠ The drift guard, and the reason `absorbing` is one function rather than two rules
+        // that happen to match. Measure wide and delete narrow and the full stop is orphaned
+        // (`look at this .`); measure narrow and delete wide and the deletion eats a character
+        // the peel never licensed. Both have shipped.
+        let bodies = [
+            a, "look at this \(a).", "look at this \(a)?!", "\(a) first",
+            "look at this \u{2}\(a)\u{2}.", "look at this (\(a))", "\(a). \(a)",
+        ]
+        for body in bodies {
+            let (visible, spans) = PreviewText.urlSpans(in: body)
+            let matches = URLMatcher.matches(in: visible)
+            for span in spans {
+                // ⚠ Paired by LOCATION, not by href. `\(a). \(a)` below is the same address
+                // twice, and matching on the string hands both spans the first occurrence — a
+                // failure of the test's bookkeeping that reads exactly like the drift it is
+                // looking for. The renderer has no such ambiguity: it walks the matches and
+                // absorbs from each one's own range.
+                guard let match = matches.first(where: { $0.range.location == span.start }) else {
+                    Issue.record("no rendered link at \(span.start) in \(body)")
+                    continue
+                }
+                #expect(
+                    PreviewText.absorbing(match.range, in: visible)
+                        == NSRange(location: span.start, length: span.end - span.start),
+                    "the span and the deletion disagree in: \(body)")
+            }
+        }
     }
 }
