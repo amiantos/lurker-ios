@@ -111,6 +111,34 @@ final class RenderingTests: XCTestCase {
         XCTAssertEqual(URLMatcher.matches(in: "(see https://example.com)").first?.href, "https://example.com")
     }
 
+    /// ⚠⚠ The reason the trim COUNTS brackets rather than stripping closers outright, and the
+    /// property the running-balance rewrite had to preserve: a pair that closes what it opened
+    /// belongs to the address. Getting this wrong resolves the URL one character short, the card
+    /// silently never appears, and the 404 is cached for an hour under a string appearing nowhere
+    /// in the message.
+    func testABalancedPairBelongsToTheAddress() {
+        XCTAssertEqual(
+            URLMatcher.matches(in: "https://e.test/wiki/Rust_(programming_language)").first?.href,
+            "https://e.test/wiki/Rust_(programming_language)")
+        // ...and it is still balanced when the whole thing is wrapped in prose brackets, where the
+        // surplus comes from the closer the sentence added rather than from the address.
+        XCTAssertEqual(
+            URLMatcher.matches(in: "(see https://e.test/wiki/Rust_(programming_language))").first?
+                .href,
+            "https://e.test/wiki/Rust_(programming_language)")
+    }
+
+    /// ⚠ The shape the balance tally exists to keep cheap. Recomputing the count per character
+    /// makes this quadratic in the app-wide linkifier; the web's copy of the function carries a
+    /// note that it cost ~0.5ms per render. Asserted for CORRECTNESS at length — a timing
+    /// assertion would just be a flake — so a future rewrite that drops the running tally still
+    /// has to produce the right answer here.
+    func testALongRunOfClosersIsTrimmedToTheAddress() {
+        let url = "https://e.test/a.png"
+        XCTAssertEqual(
+            URLMatcher.matches(in: url + String(repeating: ")", count: 100)).first?.href, url)
+    }
+
     func testBareEmailGetsMailto() {
         XCTAssertEqual(URLMatcher.matches(in: "ping me@example.com").first?.href, "mailto:me@example.com")
     }

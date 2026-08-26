@@ -135,38 +135,52 @@ public enum URLMatcher {
     /// Strip trailing sentence punctuation and unbalanced closing brackets, so
     /// `(see https://x.com)` and `end of https://x.com.` don't swallow the delimiter.
     ///
-    /// ⚠⚠ To a FIXPOINT, because the two kinds interleave. The sentence pass used to run once
-    /// and then hand over to the bracket pass, so `(https://e.test/a.png.)` stopped the first
-    /// pass dead on the `)` and the bracket pass then exposed a `.` that nothing looked at again:
-    /// the address kept a full stop, the tappable link 404'd, and `PreviewSelection` asked the
-    /// server to resolve a string appearing nowhere in the message — which is then negative-cached
-    /// for an hour, the exact failure `rawRanges` warns about.
+    /// ⚠⚠ One backward walk, and the two kinds INTERLEAVE within it. Two separate passes — a
+    /// sentence pass, then a bracket pass — cannot see each other: `(https://e.test/a.png.)`
+    /// stopped the sentence pass dead on the `)`, and the bracket pass then exposed a `.` nothing
+    /// looked at again. The address kept a full stop nobody typed, the tappable link 404'd, and
+    /// `PreviewSelection` asked the resolver about a string appearing nowhere in the message —
+    /// which is negative-cached for an hour, the exact failure `rawRanges` warns about.
+    ///
+    /// ⚠⚠ Balance is carried in `surplus` — closers minus openers, tallied ONCE up front and
+    /// decremented as closers come off — rather than recounted per character. Recounting is what
+    /// makes this quadratic, and the web's copy of this function carries a note that it cost
+    /// ~0.5ms per render on a line of a hundred `)`. This runs in the app-wide linkifier, on every
+    /// message, so it stays linear. Counting only as characters leave the END is what makes the
+    /// running tally exact: the remaining text is always a prefix of what was counted.
+    ///
+    /// A character with no entry has surplus 0, so ordinary text ends the walk without a special
+    /// case, and a BALANCED pair is kept — `…/wiki/Rust_(programming_language)` is the whole
+    /// reason this counts rather than stripping closers outright.
     ///
     /// ⚠ `…` counts as sentence punctuation. macOS substitutes it for `...` while you type, so it
     /// is ordinary in pasted text, and without it the ellipsis rode into the href. It has to be in
     /// `PreviewText.absorbable` too — this decides where the address ENDS, that decides what the
     /// address may TAKE WITH IT when its preview stands in for it, and a character this one drops
     /// that one has to be willing to delete or the punctuation is orphaned on screen.
-    ///
-    /// The loop is bounded by the string's own length and in practice runs once or twice; the
-    /// pathological input is a URL that is mostly closing brackets.
     static func trimTrailingPunctuation(_ url: String) -> String {
         var result = Substring(url)
         let trailing: Set<Character> = [".", ",", ";", ":", "!", "?", "'", "\"", "\u{2026}"]
-        var shrinking = true
-        while shrinking {
-            shrinking = false
-            while let last = result.last, trailing.contains(last) {
+        var surplus: [Character: Int] = [:]
+        for ch in result {
+            switch ch {
+            case "(": surplus[")", default: 0] -= 1
+            case ")": surplus[")", default: 0] += 1
+            case "[": surplus["]", default: 0] -= 1
+            case "]": surplus["]", default: 0] += 1
+            case "{": surplus["}", default: 0] -= 1
+            case "}": surplus["}", default: 0] += 1
+            default: break
+            }
+        }
+        while let last = result.last {
+            if trailing.contains(last) {
                 result = result.dropLast()
-                shrinking = true
+                continue
             }
-            for (open, close) in [(Character("("), Character(")")), ("[", "]"), ("{", "}")] {
-                guard result.last == close else { continue }
-                if result.filter({ $0 == close }).count > result.filter({ $0 == open }).count {
-                    result = result.dropLast()
-                    shrinking = true
-                }
-            }
+            guard surplus[last, default: 0] > 0 else { break }
+            surplus[last]? -= 1
+            result = result.dropLast()
         }
         return String(result)
     }
