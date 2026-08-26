@@ -66,8 +66,15 @@ public enum URLMatcher {
     /// `<https://en.wikipedia.org/wiki/Foo.>` keeps its full stop instead of having it guessed
     /// away. Trimming there would also break `isBracketedUrl`, which measures the untrimmed
     /// match — see its note.
+    ///
+    /// ⚠⚠ `range` is the ONLY span of the address on offer, and the untrimmed match is
+    /// deliberately not handed back beside it. It used to be, for the preview-hiding deletion,
+    /// and having both within reach is what let that deletion take a closing delimiter whose
+    /// partner sat in the prose — `look at this (…a.png)` rendering as `look at this (` (#126).
+    /// Anything that needs to reach past the address for punctuation asks
+    /// `PreviewText.absorbing`, which knows which characters are safe to take.
     public static func matches(in text: String)
-        -> [(range: NSRange, href: String, delimiters: NSRange?, raw: NSRange)]
+        -> [(range: NSRange, href: String, delimiters: NSRange?)]
     {
         let ns = text as NSString
         return rawRanges(in: text).compactMap { range in
@@ -75,8 +82,7 @@ public enum URLMatcher {
             if isBracketedUrl(text, at: range), carriesAScheme(matched) {
                 return (
                     range, href(for: matched),
-                    NSRange(location: range.location - 1, length: range.length + 2),
-                    range
+                    NSRange(location: range.location - 1, length: range.length + 2)
                 )
             }
             let trimmed = trimTrailingPunctuation(matched)
@@ -84,8 +90,7 @@ public enum URLMatcher {
             return (
                 NSRange(location: range.location, length: (trimmed as NSString).length),
                 href(for: trimmed),
-                nil,
-                range
+                nil
             )
         }
     }
@@ -127,17 +132,55 @@ public enum URLMatcher {
         return regex.stringByReplacingMatches(in: text, range: whole, withTemplate: " ")
     }
 
-    /// Strip trailing sentence punctuation and one unbalanced closing bracket, so
+    /// Strip trailing sentence punctuation and unbalanced closing brackets, so
     /// `(see https://x.com)` and `end of https://x.com.` don't swallow the delimiter.
+    ///
+    /// ⚠⚠ One backward walk, and the two kinds INTERLEAVE within it. Two separate passes — a
+    /// sentence pass, then a bracket pass — cannot see each other: `(https://e.test/a.png.)`
+    /// stopped the sentence pass dead on the `)`, and the bracket pass then exposed a `.` nothing
+    /// looked at again. The address kept a full stop nobody typed, the tappable link 404'd, and
+    /// `PreviewSelection` asked the resolver about a string appearing nowhere in the message —
+    /// which is negative-cached for an hour, the exact failure `rawRanges` warns about.
+    ///
+    /// ⚠⚠ Balance is carried in `surplus` — closers minus openers, tallied ONCE up front and
+    /// decremented as closers come off — rather than recounted per character. Recounting is what
+    /// makes this quadratic, and the web's copy of this function carries a note that it cost
+    /// ~0.5ms per render on a line of a hundred `)`. This runs in the app-wide linkifier, on every
+    /// message, so it stays linear. Counting only as characters leave the END is what makes the
+    /// running tally exact: the remaining text is always a prefix of what was counted.
+    ///
+    /// A character with no entry has surplus 0, so ordinary text ends the walk without a special
+    /// case, and a BALANCED pair is kept — `…/wiki/Rust_(programming_language)` is the whole
+    /// reason this counts rather than stripping closers outright.
+    ///
+    /// ⚠ `…` counts as sentence punctuation. macOS substitutes it for `...` while you type, so it
+    /// is ordinary in pasted text, and without it the ellipsis rode into the href. It has to be in
+    /// `PreviewText.absorbable` too — this decides where the address ENDS, that decides what the
+    /// address may TAKE WITH IT when its preview stands in for it, and a character this one drops
+    /// that one has to be willing to delete or the punctuation is orphaned on screen.
     static func trimTrailingPunctuation(_ url: String) -> String {
         var result = Substring(url)
-        let trailing: Set<Character> = [".", ",", ";", ":", "!", "?", "'", "\""]
-        while let last = result.last, trailing.contains(last) { result = result.dropLast() }
-        for (open, close) in [(Character("("), Character(")")), ("[", "]"), ("{", "}")] {
-            guard result.last == close else { continue }
-            if result.filter({ $0 == close }).count > result.filter({ $0 == open }).count {
-                result = result.dropLast()
+        let trailing: Set<Character> = [".", ",", ";", ":", "!", "?", "'", "\"", "\u{2026}"]
+        var surplus: [Character: Int] = [:]
+        for ch in result {
+            switch ch {
+            case "(": surplus[")", default: 0] -= 1
+            case ")": surplus[")", default: 0] += 1
+            case "[": surplus["]", default: 0] -= 1
+            case "]": surplus["]", default: 0] += 1
+            case "{": surplus["}", default: 0] -= 1
+            case "}": surplus["}", default: 0] += 1
+            default: break
             }
+        }
+        while let last = result.last {
+            if trailing.contains(last) {
+                result = result.dropLast()
+                continue
+            }
+            guard surplus[last, default: 0] > 0 else { break }
+            surplus[last]? -= 1
+            result = result.dropLast()
         }
         return String(result)
     }

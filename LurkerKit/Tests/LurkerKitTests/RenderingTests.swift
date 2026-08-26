@@ -111,6 +111,34 @@ final class RenderingTests: XCTestCase {
         XCTAssertEqual(URLMatcher.matches(in: "(see https://example.com)").first?.href, "https://example.com")
     }
 
+    /// ⚠⚠ The reason the trim COUNTS brackets rather than stripping closers outright, and the
+    /// property the running-balance rewrite had to preserve: a pair that closes what it opened
+    /// belongs to the address. Getting this wrong resolves the URL one character short, the card
+    /// silently never appears, and the 404 is cached for an hour under a string appearing nowhere
+    /// in the message.
+    func testABalancedPairBelongsToTheAddress() {
+        XCTAssertEqual(
+            URLMatcher.matches(in: "https://e.test/wiki/Rust_(programming_language)").first?.href,
+            "https://e.test/wiki/Rust_(programming_language)")
+        // ...and it is still balanced when the whole thing is wrapped in prose brackets, where the
+        // surplus comes from the closer the sentence added rather than from the address.
+        XCTAssertEqual(
+            URLMatcher.matches(in: "(see https://e.test/wiki/Rust_(programming_language))").first?
+                .href,
+            "https://e.test/wiki/Rust_(programming_language)")
+    }
+
+    /// ⚠ The shape the balance tally exists to keep cheap. Recomputing the count per character
+    /// makes this quadratic in the app-wide linkifier; the web's copy of the function carries a
+    /// note that it cost ~0.5ms per render. Asserted for CORRECTNESS at length — a timing
+    /// assertion would just be a flake — so a future rewrite that drops the running tally still
+    /// has to produce the right answer here.
+    func testALongRunOfClosersIsTrimmedToTheAddress() {
+        let url = "https://e.test/a.png"
+        XCTAssertEqual(
+            URLMatcher.matches(in: url + String(repeating: ")", count: 100)).first?.href, url)
+    }
+
     func testBareEmailGetsMailto() {
         XCTAssertEqual(URLMatcher.matches(in: "ping me@example.com").first?.href, "mailto:me@example.com")
     }
@@ -156,16 +184,40 @@ final class RenderingTests: XCTestCase {
         XCTAssertNotNil(URLMatcher.matches(in: "<mailto:a@b.co>").first?.delimiters)
     }
 
-    /// ⚠⚠ `raw` is the UNTRIMMED match, and the hidden-URL deletion uses it rather than `range`.
-    /// `PreviewText` measures a span's end the same way when deciding whether a URL sits against
-    /// the edge, so deleting only the trimmed span orphans the punctuation the rule had already
-    /// counted as part of the address — `look at this <url>.` became `look at this .`.
-    func testRawRangeCoversTheTrailingPunctuationTheTrimDropped() {
+    /// ⚠⚠ `range` is the TRIMMED address and it is the only span on offer — the untrimmed match
+    /// is deliberately no longer returned beside it (#126). It used to be, for the hidden-URL
+    /// deletion, and having both within reach is what let that deletion take a closing delimiter
+    /// whose partner sat in the prose: `look at this (<url>)` rendered as `look at this (`.
+    /// Reaching past the address for the punctuation it may absorb is `PreviewText.absorbing`'s
+    /// job now, because that question has an answer this trimmer does not know.
+    func testRangeIsTheTrimmedAddressAndNothingElse() {
         let text = "look at this https://e.test/a.png."
         let match = URLMatcher.matches(in: text).first
         XCTAssertEqual(match?.href, "https://e.test/a.png")
-        XCTAssertEqual(match?.raw.length, ("https://e.test/a.png." as NSString).length)
         XCTAssertEqual(match?.range.length, ("https://e.test/a.png" as NSString).length)
+    }
+
+    /// ⚠⚠ The two trims INTERLEAVE, so one pass each is not enough. The sentence pass used to run
+    /// once and hand over to the bracket pass: `(…/a.png.)` stopped it dead on the `)`, the bracket
+    /// pass then exposed a `.`, and nothing looked again. The address kept a full stop nobody
+    /// typed, the tappable link 404'd, and `PreviewSelection` sent the resolver a string appearing
+    /// nowhere in the message — which is then negative-cached for an hour.
+    func testTrimsToAFixpointWhenThePunctuationInterleaves() {
+        XCTAssertEqual(
+            URLMatcher.matches(in: "(https://e.test/a.png.)").first?.href, "https://e.test/a.png")
+        XCTAssertEqual(
+            URLMatcher.matches(in: "[see https://e.test/a.png!]").first?.href,
+            "https://e.test/a.png")
+    }
+
+    /// ⚠ macOS substitutes `…` for `...` as you type, so it arrives in pasted text constantly.
+    /// Without it in the trim set it rode into the href: the link broke, and `looksLikeMedia` saw
+    /// a path not ending in `.png` and charged the URL to the tight CARD budget instead of the
+    /// generous media one.
+    func testAnEllipsisIsSentencePunctuationLikeAnyOther() {
+        XCTAssertEqual(
+            URLMatcher.matches(in: "look at this https://e.test/a.png\u{2026}").first?.href,
+            "https://e.test/a.png")
     }
 
     func testAnOrdinaryUrlReportsNoDelimiters() {
