@@ -128,10 +128,10 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     /// One page — of highlights while the field is empty, of matches once it holds a real query.
     ///
-    /// The two travel by different roads: highlights are a REST read with a real `nextBefore`
-    /// cursor, search is a WS request/reply whose cursor is synthesized. Both arrive as a
-    /// `HighlightsPage`, which is the whole reason this screen can switch between them without
-    /// the list knowing.
+    /// Both are REST reads with a real `nextBefore` cursor, and both arrive as a
+    /// `HighlightsPage` — which is the whole reason this screen can switch between them without
+    /// the list knowing. Search used to be the odd one out: a WS request/reply whose cursor this
+    /// client synthesized from `hasMore` plus the last row's id (#123).
     ///
     /// `.tooShort` is answered here, locally, and never reaches the wire — that's the point of
     /// the state. Answering it with an empty page (rather than nil) matters: nil means "we
@@ -184,10 +184,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         }
     }
 
-    /// The search half deliberately does not say "pull to try again" the way Highlights and
-    /// Bookmarks do: search rides the socket, so offline means there is nothing to retry
-    /// against, and the field is right there — the more natural thing to reach for anyway.
-    /// The landing view is an ordinary REST read, so it gets the ordinary advice.
+    /// ⚠ Both halves are ordinary REST reads now (#123), so both get the ordinary advice. Search
+    /// used to ride the socket, and the copy said so — "your connection to the server dropped" —
+    /// which was reasonable when the only way to fail was a dead socket and is simply wrong for a
+    /// 500, a timeout, or a body we couldn't read over a perfectly healthy connection. It also
+    /// withheld "pull to try again" on the grounds that there was nothing to retry against, while
+    /// this screen has had a working refresh control the whole time.
     override var errorModel: StateView.Model {
         showing == .landing
             ? StateView.Model(
@@ -198,7 +200,7 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
             : StateView.Model(
                 symbol: "exclamationmark.triangle",
                 title: "Couldn't search",
-                subtitle: "Your connection to the server dropped. Try again once it's back."
+                subtitle: "Pull to try again, or edit your search."
             )
     }
 
@@ -266,6 +268,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // A search dismissed while it was still running left its question on screen with nothing
+        // under it — ask again. Not covered by `syncToField`, which deliberately does nothing when
+        // the field still holds the committed query, and that is precisely this case. Guarded on
+        // the flag rather than on the state of the list, so whichever of the two paths runs first
+        // wins and the other is a no-op (any reload clears it).
+        if loadWasCancelled { reload() }
         // The toolbar belongs to the navigation controller, not to this screen, so it has to
         // be asked for on the way in — and put back on the way out, since the sheet this sits
         // in may show other screens that have no business with a bottom bar.
@@ -276,6 +284,11 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Whatever is still being searched for, nobody is going to read it — see `cancelLoad`.
+        // The debounce goes too, or a query scheduled by the last keystroke before dismissal
+        // fires into a screen that has gone.
+        debounce?.cancel()
+        cancelLoad()
         if presentation == .standalone {
             navigationController?.setToolbarHidden(true, animated: animated)
         }
@@ -297,9 +310,11 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// share of characters cleared the old window and each one bought a full query. 350ms sits
     /// above that band while staying below the point where the field feels laggy.
     ///
-    /// Nothing can cancel a search already on the wire — the protocol has no cancel frame, so a
-    /// superseded query still runs to completion server-side and we merely discard the reply.
-    /// Not dispatching it in the first place is the only lever there is.
+    /// A superseded search IS cancelled now — the feed holds its page task and cancels it, which
+    /// cancels the URLSession request, and the route checks `req.destroyed` before spending the
+    /// query (#123). So the debounce is no longer the only lever, but it is still the cheaper one:
+    /// a request never made costs nothing at all, where a cancelled one has still crossed the
+    /// network and raced the server's own check.
     ///
     /// Fires for activation and dismissal too, not only for edits, so unchanged text is
     /// dropped — otherwise merely focusing the field would re-run the search that's already

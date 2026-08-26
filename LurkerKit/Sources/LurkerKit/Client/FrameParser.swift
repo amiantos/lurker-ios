@@ -58,18 +58,6 @@ enum FrameParser {
             return messageId == 0
                 ? .ignored
                 : .bookmarkUpdated(messageId: messageId, saved: obj.bool("saved"))
-        case "search-result":
-            // A reply with no token is unaddressable — it can't be matched to the call waiting
-            // for it, and `int()` would quietly read it as 0, a value no request ever carries
-            // (tokens start at 1). Dropped as unparseable rather than becoming a `.searchResult`
-            // nothing can consume.
-            //
-            // Note this is NOT the "unknown token" case, which is normal and must stay a no-op:
-            // a search that already timed out, or was failed by a socket drop, can still have
-            // its reply turn up afterwards. That one is correlated fine — to a call that has
-            // gone.
-            guard let token = obj.intOrNull("token") else { return .ignored }
-            return .searchResult(token: token, page: parseSearchPage(obj))
         case "upload-progress":
             // Same trust posture as its siblings. A frame with no token can't be matched to
             // the upload it describes, and an unrecognized phase is a server saying something
@@ -97,7 +85,7 @@ enum FrameParser {
             // guard one malformed frame silently deletes every rule in the bucket, live, and
             // nothing re-seeds them short of a reconnect. A hide feature must not fail open.
             // Both siblings in this switch refuse a payload they can't trust the same way
-            // (`search-result` on a missing token, `buffer-closed` on an empty target).
+            // (`buffer-closed` on an empty target).
             //
             // The check is on the raw value, not on emptiness: `masks: []` is a legitimate
             // "the last rule was removed" and has to keep working.
@@ -170,26 +158,6 @@ enum FrameParser {
         return HighlightsPage(
             items: obj.objects("items").map(parseFeedItem),
             nextBefore: obj.intOrNull("nextBefore")
-        )
-    }
-
-    /// A WS `search-result` frame's page. Same row shape as `/api/highlights` — the server
-    /// builds both from `MessageEventWithNetwork`, so one reader serves both — but a
-    /// *different cursor contract*, which is the whole reason this isn't `parseHighlights`.
-    ///
-    /// Search answers `hasMore` and no cursor, because the cursor is derivable: matches come
-    /// back newest-first by message id, so the next page is everything below the last row.
-    /// Synthesizing `nextBefore` here (exactly as the web store does) is what lets a search
-    /// page through `HighlightsPage` and therefore through the shared feed screen.
-    ///
-    /// `hasMore` with an empty `results` collapses to "no cursor": there is no id to page
-    /// from, and claiming more would leave the list asking for a page it can't address.
-    private static func parseSearchPage(_ obj: [String: Any]) -> HighlightsPage {
-        let items = obj.objects("results").map(parseFeedItem)
-        let hasMore = obj.bool("hasMore")
-        return HighlightsPage(
-            items: items,
-            nextBefore: hasMore ? items.last?.message.id : nil
         )
     }
 

@@ -119,25 +119,18 @@ enum ServerFrame: Equatable, Sendable {
     /// it just means that line isn't loaded here.
     case bookmarkUpdated(messageId: Int, saved: Bool)
 
-    /// WS `search-result`: the answer to one `search` verb, correlated by the `token` the
-    /// request carried.
-    ///
-    /// **The one frame that never reaches the store.** Everything else here is state the
-    /// server is telling every device about; this is a reply to a question this device asked,
-    /// and it spans every buffer at once — folding it into `messages` would splice matches
-    /// from a dozen conversations into whichever buffer happened to be open. `LurkerClient`
-    /// intercepts it and resumes the waiting `search(_:)` call, so it is parsed here and
-    /// consumed there rather than travelling on to `ChatViewModel`.
-    case searchResult(token: Int, page: HighlightsPage)
-
     /// WS `upload-progress`: how far along the server is with an upload *this* device is
     /// running (#47), correlated by the `progressToken` we put in the multipart body.
     ///
-    /// **The second frame that never reaches the store**, for the same reason as
-    /// `searchResult`: it is an answer to something this device started, not state the account
-    /// owns. It also fans out to every socket the user has open — two devices uploading at
-    /// once would otherwise drive each other's readouts — so `LurkerClient` matches the token
-    /// against its in-flight uploads and drops anything it didn't ask for.
+    /// **The one frame that never reaches the store** — it is an answer to something this device
+    /// started, not state the account owns. It also fans out to every socket the user has open —
+    /// two devices uploading at once would otherwise drive each other's readouts — so
+    /// `LurkerClient` matches the token against its in-flight uploads and drops anything it
+    /// didn't ask for.
+    ///
+    /// ⚠ It used to be one of two. `search-result` was correlated the same way until search
+    /// became a REST read (#123), which is why the interception in `LurkerClient` now has a
+    /// single case in it.
     case uploadProgress(token: String, progress: UploadServerProgress)
 
     /// WS `buffer-closed`: the user closed this buffer — from *any* of their devices.

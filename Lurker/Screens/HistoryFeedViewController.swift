@@ -52,6 +52,26 @@ class HistoryFeedViewController: UITableViewController {
     /// pull-to-refresh landing while a `loadMore` was in flight would otherwise append the old
     /// list's next page onto the new list.
     private var loadGeneration = 0
+    /// The page fetch in flight, held so a superseding `reload()` can CANCEL it rather than
+    /// merely out-generation it.
+    ///
+    /// ⚠⚠ The generation counter below is still the correctness mechanism — cancellation is
+    /// cooperative, and a request that has already returned cannot be recalled — but it only ever
+    /// discarded an answer that had already been paid for. Since search became a REST read (#123)
+    /// the request itself can be stopped: cancelling this cancels the URLSession task, and the
+    /// route checks `req.destroyed` before spending the query. That is the difference between the
+    /// server doing the work and throwing it away, and the server never doing it — and an FTS
+    /// query runs on the same event loop that services every IRC connection on the cell.
+    ///
+    /// ⚠ Only ever non-nil for one load: `isLoading` keeps `loadMore` and a non-superseding
+    /// `reload` from overlapping, so this never orphans a task it should have cancelled.
+    private var loadTask: Task<Void, Never>?
+    /// A load was abandoned before it landed, so whatever is on screen answers nothing.
+    ///
+    /// Read by the screens that cancel — the ones whose reload is a different question each time
+    /// — to decide whether coming back has to ask again. Cleared by any reload that commits, so
+    /// it does not matter whether the reopen path or the appear path gets there first.
+    private(set) var loadWasCancelled = false
     /// The first fetch failed with nothing to show — distinct from an empty result, so the
     /// placeholder can offer a retry rather than claim the feed is empty.
     private var loadFailed = false
@@ -158,6 +178,12 @@ class HistoryFeedViewController: UITableViewController {
         // refresh control is already spinning, so end it here or it spins forever. Feeds whose
         // reloads differ from one another supersede instead; see `reloadSupersedes`.
         guard !isLoading || reloadSupersedes else { refreshControl?.endRefreshing(); return }
+        // ⚠ Order relative to the generation bump does not matter, and an earlier version of
+        // this comment claimed it did. `cancel()` only sets a flag and `reload()` runs to
+        // completion on the main actor, so no suspended task can observe a state between the two.
+        // The generation check remains the correctness mechanism; this is the cost saving.
+        loadTask?.cancel()
+        loadWasCancelled = false
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
@@ -165,11 +191,46 @@ class HistoryFeedViewController: UITableViewController {
         // Only show the full-screen spinner on a cold load; a refresh keeps the list up with
         // the refresh control's own spinner rather than blanking what's already there.
         if items.isEmpty { renderPlaceholder(.loading) }
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             guard let self, generation == loadGeneration else { return }
             let page = await fetchPage(before: nil)
+            // ⚠ A cancelled fetch reports nil, which is indistinguishable here from a failure —
+            // and `handleFirstPage` would put an error placeholder up for a request the user
+            // superseded by typing. The generation check inside it catches this too; this says so
+            // where the cancelling happens.
+            guard !Task.isCancelled else { return }
             handleFirstPage(page, generation: generation)
         }
+    }
+
+    /// Give up on the page in flight, because nobody is waiting for it any more.
+    ///
+    /// ⚠⚠ For the "user left" case, which a superseding `reload()` does not cover — and which is
+    /// at least as common as "user typed another character". A search results screen is built
+    /// once and reused (`BufferListViewController.searchResults`), so it is never deallocated and
+    /// nothing else would stop the request. Since the whole argument for the REST move is that an
+    /// FTS query runs on the event loop servicing every IRC connection on the cell, a query
+    /// nobody will read is exactly the one worth not running.
+    ///
+    /// ⚠⚠ Clears the in-flight bookkeeping, and an earlier version of this did not — it left
+    /// `isLoading` set on the theory that "the next `reload()` sets it honestly on the way past".
+    /// There isn't always a next reload. `MessageSearchViewController.syncToField` deliberately
+    /// does nothing when the field still holds the committed query, which is exactly the state a
+    /// screen dismissed mid-search comes back in: `commit` assigns `query` before it reloads. So
+    /// reopening showed a spinner nothing would ever resolve, over a list that `isLoading` had
+    /// frozen against paging.
+    ///
+    /// ⚠ `loadWasCancelled` is what gets it out of that, rather than clearing the flags alone: a
+    /// cancelled load leaves a question on screen with no answer under it, so somebody has to ask
+    /// again. The placeholder is left as it is — this runs on the way out, so nobody sees it, and
+    /// an error placeholder would claim a failure when the user simply left.
+    func cancelLoad() {
+        guard loadTask != nil else { return }
+        loadTask?.cancel()
+        loadTask = nil
+        isLoading = false
+        refreshControl?.endRefreshing()
+        loadWasCancelled = true
     }
 
     /// Fetch the next older page, if there is one and we're not already fetching.
@@ -190,9 +251,10 @@ class HistoryFeedViewController: UITableViewController {
         // `reload()` superseded this, and that reload set the flag itself and clears it when its
         // own page lands. (A feed that doesn't supersede never gets here — its `reload()` is
         // dropped while a page is in flight, so the generation can't move under it.)
-        Task { [weak self] in
+        loadTask = Task { [weak self] in
             guard let self, generation == loadGeneration else { return }
             let page = await fetchPage(before: cursor)
+            guard !Task.isCancelled else { return }
             appendPage(page, generation: generation)
         }
     }
