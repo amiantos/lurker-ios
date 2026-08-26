@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import LurkerKit
 import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
@@ -85,7 +86,11 @@ final class AttachmentPicker: NSObject {
 
     func pickFromFiles(completion: @escaping (Result<[Source], PickError>) -> Void) {
         self.completion = completion
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image, .movie])
+        // ⚠⚠ The list lives in `UploadContentTypes`, and it is the whole of what Files will let
+        // you choose: an absent type is GREYED OUT with no "All Files" escape, so an omission
+        // reads as "Lurker can't send this" (#125).
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: UploadContentTypes.forOpening)
         picker.allowsMultipleSelection = true
         picker.delegate = self
         presenter?.present(picker, animated: true)
@@ -129,7 +134,10 @@ final class AttachmentPicker: NSObject {
                             )
                             return
                         }
-                        handoff.finish(copy(url, isVideo: isVideo, allowMove: true))
+                        handoff.finish(
+                            copy(
+                                url, isVideo: isVideo, allowMove: true,
+                                fallbackExtension: isVideo ? "mov" : "jpg"))
                     }
                     handoff.track(progress)
                 }
@@ -143,7 +151,9 @@ final class AttachmentPicker: NSObject {
                 DispatchQueue.global(qos: .userInitiated).async {
                     let scoped = url.startAccessingSecurityScopedResource()
                     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    continuation.resume(returning: copy(url, isVideo: isVideo, allowMove: false))
+                    continuation.resume(
+                        returning: copy(
+                            url, isVideo: isVideo, allowMove: false, fallbackExtension: nil))
                 }
             }
         }
@@ -157,12 +167,25 @@ final class AttachmentPicker: NSObject {
     /// rather than copy a second full 200 MB behind the picker's own export. A document is
     /// the user's real file (security-scoped, possibly read-only in iCloud), so it must be
     /// copied.
+    /// `fallbackExtension` names what an extensionless source almost certainly is — and is nil
+    /// when nothing here knows.
+    ///
+    /// ⚠⚠ It used to be `isVideo ? "mov" : "jpg"`, reading a two-way flag as if "not video" meant
+    /// "image". That was true while Files only offered images and movies; now that it offers text
+    /// (#125), an extensionless pick would be copied to `…​.jpg` and claimed as `image/jpeg` — and
+    /// the server reads an upload's dialect from the filename FIRST and the claim second, so a
+    /// confident wrong claim is worse than none. A photo-library item genuinely is one or the
+    /// other and still says so; a document says nothing and takes `application/octet-stream`,
+    /// which `classifyUpload` overrules from the bytes anyway.
     private nonisolated static func copy(
-        _ source: URL, isVideo: Bool, allowMove: Bool
+        _ source: URL, isVideo: Bool, allowMove: Bool, fallbackExtension: String?
     ) -> Result<Picked, PickError> {
-        let ext = source.pathExtension.isEmpty ? (isVideo ? "mov" : "jpg") : source.pathExtension
+        let ext = source.pathExtension.isEmpty ? (fallbackExtension ?? "") : source.pathExtension
         let dest = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("lurker-attach-\(UUID().uuidString).\(ext)")
+            .appendingPathComponent(
+                ext.isEmpty
+                    ? "lurker-attach-\(UUID().uuidString)"
+                    : "lurker-attach-\(UUID().uuidString).\(ext)")
         do {
             if allowMove {
                 // Move can fail across volumes; fall back to a copy so we never lose the pick.
@@ -174,9 +197,30 @@ final class AttachmentPicker: NSObject {
         } catch {
             return .failure(.failed(error.localizedDescription))
         }
-        let mime = UTType(filenameExtension: ext)?.preferredMIMEType
-            ?? (isVideo ? "video/mp4" : "application/octet-stream")
-        return .success(Picked(url: dest, filename: source.lastPathComponent, mime: mime, isVideo: isVideo))
+        let type = ext.isEmpty ? nil : UTType(filenameExtension: ext)
+        // ⚠⚠ A text type with no registered mime claims `text/plain`, NOT octet-stream, and the
+        // difference is a misclassification with teeth. Plenty of what `.text` offers has no
+        // `preferredMIMEType` at all — `.log`, `.sh`, `.c`, `.swift` all return nil — and the
+        // server exempts a claim from its SVG probe only when the claim is already a text dialect.
+        // So an octet-stream claim on a shell script that happens to contain `<svg ` in its first
+        // kilobyte is classified `image/svg+xml`: a 415 on hosted, and on self-host a file stored
+        // and served as an ACTIVE SVG rather than as the text it is. Claiming `text/plain` keeps
+        // it on the text path, where `dialectFromFilename` still gets the last word.
+        let mime = type?.preferredMIMEType
+            ?? (type?.conforms(to: .text) == true
+                ? "text/plain"
+                : (isVideo ? "video/mp4" : "application/octet-stream"))
+        // ⚠ The filename carries the inferred extension too, when one was inferred. Having the
+        // temp file and the claim say `.jpg` while the name we upload says nothing is the two
+        // halves disagreeing, and the name is the half that travels: the server reads an upload's
+        // dialect from the FILENAME first, and the transcode path rewrites extensions by string
+        // surgery on it. When the source named itself this changes nothing, which is every
+        // ordinary pick.
+        let filename =
+            source.pathExtension.isEmpty && !ext.isEmpty
+            ? "\(source.lastPathComponent).\(ext)"
+            : source.lastPathComponent
+        return .success(Picked(url: dest, filename: filename, mime: mime, isVideo: isVideo))
     }
 
     /// Resume-once plumbing for a staging step that can finish two ways — the provider calling
