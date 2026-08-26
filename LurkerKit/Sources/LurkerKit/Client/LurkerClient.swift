@@ -719,9 +719,8 @@ final class LurkerClient {
         do {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            // ⚠⚠ `scoped:` is what makes a 404 readable here — see `SearchRequest.outcome`,
-            // where the rule lives so it can be tested. Reading every 404 as an empty page turns
-            // search into a silent lie on any server without the route.
+            // ⚠ `scoped:` is what makes a 404 readable here — see `SearchRequest.outcome`, where
+            // the rule lives so it can be tested.
             switch SearchRequest.outcome(status: code, scoped: networkId != nil) {
             case .unauthorized:
                 onFrame(.unauthorized)

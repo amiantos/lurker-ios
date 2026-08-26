@@ -64,17 +64,19 @@ public enum SearchRequest {
         case failed
     }
 
-    /// ⚠⚠ `scoped` — whether the request carried a `networkId` — is what makes a 404 readable, and
-    /// getting this wrong turns search into a silent lie rather than an error.
+    /// ⚠⚠ `scoped` — whether the request carried a `networkId` — is what makes a 404 readable.
     ///
-    /// The route answers 404 for an unowned or unknown network, and for THAT a 404 is the empty
-    /// page: the user narrowed to a network holding nothing of theirs, and "no matches" is the
-    /// honest answer. But this client only ever sends an id it resolved from its own roster, so
-    /// that case is nearly unreachable — while the reachable 404 is a server with no
-    /// `/api/search` at all, which is every self-hosted instance older than lurker#676. Reading
-    /// that as an empty page means every query on such a server answers "No matches" forever,
-    /// with no error and nothing to retry. Nothing in this client gates on a server version, so
-    /// the status code is the only signal there is.
+    /// The route answers 404 for exactly one thing: an unowned or unknown network. So a SCOPED
+    /// 404 is the empty page — the user narrowed to a network holding nothing of theirs, and "no
+    /// matches" answers the question. An UNSCOPED 404 is not that answer, because there was no
+    /// network to be unknown; it is a response nobody predicted, and the only honest reading of
+    /// one is that we failed to ask.
+    ///
+    /// ⚠ The distinction is a line of code and buys the difference between an error and a lie.
+    /// "Nothing matched" is the one wrong thing to say whenever the truth is that nobody looked —
+    /// it is unfalsifiable from the outside, where an error at least offers a retry. Cheap
+    /// honesty about an unexpected status, not compatibility machinery: this client tracks the
+    /// server it ships with, and does not negotiate.
     public static func outcome(status: Int, scoped: Bool) -> Outcome {
         switch status {
         case 200..<300: .page

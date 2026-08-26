@@ -85,15 +85,13 @@ struct SearchRequestTests {
 
     // MARK: - Reading the response status
 
-    @Test("an unscoped 404 is a FAILURE, because it means the route isn't there")
+    @Test("an unscoped 404 is a FAILURE — there was no network for it to be about")
     func unscoped404Fails() {
-        // ⚠⚠ The finding that makes this rule worth a test. The route answers 404 for an unowned
-        // network, and this client first read every 404 as the empty page on that basis. But it
-        // only ever sends a networkId it resolved from its own roster, so that case is nearly
-        // unreachable — while the REACHABLE 404 is a server with no `/api/search` at all, which
-        // is every self-hosted instance older than lurker#676. Reading that as "no matches" means
-        // search answers "No matches" to every query forever, with no error and nothing to retry.
-        // Nothing in this client gates on a server version, so the status is the only signal.
+        // ⚠⚠ The route answers 404 for exactly one thing, an unowned network, and this first read
+        // EVERY 404 as the empty page on that basis. Without a networkId there is no network to
+        // be unknown, so such a response is one nobody predicted — and reporting an unpredicted
+        // response as "no matches" is a lie rather than an error. It is unfalsifiable from the
+        // outside; an error at least offers a retry.
         #expect(SearchRequest.outcome(status: 404, scoped: false) == .failed)
     }
 
