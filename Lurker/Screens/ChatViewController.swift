@@ -1938,6 +1938,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         let outcome = viewModel.send(buffer.key, text: text)
         composer.clear()
+        // The field is free again, so anything still waiting can come back — see
+        // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
+        // screen next appeared, which for someone staying in one conversation is never.
+        restoreRefusedSend()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
         if case .activate(let key) = outcome { navigate(to: key) }
         // `/join` asked us to switch once the channel is real — see `awaitJoin`.

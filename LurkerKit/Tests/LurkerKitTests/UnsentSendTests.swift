@@ -108,12 +108,20 @@ struct UnsentHoldTests {
         #expect(store.takeUnsent(chat) == nil)
     }
 
-    @Test("a hold never clobbers one already waiting")
-    func holdDoesNotClobber() {
+    @Test("two refused lines both survive, oldest first")
+    func holdsQueueRatherThanClobber() {
+        // ⚠⚠ A single slot lost text, and this is the case that showed it: two sends outstanding
+        // when the wire goes. The first refusal restores into the composer; the second is left
+        // waiting; re-sending the first fails again and arrives to find the slot occupied. A slot
+        // must then either overwrite the waiting line or discard the new one, and both throw away
+        // something the user wrote. There is one composer, so they come back one at a time — but
+        // they all come back.
         let store = LurkerStore()
         store.holdUnsent(chat, text: "first")
         store.holdUnsent(chat, text: "second")
-        #expect(store.takeUnsent(chat) == "first", "overwriting loses a line to save a line")
+        #expect(store.takeUnsent(chat) == "first")
+        #expect(store.takeUnsent(chat) == "second")
+        #expect(store.takeUnsent(chat) == nil)
     }
 
     @Test("a rename carries the hold to the surviving buffer")
@@ -133,6 +141,31 @@ struct UnsentHoldTests {
                 mergedFromBufferId: nil))
         #expect(store.takeUnsent(chat) == nil)
         #expect(store.takeUnsent(BufferKey(networkId: 1, target: "#lounge")) == "hey there")
+    }
+
+    @Test("a line still awaiting its ack follows the rename too")
+    func renameFollowsAnInFlightLine() {
+        // ⚠⚠ The other half of the rename window, and the half a store-only fix misses entirely.
+        // An Origin captured before the rename holds the OLD key, so the hold it writes when the
+        // refusal lands goes under a key nothing reads again — the screen has already followed
+        // the rename. `rekeyBuffer` moves holds already written; this moves the ones that are not
+        // written yet.
+        var c = UnsentCorrelator()
+        let id = c.track(chat, line: "hey there")
+        c.rekey(from: chat, to: BufferKey(networkId: 1, target: "#lounge"))
+        let origin = c.resolve(clientId: id, ok: false)
+        #expect(origin?.key == BufferKey(networkId: 1, target: "#lounge"))
+        #expect(origin?.line == "hey there")
+    }
+
+    @Test("a rename leaves other buffers' in-flight lines alone")
+    func renameDoesNotTouchOtherBuffers() {
+        var c = UnsentCorrelator()
+        let elsewhere = c.track(BufferKey(networkId: 1, target: "#other"), line: "not mine")
+        c.rekey(from: chat, to: BufferKey(networkId: 1, target: "#lounge"))
+        #expect(
+            c.resolve(clientId: elsewhere, ok: false)?.key
+                == BufferKey(networkId: 1, target: "#other"))
     }
 
     @Test("a refusal no longer raises a modal alert")

@@ -401,31 +401,34 @@ final class LurkerClient {
         return out
     }
 
-    func sendMessage(networkId: Int?, target: String, text: String, clientId: String? = nil) {
-        guard let networkId else { return }
+    @discardableResult
+    func sendMessage(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+        guard let networkId else { return false }
         // The one write the user made deliberately, and the one with no resend behind it —
         // so a socket-level failure to deliver it is worth telling them about. A `send`
         // that reaches the server but is rejected comes back as a `send-result` instead;
         // this only covers never getting it onto the wire. The server splits on newlines and
         // byte-length, so the whole (possibly multi-line) body goes as one `send`.
-        send(
+        return send(
             verb("send", networkId: networkId, target: target, text: text, clientId: clientId),
             surfacesFailure: true)
     }
 
     /// CTCP ACTION — `/me` and `/slap`. Surfaces a socket-level failure like `send`: it's a
     /// deliberate line the user typed, with nothing behind it to retry.
-    func sendAction(networkId: Int?, target: String, text: String, clientId: String? = nil) {
-        guard let networkId else { return }
-        send(
+    @discardableResult
+    func sendAction(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+        guard let networkId else { return false }
+        return send(
             verb("action", networkId: networkId, target: target, text: text, clientId: clientId),
             surfacesFailure: true)
     }
 
     /// NOTICE — `/notice`. Same failure surfacing rationale as `send`.
-    func sendNotice(networkId: Int?, target: String, text: String, clientId: String? = nil) {
-        guard let networkId else { return }
-        send(
+    @discardableResult
+    func sendNotice(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+        guard let networkId else { return false }
+        return send(
             verb("notice", networkId: networkId, target: target, text: text, clientId: clientId),
             surfacesFailure: true)
     }

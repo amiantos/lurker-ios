@@ -61,6 +61,19 @@ struct UnsentCorrelator {
         return ok ? nil : origin
     }
 
+    /// Follow a buffer rename, so a line still in flight comes home to the surviving buffer.
+    ///
+    /// ⚠⚠ An `Origin` captured before a rename holds the OLD key, and a rename landing between a
+    /// send and its ack is exactly when this matters. The screen follows the rename, so it only
+    /// ever asks for the new key — a hold written under the old one is unreachable forever and
+    /// the line is lost silently. `ChatState.rekeyBuffer` moves the holds already written; this
+    /// moves the ones not written yet, and both are needed to cover the window.
+    mutating func rekey(from: BufferKey, to: BufferKey) {
+        for (id, origin) in inFlight where origin.key == from {
+            inFlight[id] = Origin(key: to, line: origin.line)
+        }
+    }
+
     /// Give up on everything outstanding — the socket died, so no answer is coming.
     ///
     /// ⚠⚠ Deliberately does NOT hand the lines back, and that is a choice between two bad

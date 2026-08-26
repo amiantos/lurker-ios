@@ -193,7 +193,7 @@ public struct ChatState: Sendable {
     /// The web hits this too and documents it on `restoreFailedSend`.
     ///
     /// Drained by `takeUnsent(_:)` when that buffer next has a composer to put it in.
-    public var unsent: [String: String] = [:]
+    public var unsent: [String: [String]] = [:]
 
     public init() {}
 
@@ -525,23 +525,29 @@ final class LurkerStore {
 
     /// Keep a refused line for the buffer it was typed in — see `ChatState.unsent`.
     ///
-    /// ⚠ Never clobbers. A hold already sitting there is older text the user has not been given
-    /// back yet, and overwriting it would lose the line to save the line. In practice the drain
-    /// happens immediately when that buffer is on screen, so a collision means two sends failed
-    /// before either could be returned.
+    /// ⚠⚠ A QUEUE, not a slot, and the single-slot version lost text. There is one composer, so
+    /// only one line can be handed back at a time; a slot then had to choose between overwriting
+    /// the waiting line and discarding the new one, and both lose a message the user wrote. It
+    /// happens whenever two sends are outstanding when the wire goes: the first refusal restores
+    /// into the composer, the second is left waiting, and re-sending the first — which fails
+    /// again — arrives to find the slot occupied.
+    ///
+    /// Oldest first, so lines come back in the order they were written. Unbounded because every
+    /// entry costs a deliberate send, so the user is the limit.
     func holdUnsent(_ key: BufferKey, text: String) {
-        guard !text.isEmpty, subject.value.unsent[key.id] == nil else { return }
-        subject.value.unsent[key.id] = text
+        guard !text.isEmpty else { return }
+        subject.value.unsent[key.id, default: []].append(text)
     }
 
-    /// Take back whatever was held for `key`, if anything, clearing it.
+    /// Take back the oldest line held for `key`, if any.
     ///
     /// Read-and-clear because it is a handoff, not a mirror: once the text is in a composer the
     /// composer owns it, and leaving a copy here would re-fill the field every time the buffer
     /// was reopened.
     func takeUnsent(_ key: BufferKey) -> String? {
-        guard let text = subject.value.unsent[key.id] else { return nil }
-        subject.value.unsent[key.id] = nil
+        guard var queue = subject.value.unsent[key.id], !queue.isEmpty else { return nil }
+        let text = queue.removeFirst()
+        subject.value.unsent[key.id] = queue.isEmpty ? nil : queue
         return text
     }
 
