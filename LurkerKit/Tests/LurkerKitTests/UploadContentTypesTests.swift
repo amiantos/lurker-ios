@@ -63,13 +63,24 @@ struct UploadContentTypesTests {
         // shell script or build log containing `<svg ` in its first kilobyte is then classified
         // `image/svg+xml`: a 415 on hosted, and on self-host stored and served as active SVG.
         //
-        // Asserted as an existence proof rather than a fixed list, so a future SDK registering
-        // mimes for some of them doesn't fail the suite for the wrong reason.
+        // Asserted as an existence proof over a sample rather than a fixed list, so a future SDK
+        // registering mimes for some of them doesn't fail the suite for the wrong reason.
+        //
+        // ⚠ And an empty result would NOT mean the fallback became unreachable — it would only
+        // mean these five gained mimes. `.text` admits far more than the suite names, so the
+        // fallback has to stay whatever this says. The message says that, because a misleading
+        // diagnostic on an OS bump is how a correct guard gets deleted.
         let mimeless = ["log", "sh", "c", "h", "swift"].filter { ext in
             guard let t = UTType(filenameExtension: ext) else { return false }
             return t.conforms(to: .text) && t.preferredMIMEType == nil
         }
-        #expect(!mimeless.isEmpty, "if this is ever empty the fallback stopped being reachable")
+        #expect(
+            !mimeless.isEmpty,
+            """
+            These five text types gained registered mimes. That does NOT mean the text-aware \
+            fallback in AttachmentPicker.copy is now dead code — `.text` admits far more than \
+            this sample — so update the sample, do not remove the fallback.
+            """)
     }
 
     @Test("SVG is offered by .image regardless, so naming .text admits nothing new")

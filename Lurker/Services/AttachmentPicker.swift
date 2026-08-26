@@ -210,7 +210,17 @@ final class AttachmentPicker: NSObject {
             ?? (type?.conforms(to: .text) == true
                 ? "text/plain"
                 : (isVideo ? "video/mp4" : "application/octet-stream"))
-        return .success(Picked(url: dest, filename: source.lastPathComponent, mime: mime, isVideo: isVideo))
+        // ⚠ The filename carries the inferred extension too, when one was inferred. Having the
+        // temp file and the claim say `.jpg` while the name we upload says nothing is the two
+        // halves disagreeing, and the name is the half that travels: the server reads an upload's
+        // dialect from the FILENAME first, and the transcode path rewrites extensions by string
+        // surgery on it. When the source named itself this changes nothing, which is every
+        // ordinary pick.
+        let filename =
+            source.pathExtension.isEmpty && !ext.isEmpty
+            ? "\(source.lastPathComponent).\(ext)"
+            : source.lastPathComponent
+        return .success(Picked(url: dest, filename: filename, mime: mime, isVideo: isVideo))
     }
 
     /// Resume-once plumbing for a staging step that can finish two ways — the provider calling
