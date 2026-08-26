@@ -932,15 +932,31 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.maxEventId, 15)
     }
 
-    func testAFailedSendResultSurfacesItsErrorAnOkOneDoesNot() {
+    /// ⚠⚠ This asserted the opposite until #128, and it was never exercised in the field: iOS put
+    /// no `clientId` on a send, so `wsHub` never emitted `send-result` and this reducer never ran.
+    /// The cost of routing it to `state.error` — which presents a modal ALERT — was invisible for
+    /// exactly that reason. Since lurker#809's writable-connection gate, `ok:false` is the
+    /// ordinary outcome of any reconnect, so that would now be a modal per send for the length of
+    /// an outage, on top of a ConnectionBanner already saying "Reconnecting…".
+    ///
+    /// The frame's job is now the restore (see `UnsentCorrelator`), and announcing is left to the
+    /// bare `error` frames the server sends alongside for the failures that warrant words.
+    func testASendResultDoesNotRaiseAnAlertOfItsOwn() {
         let store = LurkerStore()
-        store.apply(.sendResult(clientId: "c1", ok: false, error: "account-paused"))
-        XCTAssertEqual(store.state.error, "account-paused")
+        store.apply(.sendResult(clientId: "c1", ok: false, error: "not-connected"))
+        XCTAssertNil(store.state.error)
 
-        store.apply(.socketOpen) // clears error
-        XCTAssertNil(store.state.error)
-        store.apply(.sendResult(clientId: "c2", ok: true, error: nil))
-        XCTAssertNil(store.state.error)
+        // ⚠ And it does not disturb an error already standing. `account-paused` arrives as BOTH a
+        // bare `error` frame (prose, shown to the user) and a `send-result` (a code) — letting the
+        // ack win would replace the sentence with the slug.
+        store.apply(.serverError("account paused"))
+        store.apply(.sendResult(clientId: "c2", ok: false, error: "account-paused"))
+        XCTAssertEqual(store.state.error, "account paused")
+
+        // ⚠ Nor does a SUCCESS clear one. It used to, which meant an unrelated error frame was
+        // wiped off the screen by the next send that happened to work.
+        store.apply(.sendResult(clientId: "c3", ok: true, error: nil))
+        XCTAssertEqual(store.state.error, "account paused")
     }
 
     // MARK: - Reachability

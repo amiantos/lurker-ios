@@ -50,6 +50,14 @@ public final class ChatViewModel {
     /// touching directly.
     public var onBufferRenamed: ((_ from: BufferKey, _ to: BufferKey) -> Void)?
 
+    /// The server refused a line typed in `key`, and it is waiting in `state.unsent`.
+    ///
+    /// ⚠ A nudge, not the delivery. The screen for `key` may be on top (fill the composer now) or
+    /// may not exist (it drains on next open, from `takeUnsent`) — this only says the hold
+    /// changed, because a screen cannot tell "a line arrived for me" from a whole-state
+    /// republish by diffing `ChatState`.
+    public var onSendRefused: ((_ key: BufferKey) -> Void)?
+
     /// Last-known setting values, so behavior is right from the first frame rather than from
     /// whenever the bootstrap fetch lands — see `SettingsCache`.
     private let settingsCache: SettingsCache
@@ -427,6 +435,18 @@ public final class ChatViewModel {
     /// Handle a line of composer input from `key`'s buffer: a plain message goes to the
     /// current target; a slash command is parsed (`CommandParser`) and its effects carried
     /// out. Returns the UI follow-up, if any.
+    /// Which composer line each outstanding `send-result` is answering — see
+    /// `UnsentCorrelator`, where the rules live and can be tested.
+    private var unsent = UnsentCorrelator()
+
+    /// Take back the line the server refused for `key`, if one is waiting (#128).
+    ///
+    /// Read-and-clear: once it is in a composer, the composer owns it. The caller decides whether
+    /// there is room for it — this does not know what is already typed.
+    public func takeUnsent(_ key: BufferKey) -> String? { store.takeUnsent(key) }
+
+
+
     @discardableResult
     public func send(_ key: BufferKey, text: String) -> SendOutcome {
         // The ignore rules go in because two commands read them: `/ignore` prints the listing
@@ -450,7 +470,9 @@ public final class ChatViewModel {
             relayBots: store.state.backlogComplete ? store.state.relayBots : nil
         ) {
         case .message(let body):
-            client.sendMessage(networkId: key.networkId, target: key.target, text: body)
+            client.sendMessage(
+                networkId: key.networkId, target: key.target, text: body,
+                clientId: unsent.track(key, line: text))
             return .none
         case .notCommand:
             // System-buffer input with no network to send to — the web's own nudge, rather
@@ -458,24 +480,36 @@ public final class ChatViewModel {
             store.appendLocal(key, text: "Not a command — type /commands to see what you can run here.")
             return .none
         case .command(let effects):
-            return run(effects, in: key)
+            return run(effects, in: key, line: text)
         }
     }
 
     /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
     /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network; `away`/
     /// `back` are user-scoped and carry none; `info` prints a local line.
-    private func run(_ effects: [CommandEffect], in key: BufferKey) -> SendOutcome {
+    private func run(_ effects: [CommandEffect], in key: BufferKey, line: String) -> SendOutcome {
         let networkId = key.networkId
         var outcome: SendOutcome = .none
+        // One correlator for the whole line, minted on first use so a command that puts nothing
+        // on the wire (`/ignore`, `/commands`) records no in-flight entry to leak.
+        var lineId: String?
+        func correlator() -> String {
+            if let lineId { return lineId }
+            let id = unsent.track(key, line: line)
+            lineId = id
+            return id
+        }
         for effect in effects {
             switch effect {
             case .send(let target, let text):
-                client.sendMessage(networkId: networkId, target: target, text: text)
+                client.sendMessage(
+                    networkId: networkId, target: target, text: text, clientId: correlator())
             case .action(let target, let text):
-                client.sendAction(networkId: networkId, target: target, text: text)
+                client.sendAction(
+                    networkId: networkId, target: target, text: text, clientId: correlator())
             case .notice(let target, let text):
-                client.sendNotice(networkId: networkId, target: target, text: text)
+                client.sendNotice(
+                    networkId: networkId, target: target, text: text, clientId: correlator())
             case .raw(let line):
                 client.sendRaw(networkId: networkId, line: line)
             case .join(let channel, let joinKey):
@@ -901,6 +935,13 @@ public final class ChatViewModel {
         case .socketClosed:
             loadingOlder.removeAll() // in-flight history pages won't get a reply now
             loadingNewer.removeAll()
+            // ⚠⚠ Dropped WITHOUT restoring, and that is a choice between two bad outcomes. A send
+            // the socket died under may or may not have reached IRC — the ACK is what would have
+            // told us, and it is exactly what is not coming. Restoring risks the user sending the
+            // same line twice, to a channel, with no way to take it back; not restoring risks
+            // losing a line they can see was never delivered. Duplicate-in-public is the worse
+            // one, and it is the call the web makes too.
+            unsent.abandonAll()
             store.apply(frame)
             onSocketDropped()
         case .history(let networkId, let target, _, let mode, _, _, _):
@@ -930,6 +971,18 @@ public final class ChatViewModel {
                 lastMarked[toKey.id] = merged ? max(fromMark, lastMarked[toKey.id] ?? 0) : fromMark
             }
             onBufferRenamed?(fromKey, toKey)
+            store.apply(frame)
+        case .sendResult(let clientId, let ok, _):
+            // ⚠⚠ The whole point of `clientId`. Give the line back to the composer it was typed
+            // in, and say nothing: the `ConnectionBanner` is already naming the outage, and the
+            // failures that need words of their own arrive as bare `error` frames alongside this
+            // (see the reducer's note). The composer refilling IS the signal.
+            //
+            // ⚠ `resolve` forgets the entry on either verdict — see its note.
+            if let origin = unsent.resolve(clientId: clientId, ok: ok) {
+                store.holdUnsent(origin.key, text: origin.line)
+                onSendRefused?(origin.key)
+            }
             store.apply(frame)
         case .favoritesChanged:
             // Apply FIRST, announce after — a hook reading `favorites` must see

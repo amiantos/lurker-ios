@@ -320,6 +320,26 @@ final class ComposerBar: UIView {
         replaceToken(range, with: "\(value) ")
     }
 
+    /// Whether the field is empty — nothing typed, nothing but whitespace.
+    var isEmpty: Bool {
+        (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Put a refused line back, as typed (#128).
+    ///
+    /// ⚠⚠ Does NOT raise the keyboard, unlike `address(_:)`. Nothing the user did asked for this
+    /// — the server refused a send and the text is coming home — so shoving the keyboard up over
+    /// a conversation they may have gone back to reading is the app talking over them. The text
+    /// appearing in the field is the whole message.
+    ///
+    /// ⚠ Caret at the end, so carrying on writing works without a tap to reposition.
+    func restore(_ text: String) {
+        guard !text.isEmpty else { return }
+        textView.text = text
+        textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        textViewDidChange(textView)
+    }
+
     /// Address `nick` at the head of the draft — what Reply does (#60).
     ///
     /// Prepends `nick: ` unless the draft already opens that way, keeps whatever was being typed,
