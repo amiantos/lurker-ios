@@ -68,8 +68,15 @@ struct UnsentCorrelator {
     /// ever asks for the new key — a hold written under the old one is unreachable forever and
     /// the line is lost silently. `ChatState.rekeyBuffer` moves the holds already written; this
     /// moves the ones not written yet, and both are needed to cover the window.
+    ///
+    /// ⚠ Collected before mutating. Writing into `inFlight` while iterating it is actually
+    /// well-defined in Swift — a Dictionary is a value type, so the iterator's reference makes the
+    /// buffer non-unique and the first write copies, leaving the walk on an intact snapshot — but
+    /// it reads like the bug it is in most other languages, and a reader should not have to know
+    /// COW semantics to be sure. Two passes cost nothing at this size and ask nothing of them.
     mutating func rekey(from: BufferKey, to: BufferKey) {
-        for (id, origin) in inFlight where origin.key == from {
+        let moving = inFlight.filter { $0.value.key == from }
+        for (id, origin) in moving {
             inFlight[id] = Origin(key: to, line: origin.line)
         }
     }

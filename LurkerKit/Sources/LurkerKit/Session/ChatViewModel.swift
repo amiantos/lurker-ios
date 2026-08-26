@@ -1010,9 +1010,14 @@ public final class ChatViewModel {
             // (see the reducer's note). The composer refilling IS the signal.
             //
             // ⚠ `resolve` forgets the entry on either verdict — see its note.
-            if let origin = unsent.resolve(clientId: clientId, ok: ok) {
-                store.holdUnsent(origin.key, text: origin.line)
-                onSendRefused?(origin.key)
+            // ⚠ Through `refuse`, not a second copy of it. That function calls itself the one
+            // place a refusal becomes a restore, and this handler having its own hold-and-nudge
+            // made that untrue the moment it was written — exactly the drift between the ack path
+            // and the no-socket path the comment there warns about.
+            if ok {
+                _ = unsent.resolve(clientId: clientId, ok: true) // nothing to give back; forget it
+            } else if let clientId {
+                refuse(clientId)
             }
             store.apply(frame)
         case .favoritesChanged:
