@@ -381,27 +381,56 @@ final class LurkerClient {
         ])
     }
 
-    func sendMessage(networkId: Int?, target: String, text: String) {
-        guard let networkId else { return }
+    /// The wire form of a `send`/`action`/`notice`, with the ACK correlator attached.
+    ///
+    /// ⚠⚠ `clientId` is what makes a refused send visible AT ALL. `wsHub` emits `send-result`
+    /// only when the request carried one, so without this the frame is never sent — and every
+    /// failure the server declines to also announce as a bare `error` frame (`not-connected`,
+    /// notably, which is the ordinary outcome of any reconnect since lurker#809's writable-
+    /// connection gate) reached this client as silence: composer cleared, no self row fanned
+    /// back, message gone. `FrameParser`, `ServerFrame` and `LurkerStore` all handled
+    /// `send-result` correctly the whole time; nothing ever asked for one (#128).
+    private func verb(
+        _ type: String, networkId: Int, target: String, text: String, clientId: String?
+    ) -> [String: Any] {
+        var out: [String: Any] = [
+            "type": type, "networkId": networkId, "target": target, "text": text,
+        ]
+        // Omitted rather than sent as null when absent: the server tests presence.
+        if let clientId { out["clientId"] = clientId }
+        return out
+    }
+
+    @discardableResult
+    func sendMessage(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+        guard let networkId else { return false }
         // The one write the user made deliberately, and the one with no resend behind it —
         // so a socket-level failure to deliver it is worth telling them about. A `send`
         // that reaches the server but is rejected comes back as a `send-result` instead;
         // this only covers never getting it onto the wire. The server splits on newlines and
         // byte-length, so the whole (possibly multi-line) body goes as one `send`.
-        send(["type": "send", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
+        return send(
+            verb("send", networkId: networkId, target: target, text: text, clientId: clientId),
+            surfacesFailure: true)
     }
 
     /// CTCP ACTION — `/me` and `/slap`. Surfaces a socket-level failure like `send`: it's a
     /// deliberate line the user typed, with nothing behind it to retry.
-    func sendAction(networkId: Int?, target: String, text: String) {
-        guard let networkId else { return }
-        send(["type": "action", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
+    @discardableResult
+    func sendAction(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+        guard let networkId else { return false }
+        return send(
+            verb("action", networkId: networkId, target: target, text: text, clientId: clientId),
+            surfacesFailure: true)
     }
 
     /// NOTICE — `/notice`. Same failure surfacing rationale as `send`.
-    func sendNotice(networkId: Int?, target: String, text: String) {
-        guard let networkId else { return }
-        send(["type": "notice", "networkId": networkId, "target": target, "text": text], surfacesFailure: true)
+    @discardableResult
+    func sendNotice(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+        guard let networkId else { return false }
+        return send(
+            verb("notice", networkId: networkId, target: target, text: text, clientId: clientId),
+            surfacesFailure: true)
     }
 
     /// A raw IRC line — the escape hatch behind `/nick`, `/mode`, `/kick`, `/whois`, the

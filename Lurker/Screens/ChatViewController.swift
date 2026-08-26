@@ -582,6 +582,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // An error that landed before we had a window — or while a sheet was covering us —
         // has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
+        // Whichever chat screen is on top owns the nudge. Claimed on APPEAR rather than once at
+        // setup, so a push hands it to the new screen and a pop hands it back — and a refusal
+        // landing while a different buffer was in front still finds a live composer here.
+        viewModel.onSendRefused = { [weak self] key in
+            guard let self, key == self.buffer.key else { return }
+            self.restoreRefusedSend()
+        }
+        // …and a line that came home while this screen did not exist, or was buried under
+        // another, has nothing coming to announce it. The hold is drained here instead.
+        restoreRefusedSend()
+    }
+
+    /// Put a refused line back in the composer, if one is waiting for this buffer (#128).
+    ///
+    /// ⚠⚠ Never over the top of something the user has since written. The line is theirs either
+    /// way, and the one in front of them is the one they can see; clobbering it to recover the
+    /// older one would lose a message to save a message. The hold stays put in that case — it is
+    /// drained on a later appear, when the field is free.
+    private func restoreRefusedSend() {
+        guard composer.isEmpty, let text = viewModel.takeUnsent(buffer.key) else { return }
+        composer.restore(text)
     }
 
     /// Backing out to the list means the *list* is where you were, not this buffer. Without
@@ -1917,6 +1938,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         let outcome = viewModel.send(buffer.key, text: text)
         composer.clear()
+        // The field is free again, so anything still waiting can come back — see
+        // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
+        // screen next appeared, which for someone staying in one conversation is never.
+        restoreRefusedSend()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
         if case .activate(let key) = outcome { navigate(to: key) }
         // `/join` asked us to switch once the channel is real — see `awaitJoin`.

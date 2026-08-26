@@ -64,6 +64,9 @@ final class ComposerBar: UIView {
     /// masquerade as an edit. See `textViewDidChange`.
     private var lastEmittedDraft = ""
 
+    /// Set while `restore(_:)` is putting a refused line back — see its note.
+    private var isRestoring = false
+
     var placeholder: String = "" {
         didSet { placeholderLabel.text = placeholder }
     }
@@ -320,6 +323,38 @@ final class ComposerBar: UIView {
         replaceToken(range, with: "\(value) ")
     }
 
+    /// Whether the field is empty — nothing typed, nothing but whitespace.
+    var isEmpty: Bool {
+        (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Put a refused line back, as typed (#128).
+    ///
+    /// ⚠⚠ Does NOT raise the keyboard, unlike `address(_:)`. Nothing the user did asked for this
+    /// — the server refused a send and the text is coming home — so shoving the keyboard up over
+    /// a conversation they may have gone back to reading is the app talking over them. The text
+    /// appearing in the field is the whole message.
+    ///
+    /// ⚠ Caret at the end, so carrying on writing works without a tap to reposition.
+    func restore(_ text: String) {
+        guard !text.isEmpty else { return }
+        textView.text = text
+        textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        // ⚠⚠ Silently. `textViewDidChange` is needed for the height, the send button and the
+        // placeholder, but its two announcements must not fire: `onDraftChange` would tell the
+        // CHANNEL you had resumed typing because the server handed your own message back, and
+        // `emitCompletion` would pop the nick bar over a restored `/msg bob hi` that nobody was
+        // in the middle of writing. Same hazard the method's own comment names for the Dynamic
+        // Type path, arriving down a different road.
+        //
+        // ⚠ `lastEmittedDraft` is deliberately NOT advanced. It mirrors what the channel was last
+        // told, and the channel was told nothing — so deleting the restored line back to empty
+        // still correctly emits no change, and typing one character still correctly emits.
+        isRestoring = true
+        textViewDidChange(textView)
+        isRestoring = false
+    }
+
     /// Address `nick` at the head of the draft — what Reply does (#60).
     ///
     /// Prepends `nick: ` unless the draft already opens that way, keeps whatever was being typed,
@@ -515,13 +550,13 @@ extension ComposerBar: UITextViewDelegate {
 
     func textViewDidChange(_ textView: UITextView) {
         updateSendEnabled()
-        emitCompletion()
+        if !isRestoring { emitCompletion() }
         // Only when the text genuinely differs. This method is also called by hand for
         // *layout* reasons — `updateMetrics()` on a Dynamic Type change, which re-measures the
         // field without touching a character — and firing the draft hook there would tell the
         // channel you'd resumed typing because you changed your text size in Control Center.
         let draft = textView.text ?? ""
-        if draft != lastEmittedDraft {
+        if !isRestoring, draft != lastEmittedDraft {
             lastEmittedDraft = draft
             onDraftChange?(draft)
         }

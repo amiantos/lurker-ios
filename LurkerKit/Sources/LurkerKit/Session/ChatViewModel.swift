@@ -50,6 +50,14 @@ public final class ChatViewModel {
     /// touching directly.
     public var onBufferRenamed: ((_ from: BufferKey, _ to: BufferKey) -> Void)?
 
+    /// The server refused a line typed in `key`, and it is waiting in `state.unsent`.
+    ///
+    /// ⚠ A nudge, not the delivery. The screen for `key` may be on top (fill the composer now) or
+    /// may not exist (it drains on next open, from `takeUnsent`) — this only says the hold
+    /// changed, because a screen cannot tell "a line arrived for me" from a whole-state
+    /// republish by diffing `ChatState`.
+    public var onSendRefused: ((_ key: BufferKey) -> Void)?
+
     /// Last-known setting values, so behavior is right from the first frame rather than from
     /// whenever the bootstrap fetch lands — see `SettingsCache`.
     private let settingsCache: SettingsCache
@@ -132,6 +140,11 @@ public final class ChatViewModel {
         featuresKnown = false
         lastPreviewToggles = nil
         store.reset()
+        // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
+        // goes with the rest of it. Neither teardown path emits `.socketClosed` — `close()`
+        // cancels the socket without firing its handler, and a 401 arrives as `.unauthorized` —
+        // so the abandon that path does would never run here.
+        unsent.abandonAll()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
@@ -424,6 +437,26 @@ public final class ChatViewModel {
         case awaitJoin(BufferKey)
     }
 
+    /// Which composer line each outstanding `send-result` is answering — see
+    /// `UnsentCorrelator`, where the rules live and can be tested.
+    private var unsent = UnsentCorrelator()
+
+    /// Take back the line the server refused for `key`, if one is waiting (#128).
+    ///
+    /// Read-and-clear: once it is in a composer, the composer owns it. The caller decides whether
+    /// there is room for it — this does not know what is already typed.
+    public func takeUnsent(_ key: BufferKey) -> String? { store.takeUnsent(key) }
+
+    /// Hand a line back to the buffer it was typed in, and nudge whatever screen is showing it.
+    ///
+    /// ⚠ The one place a refusal becomes a restore, so the two ways to learn of one — the ack
+    /// saying no, and the socket refusing to carry the verb at all — cannot drift apart.
+    private func refuse(_ clientId: String) {
+        guard let origin = unsent.resolve(clientId: clientId, ok: false) else { return }
+        store.holdUnsent(origin.key, text: origin.line)
+        onSendRefused?(origin.key)
+    }
+
     /// Handle a line of composer input from `key`'s buffer: a plain message goes to the
     /// current target; a slash command is parsed (`CommandParser`) and its effects carried
     /// out. Returns the UI follow-up, if any.
@@ -450,7 +483,17 @@ public final class ChatViewModel {
             relayBots: store.state.backlogComplete ? store.state.relayBots : nil
         ) {
         case .message(let body):
-            client.sendMessage(networkId: key.networkId, target: key.target, text: body)
+            // ⚠⚠ The Bool matters. `LurkerClient.send` returns false when there is no socket at
+            // all, and there is no queue behind it — the verb went NOWHERE, so no `send-result`
+            // can ever come back for it. Without this the line vanished exactly as it did before
+            // #128, in the window the ConnectionBanner is pointing at. The ack path covers a live
+            // socket the cell refuses on; this covers not reaching the cell.
+            let id = unsent.track(key, line: text)
+            if !client.sendMessage(
+                networkId: key.networkId, target: key.target, text: body, clientId: id)
+            {
+                refuse(id)
+            }
             return .none
         case .notCommand:
             // System-buffer input with no network to send to — the web's own nudge, rather
@@ -458,24 +501,43 @@ public final class ChatViewModel {
             store.appendLocal(key, text: "Not a command — type /commands to see what you can run here.")
             return .none
         case .command(let effects):
-            return run(effects, in: key)
+            return run(effects, in: key, line: text)
         }
     }
 
     /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
     /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network; `away`/
     /// `back` are user-scoped and carry none; `info` prints a local line.
-    private func run(_ effects: [CommandEffect], in key: BufferKey) -> SendOutcome {
+    private func run(_ effects: [CommandEffect], in key: BufferKey, line: String) -> SendOutcome {
         let networkId = key.networkId
         var outcome: SendOutcome = .none
+        // One correlator for the whole line, minted on first use so a command that puts nothing
+        // on the wire (`/ignore`, `/commands`) records no in-flight entry to leak.
+        var lineId: String?
+        func correlator() -> String {
+            if let lineId { return lineId }
+            let id = unsent.track(key, line: line)
+            lineId = id
+            return id
+        }
+        // Any wire effect that went nowhere refuses the whole line — see the note in `send`.
+        // Recorded rather than acted on inline so the remaining effects still run: a command that
+        // is half machinery should not stop halfway because one send found no socket.
+        var wentNowhere = false
         for effect in effects {
             switch effect {
             case .send(let target, let text):
-                client.sendMessage(networkId: networkId, target: target, text: text)
+                wentNowhere = !client.sendMessage(
+                    networkId: networkId, target: target, text: text, clientId: correlator())
+                    || wentNowhere
             case .action(let target, let text):
-                client.sendAction(networkId: networkId, target: target, text: text)
+                wentNowhere = !client.sendAction(
+                    networkId: networkId, target: target, text: text, clientId: correlator())
+                    || wentNowhere
             case .notice(let target, let text):
-                client.sendNotice(networkId: networkId, target: target, text: text)
+                wentNowhere = !client.sendNotice(
+                    networkId: networkId, target: target, text: text, clientId: correlator())
+                    || wentNowhere
             case .raw(let line):
                 client.sendRaw(networkId: networkId, line: line)
             case .join(let channel, let joinKey):
@@ -524,6 +586,7 @@ public final class ChatViewModel {
                 store.appendLocal(key, text: text)
             }
         }
+        if wentNowhere, let lineId { refuse(lineId) }
         return outcome
     }
 
@@ -901,6 +964,13 @@ public final class ChatViewModel {
         case .socketClosed:
             loadingOlder.removeAll() // in-flight history pages won't get a reply now
             loadingNewer.removeAll()
+            // ⚠⚠ Dropped WITHOUT restoring, and that is a choice between two bad outcomes. A send
+            // the socket died under may or may not have reached IRC — the ACK is what would have
+            // told us, and it is exactly what is not coming. Restoring risks the user sending the
+            // same line twice, to a channel, with no way to take it back; not restoring risks
+            // losing a line they can see was never delivered. Duplicate-in-public is the worse
+            // one, and it is the call the web makes too.
+            unsent.abandonAll()
             store.apply(frame)
             onSocketDropped()
         case .history(let networkId, let target, _, let mode, _, _, _):
@@ -925,11 +995,30 @@ public final class ChatViewModel {
             let toKey = BufferKey(networkId: networkId, target: to)
             if loadingOlder.remove(fromKey.id) != nil { loadingOlder.insert(toKey.id) }
             if loadingNewer.remove(fromKey.id) != nil { loadingNewer.insert(toKey.id) }
+            // A line still awaiting its ack was addressed to the old key — see `rekey`.
+            unsent.rekey(from: fromKey, to: toKey)
             let fromMark = lastMarked.removeValue(forKey: fromKey.id)
             if let fromMark {
                 lastMarked[toKey.id] = merged ? max(fromMark, lastMarked[toKey.id] ?? 0) : fromMark
             }
             onBufferRenamed?(fromKey, toKey)
+            store.apply(frame)
+        case .sendResult(let clientId, let ok, _):
+            // ⚠⚠ The whole point of `clientId`. Give the line back to the composer it was typed
+            // in, and say nothing: the `ConnectionBanner` is already naming the outage, and the
+            // failures that need words of their own arrive as bare `error` frames alongside this
+            // (see the reducer's note). The composer refilling IS the signal.
+            //
+            // ⚠ `resolve` forgets the entry on either verdict — see its note.
+            // ⚠ Through `refuse`, not a second copy of it. That function calls itself the one
+            // place a refusal becomes a restore, and this handler having its own hold-and-nudge
+            // made that untrue the moment it was written — exactly the drift between the ack path
+            // and the no-socket path the comment there warns about.
+            if ok {
+                _ = unsent.resolve(clientId: clientId, ok: true) // nothing to give back; forget it
+            } else if let clientId {
+                refuse(clientId)
+            }
             store.apply(frame)
         case .favoritesChanged:
             // Apply FIRST, announce after — a hook reading `favorites` must see
@@ -1019,6 +1108,11 @@ public final class ChatViewModel {
         featuresKnown = false
         lastPreviewToggles = nil
         store.reset()
+        // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
+        // goes with the rest of it. Neither teardown path emits `.socketClosed` — `close()`
+        // cancels the socket without firing its handler, and a 401 arrives as `.unauthorized` —
+        // so the abandon that path does would never run here.
+        unsent.abandonAll()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()

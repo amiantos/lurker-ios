@@ -183,6 +183,17 @@ public struct ChatState: Sendable {
     /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
     public var settings = Settings()
     public var error: String?
+    /// Text the server refused to send, waiting for the buffer it was TYPED IN. Keyed by
+    /// `BufferKey.id`.
+    ///
+    /// ⚠⚠ Held rather than handed straight to the composer, because the composer that should
+    /// get it may not be on screen. `/msg bob hi` activates the DM before the ACK lands, so the
+    /// failure belongs to a buffer the user has already navigated away from — writing it into
+    /// whatever composer is in front of them would strand the line in the wrong conversation.
+    /// The web hits this too and documents it on `restoreFailedSend`.
+    ///
+    /// Drained by `takeUnsent(_:)` when that buffer next has a composer to put it in.
+    public var unsent: [String: [String]] = [:]
 
     public init() {}
 
@@ -210,6 +221,11 @@ public struct ChatState: Sendable {
         typing[key] = nil
         speakers[key] = nil
         heldLive[key] = nil
+        // ⚠ A refused line held for this buffer goes with it. Closing is deliberate, and text
+        // keyed to a buffer that is no longer on the list would resurface without warning
+        // whenever it was reopened. The cost is real — it is the user's own writing — but a
+        // buffer they closed is not where they are looking for it.
+        unsent[key] = nil
     }
 
     /// Move everything keyed by `from` onto `to` — the rename mirror of
@@ -239,6 +255,11 @@ public struct ChatState: Sendable {
         speakers[from] = nil
         heldLive[to] = heldLive[from]
         heldLive[from] = nil
+        // ⚠ Moved, not dropped. Left under the dead key this is unreachable forever — nothing
+        // ever reads that id again — and the user's refused line is gone with no way to notice.
+        // Same class as the in-flight page flags `ChatViewModel` rekeys for the same reason.
+        unsent[to] = unsent[from]
+        unsent[from] = nil
         if burstSeen.remove(from) != nil { burstSeen.insert(to) }
         if let id = renamed.bufferId { keysById[id] = to }
     }
@@ -502,6 +523,34 @@ final class LurkerStore {
 
     func clearError() { subject.value.error = nil }
 
+    /// Keep a refused line for the buffer it was typed in — see `ChatState.unsent`.
+    ///
+    /// ⚠⚠ A QUEUE, not a slot, and the single-slot version lost text. There is one composer, so
+    /// only one line can be handed back at a time; a slot then had to choose between overwriting
+    /// the waiting line and discarding the new one, and both lose a message the user wrote. It
+    /// happens whenever two sends are outstanding when the wire goes: the first refusal restores
+    /// into the composer, the second is left waiting, and re-sending the first — which fails
+    /// again — arrives to find the slot occupied.
+    ///
+    /// Oldest first, so lines come back in the order they were written. Unbounded because every
+    /// entry costs a deliberate send, so the user is the limit.
+    func holdUnsent(_ key: BufferKey, text: String) {
+        guard !text.isEmpty else { return }
+        subject.value.unsent[key.id, default: []].append(text)
+    }
+
+    /// Take back the oldest line held for `key`, if any.
+    ///
+    /// Read-and-clear because it is a handoff, not a mirror: once the text is in a composer the
+    /// composer owns it, and leaving a copy here would re-fill the field every time the buffer
+    /// was reopened.
+    func takeUnsent(_ key: BufferKey) -> String? {
+        guard var queue = subject.value.unsent[key.id], !queue.isEmpty else { return nil }
+        let text = queue.removeFirst()
+        subject.value.unsent[key.id] = queue.isEmpty ? nil : queue
+        return text
+    }
+
     /// Append a client-authored info line to a buffer — the app answering the user in
     /// place, the web client's `localInfo`. Ephemeral by construction: id 0 never
     /// persists, so resyncs and reloads drop it, exactly like the web's local lines.
@@ -749,10 +798,23 @@ final class LurkerStore {
             var next = state
             next.error = text
             return next
-        case .sendResult(_, let ok, let error):
-            var next = state
-            next.error = ok ? nil : (error ?? "Send failed")
-            return next
+        case .sendResult:
+            // ⚠⚠ Deliberately inert here, and the restore is done by `ChatViewModel` instead —
+            // it is the only thing holding the correlation from `clientId` back to the buffer
+            // and the line as typed.
+            //
+            // ⚠⚠ It used to set `state.error`, which surfaces a MODAL ALERT. That was written
+            // when this frame never actually arrived, so the cost was invisible; since
+            // lurker#809's writable-connection gate, `ok:false` is the ordinary outcome of any
+            // reconnect, and a modal per send during an outage is not a thing to inflict on
+            // somebody. The `ConnectionBanner` is already saying "Reconnecting…" — the failure
+            // is announced, and what was missing was the message coming back.
+            //
+            // ⚠ The failures that DO warrant words still get them: `unknown-network` and
+            // `account-paused` arrive as bare `error` frames alongside this one and keep the
+            // alert unchanged. `not-connected` is the case the server deliberately does not
+            // announce, because the client already knows.
+            return state
         case .socketOpen:
             var next = state
             next.connection = .connected
