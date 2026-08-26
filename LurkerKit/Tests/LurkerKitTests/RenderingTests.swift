@@ -169,6 +169,29 @@ final class RenderingTests: XCTestCase {
         XCTAssertEqual(match?.range.length, ("https://e.test/a.png" as NSString).length)
     }
 
+    /// ⚠⚠ The two trims INTERLEAVE, so one pass each is not enough. The sentence pass used to run
+    /// once and hand over to the bracket pass: `(…/a.png.)` stopped it dead on the `)`, the bracket
+    /// pass then exposed a `.`, and nothing looked again. The address kept a full stop nobody
+    /// typed, the tappable link 404'd, and `PreviewSelection` sent the resolver a string appearing
+    /// nowhere in the message — which is then negative-cached for an hour.
+    func testTrimsToAFixpointWhenThePunctuationInterleaves() {
+        XCTAssertEqual(
+            URLMatcher.matches(in: "(https://e.test/a.png.)").first?.href, "https://e.test/a.png")
+        XCTAssertEqual(
+            URLMatcher.matches(in: "[see https://e.test/a.png!]").first?.href,
+            "https://e.test/a.png")
+    }
+
+    /// ⚠ macOS substitutes `…` for `...` as you type, so it arrives in pasted text constantly.
+    /// Without it in the trim set it rode into the href: the link broke, and `looksLikeMedia` saw
+    /// a path not ending in `.png` and charged the URL to the tight CARD budget instead of the
+    /// generous media one.
+    func testAnEllipsisIsSentencePunctuationLikeAnyOther() {
+        XCTAssertEqual(
+            URLMatcher.matches(in: "look at this https://e.test/a.png\u{2026}").first?.href,
+            "https://e.test/a.png")
+    }
+
     func testAnOrdinaryUrlReportsNoDelimiters() {
         XCTAssertNil(URLMatcher.matches(in: "see https://example.com now").first?.delimiters)
         // A half-open bracket is ordinary prose, not the convention.

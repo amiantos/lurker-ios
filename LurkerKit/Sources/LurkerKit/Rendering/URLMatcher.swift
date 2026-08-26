@@ -132,16 +132,40 @@ public enum URLMatcher {
         return regex.stringByReplacingMatches(in: text, range: whole, withTemplate: " ")
     }
 
-    /// Strip trailing sentence punctuation and one unbalanced closing bracket, so
+    /// Strip trailing sentence punctuation and unbalanced closing brackets, so
     /// `(see https://x.com)` and `end of https://x.com.` don't swallow the delimiter.
+    ///
+    /// ⚠⚠ To a FIXPOINT, because the two kinds interleave. The sentence pass used to run once
+    /// and then hand over to the bracket pass, so `(https://e.test/a.png.)` stopped the first
+    /// pass dead on the `)` and the bracket pass then exposed a `.` that nothing looked at again:
+    /// the address kept a full stop, the tappable link 404'd, and `PreviewSelection` asked the
+    /// server to resolve a string appearing nowhere in the message — which is then negative-cached
+    /// for an hour, the exact failure `rawRanges` warns about.
+    ///
+    /// ⚠ `…` counts as sentence punctuation. macOS substitutes it for `...` while you type, so it
+    /// is ordinary in pasted text, and without it the ellipsis rode into the href. It has to be in
+    /// `PreviewText.absorbable` too — this decides where the address ENDS, that decides what the
+    /// address may TAKE WITH IT when its preview stands in for it, and a character this one drops
+    /// that one has to be willing to delete or the punctuation is orphaned on screen.
+    ///
+    /// The loop is bounded by the string's own length and in practice runs once or twice; the
+    /// pathological input is a URL that is mostly closing brackets.
     static func trimTrailingPunctuation(_ url: String) -> String {
         var result = Substring(url)
-        let trailing: Set<Character> = [".", ",", ";", ":", "!", "?", "'", "\""]
-        while let last = result.last, trailing.contains(last) { result = result.dropLast() }
-        for (open, close) in [(Character("("), Character(")")), ("[", "]"), ("{", "}")] {
-            guard result.last == close else { continue }
-            if result.filter({ $0 == close }).count > result.filter({ $0 == open }).count {
+        let trailing: Set<Character> = [".", ",", ";", ":", "!", "?", "'", "\"", "\u{2026}"]
+        var shrinking = true
+        while shrinking {
+            shrinking = false
+            while let last = result.last, trailing.contains(last) {
                 result = result.dropLast()
+                shrinking = true
+            }
+            for (open, close) in [(Character("("), Character(")")), ("[", "]"), ("{", "}")] {
+                guard result.last == close else { continue }
+                if result.filter({ $0 == close }).count > result.filter({ $0 == open }).count {
+                    result = result.dropLast()
+                    shrinking = true
+                }
             }
         }
         return String(result)

@@ -764,76 +764,13 @@ enum MessageRenderer {
         // assembled string — `mircColored`, `spoilered` and `links` are plain arrays and do not
         // move when characters do, so deleting earlier silently mis-styles whatever follows.
         // (The attributed string's OWN attributes survive a deletion; the bookkeeping beside it
-        // does not, and that is the trap.) One pass, back to front, so each deletion leaves the
-        // earlier offsets untouched.
+        // does not, and that is the trap.)
         //
-        // Two jobs:
-        //
-        // 1. `<https://example.com>` renders WITHOUT its brackets — RFC 3986 Appendix C's
-        //    delimiter convention, which Discord borrowed as "link, but no unfurl".
-        //    `PreviewSelection` already declines to resolve one; this is the other half, and
-        //    without it the convention is visible punctuation that appears to do nothing.
-        //    ⚠ This changes rendering for EVERY message, not only previewed ones — the two
-        //    settings are off by default and this is the app-wide linkifier. Deliberate, and it
-        //    matches the web: the convention is about how a person writes a link.
-        //
-        // 2. Addresses whose picture is about to stand in for them come out entirely.
-        // ⚠ One snapshot, taken before the first deletion, and every range in this loop is an
-        // offset into it — the matches already were, and the absorption below has to be too.
-        // Asking the live `attributed.string` mid-loop measures against a string the earlier
-        // (higher-offset) deletions have already shortened, which is a different document from
-        // the one `PreviewText.urlSpans` measured when it decided what was hideable.
-        let source = attributed.string
-        for match in URLMatcher.matches(in: source).reversed() {
-            if hiddenUrls.contains(match.href) {
-                // ⚠⚠ Exactly what the hiding rule MEASURED — `PreviewText.absorbing`, the same
-                // call `UrlSpan.end` makes — and neither of the two obvious ranges beside it.
-                //
-                // Deleting the trimmed `match.range` orphans the punctuation the span counted as
-                // part of the address: `look at this https://e.test/a.png.` became `look at this
-                // .`, and a message that was ONLY `https://e.test/shot.png.` collapsed to a body
-                // of one full stop — which is not empty, so the end-trim below (whitespace only)
-                // left it and a line holding a lone `.` was painted above the picture.
-                //
-                // Deleting the raw `match.raw` is the same orphan at the other end. The trimmer
-                // discards a closing delimiter whose partner sits in the PROSE, so taking the
-                // whole match ate the `)` and left `look at this (` (#126). The span stops at
-                // anything paired, so such a URL is not hideable and never reaches this line —
-                // but only while both sides ask the same function.
-                attributed.deleteCharacters(
-                    in: match.delimiters ?? PreviewText.absorbing(match.range, in: source))
-                continue
-            }
-            guard let delimiters = match.delimiters,
-                !spoilered.contains(where: { NSIntersectionRange($0, match.range).length > 0 })
-            else { continue }
-            attributed.deleteCharacters(
-                in: NSRange(location: delimiters.location + delimiters.length - 1, length: 1))
-            attributed.deleteCharacters(in: NSRange(location: delimiters.location, length: 1))
-        }
-        // Trim the ends, which is what makes a body that lost a URL read as a sentence rather
-        // than as one with a hole in it: dropping the address from "look at this: <url>" leaves
-        // a colon and a trailing space, and dropping it from a message that WAS only a link
-        // leaves pure whitespace, which still paints a blank line above the picture.
-        if !hiddenUrls.isEmpty {
-            let text = attributed.string as NSString
-            let firstInk = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
-            if firstInk.location == NSNotFound {
-                attributed.deleteCharacters(in: NSRange(location: 0, length: attributed.length))
-            } else {
-                let lastInk = text.rangeOfCharacter(
-                    from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards)
-                let tail = lastInk.location + lastInk.length
-                if tail < text.length {
-                    attributed.deleteCharacters(
-                        in: NSRange(location: tail, length: text.length - tail))
-                }
-                if firstInk.location > 0 {
-                    attributed.deleteCharacters(
-                        in: NSRange(location: 0, length: firstInk.location))
-                }
-            }
-        }
+        // ⚠ The rule itself lives in LurkerKit, not here, and that is the point: this file is in
+        // the app target, which has no test bundle, so anything decided here can only be argued
+        // about. `PreviewHiding` measures which URLs may go and `PreviewText.stripHiddenUrls`
+        // takes them out, and the two agreeing to the character is the entire defect class (#126).
+        PreviewText.stripHiddenUrls(from: attributed, hidden: hiddenUrls, spoilered: spoilered)
         return attributed
     }
 

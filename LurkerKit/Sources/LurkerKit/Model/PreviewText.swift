@@ -114,7 +114,11 @@ public enum PreviewText {
     /// The cost of the narrowness is that a wrapped URL is simply not hideable — its address
     /// stays on screen beside its own preview, which is redundant rather than broken. That is the
     /// right way to be wrong here.
-    public static let absorbable: Set<Character> = [".", ",", ";", ":", "!", "?"]
+    /// ⚠ `…` is here for the same reason it is in `URLMatcher.trimTrailingPunctuation`'s set, and
+    /// the two must move together: that one decides where the address ends, this one decides what
+    /// the address may take with it. A character dropped there and not deletable here is left
+    /// orphaned on screen — which is the whole of #126, in the other direction.
+    public static let absorbable: Set<Character> = [".", ",", ";", ":", "!", "?", "\u{2026}"]
 
     /// `range` — a URL's TRIMMED span in `text` — extended across the sentence punctuation that
     /// reads as part of the address.
@@ -141,5 +145,96 @@ public enum PreviewText {
             end += 1
         }
         return NSRange(location: range.location, length: end - range.location)
+    }
+
+    /// Take the hidden URLs' addresses out of a rendered body, and close up the gap they leave.
+    ///
+    /// Moved out of `MessageRenderer` so it can be tested: the renderer is in the app target,
+    /// which has no test bundle, and the range it chooses to delete IS the defect class here
+    /// (#126, and the orphaned full stop before it). A property test that only re-derives
+    /// `UrlSpan.end` from `absorbing` cannot see a renderer that reaches for a different range —
+    /// which is exactly what both bugs were.
+    ///
+    /// ⚠⚠ Back to front, one pass. The caller's own bookkeeping (colour runs, spoiler ranges,
+    /// link ranges) is plain arrays of offsets into the assembled string and does NOT move when
+    /// characters do, so deleting from the front silently mis-styles everything after it. The
+    /// attributed string's own attributes survive a deletion; the arrays beside it do not.
+    ///
+    /// Two jobs:
+    ///
+    /// 1. `<https://example.com>` renders WITHOUT its brackets — RFC 3986 Appendix C's delimiter
+    ///    convention, which Discord borrowed as "link, but no unfurl". `PreviewSelection` already
+    ///    declines to resolve one; this is the other half, and without it the convention is
+    ///    visible punctuation that appears to do nothing. ⚠ This runs for EVERY message, not only
+    ///    previewed ones — the two settings are off by default and this is the app-wide
+    ///    linkifier. Deliberate, and it matches the web.
+    ///
+    /// 2. Addresses whose picture is about to stand in for them come out entirely.
+    public static func stripHiddenUrls(
+        from attributed: NSMutableAttributedString,
+        hidden: Set<String>,
+        spoilered: [NSRange]
+    ) {
+        // ⚠ One snapshot, taken before the first deletion, and every range below is an offset
+        // into it — the matches already are, and the absorption has to be too. Asking the live
+        // string mid-loop measures against a document the earlier (higher-offset) deletions have
+        // already shortened, which is not the one `urlSpans` judged.
+        let source = attributed.string
+        for match in URLMatcher.matches(in: source).reversed() {
+            let inSpoiler = spoilered.contains {
+                NSIntersectionRange($0, match.range).length > 0
+            }
+            if hidden.contains(match.href) {
+                // ⚠⚠ Never inside a spoiler, even though the address matches. Hiding is decided
+                // by URL STRING, not by span identity (see `PreviewHiding`), so a message posting
+                // the same image bare at one end and again inside a spoiler marks BOTH — and
+                // deleting the second one takes characters out of a box the reader never revealed,
+                // shrinking it to fit a secret it no longer holds. A spoilered URL is never
+                // resolved and so never has a picture standing in for it; there is nothing there
+                // to be redundant with. The delimiter branch below has always guarded this.
+                guard !inSpoiler else { continue }
+                // ⚠⚠ Exactly what the hiding rule MEASURED — `absorbing`, the same call
+                // `UrlSpan.end` makes — and neither of the two obvious ranges beside it.
+                //
+                // Deleting the trimmed `match.range` orphans the punctuation the span counted as
+                // part of the address: `look at this https://e.test/a.png.` became `look at this
+                // .`, and a message that was ONLY `https://e.test/shot.png.` collapsed to a body
+                // of one full stop — not empty, so the end-trim below (whitespace only) left it
+                // and a line holding a lone `.` was painted above the picture.
+                //
+                // Deleting the untrimmed match is the same orphan at the other end. The trimmer
+                // discards a closing delimiter whose partner sits in the PROSE, so taking the
+                // whole match ate the `)` and left `look at this (` (#126). The span stops at
+                // anything paired, so such a URL is not hideable and never reaches this line —
+                // but only while both sides ask the same function.
+                attributed.deleteCharacters(
+                    in: match.delimiters ?? absorbing(match.range, in: source))
+                continue
+            }
+            guard let delimiters = match.delimiters, !inSpoiler else { continue }
+            attributed.deleteCharacters(
+                in: NSRange(location: delimiters.location + delimiters.length - 1, length: 1))
+            attributed.deleteCharacters(in: NSRange(location: delimiters.location, length: 1))
+        }
+        // Trim the ends, which is what makes a body that lost a URL read as a sentence rather
+        // than as one with a hole in it: dropping the address from "look at this: <url>" leaves
+        // a colon and a trailing space, and dropping it from a message that WAS only a link
+        // leaves pure whitespace, which still paints a blank line above the picture.
+        guard !hidden.isEmpty else { return }
+        let text = attributed.string as NSString
+        let firstInk = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
+        if firstInk.location == NSNotFound {
+            attributed.deleteCharacters(in: NSRange(location: 0, length: attributed.length))
+            return
+        }
+        let lastInk = text.rangeOfCharacter(
+            from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards)
+        let tail = lastInk.location + lastInk.length
+        if tail < text.length {
+            attributed.deleteCharacters(in: NSRange(location: tail, length: text.length - tail))
+        }
+        if firstInk.location > 0 {
+            attributed.deleteCharacters(in: NSRange(location: 0, length: firstInk.location))
+        }
     }
 }

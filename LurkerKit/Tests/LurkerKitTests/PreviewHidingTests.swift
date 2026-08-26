@@ -173,19 +173,31 @@ struct PreviewHidingTests {
 
 /// The other half of the hiding rule: what actually comes out of the body.
 ///
-/// ⚠⚠ `MessageRenderer` lives in the app target, which has no test bundle, so the deletion cannot
-/// be driven end to end from here. What CAN be pinned is the thing the deletion is made of —
-/// `PreviewText.absorbing`, the single call both sides make — and the property that the renderer's
-/// starting range agrees with the span the rule measured. That agreement is the whole defect class:
-/// #126 was a disagreement of one character, and so was the bug before it.
+/// ⚠⚠ These drive `PreviewText.stripHiddenUrls` — the deletion itself — and that is the point.
+/// The deletion used to live in `MessageRenderer`, in the app target, which has no test bundle;
+/// what could be reached from here was `absorbing`, and a test comparing it against `UrlSpan.end`
+/// is TAUTOLOGICAL, because `end` is computed by calling it. Such a test passes against a renderer
+/// that deletes an entirely different range — which is precisely what #126 and the orphaned full
+/// stop before it both were. Making the deletion reachable is what turned this suite into a guard.
+///
 @Suite("PreviewHiding/absorption")
 struct PreviewAbsorptionTests {
 
     private let a = "https://e.test/a.png"
 
+    /// What the URL at the head of `text` takes with it, beyond its own address.
+    ///
+    /// ⚠⚠ Records an issue rather than returning `""` when nothing matched. Every assertion about
+    /// a delimiter below is `.isEmpty`, so a helper that answers `""` for "no URL here" satisfies
+    /// them whether the absorption correctly stopped at the `)` or the matcher simply found
+    /// nothing — and those are the exact assertions pinning #126. A test that cannot fail is not
+    /// a test; make the absence loud.
     private func absorbed(_ text: String) -> String {
         let ns = text as NSString
-        guard let match = URLMatcher.matches(in: text).first else { return "" }
+        guard let match = URLMatcher.matches(in: text).first else {
+            Issue.record("no URL matched in \(text) — the fixture, not the rule, is wrong")
+            return "<no match>"
+        }
         let span = PreviewText.absorbing(match.range, in: text)
         return ns.substring(with: NSRange(
             location: NSMaxRange(match.range),
@@ -219,34 +231,76 @@ struct PreviewAbsorptionTests {
         #expect(absorbed("look at this \(a) and more").isEmpty)
     }
 
-    @Test("what the rule measured is what the renderer would delete")
+    @Test("what the rule measured is what the renderer deletes")
     func theTwoSidesAgree() {
-        // ⚠⚠ The drift guard, and the reason `absorbing` is one function rather than two rules
-        // that happen to match. Measure wide and delete narrow and the full stop is orphaned
-        // (`look at this .`); measure narrow and delete wide and the deletion eats a character
-        // the peel never licensed. Both have shipped.
-        let bodies = [
-            a, "look at this \(a).", "look at this \(a)?!", "\(a) first",
-            "look at this \u{2}\(a)\u{2}.", "look at this (\(a))", "\(a). \(a)",
-        ]
-        for body in bodies {
-            let (visible, spans) = PreviewText.urlSpans(in: body)
-            let matches = URLMatcher.matches(in: visible)
-            for span in spans {
-                // ⚠ Paired by LOCATION, not by href. `\(a). \(a)` below is the same address
-                // twice, and matching on the string hands both spans the first occurrence — a
-                // failure of the test's bookkeeping that reads exactly like the drift it is
-                // looking for. The renderer has no such ambiguity: it walks the matches and
-                // absorbs from each one's own range.
-                guard let match = matches.first(where: { $0.range.location == span.start }) else {
-                    Issue.record("no rendered link at \(span.start) in \(body)")
-                    continue
-                }
-                #expect(
-                    PreviewText.absorbing(match.range, in: visible)
-                        == NSRange(location: span.start, length: span.end - span.start),
-                    "the span and the deletion disagree in: \(body)")
-            }
+        // ⚠⚠ Written first as a comparison of `absorbing(match.range)` against `span.end` — which
+        // is TAUTOLOGICAL, because `span.end` is computed by calling `absorbing` on the same
+        // range. It would have passed against a renderer that deleted `match.range` and orphaned
+        // every full stop, which is the bug it claimed to guard. The deletion had to become
+        // reachable before it could be pinned; that is why `stripHiddenUrls` moved into LurkerKit.
+        //
+        // So: assert the BODY, the thing the reader ends up looking at.
+        let a = "https://e.test/a.png"
+        #expect(stripped("look at this \(a).", hiding: a) == "look at this")
+        #expect(stripped("look at this \(a)?!", hiding: a) == "look at this")
+        #expect(stripped("\(a). look at this", hiding: a) == "look at this")
+        #expect(stripped("look at this \u{2}\(a)\u{2}.", hiding: a) == "look at this")
+    }
+
+    @Test("a body that was only a link, and its punctuation, comes out empty")
+    func onlyALinkCollapses() {
+        // ⚠⚠ The symptom that made #774 visible: the address went and the full stop stayed, so the
+        // body was not empty, so the whitespace-only end-trim left it — and a line holding a lone
+        // `.` was painted above the picture. An empty body is what lets the caller drop the label.
+        let a = "https://e.test/shot.png"
+        #expect(stripped(a, hiding: a).isEmpty)
+        #expect(stripped("\(a).", hiding: a).isEmpty)
+        #expect(stripped("  \(a)!  ", hiding: a).isEmpty)
+        #expect(stripped("\(a)\u{2026}", hiding: a).isEmpty)
+    }
+
+    @Test("a wrapped URL keeps its address rather than losing half a pair")
+    func wrappedUrlIsLeftIntact() {
+        // ⚠⚠ #126 itself, asserted where it was actually seen. The rule declines to hide these, so
+        // nothing should be deleted at all — the old renderer took the `)` and left `look at this (`
+        // above the picture. Driving the deletion (rather than the rule) is what makes this real:
+        // it fails if either side reaches for the untrimmed match again.
+        let a = "https://e.test/a.png"
+        for body in ["look at this (\(a))", "look at this [\(a)]", "he said \"check \(a)\""] {
+            #expect(
+                stripped(body, hiding: PreviewHiding.hideableUrls(in: body, candidates: [a]))
+                    == body,
+                "nothing was hideable, so nothing may be deleted: \(body)")
         }
+    }
+
+    @Test("a spoilered copy of a hidden address keeps its characters")
+    func spoilerIsNotShrunkByATwin() {
+        // ⚠⚠ Hiding is decided by URL STRING, not by span identity — `PreviewHiding` says so and
+        // declines to fix it, reasonably. The cost lands here: post the same image bare and again
+        // inside a spoiler, and the bare one being hideable marked BOTH for deletion. The second
+        // deletion takes characters out of a box the reader never opened.
+        //
+        // ⚠ `stripHiddenUrls` is given the spoiler ranges for exactly this. The delimiter branch
+        // beside it has always guarded them; the hiding branch had not.
+        let a = "https://e.test/a.png"
+        let body = "\(a) then \(a)"
+        let spoiler = NSRange(location: ("\(a) then " as NSString).length, length: (a as NSString).length)
+
+        let out = NSMutableAttributedString(string: body)
+        PreviewText.stripHiddenUrls(from: out, hidden: [a], spoilered: [spoiler])
+        #expect(out.string == "then \(a)", "the spoilered twin must survive intact")
+    }
+
+    /// The body a reader is left with, after `hidden`'s addresses are taken out.
+    private func stripped(_ body: String, hiding hidden: Set<String>) -> String {
+        let out = NSMutableAttributedString(
+            string: IRCFormatting.parse(body).map(\.text).joined())
+        PreviewText.stripHiddenUrls(from: out, hidden: hidden, spoilered: [])
+        return out.string
+    }
+
+    private func stripped(_ body: String, hiding url: String) -> String {
+        stripped(body, hiding: [url])
     }
 }
