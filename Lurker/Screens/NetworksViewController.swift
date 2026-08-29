@@ -42,6 +42,8 @@ final class NetworksViewController: UITableViewController {
     /// The status each row was last built with, so a live transition reconfigures only the
     /// rows it actually moved — see `applyLiveStatuses`.
     private var shownStatuses: [Int: NetworkRowStatus] = [:]
+    /// The list as last drawn, so a re-read that changed nothing doesn't redraw it.
+    private var shownConfigs: [NetworkConfig] = []
     /// Which fetch is the current one. Three call sites can start one — every appearance, a
     /// completed delete, and Try Again — and they are not ordered by anything.
     private var loadGeneration = 0
@@ -146,7 +148,15 @@ final class NetworksViewController: UITableViewController {
         let live = Set(configs.map(\.id))
         shownStatuses = shownStatuses.filter { live.contains($0.key) }
         if let error = actionError, !live.contains(error.id) { actionError = nil }
-        tableView.reloadData()
+        // ⚠⚠ Only when the list actually changed. `reloadData` replaces every visible cell and
+        // dismisses an open action menu with it — the failure `applyLiveStatuses` below avoids
+        // by reconfiguring, reintroduced here by the path that re-reads on every appearance.
+        // Open a row's menu, and a re-read that lands half a second later on a slow link
+        // closes it under your finger, having changed nothing.
+        if configs != shownConfigs {
+            shownConfigs = configs
+            tableView.reloadData()
+        }
         updatePlaceholder()
     }
 
