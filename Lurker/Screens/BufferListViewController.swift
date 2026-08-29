@@ -705,7 +705,7 @@ final class BufferListViewController: UICollectionViewController {
     /// Shown rather than hidden because the network is still yours, and a list that silently
     /// omits it just looks wrong.
     private func joinElements() -> [UIMenuElement] {
-        let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        let networks = state.networks.values.sorted { $0.displayName.lowercased() < $1.displayName.lowercased() }
         guard !networks.isEmpty else {
             return [UIAction(title: "No networks", attributes: .disabled) { _ in }]
         }
@@ -719,7 +719,7 @@ final class BufferListViewController: UICollectionViewController {
         }
         return networks.map { network in
             UIAction(
-                title: network.name,
+                title: network.displayName,
                 subtitle: network.state == .connected ? nil : "not connected",
                 attributes: network.state == .connected ? [] : .disabled
             ) { [weak self] _ in
@@ -730,7 +730,7 @@ final class BufferListViewController: UICollectionViewController {
 
     private func presentJoinAlert(network: Network) {
         guard presentedViewController == nil else { return }
-        let alert = UIAlertController(title: "Join channel", message: "on \(network.name)", preferredStyle: .alert)
+        let alert = UIAlertController(title: "Join channel", message: "on \(network.displayName)", preferredStyle: .alert)
         alert.addTextField {
             $0.placeholder = "#channel"
             $0.autocapitalizationType = .none
@@ -801,7 +801,7 @@ final class BufferListViewController: UICollectionViewController {
         // Abbreviations are per-account, so they're computed once and shared by all three;
         // they're measured against every network the user has, not the ones on screen, which
         // is also what the web computes for the same rows (see `NetworkAbbreviation`).
-        let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.name))
+        let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.displayName))
         Self.addNetworkHints(abbreviations, &friends)
         Self.addNetworkHints(abbreviations, &favorites)
         Self.addNetworkHints(abbreviations, &recents, everyRow: true)
@@ -824,7 +824,7 @@ final class BufferListViewController: UICollectionViewController {
         // them down with buffers you merely passed through.
         if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
 
-        let networks = state.networks.values.sorted { $0.name.lowercased() < $1.name.lowercased() }
+        let networks = state.networks.values.sorted { $0.displayName.lowercased() < $1.displayName.lowercased() }
         var seen = Set<Int>()
         for network in networks {
             seen.insert(network.id)
@@ -1014,10 +1014,10 @@ final class BufferListViewController: UICollectionViewController {
 
     private func header(for network: Network) -> String {
         switch network.state {
-        case .connected: return network.name
-        case .connecting: return "\(network.name) — connecting…"
-        case .reconnecting: return "\(network.name) — reconnecting…"
-        case .disconnected: return "\(network.name) — offline"
+        case .connected: return network.displayName
+        case .connecting: return "\(network.displayName) — connecting…"
+        case .reconnecting: return "\(network.displayName) — reconnecting…"
+        case .disconnected: return "\(network.displayName) — offline"
         }
     }
 

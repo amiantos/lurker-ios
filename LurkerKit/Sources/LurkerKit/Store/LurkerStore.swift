@@ -641,6 +641,18 @@ final class LurkerStore {
             var next = state
             next.networks[networkId]?.nick = nick
             return next
+        case .networkState(let networkId, let connection, let nick):
+            // Patched onto a known network for the same reason `own-nick` is: a state for a
+            // network with no row has nothing to describe, and conjuring one here would
+            // invent a nameless network the roster never mentioned.
+            //
+            // The nick is applied only when the frame carried one — it rides the connect
+            // transition alone, and treating its absence as "" would blank the nick on every
+            // disconnect.
+            var next = state
+            next.networks[networkId]?.state = connection
+            if let nick { next.networks[networkId]?.nick = nick }
+            return next
         case .history(
             let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer,
             let speakers
@@ -953,8 +965,16 @@ final class LurkerStore {
                 existing.away = snapshot.away
                 next.networks[snapshot.id] = existing
             } else {
+                // ⚠⚠ No name, rather than a placeholder that reads like one (#136). The
+                // snapshot carries no network names at all, so a network the roster hasn't
+                // named — a roster fetch that failed, or a network added from another client
+                // while this app was running — arrives here nameless. The literal `"network"`
+                // this used to store was indistinguishable downstream from a real name, which
+                // is why the bug presented as the app calling a network "network" forever
+                // instead of as a fetch that never happened. `LurkerClient` watches for a nil
+                // name and re-fetches the roster.
                 next.networks[snapshot.id] = Network(
-                    id: snapshot.id, name: "network", state: snapshot.state, nick: snapshot.nick,
+                    id: snapshot.id, name: nil, state: snapshot.state, nick: snapshot.nick,
                     away: snapshot.away
                 )
             }

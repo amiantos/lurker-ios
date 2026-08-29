@@ -144,8 +144,50 @@ enum FrameParser {
     static func parseNetworks(_ body: String) -> ServerFrame {
         guard let obj = object(from: body) else { return .networks([]) }
         // REST carries no live state; the WS snapshot fills state/nick in.
-        let networks = obj.objects("networks").map { Network(id: $0.int("id"), name: $0.string("name", "network")) }
+        let networks = obj.objects("networks").map { Network(id: $0.int("id"), name: $0.stringOrNull("name")) }
         return .networks(networks)
+    }
+
+    /// Parse REST `GET /api/networks` into the editable configuration rows (#11).
+    ///
+    /// Same response as `parseNetworks` above, read for a different purpose: that one takes
+    /// the two fields the roster needs, this one takes everything the networks screen and its
+    /// form do. Two readers rather than one union type, because the roster is reduced into
+    /// long-lived state on every connect and this is fetched, shown, and dropped.
+    static func parseNetworkConfigs(_ body: String) -> [NetworkConfig] {
+        guard let obj = object(from: body) else { return [] }
+        return obj.objects("networks").map(parseNetworkConfig)
+    }
+
+    static func parseNetworkConfig(_ obj: [String: Any]) -> NetworkConfig {
+        NetworkConfig(
+            id: obj.int("id"),
+            name: obj.string("name"),
+            host: obj.string("host"),
+            // A row predating a port column, or one a hand-written client POSTed without one,
+            // reads 0 — which is not a port. The server's own default is the honest stand-in.
+            port: obj.int("port") == 0 ? 6697 : obj.int("port"),
+            tls: obj.bool("tls"),
+            trustedCertificates: obj.bool("trusted_certificates"),
+            nick: obj.string("nick"),
+            username: obj.stringOrNull("username"),
+            realname: obj.stringOrNull("realname"),
+            autoconnect: obj.bool("autoconnect"),
+            saslAccount: obj.stringOrNull("sasl_account"),
+            connectCommands: obj.stringOrNull("connect_commands"),
+            hasPassword: obj.bool("has_password"),
+            hasSaslPassword: obj.bool("has_sasl_password"),
+            // Absent on a server older than the allowlist (#298), and absent must read as
+            // "not blocked": an older server has no allowlist to be excluded from, and
+            // defaulting the other way would grey out every network on it.
+            blocked: obj.bool("blocked")
+        )
+    }
+
+    /// One network row from a create/update reply — `{network: {...}}`.
+    static func parseNetworkReply(_ body: String) -> NetworkConfig? {
+        guard let obj = object(from: body), let row = obj["network"] as? [String: Any] else { return nil }
+        return parseNetworkConfig(row)
     }
 
     /// Parse REST `GET /api/highlights` into a page. Each item is a `MessageEvent` spread
@@ -451,6 +493,27 @@ enum FrameParser {
             let nick = obj.string("nick")
             if nick.isEmpty { return .ignored }
             return .ownNick(networkId: networkId, nick: nick)
+        }
+        // `state` is the connection indicator's only live source, and it was being DROPPED.
+        //
+        // The server publishes one on every transition (`ircConnection.setState`,
+        // unconditionally — the comment there says it exists to keep a late-attaching client
+        // in sync). Without a case here it folded to `.other`, and since it carries no `text`
+        // it rendered nowhere either: the per-network `state` the app showed came only from
+        // the connect `snapshot` and was then frozen for the session. So a network that
+        // dropped still read as connected, one that came back still read as disconnected,
+        // and under #11 the Connect button would have appeared to do nothing.
+        //
+        // `nick` rides along on the connect transition only, so it's optional here — an
+        // absent one must not blank the nick the snapshot gave us.
+        if obj.string("type") == "state" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let nick = obj.string("nick")
+            return .networkState(
+                networkId: networkId,
+                state: ConnectionState.from(obj.stringOrNull("state")),
+                nick: nick.isEmpty ? nil : nick
+            )
         }
         let target = obj.string("target")
         if target.isEmpty { return .ignored }
