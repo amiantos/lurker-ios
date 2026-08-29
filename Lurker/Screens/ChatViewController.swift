@@ -660,8 +660,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// What the empty field says: the network's name — the transport, the way iMessage
     /// captions its field "iMessage" or "Text Message" rather than the recipient, who is
-    /// already named by the title pill. Re-read on every `apply`, because the snapshot
-    /// creates networks as "network" and the REST roster fills real names in later.
+    /// already named by the title pill. Re-read on every `apply`, because a network the
+    /// snapshot materialized has no name until the REST roster lands (#136) — and until it
+    /// does, the fallback below is what shows, rather than a placeholder posing as a name.
     /// The system buffer is the app's own command console, so it invites one.
     private var composerPlaceholder: String {
         guard let networkId = buffer.networkId else { return "Type a command…" }

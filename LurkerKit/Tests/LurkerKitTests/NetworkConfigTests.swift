@@ -64,15 +64,6 @@ final class NetworkConfigTests: XCTestCase {
         XCTAssertEqual(store.state.networks[2]?.nick, "me")
     }
 
-    func testAStateForAnUnknownNetworkMaterializesNothing() {
-        // Same rule as `own-nick` and `away-state`: a state event describes a network the
-        // snapshot has already named. Creating a row from one would invent a nameless network
-        // the roster never mentioned — and the roster is what decides what the user sees.
-        let store = LurkerStore()
-        store.apply(.networkState(networkId: 99, state: .connected, nick: "me"))
-        XCTAssertNil(store.state.networks[99])
-    }
-
     func testTheRosterNameSurvivesAStateEvent() {
         let store = LurkerStore()
         store.apply(.networks([Network(id: 2, name: "Libera")]))
@@ -118,6 +109,63 @@ final class NetworkConfigTests: XCTestCase {
     func testANamelessNetworkStillRendersAsSomething() {
         XCTAssertEqual(Network(id: 1, name: nil).displayName, "Unnamed network")
         XCTAssertEqual(Network(id: 1, name: "Libera").displayName, "Libera")
+    }
+
+    func testAStateEventMaterializesANetworkCreatedSinceWeConnected() {
+        // ⚠⚠ `POST /api/networks` starts the connection BEFORE it answers, so the new
+        // network's `connecting` can beat the roster re-read that would otherwise create its
+        // row. Dropped, the network then appeared at `ConnectionState`'s default and read
+        // "offline" while genuinely connected, with no further transition coming to fix it.
+        let store = LurkerStore()
+        store.apply(.networkState(networkId: 12, state: .connecting, nick: nil))
+        XCTAssertEqual(store.state.networks[12]?.state, .connecting)
+        XCTAssertNil(store.state.networks[12]?.name)
+    }
+
+    // MARK: - Roster membership
+
+    func testTheRosterRemovesANetworkItNoLongerNames() {
+        // The roster is the whole set, so it decides membership too. Without this a deleted
+        // network kept its section header, its join-menu entry and its `on:` name for the
+        // life of the process — `pruneToBurst` prunes buffers only, and the snapshot merges.
+        let store = LurkerStore()
+        store.apply(.networks([Network(id: 1, name: "Libera"), Network(id: 2, name: "OFTC")]))
+        store.apply(.networks([Network(id: 1, name: "Libera")]))
+        XCTAssertNotNil(store.state.networks[1])
+        XCTAssertNil(store.state.networks[2])
+    }
+
+    func testRemovingANetworkTakesItsBuffersWithIt() {
+        let store = LurkerStore()
+        store.apply(.networks([Network(id: 2, name: "OFTC")]))
+        store.apply(FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":2,"target":"#chan","joined":true,"events":[]}"##
+        ))
+        let key = BufferKey(networkId: 2, target: "#chan").id
+        XCTAssertNotNil(store.state.buffers[key])
+        store.apply(.networks([]))
+        XCTAssertNil(store.state.networks[2])
+        // A buffer whose network is gone has no section to sit under and nothing to send to.
+        XCTAssertNil(store.state.buffers[key])
+        XCTAssertNil(store.state.messages[key])
+    }
+
+    func testAnUnreadableRosterDoesNotWipeTheNetworks() {
+        // ⚠⚠ The hazard the removal above creates. "We couldn't read the answer" is not "you
+        // have no networks", and reading it that way would delete every network and buffer
+        // the user has on one malformed response.
+        let store = LurkerStore()
+        store.apply(.networks([Network(id: 1, name: "Libera")]))
+        store.apply(FrameParser.parseNetworks("not json"))
+        XCTAssertEqual(store.state.networks[1]?.name, "Libera")
+    }
+
+    func testAnEmptyRosterIsStillAnAnswer() {
+        // A user who deleted their last network really does have none.
+        let store = LurkerStore()
+        store.apply(.networks([Network(id: 1, name: "Libera")]))
+        store.apply(FrameParser.parseNetworks(##"{"networks":[]}"##))
+        XCTAssertTrue(store.state.networks.isEmpty)
     }
 
     // MARK: - Config rows
@@ -230,6 +278,37 @@ final class NetworkConfigTests: XCTestCase {
         d.password = .cleared
         d.defaultChannel = "#lurker"
         XCTAssertTrue(JSONSerialization.isValidJSONObject(d.jsonBody(includeDefaultChannel: true)))
+    }
+
+    // MARK: - Validation
+
+    func testADraftMissingAnIdentityFieldIsRefused() {
+        // ⚠⚠ `PATCH` validates nothing server-side — it sets whatever keys it is given — so
+        // this layer is the only guard an edit passes through. A network saved with an empty
+        // name reads back as *no* name, which is #136's state: it renders "Unnamed network"
+        // and re-triggers the roster read for good.
+        XCTAssertNotNil(NetworkDraft(name: "", host: "h", nick: "n").validationError)
+        XCTAssertNotNil(NetworkDraft(name: "n", host: "", nick: "n").validationError)
+        XCTAssertNotNil(NetworkDraft(name: "n", host: "h", nick: "").validationError)
+        XCTAssertNil(NetworkDraft(name: "n", host: "h", nick: "n").validationError)
+    }
+
+    func testWhitespaceIsNotAName() {
+        XCTAssertNotNil(NetworkDraft(name: "   ", host: "h", nick: "n").validationError)
+    }
+
+    func testAPortOutsideTheRangeIsRefused() {
+        XCTAssertNotNil(NetworkDraft(name: "n", host: "h", port: 0, nick: "n").validationError)
+        XCTAssertNotNil(NetworkDraft(name: "n", host: "h", port: 70000, nick: "n").validationError)
+        XCTAssertNil(NetworkDraft(name: "n", host: "h", port: 6667, nick: "n").validationError)
+    }
+
+    func testIdentityFieldsAreSentTrimmed() {
+        let body = NetworkDraft(name: " Libera ", host: " irc.libera.chat ", nick: " me ")
+            .jsonBody(includeDefaultChannel: false)
+        XCTAssertEqual(body["name"] as? String, "Libera")
+        XCTAssertEqual(body["host"] as? String, "irc.libera.chat")
+        XCTAssertEqual(body["nick"] as? String, "me")
     }
 
     func testEditingADraftStartsBothSecretsUnchanged() {

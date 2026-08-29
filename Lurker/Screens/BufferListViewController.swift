@@ -876,7 +876,7 @@ final class BufferListViewController: UICollectionViewController {
             let buffer = state.buffer(for: entry.key)
             return Row(
                 buffer: buffer,
-                networkName: state.networks[entry.networkId]?.name,
+                networkName: state.networks[entry.networkId]?.displayName,
                 presence: state.presence(networkId: entry.networkId, nick: entry.target),
                 isFriendChip: true,
                 muted: Self.isMuted(buffer, state)
@@ -932,7 +932,7 @@ final class BufferListViewController: UICollectionViewController {
     private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer,
-            networkName: buffer.networkId.flatMap { state.networks[$0]?.name },
+            networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
             muted: Self.isMuted(buffer, state)
         )
     }

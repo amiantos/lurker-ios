@@ -141,8 +141,13 @@ enum FrameParser {
     }
 
     /// Parse REST `GET /api/networks` into the roster (id → name).
+    ///
+    /// ⚠⚠ An unreadable body is `.ignored`, NOT an empty roster. `applyNetworks` is
+    /// authoritative over membership — it removes networks the list doesn't name — so
+    /// reporting "we couldn't read the answer" as "you have no networks" would wipe every
+    /// network the user has, buffers included.
     static func parseNetworks(_ body: String) -> ServerFrame {
-        guard let obj = object(from: body) else { return .networks([]) }
+        guard let obj = object(from: body) else { return .ignored }
         // REST carries no live state; the WS snapshot fills state/nick in.
         let networks = obj.objects("networks").map { Network(id: $0.int("id"), name: $0.stringOrNull("name")) }
         return .networks(networks)

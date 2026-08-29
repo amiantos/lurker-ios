@@ -17,8 +17,8 @@ public struct Network: Equatable, Sendable {
     /// network added from another client mid-session — and the row it materialized used the
     /// literal `"network"`, which is indistinguishable from a real name by anything
     /// downstream. So the app said "network" where a name belonged and no code could tell
-    /// it was lying. Nil is the honest reading, and it's what triggers the roster re-fetch
-    /// (`LurkerClient.refetchRosterIfNamesAreMissing`).
+    /// it was lying. Nil is the honest reading, and it's what triggers the roster re-read
+    /// (`ChatViewModel.refreshRosterIfAnyNetworkIsNameless`).
     public var name: String?
     public var state: ConnectionState
     public var nick: String

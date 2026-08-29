@@ -171,6 +171,27 @@ public struct NetworkDraft: Equatable, Sendable {
         )
     }
 
+    /// Why this draft can't be sent, or nil when it can.
+    ///
+    /// ⚠⚠ Enforced here, not only in the form. `POST` is validated server-side — 400 on a
+    /// missing name, host or nick — but `PATCH` is **not**: it sets whatever keys it is
+    /// given. So an edit that blanks the name stores an empty one, and the roster then reads
+    /// it back as no name at all — which is #136's "we haven't heard the name" state, so the
+    /// network renders as "Unnamed network" and re-triggers the roster read for good. This
+    /// layer is the only guard both paths share, and a gate you have to remember to apply
+    /// isn't one.
+    public var validationError: String? {
+        if Self.trimmed(name).isEmpty { return "Give this network a name." }
+        if Self.trimmed(host).isEmpty { return "A server address is required." }
+        if Self.trimmed(nick).isEmpty { return "A nickname is required." }
+        if !(1...65535).contains(port) { return "Port must be between 1 and 65535." }
+        return nil
+    }
+
+    private static func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// The JSON body for `POST /api/networks` or `PATCH /api/networks/:id`.
     ///
     /// `includeDefaultChannel` is false on an edit, where the key has no meaning. Secrets
@@ -178,13 +199,16 @@ public struct NetworkDraft: Equatable, Sendable {
     /// the key, `cleared` sends an explicit null (which is what the column stores for "no
     /// password", so null is a value here and not an absence).
     public func jsonBody(includeDefaultChannel: Bool) -> [String: Any] {
+        // Trimmed on the way out, so a name that is only spaces can't slip past a check that
+        // read it untrimmed — and so a host with a stray trailing space isn't a host nothing
+        // resolves.
         var body: [String: Any] = [
-            "name": name,
-            "host": host,
+            "name": Self.trimmed(name),
+            "host": Self.trimmed(host),
             "port": port,
             "tls": tls,
             "trusted_certificates": trustedCertificates,
-            "nick": nick,
+            "nick": Self.trimmed(nick),
             "autoconnect": autoconnect,
         ]
         // Optional text fields send null rather than "" when empty: the column is nullable and
@@ -219,6 +243,14 @@ public struct NetworkDraft: Equatable, Sendable {
 /// out would be a round trip for something the reply already carried.
 public enum NetworkSaveResult: Equatable, Sendable {
     case saved(NetworkConfig)
+    /// The write landed but its reply couldn't be read.
+    ///
+    /// ⚠ Its own case rather than a `failure` with careful wording, because the distinction
+    /// is one the caller has to *act* on, not report: a form that treats this as a refusal
+    /// keeps itself open with Save re-enabled, and the next tap creates the network a second
+    /// time. Prose in a message string cannot stop that. Dismiss on this, the way you would
+    /// on `saved`; the roster has already been re-read, so the network is there to see.
+    case savedWithoutDetail
     /// The server's own wording wherever it gave any — a blocked host, a missing field, a
     /// paused account — because it knows why it refused and this client is guessing.
     case failure(message: String)

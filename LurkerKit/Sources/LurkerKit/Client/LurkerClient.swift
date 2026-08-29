@@ -302,28 +302,31 @@ final class LurkerClient {
     /// `POST /api/networks`. The server connects the new network immediately, regardless of
     /// `autoconnect` — that flag governs cold start, not this.
     func createNetwork(_ draft: NetworkDraft) async -> NetworkSaveResult {
-        await save("POST", "/api/networks", body: draft.jsonBody(includeDefaultChannel: true))
+        if let problem = draft.validationError { return .failure(message: problem) }
+        return await save("POST", "/api/networks", body: draft.jsonBody(includeDefaultChannel: true))
     }
 
     /// `PATCH /api/networks/:id`. Takes effect on the next connection: the server updates the
     /// row, and an established connection keeps whatever it registered with.
     func updateNetwork(id: Int, draft: NetworkDraft) async -> NetworkSaveResult {
-        await save("PATCH", "/api/networks/\(id)", body: draft.jsonBody(includeDefaultChannel: false))
+        // ⚠ Checked here and not only on create: `PATCH` sets whatever keys it is given and
+        // validates none of them, so this client is the only thing standing between an edit
+        // and a network stored with no name. See `NetworkDraft.validationError`.
+        if let problem = draft.validationError { return .failure(message: problem) }
+        return await save("PATCH", "/api/networks/\(id)", body: draft.jsonBody(includeDefaultChannel: false))
     }
 
     private func save(_ method: String, _ path: String, body: [String: Any]) async -> NetworkSaveResult {
         switch await rest(method, path, body: body) {
         case .ok(let text):
             guard let config = FrameParser.parseNetworkReply(text) else {
-                // ⚠ A 2xx we can't read is a write that HAPPENED. Reporting it as a plain
-                // failure invites the user to tap Save again and end up with the network
-                // twice — the same "the retry is worse than the loss" call the send path
-                // makes when an ack goes missing. So say the save worked and we lost the
-                // reply, and re-read the roster here rather than in the caller's `.saved`
-                // branch: the roster is how the new network becomes visible at all, and
-                // nothing else will fetch it before the next reconnect.
+                // ⚠ A 2xx we can't read is a write that HAPPENED — its own case, so a caller
+                // can dismiss rather than invite the retry that creates the network twice.
+                // The roster is re-read here rather than in the caller's `.saved` branch:
+                // it's how a new network becomes visible at all, and nothing else fetches it
+                // before the next reconnect.
                 await refreshNetworks()
-                return .failure(message: "Saved, but the server's reply couldn't be read.")
+                return .savedWithoutDetail
             }
             return .saved(config)
         case .failure(let message):

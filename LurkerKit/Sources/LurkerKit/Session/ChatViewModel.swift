@@ -684,6 +684,8 @@ public final class ChatViewModel {
     /// carries a network's name.
     public func createNetwork(_ draft: NetworkDraft) async -> NetworkSaveResult {
         let result = await client.createNetwork(draft)
+        // `savedWithoutDetail` re-reads the roster itself, at the point that knows the write
+        // landed — so only the ordinary success needs one here.
         if case .saved = result { await client.refreshNetworks() }
         return result
     }
@@ -692,6 +694,8 @@ public final class ChatViewModel {
     /// registered with — so a caller that changed the nick or host owes the user that fact.
     public func updateNetwork(id: Int, draft: NetworkDraft) async -> NetworkSaveResult {
         let result = await client.updateNetwork(id: id, draft: draft)
+        // `savedWithoutDetail` re-reads the roster itself, at the point that knows the write
+        // landed — so only the ordinary success needs one here.
         if case .saved = result { await client.refreshNetworks() }
         return result
     }
@@ -1077,22 +1081,9 @@ public final class ChatViewModel {
             // the state this frame proved, not the one before it.
             store.apply(frame)
             onFavoritesSynced?()
-        case .snapshot:
+        case .snapshot, .networkState:
             store.apply(frame)
-            // ⚠⚠ The snapshot names every network the account has; it names none of them.
-            // Network names live only in `GET /api/networks`, which runs once on connect and
-            // is deliberately skipped on reconnect. So a network the roster doesn't hold —
-            // one added from another client since we connected, or every one of them after a
-            // roster fetch that failed — lands nameless and stays that way for the life of
-            // the app (#136).
-            //
-            // Keyed on a nil name rather than on "did the fetch fail", because the second
-            // question misses the network added mid-session, which is the case a user hits by
-            // adding one on the web. Costs nothing in the ordinary case: the roster already
-            // holds every id a snapshot mentions, so this asks nothing.
-            if store.state.networks.values.contains(where: { $0.name == nil }) {
-                Task { await client.refreshNetworks() }
-            }
+            refreshRosterIfAnyNetworkIsNameless()
         default:
             store.apply(frame)
         }
@@ -1106,6 +1097,37 @@ public final class ChatViewModel {
         // It also means the message frames prime against a store that already holds them, which
         // is the more obviously correct order even though those read their texts from the frame.
         primePreviews(frame)
+    }
+
+    /// Whether a roster re-read is already in flight. Without it a burst of `state` events
+    /// for one unnamed network would fire a GET each.
+    private var rosterRefreshInFlight = false
+
+    /// Re-read `GET /api/networks` when the store holds a network we have no name for (#136).
+    ///
+    /// ⚠⚠ The snapshot names every network the account has and names none of them: network
+    /// names live only in the REST roster, which runs once on connect and is deliberately
+    /// skipped on reconnect. So a network the roster doesn't hold — one added from another
+    /// client since we connected, one created here whose `state` event beat the create's own
+    /// re-read, or every one of them after a roster fetch that failed — lands nameless and,
+    /// before this, stayed that way for the life of the app.
+    ///
+    /// Keyed on a nil name rather than on "did the fetch fail", because the second question
+    /// misses every case but the last. Costs nothing in the ordinary case: the roster already
+    /// holds each id, so this asks nothing.
+    ///
+    /// Terminating without a retry bound, because the re-read is authoritative over
+    /// membership: it either names the network or removes it. Either way there is no nameless
+    /// network left to trigger another.
+    private func refreshRosterIfAnyNetworkIsNameless() {
+        guard !rosterRefreshInFlight,
+              store.state.networks.values.contains(where: { $0.name == nil })
+        else { return }
+        rosterRefreshInFlight = true
+        Task {
+            await client.refreshNetworks()
+            rosterRefreshInFlight = false
+        }
     }
 
     // MARK: - Reconnect
