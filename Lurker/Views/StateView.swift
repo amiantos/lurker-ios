@@ -127,7 +127,12 @@ final class StateView: UIView {
         titleLabel.text = model.title
         subtitleLabel.text = model.subtitle
         subtitleLabel.isHidden = model.subtitle == nil
-        actionButton.setTitle(model.actionTitle, for: .normal)
+        // ⚠ Through the CONFIGURATION, not `setTitle`. This button was built with one
+        // (`.borderless()`), and the legacy title setter and a configuration are two sources
+        // for the same property — the configuration wins when it next resolves, so the title
+        // can simply fail to appear. `SuggestionsView` sets `config.title` for the same
+        // reason.
+        actionButton.configuration?.title = model.actionTitle
         actionButton.isHidden = model.actionTitle == nil
     }
 }
