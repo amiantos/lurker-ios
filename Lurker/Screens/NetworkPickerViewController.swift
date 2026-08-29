@@ -34,6 +34,8 @@ final class NetworkPickerViewController: UITableViewController, UISearchResultsU
     private var allowsCustom = true
     private var rows: [Row] = []
     private var query = ""
+    private let placeholderView = StateView()
+    private var shownPlaceholder: StateView.Model?
 
     init(
         viewModel: ChatViewModel,
@@ -67,10 +69,10 @@ final class NetworkPickerViewController: UITableViewController, UISearchResultsU
         navigationItem.searchController = search
         navigationItem.hidesSearchBarWhenScrolling = false
 
-        // The bundled catalogue is already on the device, so the list is never empty and
-        // never needs a spinner. The fetch only adds this instance's own networks and its
-        // policy — and on failure we simply keep what we shipped with, because a request that
-        // didn't arrive is no reason to refuse to add a network.
+        // The bundled catalogue is already on the device, so this never needs a spinner: the
+        // fetch only adds this instance's own networks and its policy, and on failure we keep
+        // what we shipped with, because a request that didn't arrive is no reason to refuse
+        // to add a network. (It can still come back EMPTY — see `updatePlaceholder`.)
         rebuild()
         Task { [weak self] in
             guard let self, let presets = await viewModel.networkPresets() else { return }
@@ -96,6 +98,36 @@ final class NetworkPickerViewController: UITableViewController, UISearchResultsU
         // already said no to.
         if allowsCustom { rows.append(.custom) }
         tableView.reloadData()
+        updatePlaceholder(matched: !matches.isEmpty)
+    }
+
+    /// ⚠ The list CAN be empty, despite the catalogue being on the device: a locked-down
+    /// instance (`allowUserDefined: false`) offers its own networks and nothing else, so an
+    /// admin who has enabled none leaves nothing to show — and the custom-server row is
+    /// suppressed too, because a network the allowlist excludes can only 403. A blank screen
+    /// is the one answer that explains nothing, and it's reachable on a configuration that
+    /// means "nobody may add a network here", which is exactly when a user needs telling.
+    private func updatePlaceholder(matched: Bool) {
+        let model: StateView.Model? = {
+            guard rows.isEmpty else { return nil }
+            // Two different blanks: nothing on offer at all, versus a search that missed.
+            guard matched || query.trimmingCharacters(in: .whitespaces).isEmpty else {
+                return .init(symbol: "magnifyingglass", title: "No matches")
+            }
+            return .init(
+                symbol: "network.slash",
+                title: "No networks available",
+                subtitle: "This server's administrator chooses which networks can be added."
+            )
+        }()
+        guard model != shownPlaceholder else { return }
+        shownPlaceholder = model
+        if let model {
+            placeholderView.configure(model)
+            tableView.backgroundView = placeholderView
+        } else {
+            tableView.backgroundView = nil
+        }
     }
 
     func updateSearchResults(for searchController: UISearchController) {
@@ -110,7 +142,9 @@ final class NetworkPickerViewController: UITableViewController, UISearchResultsU
     }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        guard !allowsCustom else { return nil }
+        // Nothing to footnote when there are no rows — the placeholder is saying it instead,
+        // and both at once is the same sentence twice.
+        guard !allowsCustom, !rows.isEmpty else { return nil }
         // Said once, at the bottom, rather than leaving the absence of a "custom" row to be
         // noticed: a user hunting for the network they use needs to know it isn't missing by
         // accident.
