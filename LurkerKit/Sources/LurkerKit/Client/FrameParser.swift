@@ -204,6 +204,32 @@ enum FrameParser {
         return parseNetworkConfig(row)
     }
 
+    /// Parse REST `GET /api/network-presets` — the networks this instance recommends, plus
+    /// whether users may connect to anything else (#298).
+    ///
+    /// ⚠ `allowUserDefined` defaults TRUE on a missing key. A server predating the lockdown
+    /// has no such policy, and reading its silence as "locked down" would hide the
+    /// custom-server path on every older instance — leaving an app that can't add a network,
+    /// which is the whole failure #11 exists to fix.
+    static func parseNetworkPresets(_ body: String) -> NetworkPresets? {
+        guard let obj = object(from: body) else { return nil }
+        return NetworkPresets(
+            instance: obj.objects("presets").map { preset in
+                NetworkPreset(
+                    name: preset.string("name"),
+                    host: preset.string("host"),
+                    port: preset.int("port", 6697),
+                    tls: preset.bool("tls", true),
+                    saslLikelyRequired: preset.bool("saslLikelyRequired"),
+                    recommendedChannels: (preset["channels"] as? [String]) ?? [],
+                    isInstance: true,
+                    instanceID: preset.intOrNull("id")
+                )
+            },
+            allowUserDefined: obj.bool("allowUserDefined", true)
+        )
+    }
+
     /// Parse REST `GET /api/highlights` into a page. Each item is a `MessageEvent` spread
     /// flat (so `parseEvent` reads it, same as a backlog line) plus the buffer address
     /// (`networkId`/`target`) and a resolved `networkName`. `nextBefore` is the cursor for

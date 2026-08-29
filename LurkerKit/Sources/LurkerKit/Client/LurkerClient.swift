@@ -299,6 +299,19 @@ final class LurkerClient {
         }
     }
 
+    /// `GET /api/network-presets` — what this instance recommends, and whether anything else
+    /// is allowed.
+    ///
+    /// Nil is "we couldn't ask". The picker falls back to the bundled catalogue on nil rather
+    /// than showing an error: the builtins are already on the device, and a failed request
+    /// for the instance's *extra* suggestions is no reason to refuse to add a network.
+    func networkPresets() async -> NetworkPresets? {
+        switch await rest("GET", "/api/network-presets") {
+        case .ok(let text): return FrameParser.parseNetworkPresets(text)
+        case .failure: return nil
+        }
+    }
+
     /// `POST /api/networks`. The server connects the new network immediately, regardless of
     /// `autoconnect` — that flag governs cold start, not this.
     func createNetwork(_ draft: NetworkDraft) async -> NetworkSaveResult {

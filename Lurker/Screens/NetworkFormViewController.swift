@@ -39,6 +39,11 @@ final class NetworkFormViewController: UITableViewController {
         let rows: [Row]
     }
 
+    /// What to do once the write has landed. The form doesn't navigate itself: it is always
+    /// pushed — onto the picker when adding, onto the list when editing — and where you
+    /// should end up afterwards is the list's business, not the form's. It certainly isn't
+    /// "back to the picker", which is what popping one screen would give.
+    ///
     /// The network being edited, or nil when adding. Also the source of `has_password` — the
     /// only way to know a secret exists, since its value is never sent to us.
     ///
@@ -82,9 +87,6 @@ final class NetworkFormViewController: UITableViewController {
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: isEditingNetwork ? "Save" : "Add",
             primaryAction: UIAction { [weak self] _ in self?.save() }
-        )
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            systemItem: .cancel, primaryAction: UIAction { [weak self] _ in self?.close() }
         )
         tableView.register(FormTextCell.self, forCellReuseIdentifier: FormTextCell.reuseID)
         tableView.register(FormSwitchCell.self, forCellReuseIdentifier: FormSwitchCell.reuseID)
@@ -387,11 +389,10 @@ final class NetworkFormViewController: UITableViewController {
             navigationItem.rightBarButtonItem?.isEnabled = true
             switch result {
             case .saved, .savedWithoutDetail:
-                // ⚠ `savedWithoutDetail` closes too. The write landed; only its reply was
+                // ⚠ `savedWithoutDetail` leaves too. The write landed; only its reply was
                 // unreadable. Keeping the form open would invite the retry that creates the
                 // network twice — see `NetworkSaveResult`.
                 onSaved()
-                close()
             case .failure(let message):
                 show(error: message)
             }
@@ -407,11 +408,4 @@ final class NetworkFormViewController: UITableViewController {
         tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: true)
     }
 
-    private func close() {
-        if let navigation = navigationController, navigation.viewControllers.first !== self {
-            navigation.popViewController(animated: true)
-        } else {
-            dismiss(animated: true)
-        }
-    }
 }

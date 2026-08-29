@@ -295,23 +295,37 @@ final class NetworksViewController: UITableViewController {
 
     // MARK: - Actions
 
+    /// Adding starts with "which network?", not with a blank hostname field — see
+    /// `NetworkPickerViewController` for why that ordering is the point.
     private func add() {
-        // Pushed, so Add and Cancel sit in the same bar the list's own items do and the form
-        // inherits the back-swipe. Its `onSaved` reloads: the create's roster re-read updates
-        // the store, but this screen's list is a separate fetch of a separate shape.
-        navigationController?.pushViewController(
-            NetworkFormViewController(viewModel: viewModel) { [weak self] in self?.reload() },
-            animated: true
-        )
+        push(NetworkPickerViewController(viewModel: viewModel) { [weak self] draft in
+            guard let self else { return }
+            push(NetworkFormViewController(viewModel: viewModel, draft: draft) { [weak self] in
+                self?.finished()
+            })
+        })
     }
 
     private func edit(_ config: NetworkConfig) {
-        navigationController?.pushViewController(
-            NetworkFormViewController(viewModel: viewModel, editing: config) { [weak self] in
-                self?.reload()
-            },
-            animated: true
-        )
+        push(NetworkFormViewController(viewModel: viewModel, editing: config) { [weak self] in
+            self?.finished()
+        })
+    }
+
+    private func push(_ controller: UIViewController) {
+        navigationController?.pushViewController(controller, animated: true)
+    }
+
+    /// Back to the list, with the change on it.
+    ///
+    /// ⚠ `popToViewController`, not `popViewController`: adding goes list → picker → form, so
+    /// popping one screen would land on the picker — the step before the form, not the place
+    /// the user started. The reload is separate from the store's own: the create's roster
+    /// re-read updates the roster, and this screen's list is a different fetch of a different
+    /// shape.
+    private func finished() {
+        reload()
+        navigationController?.popToViewController(self, animated: true)
     }
 
     private func row(for config: NetworkConfig) -> NetworkRow {

@@ -677,6 +677,12 @@ public final class ChatViewModel {
         await client.networkConfigs()
     }
 
+    /// The networks this instance recommends, and whether users may add anything else.
+    /// Nil is "couldn't ask" — the picker still has the bundled catalogue.
+    public func networkPresets() async -> NetworkPresets? {
+        await client.networkPresets()
+    }
+
     /// Create a network. The server connects it immediately on success.
     ///
     /// The roster is re-read afterwards because nothing else will name the new network: it

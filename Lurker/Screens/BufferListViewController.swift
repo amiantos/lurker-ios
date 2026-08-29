@@ -747,17 +747,35 @@ final class BufferListViewController: UICollectionViewController {
         ])
     }
 
-    /// The add form, in its own sheet — reached from here without going through Settings,
+    /// Adding a network, in its own sheet — reached from here without going through Settings,
     /// because the account with no networks is exactly the one that can't find Settings'
     /// Networks row and shouldn't have to.
+    ///
+    /// Picker first, then the form pushed on top of it: a blank hostname field is the wrong
+    /// first question for the person most likely to be asking it.
     private func showAddNetwork() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
-        let sheet = UINavigationController(
-            rootViewController: NetworkFormViewController(viewModel: viewModel) {}
-        )
-        sheet.sheetPresentationController?.prefersGrabberVisible = true
-        sheet.sheetPresentationController?.detents = [.large()]
-        present(sheet, animated: true)
+        var sheet: UINavigationController?
+        let picker = NetworkPickerViewController(
+            viewModel: viewModel,
+            onCancel: { [weak self] in self?.dismiss(animated: true) }
+        ) { [weak self] draft in
+            guard let self else { return }
+            sheet?.pushViewController(
+                NetworkFormViewController(viewModel: viewModel, draft: draft) { [weak self] in
+                    // The whole sheet goes: this screen isn't a networks list, so there is
+                    // nothing here to come back to — the new network's buffers arriving IS
+                    // the result.
+                    self?.dismiss(animated: true)
+                },
+                animated: true
+            )
+        }
+        let navigation = UINavigationController(rootViewController: picker)
+        sheet = navigation
+        navigation.sheetPresentationController?.prefersGrabberVisible = true
+        navigation.sheetPresentationController?.detents = [.large()]
+        present(navigation, animated: true)
     }
 
     private func presentJoinAlert(network: Network) {

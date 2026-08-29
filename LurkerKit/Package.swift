@@ -17,7 +17,10 @@ let package = Package(
         .library(name: "LurkerKit", targets: ["LurkerKit"]),
     ],
     targets: [
-        .target(name: "LurkerKit"),
+        // The bundled network catalogue rides here rather than in the app target so the
+        // picker's data and the channel-suggestion rules are testable with `swift test` on
+        // the host, like everything else in this package.
+        .target(name: "LurkerKit", resources: [.process("Resources")]),
         .testTarget(name: "LurkerKitTests", dependencies: ["LurkerKit"]),
     ],
     swiftLanguageModes: [.v5]
