@@ -178,7 +178,11 @@ enum FrameParser {
             // reads 0 — which is not a port. The server's own default is the honest stand-in.
             port: obj.int("port") == 0 ? 6697 : obj.int("port"),
             tls: obj.bool("tls"),
-            trustedCertificates: obj.bool("trusted_certificates"),
+            // ⚠ Defaults TRUE, unlike every other flag here. It means `rejectUnauthorized`,
+            // so an absent value read as false would report a network as not verifying its
+            // certificate when the server's column says it does — and the form would then
+            // save that misreading back.
+            trustedCertificates: obj.bool("trusted_certificates", true),
             nick: obj.string("nick"),
             username: obj.stringOrNull("username"),
             realname: obj.stringOrNull("realname"),

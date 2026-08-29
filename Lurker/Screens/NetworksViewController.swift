@@ -73,8 +73,16 @@ final class NetworksViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Networks"
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            systemItem: .add, primaryAction: UIAction { [weak self] _ in self?.add() }
+        )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "network")
-        placeholderView.onAction = { [weak self] in self?.reload() }
+        // One button, two meanings — whichever state is on screen owns it. The empty state
+        // and the failure state can't both be showing, so this can't be ambiguous.
+        placeholderView.onAction = { [weak self] in
+            guard let self else { return }
+            if case .loaded = load { add() } else { reload() }
+        }
 
         // Only the connection states, and only when they actually move. `statePublisher`
         // fires on every frame the store reduces — every message in every buffer — and this
@@ -188,10 +196,8 @@ final class NetworksViewController: UITableViewController {
                 ? .init(
                     symbol: "network",
                     title: "No networks yet",
-                    // No call to action while there's no way to answer it — adding is the
-                    // next PR. Saying "add one" over a screen with no add button would be
-                    // the buffer list's dead end again, one level down.
-                    subtitle: "Networks you've added appear here."
+                    subtitle: "Add the IRC network you want to talk on.",
+                    actionTitle: "Add Network"
                 )
                 : nil
         }
@@ -245,10 +251,10 @@ final class NetworksViewController: UITableViewController {
         content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 10)
         cell.contentConfiguration = content
 
-        // The row itself is inert until editing exists (next PR), so everything this screen
-        // can do lives behind one button rather than a tap target that does nothing.
+        // The tap edits; the button is for everything that changes the connection rather than
+        // the configuration. Splitting them this way is what lets the menu be a menu — the
+        // primary action of a row in a list of things you configure is to configure it.
         cell.accessoryView = actionButton(for: config)
-        cell.selectionStyle = .none
         return cell
     }
 
@@ -268,7 +274,31 @@ final class NetworksViewController: UITableViewController {
         return UISwipeActionsConfiguration(actions: [delete])
     }
 
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        edit(configs[indexPath.row])
+    }
+
     // MARK: - Actions
+
+    private func add() {
+        // Pushed, so Add and Cancel sit in the same bar the list's own items do and the form
+        // inherits the back-swipe. Its `onSaved` reloads: the create's roster re-read updates
+        // the store, but this screen's list is a separate fetch of a separate shape.
+        navigationController?.pushViewController(
+            NetworkFormViewController(viewModel: viewModel) { [weak self] in self?.reload() },
+            animated: true
+        )
+    }
+
+    private func edit(_ config: NetworkConfig) {
+        navigationController?.pushViewController(
+            NetworkFormViewController(viewModel: viewModel, editing: config) { [weak self] in
+                self?.reload()
+            },
+            animated: true
+        )
+    }
 
     private func status(of config: NetworkConfig) -> NetworkRowStatus {
         NetworkRowStatus.of(

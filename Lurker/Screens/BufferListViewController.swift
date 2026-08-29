@@ -157,6 +157,9 @@ final class BufferListViewController: UICollectionViewController {
         // title; now that it belongs to the bar instead, nothing does, and "Buffers" draws
         // underneath it as soon as the large title collapses on scroll.
         navigationItem.largeTitle = "Buffers"
+        // The empty state's only button, and it has only one meaning here: this screen's
+        // placeholder never asks anything else of the user.
+        placeholderView.onAction = { [weak self] in self?.showAddNetwork() }
         // `title` is what the back button would have borrowed, so name it explicitly — it
         // still feeds the back button's long-press menu and VoiceOver.
         navigationItem.backButtonTitle = "Buffers"
@@ -396,10 +399,13 @@ final class BufferListViewController: UICollectionViewController {
             placeholderView.configure(.init(title: "Loading buffers…", isLoading: true))
             collectionView.backgroundView = placeholderView
         case .noNetworks:
+            // The button is the whole point of this state now: it used to say "add a network"
+            // to a person with nowhere to do it, which is the dead end #11 exists to close.
             placeholderView.configure(.init(
                 symbol: "bubble.left.and.bubble.right",
                 title: "No networks yet",
-                subtitle: "Add a network to start a conversation."
+                subtitle: "Add a network to start a conversation.",
+                actionTitle: "Add Network"
             ))
             collectionView.backgroundView = placeholderView
         case .noBuffers:
@@ -680,7 +686,10 @@ final class BufferListViewController: UICollectionViewController {
     /// on every unread count that previously closed the menu out from under whoever had it
     /// open. Deferring is the fix; rebuilding is the bug.
     ///
-    /// #11 will add "Add Network…" alongside the channels.
+    /// Carries "Add Network…" alongside the channels (#11): both are "one more of these", and
+    /// the two are the same question at different scales — a channel on a network you have,
+    /// or a network to have channels on. It sits last, under a separator, because it is the
+    /// rarer of the two by a wide margin.
     private lazy var joinItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "plus"),
@@ -688,8 +697,8 @@ final class BufferListViewController: UICollectionViewController {
                 UIDeferredMenuElement.uncached { [weak self] completion in
                     guard let self else { return completion([]) }
                     // Friends are made from a DM or member row now ("Add to
-                    // Friends" — one favorites flag), so the + is joins alone.
-                    completion(self.joinElements())
+                    // Friends" — one favorites flag), so the + is joins and networks.
+                    completion(self.joinElements() + [self.addNetworkElement()])
                 },
             ])
         )
@@ -726,6 +735,29 @@ final class BufferListViewController: UICollectionViewController {
                 self?.presentJoinAlert(network: network)
             }
         }
+    }
+
+    /// "Add Network…" as its own inline section, so the separator does the work of saying it
+    /// is a different kind of thing from the channel entries above it.
+    private func addNetworkElement() -> UIMenuElement {
+        UIMenu(options: .displayInline, children: [
+            UIAction(title: "Add Network…", image: UIImage(systemName: "network")) { [weak self] _ in
+                self?.showAddNetwork()
+            },
+        ])
+    }
+
+    /// The add form, in its own sheet — reached from here without going through Settings,
+    /// because the account with no networks is exactly the one that can't find Settings'
+    /// Networks row and shouldn't have to.
+    private func showAddNetwork() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let sheet = UINavigationController(
+            rootViewController: NetworkFormViewController(viewModel: viewModel) {}
+        )
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        sheet.sheetPresentationController?.detents = [.large()]
+        present(sheet, animated: true)
     }
 
     private func presentJoinAlert(network: Network) {

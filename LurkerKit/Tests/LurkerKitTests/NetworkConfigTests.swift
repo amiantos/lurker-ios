@@ -286,6 +286,41 @@ final class NetworkConfigTests: XCTestCase {
         XCTAssertTrue(JSONSerialization.isValidJSONObject(d.jsonBody(includeDefaultChannel: true)))
     }
 
+    // MARK: - Certificate verification
+
+    func testANewDraftVerifiesItsCertificate() {
+        // ⚠⚠ `trusted_certificates` reads like permission to accept anything and is the
+        // opposite: the server hands it straight to `rejectUnauthorized`, and its column
+        // defaults to 1. A draft defaulting it false would silently turn off certificate
+        // verification for every network created from this app.
+        XCTAssertTrue(NetworkDraft().trustedCertificates)
+        XCTAssertEqual(
+            NetworkDraft(name: "n", host: "h", nick: "n")
+                .jsonBody(includeDefaultChannel: true)["trusted_certificates"] as? Bool,
+            true
+        )
+    }
+
+    func testAnAbsentVerifyFlagReadsAsVerifying() {
+        // Defaults true where every other flag here defaults false, for the same reason: read
+        // as false, a row would report a network as not verifying when the column says it
+        // does — and the edit form would then save that misreading back.
+        let config = FrameParser.parseNetworkConfigs(##"{"networks":[{"id":1,"name":"n","host":"h"}]}"##)?.first
+        XCTAssertEqual(config?.trustedCertificates, true)
+    }
+
+    func testTurningVerificationOffRoundTripsThroughTheForm() {
+        // The one case that must survive an edit: a self-signed server the user deliberately
+        // accepted must not be silently re-secured (or, worse, the other way) by opening the
+        // form and saving it unchanged.
+        let config = FrameParser.parseNetworkConfigs(
+            ##"{"networks":[{"id":1,"name":"n","host":"h","trusted_certificates":false}]}"##
+        )!.first!
+        XCTAssertFalse(config.trustedCertificates)
+        let body = NetworkDraft(editing: config).jsonBody(includeDefaultChannel: false)
+        XCTAssertEqual(body["trusted_certificates"] as? Bool, false)
+    }
+
     // MARK: - Validation
 
     func testADraftMissingAnIdentityFieldIsRefused() {
