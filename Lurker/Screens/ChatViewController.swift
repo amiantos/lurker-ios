@@ -882,7 +882,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
             hydratesOnDemand: buffer.kind.hydratesOnDemand,
-            bufferExists: state.buffers[buffer.key.id] != nil
+            bufferExists: state.buffers[buffer.key.id] != nil,
+            rosterSettled: state.rosterSettled
         )
         modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
         rebuildRows()
@@ -1373,7 +1374,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             hasMessages: hasMessages,
             hydrated: known?.hydrated ?? false,
             hydratesOnDemand: buffer.kind.hydratesOnDemand,
-            bufferExists: known != nil
+            bufferExists: known != nil,
+            rosterSettled: viewModel.state.rosterSettled
         )
         guard placeholder != shownPlaceholder else { return }
         shownPlaceholder = placeholder
