@@ -835,29 +835,28 @@ final class BufferListViewController: UICollectionViewController {
         let orderedFavorites = orderedFavorites(state)
         let friendEntries = orderedFavorites.filter(Self.isFriendEntry)
         let channelEntries = orderedFavorites.filter { !Self.isFriendEntry($0) }
-        // A friend (a favorited DM) is shown as its Friends chip, so it's hidden from its
-        // network's roster (and from Recent) rather than printed twice — matching the web
-        // client, whose FRIENDS section likewise lifts these DMs out of their network list.
-        let friendDmKeys = Set(friendEntries.map(\.key.id))
+        // ⚠⚠ A favorite is a RELOCATION, not a shortcut. Its chip is where it lives, so it's
+        // hidden from its network's roster (and from Recent) rather than printed twice —
+        // matching the web, where `isFavoriteBuf` filters favorites out of both the pinned
+        // and unpinned halves of every network group.
+        //
+        // This used to be true of friends only, on the reasoning that a card and a row read
+        // as different things so the duplication was a quick way in rather than a mistake.
+        // In use it doesn't read that way: the buffers you favorite are the ones you look at
+        // most, so the list you scan most is the one with every important row in it twice.
+        let favoriteKeys = Set(orderedFavorites.map(\.key.id))
 
-        var byNetwork: [Int: [Buffer]] = [:]
-        for buffer in state.buffers.values {
-            // The system buffer has no network and no row of its own here anymore — it's the
-            // title pill in the bar — so it's simply not collected into a section.
-            guard let networkId = buffer.networkId else { continue }
-            if friendDmKeys.contains(buffer.key.id) { continue } // shown under Friends instead
-            byNetwork[networkId, default: []].append(buffer)
-        }
+        let byNetwork = BufferOrder.byNetwork(state.buffers.values, excluding: favoriteKeys)
 
         var sections: [Section] = []
 
-        // Favorites and Recent are shortcuts, not a relocation: a buffer here also keeps its
-        // ordinary row in its network section below. The grid chip and the roster row read as
-        // different things — a card vs. a row, and only the row leaves the channel on a swipe —
-        // so the duplication is a quick way in, not a buffer printed twice by accident.
-        // (Friends are the exception, lifted out entirely — see friendDmKeys above.)
+        // Friends and Favorites are a relocation (see `favoriteKeys` above); Recent is the
+        // one shortcut left, and it keeps its rows in their network sections because it isn't
+        // curated — it's just where you've been, and hiding a row from its network because
+        // you happened to pass through it would make the list you scan depend on what you did
+        // five minutes ago.
         var favorites = favoriteRows(channelEntries, state)
-        var recents = recentRows(state, favoriteKeys: Set(orderedFavorites.map(\.key.id)))
+        var recents = recentRows(state, favoriteKeys: favoriteKeys)
         var friends = friendRows(friendEntries, state)
         // Each grid on its own — a collision is a fact about one section's rows. Recent hints
         // every chip rather than just its collisions: it's the one grid you didn't curate.
@@ -1157,14 +1156,21 @@ final class BufferListViewController: UICollectionViewController {
         guard buffer.kind != .server, buffer.kind != .system else { return nil }
         let title = buffer.kind == .channel ? "Leave" : "Close"
         let close = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, done in
-            self?.viewModel.closeBuffer(buffer.key)
-            // Leaving here is the one moment the client *knows* a buffer is gone. Restoring
-            // into one that isn't there lands on a spinner that never resolves (see
-            // `SceneDelegate.launchBuffer`), and that path can't detect it — so tell it.
-            UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
+            self?.close(buffer)
             done(true)
         }
         return UISwipeActionsConfiguration(actions: [close])
+    }
+
+    /// Leave a channel / close a DM. Shared by the swipe and the context menu rather than
+    /// written twice: the `forgetLastBuffer` half is easy to leave out of a second copy and
+    /// impossible to notice missing until a relaunch strands someone on a spinner.
+    private func close(_ buffer: Buffer) {
+        viewModel.closeBuffer(buffer.key)
+        // Leaving here is the one moment the client *knows* a buffer is gone. Restoring into
+        // one that isn't there lands on a spinner that never resolves (see
+        // `SceneDelegate.launchBuffer`), and that path can't detect it — so tell it.
+        UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
     }
 
     /// Long-press to pin. The Favorites section is only as real as the way to fill it, and
@@ -1193,6 +1199,17 @@ final class BufferListViewController: UICollectionViewController {
         let image = isFavorite
             ? UIImage(systemName: isDm ? "person.badge.minus" : "star.slash")
             : UIImage(systemName: isDm ? "person.badge.plus" : "star")
+        // ⚠⚠ Close belongs on THIS menu, not only on the roster row's swipe. A favorited
+        // buffer has no roster row any more — its chip is where it lives — so without this
+        // there is no way to leave a favorited channel short of unfavoriting it first, and
+        // the buffers people favorite are exactly the ones they keep. (Favorited DMs had
+        // this hole already, having been lifted out since Friends landed.) The web reaches
+        // the same conclusion by giving every row, favorites included, one menu ending in
+        // Close.
+        //
+        // Its own inline section, so the separator sets a destructive action apart from the
+        // favorite toggle above rather than leaving them a thumb-slip apart.
+        let leaveTitle = isDm ? "Close" : "Leave"
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(children: [
                 UIAction(title: title, image: image, attributes: isFavorite && isDm ? .destructive : []) { _ in
@@ -1203,6 +1220,13 @@ final class BufferListViewController: UICollectionViewController {
                         self.viewModel.favoriteBuffer(networkId: networkId, target: target)
                     }
                 },
+                UIMenu(options: .displayInline, children: [
+                    UIAction(
+                        title: leaveTitle,
+                        image: UIImage(systemName: "xmark"),
+                        attributes: .destructive
+                    ) { _ in self?.close(buffer) },
+                ]),
             ])
         }
     }

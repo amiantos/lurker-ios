@@ -25,6 +25,28 @@ public enum BufferOrder {
         }
     }
 
+    /// The buffers each network section lists, grouped by network id.
+    ///
+    /// Two things don't appear here. The **system buffer** has no network and no row of its
+    /// own — it's the title pill in the bar. And a **favorited** buffer lives in its
+    /// Friends/Favorites chip: the favorite is a relocation, not a shortcut, matching the web
+    /// (`isFavoriteBuf`, which filters them out of both halves of every network group).
+    ///
+    /// ⚠ That second rule used to apply to favorited DMs alone, so a favorited *channel*
+    /// appeared twice — once as a chip and again in its network. In use that means the list
+    /// you scan most is the one with every row you care about duplicated in it, since the
+    /// buffers people favorite are the ones they look at most.
+    ///
+    /// Keyed by `BufferKey.id`, so the caller's favorites set has to be too.
+    public static func byNetwork(_ buffers: some Sequence<Buffer>, excluding favorites: Set<String>) -> [Int: [Buffer]] {
+        var grouped: [Int: [Buffer]] = [:]
+        for buffer in buffers {
+            guard let networkId = buffer.networkId, !favorites.contains(buffer.key.id) else { continue }
+            grouped[networkId, default: []].append(buffer)
+        }
+        return grouped
+    }
+
     /// One network's buffers: pinned first in the user's pin order, then everything else in
     /// the ordinary channels-then-DMs-then-server, sigil-stripped-alphabetical order.
     ///

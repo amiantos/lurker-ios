@@ -103,6 +103,38 @@ final class BufferOrderTests: XCTestCase {
         )
     }
 
+    // MARK: - What a network section lists
+
+    func testAFavoritedBufferIsNotAlsoListedUnderItsNetwork() {
+        // ⚠⚠ A favorite is a relocation, not a shortcut. This used to be true of favorited
+        // DMs alone, so a favorited *channel* appeared twice — and since the buffers people
+        // favorite are the ones they look at most, the list they scan most was the one with
+        // every row they cared about duplicated in it.
+        let favorite = buffer("#kept")
+        let ordinary = buffer("#other")
+        let grouped = BufferOrder.byNetwork(
+            [favorite, ordinary], excluding: [favorite.key.id]
+        )
+        XCTAssertEqual(grouped[1]?.map(\.target), ["#other"])
+    }
+
+    func testAFavoriteMatchesRegardlessOfItsSpelling() {
+        // The exclusion set is keyed by `BufferKey.id`, which lowercases the target — so a
+        // favorite recorded as "#Kept" still hides the buffer held as "#kept".
+        let held = Buffer(networkId: 1, target: "#Kept", kind: .channel)
+        let grouped = BufferOrder.byNetwork(
+            [held], excluding: [BufferKey(networkId: 1, target: "#kept").id]
+        )
+        XCTAssertNil(grouped[1])
+    }
+
+    func testTheSystemBufferHasNoNetworkSection() {
+        // It has no network and no row of its own — it's the title pill in the bar.
+        let grouped = BufferOrder.byNetwork([Buffer.system, buffer("#chan")], excluding: [])
+        XCTAssertEqual(grouped.count, 1)
+        XCTAssertEqual(grouped[1]?.map(\.target), ["#chan"])
+    }
+
     // MARK: - The ordinary order (moved here from the view controller)
 
     func testChannelsThenDmsThenTheServerLog() {
