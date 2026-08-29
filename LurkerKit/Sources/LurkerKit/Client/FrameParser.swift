@@ -127,6 +127,13 @@ enum FrameParser {
                     merged: obj.bool("merged"),
                     mergedFromBufferId: obj.intOrNull("mergedFromBufferId")
                 )
+        case "pins-changed":
+            // `pinned` is the ordered target list; `pinnedIds` rides alongside it,
+            // parallel-indexed, and is ignored here — this client addresses buffers by
+            // (networkId, target) everywhere else, and reading both would be two spellings of
+            // one list to keep in step.
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            return .pinsChanged(networkId: networkId, pinned: (obj["pinned"] as? [String]) ?? [])
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
@@ -149,7 +156,14 @@ enum FrameParser {
     static func parseNetworks(_ body: String) -> ServerFrame {
         guard let obj = object(from: body) else { return .ignored }
         // REST carries no live state; the WS snapshot fills state/nick in.
-        let networks = obj.objects("networks").map { Network(id: $0.int("id"), name: $0.stringOrNull("name")) }
+        // `position` is the user's own ordering, which this endpoint is already sorted by.
+        // Read rather than inferred from the array index: the array is a snapshot of one
+        // response, and the store holds networks in a dictionary that has no order at all.
+        // Absent (an older server) reads as `Int.max`, so those networks sort last instead of
+        // all colliding at 0 and re-sorting by id.
+        let networks = obj.objects("networks").map {
+            Network(id: $0.int("id"), name: $0.stringOrNull("name"), position: $0.int("position", .max))
+        }
         return .networks(networks)
     }
 
@@ -274,7 +288,8 @@ enum FrameParser {
                 peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any]),
                 ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule),
                 relayBots: network.objects("relayBots").compactMap(parseRelayBot),
-                away: parseAwayState(network["away"])
+                away: parseAwayState(network["away"]),
+                pinned: (network["pinned"] as? [String]) ?? []
             )
         }
         return .snapshot(networks, globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule))

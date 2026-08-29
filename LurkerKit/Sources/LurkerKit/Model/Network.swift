@@ -20,6 +20,14 @@ public struct Network: Equatable, Sendable {
     /// it was lying. Nil is the honest reading, and it's what triggers the roster re-read
     /// (`ChatViewModel.refreshRosterIfAnyNetworkIsNameless`).
     public var name: String?
+    /// Where this network sits in the user's own ordering — the `position` column, which
+    /// `GET /api/networks` is already sorted by and which the web sidebar's drag-to-reorder
+    /// writes.
+    ///
+    /// REST-only, like `name`: no frame carries it. A network the roster hasn't described yet
+    /// gets `Int.max` and sorts last rather than jumping to the front, which is the less
+    /// startling of the two ways to be wrong for the moment before the roster lands.
+    public var position: Int
     public var state: ConnectionState
     public var nick: String
     /// Your own away state, as this network last reported it (#68).
@@ -32,12 +40,14 @@ public struct Network: Equatable, Sendable {
     public init(
         id: Int,
         name: String?,
+        position: Int = .max,
         state: ConnectionState = .disconnected,
         nick: String = "",
         away: AwayState? = nil
     ) {
         self.id = id
         self.name = name
+        self.position = position
         self.state = state
         self.nick = nick
         self.away = away
@@ -49,7 +59,15 @@ public struct Network: Equatable, Sendable {
     /// anything later: an unnamed network is a transient state (the re-fetch closes it) but
     /// it still has to render as *something*, and every site inventing its own word is how
     /// #136's placeholder got mistaken for a name in the first place.
-    public var displayName: String { name ?? "Unnamed network" }
+    public var displayName: String { name ?? Self.unnamedDisplayName }
+
+    /// What to call a network whose name we haven't heard.
+    ///
+    /// Exposed because the buffer list also has to name a *section* for buffers whose network
+    /// has no roster entry at all — a case with no `Network` to ask. That site had its own
+    /// literal, and the literal was `"network"`: #136's placeholder, still lying in the one
+    /// place the fix didn't reach.
+    public static let unnamedDisplayName = "Unnamed network"
 }
 
 /// Mirrors the server's per-network `state` string.

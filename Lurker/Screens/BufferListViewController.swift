@@ -714,7 +714,9 @@ final class BufferListViewController: UICollectionViewController {
     /// Shown rather than hidden because the network is still yours, and a list that silently
     /// omits it just looks wrong.
     private func joinElements() -> [UIMenuElement] {
-        let networks = state.networks.values.sorted { $0.displayName.lowercased() < $1.displayName.lowercased() }
+        // The user's order here too, so the join menu lists networks the way the list below
+        // it does. Two orderings of one set on one screen is a thing to re-learn per surface.
+        let networks = BufferOrder.networks(state.networks)
         guard !networks.isEmpty else {
             return [UIAction(title: "No networks", attributes: .disabled) { _ in }]
         }
@@ -877,19 +879,26 @@ final class BufferListViewController: UICollectionViewController {
         // them down with buffers you merely passed through.
         if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
 
-        let networks = state.networks.values.sorted { $0.displayName.lowercased() < $1.displayName.lowercased() }
+        // The user's own order, not ours: they arranged their networks on the web, and a
+        // phone that re-alphabetises them is a phone you have to re-read every time you pick
+        // it up. Same for the pins inside each one.
+        let networks = BufferOrder.networks(state.networks)
         var seen = Set<Int>()
         for network in networks {
             seen.insert(network.id)
-            let buffers = (byNetwork[network.id] ?? []).sorted(by: Self.order)
+            let buffers = BufferOrder.buffers(byNetwork[network.id] ?? [], pinned: state.pinned[network.id] ?? [])
             guard !buffers.isEmpty else { continue }
             sections.append(Section(title: header(for: network), layout: .list, rows: buffers.map { rosterRow($0, state) }))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
-            let rest = buffers.sorted(by: Self.order)
+            let rest = BufferOrder.buffers(buffers, pinned: state.pinned[networkId] ?? [])
             guard !rest.isEmpty else { continue }
-            sections.append(Section(title: "network", layout: .list, rows: rest.map { rosterRow($0, state) }))
+            // NOT the literal "network" this used to say — that was #136's placeholder
+            // surviving in the one place the fix didn't reach, and it reads as a real name.
+            sections.append(Section(
+                title: Network.unnamedDisplayName, layout: .list, rows: rest.map { rosterRow($0, state) }
+            ))
         }
         return sections
     }
@@ -1072,30 +1081,6 @@ final class BufferListViewController: UICollectionViewController {
         case .reconnecting: return "\(network.displayName) — reconnecting…"
         case .disconnected: return "\(network.displayName) — offline"
         }
-    }
-
-    /// Channels, then DMs, then the server log; alphabetical within each.
-    ///
-    /// Matches the web client's ordering: the alphabetical key strips leading channel sigils
-    /// (`##anime` sorts as "anime", not before `#aardvark`), so the two clients list the same
-    /// network the same way. All four sigils, via `ChannelName.stripSigils` — this stripped a
-    /// hand-written `#&` until lurker-ios#98 and floated `+`/`!` channels above every named
-    /// one, which the web (`stripChannelPrefix`) never did.
-    private nonisolated static func order(_ lhs: Buffer, _ rhs: Buffer) -> Bool {
-        func rank(_ kind: BufferKind) -> Int {
-            switch kind {
-            case .channel: 0
-            case .dm: 1
-            case .server: 2
-            case .system: 3
-            }
-        }
-        if rank(lhs.kind) != rank(rhs.kind) { return rank(lhs.kind) < rank(rhs.kind) }
-        return sortKey(lhs.target).localizedCaseInsensitiveCompare(sortKey(rhs.target)) == .orderedAscending
-    }
-
-    private nonisolated static func sortKey(_ target: String) -> String {
-        ChannelName.stripSigils(target)
     }
 
     // MARK: - Collection view data source

@@ -1,0 +1,176 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+import XCTest
+@testable import LurkerKit
+
+/// The buffer list's order, where the order is the user's own: their network arrangement and
+/// their pins, both made on the web and only rendered here.
+@MainActor
+final class BufferOrderTests: XCTestCase {
+
+    private func network(_ id: Int, _ name: String, position: Int) -> Network {
+        Network(id: id, name: name, position: position)
+    }
+
+    private func buffer(_ target: String, kind: BufferKind = .channel) -> Buffer {
+        Buffer(networkId: 1, target: target, kind: kind)
+    }
+
+    // MARK: - Networks
+
+    func testNetworksFollowTheUsersOrderNotTheAlphabet() {
+        let networks = [
+            2: network(2, "Aardvark", position: 1),
+            1: network(1, "Zulu", position: 0),
+        ]
+        XCTAssertEqual(BufferOrder.networks(networks).map(\.id), [1, 2])
+    }
+
+    func testTiesBreakOnIdTheWayTheServerBreaksThem() {
+        // `position` is only densified when something is reordered, so ties are normal — and
+        // the server's own `ORDER BY position ASC, id ASC` is what the two clients have to
+        // agree on. Name would be the wrong tiebreak: two networks would swap on a rename.
+        let networks = [
+            9: network(9, "Aardvark", position: 0),
+            3: network(3, "Zulu", position: 0),
+        ]
+        XCTAssertEqual(BufferOrder.networks(networks).map(\.id), [3, 9])
+    }
+
+    func testANetworkWeHaveNoRosterRowForSortsLast() {
+        // Defaulted position, from a network the snapshot materialized before the roster
+        // landed (#136). Last is the less startling of the two ways to be wrong for the
+        // moment before the re-fetch names it — it doesn't shove itself to the top.
+        let networks = [
+            1: network(1, "Libera", position: 5),
+            2: Network(id: 2, name: nil),
+        ]
+        XCTAssertEqual(BufferOrder.networks(networks).map(\.id), [1, 2])
+    }
+
+    // MARK: - Pins
+
+    func testPinnedBuffersLeadInTheUsersPinOrder() {
+        let buffers = [buffer("#aardvark"), buffer("#zulu"), buffer("#middle")]
+        let ordered = BufferOrder.buffers(buffers, pinned: ["#zulu", "#middle"])
+        XCTAssertEqual(ordered.map(\.target), ["#zulu", "#middle", "#aardvark"])
+    }
+
+    func testTheRestKeepsTheOrdinaryOrderBehindThePins() {
+        let buffers = [buffer("bob", kind: .dm), buffer("#zulu"), buffer("#aardvark")]
+        let ordered = BufferOrder.buffers(buffers, pinned: ["#zulu"])
+        // Channels before DMs, alphabetical within — unchanged, just after the pins.
+        XCTAssertEqual(ordered.map(\.target), ["#zulu", "#aardvark", "bob"])
+    }
+
+    func testAPinWithNoOpenBufferContributesNothing() {
+        // ⚠ A pin row outlives its buffer being parted or closed, so the pin list is a
+        // superset of what can be shown. Mapping it blindly would render rows for buffers
+        // that aren't there.
+        let ordered = BufferOrder.buffers([buffer("#here")], pinned: ["#gone", "#here"])
+        XCTAssertEqual(ordered.map(\.target), ["#here"])
+    }
+
+    func testPinsMatchTargetsCaseInsensitively() {
+        // The pin is stored under the spelling the server last saw and the buffer under the
+        // one this client holds; IRC lets those differ. An exact match would silently drop a
+        // pin after a CASEMAPPING refold.
+        let ordered = BufferOrder.buffers([buffer("#Zulu"), buffer("#aardvark")], pinned: ["#ZULU"])
+        XCTAssertEqual(ordered.map(\.target), ["#Zulu", "#aardvark"])
+    }
+
+    func testADuplicatedPinDoesNotPrintTheBufferTwice() {
+        let ordered = BufferOrder.buffers([buffer("#a"), buffer("#b")], pinned: ["#a", "#a"])
+        XCTAssertEqual(ordered.map(\.target), ["#a", "#b"])
+    }
+
+    func testNoPinsIsJustTheOrdinaryOrder() {
+        let buffers = [buffer("#zulu"), buffer("bob", kind: .dm), buffer("#aardvark")]
+        XCTAssertEqual(
+            BufferOrder.buffers(buffers, pinned: []).map(\.target),
+            ["#aardvark", "#zulu", "bob"]
+        )
+    }
+
+    // MARK: - The ordinary order (moved here from the view controller)
+
+    func testChannelsThenDmsThenTheServerLog() {
+        let buffers = [
+            buffer(":server:", kind: .server),
+            buffer("bob", kind: .dm),
+            buffer("#chan"),
+        ]
+        XCTAssertEqual(
+            BufferOrder.buffers(buffers, pinned: []).map(\.target),
+            ["#chan", "bob", ":server:"]
+        )
+    }
+
+    func testTheAlphabeticalKeyStripsEverySigil() {
+        // All four, via `ChannelName.stripSigils`: a hand-written `#&` floated `+`/`!`
+        // channels above every named one until lurker-ios#98, which the web never did.
+        let buffers = [buffer("#zebra"), buffer("!aardvark"), buffer("+middle"), buffer("&bear")]
+        XCTAssertEqual(
+            BufferOrder.buffers(buffers, pinned: []).map(\.target),
+            ["!aardvark", "&bear", "+middle", "#zebra"]
+        )
+    }
+
+    // MARK: - Store
+
+    func testTheSnapshotSeedsPinsAndReplacesThemWholesale() {
+        let store = LurkerStore()
+        store.apply(FrameParser.parseWs(
+            ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"pinned":["#a","#b"]}]}"##
+        ))
+        XCTAssertEqual(store.state.pinned[2], ["#a", "#b"])
+        // A pin dropped from the web while this device was away has to disappear here rather
+        // than survive as a leftover.
+        store.apply(FrameParser.parseWs(
+            ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"pinned":["#b"]}]}"##
+        ))
+        XCTAssertEqual(store.state.pinned[2], ["#b"])
+    }
+
+    func testPinsChangedReplacesOneNetworksList() {
+        let store = LurkerStore()
+        store.apply(.pinsChanged(networkId: 1, pinned: ["#a"]))
+        store.apply(.pinsChanged(networkId: 2, pinned: ["#b"]))
+        store.apply(.pinsChanged(networkId: 1, pinned: []))
+        XCTAssertEqual(store.state.pinned[1], [])
+        // Sent per network, so it says nothing about the others.
+        XCTAssertEqual(store.state.pinned[2], ["#b"])
+    }
+
+    func testPinsChangedParsesItsOrderedList() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"pins-changed","networkId":4,"pinned":["#b","#a"],"pinnedIds":[7,3]}"##
+        )
+        guard case let .pinsChanged(networkId, pinned) = frame else {
+            return XCTFail("expected pinsChanged, got \(frame)")
+        }
+        XCTAssertEqual(networkId, 4)
+        XCTAssertEqual(pinned, ["#b", "#a"])
+    }
+
+    func testDeletingANetworkTakesItsPinsWithIt() {
+        let store = LurkerStore()
+        store.apply(.networks([Network(id: 1, name: "Libera", position: 0)]))
+        store.apply(.pinsChanged(networkId: 1, pinned: ["#a"]))
+        store.apply(.networks([]))
+        XCTAssertNil(store.state.pinned[1])
+    }
+
+    func testTheRosterCarriesThePosition() {
+        let frame = FrameParser.parseNetworks(##"{"networks":[{"id":1,"name":"Libera","position":3}]}"##)
+        guard case let .networks(networks) = frame else { return XCTFail("expected networks, got \(frame)") }
+        XCTAssertEqual(networks.first?.position, 3)
+    }
+
+    func testAnOlderServerWithNoPositionSortsLast() {
+        let frame = FrameParser.parseNetworks(##"{"networks":[{"id":1,"name":"Libera"}]}"##)
+        guard case let .networks(networks) = frame else { return XCTFail("expected networks, got \(frame)") }
+        XCTAssertEqual(networks.first?.position, .max)
+    }
+}
