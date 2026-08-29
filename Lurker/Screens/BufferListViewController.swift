@@ -877,7 +877,11 @@ final class BufferListViewController: UICollectionViewController {
         var seen = Set<Int>()
         for network in networks {
             seen.insert(network.id)
-            let split = BufferOrder.split(byNetwork[network.id] ?? [], pinned: state.pinned[network.id] ?? [])
+            // `withServerLog`, so a network always has at least its log and therefore always
+            // has a row — the web's network header is that buffer, and iOS's server row was
+            // coming and going with the connect burst's prune.
+            let rows = BufferOrder.withServerLog(byNetwork[network.id] ?? [], networkId: network.id)
+            let split = BufferOrder.split(rows, pinned: state.pinned[network.id] ?? [])
             sections.append(contentsOf: networkSections(header(for: network), split, state))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).

@@ -146,6 +146,49 @@ final class BufferOrderTests: XCTestCase {
         XCTAssertEqual(grouped[1]?.map(\.target), ["#chan"])
     }
 
+    // MARK: - The server log
+
+    func testANetworkAlwaysHasItsServerLog() {
+        // ⚠⚠ The row used to appear only if the server had sent one, and `pruneToBurst` drops
+        // it whenever the connect burst doesn't name it — so a network's log was present on
+        // one launch and gone on the next, with nothing the user did to explain it.
+        let rows = BufferOrder.withServerLog([buffer("#chan")], networkId: 1)
+        XCTAssertEqual(rows.map(\.target), ["#chan", ":server:1"])
+        XCTAssertEqual(rows.last?.kind, .server)
+    }
+
+    func testAnExistingServerLogIsNotDuplicated() {
+        // The store's own row wins — it carries the read state and unread count a synthesized
+        // one wouldn't have.
+        let real = Buffer(networkId: 1, target: ":server:1", kind: .server, unread: 7)
+        let rows = BufferOrder.withServerLog([real, buffer("#chan")], networkId: 1)
+        XCTAssertEqual(rows.filter { $0.kind == .server }.count, 1)
+        XCTAssertEqual(rows.first(where: { $0.kind == .server })?.unread, 7)
+    }
+
+    func testANetworkWithNothingJoinedStillHasARow() {
+        // Which is what the web does — its network header IS the server buffer, so a network
+        // with nothing joined still appears and still has a way in. Before this, a fully
+        // parted network simply vanished from the list.
+        let rows = BufferOrder.withServerLog([], networkId: 4)
+        XCTAssertEqual(rows.map(\.target), [":server:4"])
+    }
+
+    func testTheServerLogSortsLastWithinItsNetwork() {
+        let rows = BufferOrder.withServerLog([buffer("bob", kind: .dm), buffer("#chan")], networkId: 1)
+        XCTAssertEqual(
+            BufferOrder.split(rows, pinned: []).rest.map(\.target),
+            ["#chan", "bob", ":server:1"]
+        )
+    }
+
+    func testTheSynthesizedTargetMatchesTheServers() {
+        // `:server:<id>`, the same string the server and the web use — a client-built target
+        // that didn't match would open a second, empty buffer beside the real one.
+        XCTAssertEqual(Buffer.serverTarget(2), ":server:2")
+        XCTAssertEqual(BufferKind.of(networkId: 2, target: Buffer.serverTarget(2)), .server)
+    }
+
     // MARK: - The ordinary order (moved here from the view controller)
 
     func testChannelsThenDmsThenTheServerLog() {

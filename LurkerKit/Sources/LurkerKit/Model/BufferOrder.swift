@@ -47,6 +47,26 @@ public enum BufferOrder {
         return grouped
     }
 
+    /// One network's buffers, with its server log guaranteed to be among them.
+    ///
+    /// ⚠⚠ Synthesized when absent, rather than shown only if the server sent a row. A
+    /// buffer row for `:server:<id>` arrives with the connect burst and is dropped again by
+    /// `pruneToBurst` whenever that burst doesn't name it, so the row came and went on its
+    /// own — a network's log present on one launch and missing on the next, with nothing the
+    /// user did to explain it. Synthesizing costs nothing: `ChatState.buffer(for:)` already
+    /// materializes a buffer from a key for exactly this reason, and the chat screen hydrates
+    /// whatever it lands on.
+    ///
+    /// It also means every network the user has appears in the list, which is what the web
+    /// does — its network header is the server buffer, so a network with nothing joined still
+    /// has a row and a way in. Before this a fully-parted network simply vanished.
+    public static func withServerLog(_ buffers: [Buffer], networkId: Int) -> [Buffer] {
+        guard !buffers.contains(where: { $0.kind == .server }) else { return buffers }
+        return buffers + [Buffer(
+            networkId: networkId, target: Buffer.serverTarget(networkId), kind: .server
+        )]
+    }
+
     /// One network's buffers as its two lists: the pinned ones in the user's pin order, and
     /// everything else in the ordinary channels-then-DMs-then-server, sigil-stripped
     /// alphabetical order.
