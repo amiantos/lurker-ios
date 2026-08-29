@@ -149,27 +149,30 @@ final class BufferListViewController: UICollectionViewController {
         let title: String?
         var rows: [Row]
 
+        /// ⚠⚠ De-duplicated once, HERE, so the model and the snapshot cannot disagree.
+        ///
+        /// A diffable snapshot raises `NSInternalInconsistencyException` on a repeated item
+        /// identifier, and the store can hold two favorites under one key for a frame: the
+        /// nick-change handler rewrites a favorite's target by `bufferId` and leaves merge
+        /// dedupe to the `favorites-changed` that follows, so being friends with `alice` and
+        /// `bob` and watching `bob` rename to `alice` collides them.
+        ///
+        /// The first attempt de-duplicated in `items` alone, which fixed the crash and bought
+        /// a subtler bug: the drag reorder does its index arithmetic against `rows`, while
+        /// UIKit hands back index paths addressing the de-duplicated snapshot — so with a
+        /// duplicate present the two lists are off by one and a drop lands in the wrong
+        /// place. One list, de-duplicated at the door, and the question doesn't arise.
+        init(id: SectionID, title: String?, rows: [Row]) {
+            self.id = id
+            self.title = title
+            var seen = Set<String>()
+            self.rows = rows.filter { seen.insert($0.buffer.key.id).inserted }
+        }
+
         var layout: Layout { id.layout }
         var reorderable: Bool { id.reorderable }
-        /// ⚠⚠ De-duplicated. A diffable snapshot raises `NSInternalInconsistencyException` on
-        /// a repeated item identifier, and `rowsByID` one level up deliberately tolerates a
-        /// collision ("keep the first and move on rather than trapping in front of a user") —
-        /// so without this the tolerant path was dead and the outcome was a crash instead.
-        ///
-        /// It is reachable: the store's nick-change handler rewrites a favorite's target by
-        /// `bufferId` and leaves merge dedupe to the `favorites-changed` that follows, so
-        /// being friends with both `alice` and `bob` and watching `bob` rename to `alice`
-        /// puts two entries with one key in `favorites` for a frame. The old data source drew
-        /// the chip twice for that frame; this drops the second, which is the same answer
-        /// without the crash.
-        var items: [ItemID] {
-            var seen = Set<String>()
-            return rows.compactMap { row in
-                seen.insert(row.buffer.key.id).inserted
-                    ? ItemID(section: id, key: row.buffer.key.id)
-                    : nil
-            }
-        }
+        /// One per row, and `rows` is unique by construction — see `init`.
+        var items: [ItemID] { rows.map { ItemID(section: id, key: $0.buffer.key.id) } }
     }
 
     private var state = ChatState()
