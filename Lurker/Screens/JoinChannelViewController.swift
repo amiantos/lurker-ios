@@ -46,11 +46,7 @@ final class JoinChannelViewController: UITableViewController {
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "network")
 
         networks = BufferOrder.networks(viewModel.state.networks)
-        // The first connected one, since a JOIN needs a socket to travel down. Falling back to
-        // the first of any kind rather than nothing: the picker should always show a
-        // selection, and Join stays disabled to say why it can't be used yet.
-        selected = (networks.first { $0.state == .connected } ?? networks.first)?.id
-        updateJoinButton()
+        selectDefault()
 
         // A network finishing its connect while this sheet is open makes it selectable, so the
         // list follows the socket rather than a snapshot taken when the sheet opened.
@@ -65,8 +61,14 @@ final class JoinChannelViewController: UITableViewController {
             .sink { [weak self] state in
                 guard let self else { return }
                 networks = BufferOrder.networks(state)
-                if let selected, !networks.contains(where: { $0.id == selected }) { self.selected = nil }
-                updateJoinButton()
+                // ⚠ Re-picked, not merely validated. The default is "the first connected
+                // one", and that answer changes: two disconnected networks open the sheet
+                // with the first one checked, and when the *second* finishes connecting the
+                // checkmark would have stayed on the unusable row with Join still disabled,
+                // over a working socket. A selection that has been deleted from the web is
+                // the same problem from the other end — nothing checked at all, against a
+                // picker whose rule is that something always is.
+                if target == nil { selectDefault() } else { updateJoinButton() }
                 tableView.reloadSections(IndexSet(integer: 1), with: .none)
             }
             .store(in: &cancellables)
@@ -128,6 +130,16 @@ final class JoinChannelViewController: UITableViewController {
         cell.contentConfiguration = content
         cell.accessoryType = network.id == selected ? .checkmark : .none
         cell.selectionStyle = connected ? .default : .none
+        // ⚠ Set both ways, because cells are reused — and set at all because greying a row
+        // says nothing to a screen reader. Without it a disconnected network is announced as
+        // an ordinary actionable row that does nothing when tapped, which is a regression
+        // against the menu this replaced (`attributes: .disabled` announces as dimmed) for
+        // exactly the readers the greying was meant to inform.
+        if connected {
+            cell.accessibilityTraits.remove(.notEnabled)
+        } else {
+            cell.accessibilityTraits.insert(.notEnabled)
+        }
         return cell
     }
 
@@ -151,18 +163,25 @@ final class JoinChannelViewController: UITableViewController {
         return network
     }
 
+    /// The first connected network, since a JOIN needs a socket to travel down — falling
+    /// back to the first of any kind rather than to nothing, so the picker always shows a
+    /// selection and Join stays disabled to say why it can't be used yet.
+    private func selectDefault() {
+        selected = (networks.first { $0.state == .connected } ?? networks.first)?.id
+        updateJoinButton()
+    }
+
     private func updateJoinButton() {
-        // A bare sigil is not a name — `fold` strips one and lowercases, so "#" folds to
-        // empty. Same test the join itself makes, so the button can't offer what the action
-        // would refuse.
-        navigationItem.rightBarButtonItem?.isEnabled =
-            target != nil && !ChannelName.fold(channel.trimmingCharacters(in: .whitespaces)).isEmpty
+        // Literally the same test the join makes, so the button can't offer what the action
+        // would refuse — `namesAChannel` exists because the two used to be separate spellings
+        // of one rule, with a comment claiming they agreed.
+        navigationItem.rightBarButtonItem?.isEnabled = target != nil && ChannelName.namesAChannel(channel)
     }
 
     private func join() {
         guard let target else { return }
         let typed = channel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ChannelName.fold(typed).isEmpty else { return }
+        guard ChannelName.namesAChannel(typed) else { return }
         // Dismiss first, then hand over: the caller navigates to the new buffer, and pushing
         // a screen out from under a sheet that is still on its way down lands the reader on
         // an animation fighting itself.

@@ -765,7 +765,12 @@ public final class ChatViewModel {
         store.removeBuffer(key)
     }
 
-    /// The networks the user is on, for the join picker and buffer-list grouping.
+    /// The networks the user is on, unordered.
+    ///
+    /// ⚠ Unordered, so it is only good for a lookup by id — which is its one remaining caller
+    /// (`BufferInfoViewController`, resolving a buffer's network name). Anything that *lists*
+    /// networks wants `BufferOrder.networks`, which puts them in the order the user arranged
+    /// them in; the buffer list, the join sheet and the networks screen all do.
     public var networks: [Network] { Array(store.state.networks.values) }
 
     // MARK: - Favorites (the Friends/Contacts successor)

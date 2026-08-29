@@ -742,9 +742,11 @@ final class BufferListViewController: UICollectionViewController {
             }
         )
         sheet.sheetPresentationController?.prefersGrabberVisible = true
-        // Medium first: it's a text field and a short list, and a half sheet leaves the buffer
-        // list visible behind it. Large is there for an account with enough networks to scroll.
-        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        // ⚠ Large, not medium. A sheet presentation doesn't change detent when the keyboard
+        // comes up, and this sheet raises it on appear — at medium the keyboard would cover
+        // the network picker entirely, which is the half of the sheet this whole change was
+        // made to introduce. `showAddNetwork` already reached the same answer.
+        sheet.sheetPresentationController?.detents = [.large()]
         present(sheet, animated: true)
     }
 
@@ -798,7 +800,7 @@ final class BufferListViewController: UICollectionViewController {
     /// `hydrateIfNeeded` fill it in when the join completes.
     private func join(network: Network, channel typed: String) {
         // A bare sigil is not a name: `ensurePrefix("#")` would send a JOIN for "#".
-        guard !ChannelName.fold(typed).isEmpty else { return }
+        guard ChannelName.namesAChannel(typed) else { return }
         let channel = ChannelName.ensurePrefix(typed)
         viewModel.joinChannel(networkId: network.id, channel: channel)
         // `buffer(for:)` rather than a hand-built one: the kind must come from the one
