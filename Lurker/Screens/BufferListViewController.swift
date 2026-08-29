@@ -441,6 +441,34 @@ final class BufferListViewController: UICollectionViewController {
             return was != now
         }
         if !restyled.isEmpty { snapshot.reconfigureItems(restyled) }
+        // ⚠⚠ And the same problem one level up, for HEADERS.
+        //
+        // A section's title is deliberately not part of its identity: a network's header
+        // carries its connection state ("libera — offline"), so folding the title into
+        // `SectionID` would delete and re-insert the whole section every time it reconnected.
+        // The cost is that a snapshot diff can't see a title change either — the section is
+        // "the same", so its header view is never re-requested and keeps whatever it last
+        // drew.
+        //
+        // That is how a network shows as "Unnamed network" after its real name has arrived:
+        // the roster landed, the model updated, the rows are right, and nothing asked the
+        // header to say so. It looks fixed the moment you scroll the header off screen and
+        // back, because that recycles the view. Same for a network that connects while you're
+        // looking at it and keeps its "— offline" suffix.
+        //
+        // `reloadSections` re-requests the header. It reloads that section's cells too, which
+        // is more than strictly needed — but only for the sections whose title actually moved,
+        // which is a handful of rows on a rare event, and there is no "reconfigure
+        // supplementary" to reach for.
+        let renamed = sections.filter { section in
+            // A section absent from `shownTitles` is being inserted, and draws fresh anyway.
+            guard let shown = shownTitles[section.id] else { return false }
+            return shown != section.title
+        }
+        shownTitles = Dictionary(
+            sections.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first }
+        )
+        if !renamed.isEmpty { snapshot.reloadSections(renamed.map(\.id)) }
         // Never animated: this runs on every frame that changes the roster, and a list that
         // slides every time someone speaks is a list you can't read.
         dataSource.apply(snapshot, animatingDifferences: false)
@@ -654,6 +682,10 @@ final class BufferListViewController: UICollectionViewController {
         }
         return source
     }()
+
+    /// The title each section was last drawn with, so a rename can be spotted — see the note
+    /// in `rebuild`. Not derivable from the snapshot, which holds identifiers and not titles.
+    private var shownTitles: [SectionID: String?] = [:]
 
     /// Every row on screen, by identity — what the cell provider configures from, since a
     /// snapshot carries identifiers and not content.
