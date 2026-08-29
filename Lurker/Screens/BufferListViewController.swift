@@ -714,37 +714,38 @@ final class BufferListViewController: UICollectionViewController {
         return item
     }()
 
-    /// One network makes the "+" a straight tap through to the prompt — a menu of one is a
-    /// tap spent to learn nothing — and several make it a list to pick from.
+    /// One entry, whatever the account looks like.
     ///
-    /// Networks that aren't connected are offered but disabled, matching the web's `net-add`:
-    /// a JOIN with no socket to travel down goes nowhere, and nothing comes back to say so.
-    /// Shown rather than hidden because the network is still yours, and a list that silently
-    /// omits it just looks wrong.
+    /// It used to be a row per network, on the reasoning that a menu of one is a tap spent to
+    /// learn nothing. But that put the *rarer* half of the decision first — which network is
+    /// a question most accounts answer the same way every time — and made the menu grow with
+    /// the account, so five networks meant five rows to read past on the way to the one text
+    /// field you came for. The picker moved inside the sheet, under the channel name, where
+    /// it has a default and can be ignored.
+    ///
+    /// Enabled even when nothing is connected: the sheet names each network's state and
+    /// disables Join, which says why. A greyed-out menu row says nothing at all.
     private func joinElements() -> [UIMenuElement] {
-        // The user's order here too, so the join menu lists networks the way the list below
-        // it does. Two orderings of one set on one screen is a thing to re-learn per surface.
-        let networks = BufferOrder.networks(state.networks)
-        guard !networks.isEmpty else {
+        guard !state.networks.isEmpty else {
             return [UIAction(title: "No networks", attributes: .disabled) { _ in }]
         }
-        if networks.count == 1, let only = networks.first {
-            return [UIAction(
-                title: "Join Channel…",
-                attributes: only.state == .connected ? [] : .disabled
-            ) { [weak self] _ in
-                self?.presentJoinAlert(network: only)
-            }]
-        }
-        return networks.map { network in
-            UIAction(
-                title: network.displayName,
-                subtitle: network.state == .connected ? nil : "not connected",
-                attributes: network.state == .connected ? [] : .disabled
-            ) { [weak self] _ in
-                self?.presentJoinAlert(network: network)
+        return [UIAction(title: "Join Channel…", image: UIImage(systemName: "number")) { [weak self] _ in
+            self?.showJoinChannel()
+        }]
+    }
+
+    private func showJoinChannel() {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let sheet = UINavigationController(
+            rootViewController: JoinChannelViewController(viewModel: viewModel) { [weak self] network, channel in
+                self?.join(network: network, channel: channel)
             }
-        }
+        )
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        // Medium first: it's a text field and a short list, and a half sheet leaves the buffer
+        // list visible behind it. Large is there for an account with enough networks to scroll.
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
     }
 
     /// "Add Network…" as its own inline section, so the separator does the work of saying it
@@ -789,25 +790,6 @@ final class BufferListViewController: UICollectionViewController {
         navigation.sheetPresentationController?.prefersGrabberVisible = true
         navigation.sheetPresentationController?.detents = [.large()]
         present(navigation, animated: true)
-    }
-
-    private func presentJoinAlert(network: Network) {
-        guard presentedViewController == nil else { return }
-        let alert = UIAlertController(title: "Join channel", message: "on \(network.displayName)", preferredStyle: .alert)
-        alert.addTextField {
-            $0.placeholder = "#channel"
-            $0.autocapitalizationType = .none
-            $0.autocorrectionType = .no
-            $0.spellCheckingType = .no
-            $0.returnKeyType = .join
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Join", style: .default) { [weak self, weak alert] _ in
-            let typed = (alert?.textFields?.first?.text ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            self?.join(network: network, channel: typed)
-        })
-        present(alert, animated: true)
     }
 
     /// Joining is also switching: you asked for a channel, so land in it. The buffer won't
