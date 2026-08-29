@@ -36,21 +36,28 @@ public enum BufferOrder {
     /// Targets are matched case-insensitively. The pin is stored under the spelling the
     /// server last saw and the buffer under the one the client holds, and IRC lets those
     /// differ — an exact match would silently drop a pin after a CASEMAPPING refold.
+    ///
+    /// ⚠⚠ Keyed on `target.lowercased()`, which is what `BufferKey.id` uses — NOT
+    /// `ChannelName.fold`, which is the *autocomplete* fold and also drops a leading sigil so
+    /// `li` matches `#linux`. As a target key that collides two real buffers: `#ops` and
+    /// `&ops` both fold to "ops", so a pin on one could render the other in its slot, and the
+    /// `rest` filter below — matching the same collided key — would drop the loser out of the
+    /// buffer list entirely.
     public static func buffers(_ buffers: [Buffer], pinned: [String]) -> [Buffer] {
         guard !pinned.isEmpty else { return buffers.sorted(by: order) }
         var byTarget: [String: Buffer] = [:]
-        for buffer in buffers { byTarget[ChannelName.fold(buffer.target)] = buffer }
+        for buffer in buffers { byTarget[buffer.target.lowercased()] = buffer }
         var pinnedBuffers: [Buffer] = []
         var claimed: Set<String> = []
         for target in pinned {
-            let key = ChannelName.fold(target)
+            let key = target.lowercased()
             // `claimed` before `byTarget`: a pin list with a duplicate in it must not print
             // the same buffer twice.
             guard !claimed.contains(key), let buffer = byTarget[key] else { continue }
             claimed.insert(key)
             pinnedBuffers.append(buffer)
         }
-        let rest = buffers.filter { !claimed.contains(ChannelName.fold($0.target)) }
+        let rest = buffers.filter { !claimed.contains($0.target.lowercased()) }
         return pinnedBuffers + rest.sorted(by: order)
     }
 

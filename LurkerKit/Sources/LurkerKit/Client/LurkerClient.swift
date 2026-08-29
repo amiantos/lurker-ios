@@ -164,16 +164,25 @@ final class LurkerClient {
     }
 
     /// Reopen the socket after a drop, resuming from `since` so the server ships only the
-    /// gap (`?since=N`) rather than re-sending everything. Skips the roster re-fetch —
-    /// names don't change and the reconnect snapshot re-sends live network state anyway.
+    /// gap (`?since=N`) rather than re-sending everything.
+    ///
+    /// Settings and the network roster are both re-read here, and for the same reason: they
+    /// are the state with no resume path. `settings` frames are live fan-out only and are
+    /// never replayed (the resume slice carries messages), and the roster is REST-only —
+    /// nothing on the socket carries a network's name or its position.
+    ///
+    /// ⚠⚠ The roster read used to be skipped here, on the grounds that "names don't change".
+    /// True, and twice beside the point. The *set* of networks changes (#136 — a network
+    /// added elsewhere arrives nameless and stays that way), and so does their **order**: a
+    /// drag-reorder on the web writes `position` with no frame of any kind, unlike pins,
+    /// which at least have `pins-changed`. Skipped, the phone kept yesterday's order until
+    /// the app was relaunched — on a screen whose whole point is that the two clients agree.
+    ///
+    /// Not awaited: a slow or failing roster read must not hold the socket down. It lands as
+    /// a `networks` frame whenever it arrives, and the list re-sorts then.
     func reconnect(since: Int) {
-        // Settings are re-fetched here, unlike the network roster.
-        //
-        // They're the one piece of state with no resume path: `settings` frames are live
-        // fan-out only and are never replayed (the resume slice carries messages, not
-        // settings), so a change made on the web while this phone was backgrounded or in
-        // reconnect backoff would otherwise be invisible until the app was relaunched.
         Task { await fetchSettings() }
+        Task { await refreshNetworks() }
         openSocket(since: since)
     }
 

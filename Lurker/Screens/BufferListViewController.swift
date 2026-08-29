@@ -255,6 +255,14 @@ final class BufferListViewController: UICollectionViewController {
                     // until some unrelated change happens to let a rebuild through.
                     // (`===` is the right test — see `IgnoreSet`.)
                     && $0.ignores === $1.ignores
+                    // ⚠⚠ Pins order every network section, and a `pins-changed` frame moves
+                    // NOTHING else in the state — so without this the frame is dropped as a
+                    // duplicate, `apply` never runs, and a pin set on the web moves nothing
+                    // here until some unrelated message happens to let a rebuild through.
+                    // Worse than a late redraw: `self.state` is never updated either, so even
+                    // the `viewWillAppear` rebuild would use the stale pins. Exactly the
+                    // failure the favorites and ignores lines above already document.
+                    && $0.pinned == $1.pinned
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }

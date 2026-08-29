@@ -72,6 +72,16 @@ final class BufferOrderTests: XCTestCase {
         XCTAssertEqual(ordered.map(\.target), ["#here"])
     }
 
+    func testASigilIsPartOfTheTargetNotNoiseToFoldAway() {
+        // ⚠⚠ Keyed on `target.lowercased()` — `BufferKey.id`'s rule — and NOT on
+        // `ChannelName.fold`, which is the autocomplete fold and drops a leading sigil. Under
+        // that key `#ops` and `&ops` collide: the pin could render the wrong one, and the
+        // filter for "everything else", matching the same collided key, would drop the loser
+        // out of the list altogether.
+        let ordered = BufferOrder.buffers([buffer("#ops"), buffer("&ops")], pinned: ["&ops"])
+        XCTAssertEqual(ordered.map(\.target), ["&ops", "#ops"])
+    }
+
     func testPinsMatchTargetsCaseInsensitively() {
         // The pin is stored under the spelling the server last saw and the buffer under the
         // one this client holds; IRC lets those differ. An exact match would silently drop a
@@ -160,6 +170,23 @@ final class BufferOrderTests: XCTestCase {
         store.apply(.pinsChanged(networkId: 1, pinned: ["#a"]))
         store.apply(.networks([]))
         XCTAssertNil(store.state.pinned[1])
+    }
+
+    func testTheRosterMergeCarriesThePositionOntoAnExistingNetwork() {
+        // ⚠ `position` is REST-only data exactly like `name`, so the merge has to take both.
+        // Taking only the name left every network the snapshot materialized stuck at the
+        // default — sorting by id for the life of the process, on any launch where the roster
+        // read lost its race with the socket.
+        let store = LurkerStore()
+        store.apply(FrameParser.parseWs(
+            ##"{"kind":"snapshot","networks":[{"networkId":7,"state":"connected","nick":"me","channels":[]}]}"##
+        ))
+        XCTAssertEqual(store.state.networks[7]?.position, .max)
+        store.apply(.networks([Network(id: 7, name: "Libera", position: 2)]))
+        XCTAssertEqual(store.state.networks[7]?.position, 2)
+        XCTAssertEqual(store.state.networks[7]?.name, "Libera")
+        // …and the live state the snapshot set is still there.
+        XCTAssertEqual(store.state.networks[7]?.state, .connected)
     }
 
     func testTheRosterCarriesThePosition() {
