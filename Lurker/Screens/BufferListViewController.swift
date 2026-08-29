@@ -367,6 +367,22 @@ final class BufferListViewController: UICollectionViewController {
         updatePlaceholder()
         guard Self.sameStructure(previous, sections) else {
             collectionView.reloadData()
+            // ⚠⚠ And the LAYOUT, which `reloadData` does not discard.
+            //
+            // `UICollectionViewCompositionalLayout`'s section provider is called lazily and
+            // its `NSCollectionLayoutSection` is cached per *index*. This screen's sections
+            // are not interchangeable — the top ones are grids of chips and the network ones
+            // are lists — and their indices shift as sections arrive: during the connect
+            // burst the list goes `Recent | libera | …` and then
+            // `Friends | Favorites | Recent | libera | …`, so index 1 stops being a list and
+            // becomes a grid. Without this the cached list geometry is reused for grid
+            // content, and the result is the buffer list drawing headers in the wrong places
+            // over rows that are themselves correct — the model is right, the picture isn't.
+            //
+            // It looks self-healing, which is what makes it hard to believe: opening a buffer
+            // and coming back re-enters the window and forces a fresh layout pass, so the
+            // list is correct the moment you go and look somewhere else.
+            collectionView.collectionViewLayout.invalidateLayout()
             return
         }
         let changed = previous.indices.flatMap { section in
