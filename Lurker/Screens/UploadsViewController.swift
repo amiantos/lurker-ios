@@ -37,6 +37,14 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     private var items: [UploadItem] = []
     private var filter = UploadsFilter()
+    /// The filter the rows currently on screen are the answer to.
+    ///
+    /// ⚠⚠ Not the same thing as `filter`, and the gap between them is the whole point: while a
+    /// filter change is in flight the grid still shows the PREVIOUS question's rows, which is
+    /// right — blanking a readable grid on every keystroke is worse than a moment of staleness —
+    /// and becomes a lie the instant that request FAILS. Without this there was nothing left to
+    /// tell "these are the matches for what you typed" from "these are what was here before".
+    private var shownFilter = UploadsFilter()
     /// The smallest id seen, which is the next page's `before`. Nil once there is nothing to
     /// page from.
     private var cursor: Int?
@@ -332,8 +340,21 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         guard generation == loadGeneration else { return }
         isLoading = false
         collectionView.refreshControl?.endRefreshing()
+        let changedQuestion = filter != shownFilter
         guard let page else {
             loadFailed = true
+            // ⚠⚠ A failed load of a DIFFERENT question has to take the old rows with it. Left up,
+            // the whole unfiltered history stands in as "the matches for cat" with nothing said —
+            // and the stale `cursor`/`hasMore` then page the real matches onto the end of it.
+            // A failed REFRESH keeps its rows: same question, and there is something to read.
+            if changedQuestion {
+                items = []
+                cursor = nil
+                hasMore = false
+                isTruncated = false
+                shownFilter = filter
+                collectionView.reloadData()
+            }
             renderPlaceholder()
             return
         }
@@ -341,7 +362,17 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         cursor = items.last?.id
         hasMore = UploadsRequest.hasMore(filter: filter, received: page.items.count, limit: limit)
         isTruncated = UploadsRequest.isTruncated(filter: filter, received: page.items.count)
+        shownFilter = filter
         collectionView.reloadData()
+        // ⚠ Back to the top, but only for a new question. `reloadData` keeps the content offset
+        // (clamped to the new height), so searching from deep in a long grid landed the reader on
+        // the OLDEST few matches with the newest scrolled off above — which reads as the search
+        // having found the wrong ones. A refresh is already at the top, so it is left alone rather
+        // than fighting a reader who pulled from somewhere else.
+        if changedQuestion {
+            collectionView.setContentOffset(
+                CGPoint(x: 0, y: -collectionView.adjustedContentInset.top), animated: false)
+        }
         renderPlaceholder()
     }
 
@@ -497,12 +528,20 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             items[index] = original.settingFavorite(wanted)
             collectionView.reconfigureItems(at: [IndexPath(item: index, section: 0)])
         }
+        // ⚠⚠ The list this revert belongs to. `restore` puts a missing row back BY INDEX, which is
+        // what an unstar-in-the-starred-view needs — and which, against a list that has since been
+        // replaced, splices a foreign row into it and sets `cursor` to an id from a list that no
+        // longer exists. Star a row, switch the filter to Video, then have the request fail: the
+        // image lands in the video grid and the next page is fetched from its id.
+        let generation = loadGeneration
         Task { [weak self] in
             guard let self, let message = await viewModel.setUploadFavorite(id: item.id, favorite: wanted)
             else { return }
             // It didn't take. Put the row back exactly as it was and say why — a star that
-            // silently un-flips a second later is worse than one that never moved.
-            restore(original, at: index)
+            // silently un-flips a second later is worse than one that never moved. The row is only
+            // restored into the list it came from; the failure is reported either way, because the
+            // server state is unchanged whichever list is on screen now.
+            if generation == loadGeneration { restore(original, at: index) }
             report(title: wanted ? "Couldn't Star" : "Couldn't Unstar", message: message)
         }
     }
@@ -523,7 +562,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
                 self?.delete(item)
             })
-        present(alert, animated: true)
+        presentOverTop(alert)
     }
 
     private func delete(_ item: UploadItem) {
@@ -560,10 +599,24 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         renderPlaceholder()
     }
 
+    /// Say something went wrong, over whatever is currently up.
+    ///
+    /// ⚠⚠ Presented from the frontmost VC in this screen's chain, not from `self`. These reports
+    /// land after an await, by which time the reader may have opened the media viewer or a share
+    /// sheet — and UIKit silently drops a `present` on a controller that is already presenting.
+    /// The star would visibly un-flip with no explanation, which is the exact outcome this path
+    /// exists to prevent.
     private func report(title: String, message: String) {
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        presentOverTop(alert)
+    }
+
+    /// Put `controller` up over whatever is frontmost in this screen's chain.
+    private func presentOverTop(_ controller: UIViewController) {
+        var host: UIViewController = self
+        while let presented = host.presentedViewController { host = presented }
+        host.present(controller, animated: true)
     }
 }
 
