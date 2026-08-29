@@ -926,6 +926,62 @@ final class LurkerClient {
         }
     }
 
+    // MARK: - Upload history
+
+    /// One page of the account's upload history — `GET /api/uploads` (#138).
+    ///
+    /// A plain REST read like bookmarks and search, and for the same reason: the client only
+    /// holds the pages it has scrolled through, so the filename search and the kind filter are
+    /// questions for the server rather than predicates over what happens to be in memory.
+    ///
+    /// Nil means no answer, never "nothing matched" (that's an empty page): unauthenticated,
+    /// offline, or a response we couldn't read. All three leave the caller free to offer a retry
+    /// rather than claiming the browse came back empty.
+    func fetchUploads(
+        filter: UploadsFilter,
+        before: Int? = nil,
+        limit: Int
+    ) async -> UploadsPage? {
+        guard let token,
+            let url = UploadsRequest.url(base: baseURL, filter: filter, before: before, limit: limit)
+        else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            switch UploadsRequest.outcome(status: code) {
+            case .unauthorized:
+                onFrame(.unauthorized)
+                return nil
+            case .failed: return nil
+            case .page: break
+            }
+            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            return FrameParser.parseUploads(text)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Star or unstar an upload. Nil on success, else a sentence to put in front of the user.
+    ///
+    /// ⚠ Its own subpath rather than a field on a PATCH of the row, matching the route:
+    /// everything else about an upload is immutable once captured, and a general-purpose PATCH
+    /// would imply otherwise.
+    func setUploadFavorite(id: Int, favorite: Bool) async -> String? {
+        await act(favorite ? "PUT" : "DELETE", "/api/uploads/\(id)/favorite")
+    }
+
+    /// Destroy an upload's bytes and drop its row. Nil on success, else the server's own reason.
+    ///
+    /// ⚠⚠ Only ever called for a row whose `canDelete` is set. There is deliberately no
+    /// remove-the-record-but-leave-the-file path — the route answers 409 for a row whose bytes
+    /// can't be destroyed, so asking for one is a bug on this side, not a case to handle.
+    func deleteUpload(id: Int) async -> String? {
+        await act("DELETE", "/api/uploads/\(id)")
+    }
+
     /// Tell the network we're composing. Fire-and-forget: the server turns it into a
     /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
     /// rather than needing a retry.

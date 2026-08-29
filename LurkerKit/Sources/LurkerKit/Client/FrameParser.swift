@@ -257,6 +257,36 @@ enum FrameParser {
         )
     }
 
+    /// Parse REST `GET /api/uploads` into a page of history rows (#138).
+    ///
+    /// ⚠ No `nextBefore` in this envelope, unlike the three message feeds — the caller pages on
+    /// the last row's id and reads a short page as the end. `UploadsRequest.hasMore` holds that
+    /// rule, along with the starred view's exception to it.
+    ///
+    /// ⚠⚠ `removed` is not a flag on an otherwise-normal row. The server sends a moderated
+    /// takedown as a tombstone — no `can_delete`, no thumbnail — because the bytes are gone, so
+    /// everything the row would otherwise offer (view, share, copy, insert) is dead for one. Read
+    /// back as false/nil rather than defaulted into something that looks live.
+    static func parseUploads(_ body: String) -> UploadsPage {
+        guard let obj = object(from: body) else { return UploadsPage(items: []) }
+        return UploadsPage(items: obj.objects("items").map(parseUpload))
+    }
+
+    private static func parseUpload(_ row: [String: Any]) -> UploadItem {
+        UploadItem(
+            id: row.int("id"),
+            url: row.string("url"),
+            filename: row.stringOrNull("filename"),
+            mime: row.stringOrNull("mime"),
+            byteSize: row.intOrNull("byte_size"),
+            createdAt: ISOTime.parse(row.stringOrNull("created_at")),
+            favorite: row.bool("favorite"),
+            canDelete: row.bool("can_delete"),
+            thumbnailPath: row.stringOrNull("thumbnail_url"),
+            removed: row.bool("removed")
+        )
+    }
+
     /// One cross-buffer feed row: a `MessageEvent` spread flat (so `parseEvent` reads it, same
     /// as a backlog line) plus the buffer address (`networkId`/`target`) and a server-resolved
     /// `networkName`. Shared by highlights, bookmarks and search.

@@ -884,10 +884,10 @@ final class BufferListViewController: UICollectionViewController {
 
     /// The same views menu the chat screen carries, minus the entries that need a buffer.
     ///
-    /// Highlights and Bookmarks are app-scoped — they span every network — so being able to
-    /// reach them only from inside some arbitrary conversation was an artifact of the chat
-    /// screen having once been the only screen. Search and uploads land here as they're built,
-    /// which is the set the desktop client keeps in its bottom toolbar (#49).
+    /// Highlights, Bookmarks and Uploads are app-scoped — they span every network — so being
+    /// able to reach them only from inside some arbitrary conversation was an artifact of the chat
+    /// screen having once been the only screen. Search is the entry this screen doesn't need: its
+    /// field is already in the bottom bar.
     ///
     /// Members is deliberately absent: it describes a channel, and there isn't one here.
     private func viewsItem() -> UIBarButtonItem {
@@ -899,9 +899,17 @@ final class BufferListViewController: UICollectionViewController {
             guard let self else { return }
             showBookmarks(viewModel: viewModel)
         }
+        // ⚠ No `onInsert`. There is no composer mounted behind this screen, so an "Add to
+        // Message" offered from here would land nowhere and report nothing. Copy Link and Share
+        // are the answers from the list, and both are in the same menu on the tile.
+        let uploads = UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) {
+            [weak self] _ in
+            guard let self else { return }
+            showUploads(viewModel: viewModel)
+        }
         let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
-            menu: UIMenu(children: [highlights, bookmarks])
+            menu: UIMenu(children: [highlights, bookmarks, uploads])
         )
         item.accessibilityLabel = "More"
         return item

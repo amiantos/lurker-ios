@@ -421,6 +421,31 @@ public final class ChatViewModel {
         }
     }
 
+    /// One page of the account's upload history (#138). `before` is the previous page's last
+    /// row id; nil for the first. The starred view ignores it and arrives whole — see
+    /// `UploadsRequest`.
+    public func fetchUploads(
+        filter: UploadsFilter,
+        before: Int? = nil,
+        limit: Int
+    ) async -> UploadsPage? {
+        await client.fetchUploads(filter: filter, before: before, limit: limit)
+    }
+
+    /// Star or unstar an upload. Nil on success, else a sentence to show the user.
+    ///
+    /// Server-side rather than a device preference, deliberately: the same starred gifs should
+    /// be at hand on every device the account is signed in on.
+    public func setUploadFavorite(id: Int, favorite: Bool) async -> String? {
+        await client.setUploadFavorite(id: id, favorite: favorite)
+    }
+
+    /// Destroy an upload's stored bytes and drop its row. Nil on success, else the server's own
+    /// reason. Only ever called for a row whose `canDelete` is set.
+    public func deleteUpload(id: Int) async -> String? {
+        await client.deleteUpload(id: id)
+    }
+
     /// What the UI should do after a line of input — almost always nothing, but `/msg` and
     /// `/query` ask the composer's owner to switch to the DM they opened, and `/join` asks
     /// it to switch once the channel actually exists.

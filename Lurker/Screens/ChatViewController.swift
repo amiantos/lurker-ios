@@ -2494,8 +2494,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - Actions
 
     /// The views menu, opposite the back button: the surfaces you *look at*, as against the
-    /// buffer you're in. Highlights and Bookmarks today; search and uploads land here as
-    /// they're built, which is the set the desktop client keeps in its bottom toolbar (#49).
+    /// buffer you're in. Search, Highlights, Bookmarks and Uploads — the set the desktop client
+    /// keeps in its bottom toolbar (#49), now complete.
     ///
     /// Nothing account-scoped lives here. Sign-out sits in the buffer list's own menu,
     /// where the things that outlast the buffer you happen to be reading belong.
@@ -2524,6 +2524,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
                 guard let self else { return }
                 showBookmarks(viewModel: viewModel)
+            },
+            // The one entry here that can act on the buffer behind it: a file picked in the
+            // browser goes into THIS composer. That's the whole reason the screen is worth
+            // having on a phone, and it's why the closure is passed from here and not from the
+            // buffer list, which has no composer to insert into.
+            UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
+                guard let self else { return }
+                showUploads(viewModel: viewModel) { [weak self] url in
+                    self?.composer.insert(url)
+                }
             },
         ]
         // Built once, not deferred: nothing in here varies at all now, let alone per press.
