@@ -180,7 +180,7 @@ final class NetworkConfigTests: XCTestCase {
     """##
 
     func testAConfigRowReadsEveryFieldTheFormEdits() {
-        let config = FrameParser.parseNetworkConfigs(Self.row).first
+        let config = FrameParser.parseNetworkConfigs(Self.row)?.first
         XCTAssertEqual(config?.id, 4)
         XCTAssertEqual(config?.name, "Libera")
         XCTAssertEqual(config?.host, "irc.libera.chat")
@@ -202,19 +202,25 @@ final class NetworkConfigTests: XCTestCase {
         // A server predating the admin allowlist (#298) sends no `blocked`. It has no
         // allowlist to be excluded from, so defaulting the other way would grey out every
         // network on every older server.
-        let config = FrameParser.parseNetworkConfigs(##"{"networks":[{"id":1,"name":"n","host":"h"}]}"##).first
+        let config = FrameParser.parseNetworkConfigs(##"{"networks":[{"id":1,"name":"n","host":"h"}]}"##)?.first
         XCTAssertEqual(config?.blocked, false)
     }
 
     func testAMissingPortFallsBackToTheServersDefault() {
         // `int()` reads an absent port as 0, which is not a port anything can connect to.
-        let config = FrameParser.parseNetworkConfigs(##"{"networks":[{"id":1,"name":"n","host":"h"}]}"##).first
+        let config = FrameParser.parseNetworkConfigs(##"{"networks":[{"id":1,"name":"n","host":"h"}]}"##)?.first
         XCTAssertEqual(config?.port, 6697)
     }
 
-    func testAnUnreadableBodyIsNoRowsRatherThanACrash() {
-        XCTAssertTrue(FrameParser.parseNetworkConfigs("not json").isEmpty)
+    func testAnUnreadableBodyIsNotAnEmptyRoster() {
+        // The screen shows a fresh account "add your first network" on an empty list, so an
+        // unreadable reply reported as `[]` would greet a failed request with a welcome.
+        XCTAssertNil(FrameParser.parseNetworkConfigs("not json"))
         XCTAssertNil(FrameParser.parseNetworkReply("not json"))
+    }
+
+    func testAnEmptyListIsStillAnAnswer() {
+        XCTAssertEqual(FrameParser.parseNetworkConfigs(##"{"networks":[]}"##)?.count, 0)
     }
 
     func testACreateReplyCarriesTheSavedRow() {
@@ -314,7 +320,7 @@ final class NetworkConfigTests: XCTestCase {
     func testEditingADraftStartsBothSecretsUnchanged() {
         // The values were never sent to us. Anything but `unchanged` would be a guess, and the
         // guess that loses a password is the one that costs the user their connection.
-        let config = FrameParser.parseNetworkConfigs(Self.row).first!
+        let config = FrameParser.parseNetworkConfigs(Self.row)!.first!
         let d = NetworkDraft(editing: config)
         XCTAssertEqual(d.password, .unchanged)
         XCTAssertEqual(d.saslPassword, .unchanged)

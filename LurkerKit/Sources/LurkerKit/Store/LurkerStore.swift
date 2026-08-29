@@ -969,10 +969,14 @@ final class LurkerStore {
                 next.networks[network.id] = network
             }
         }
+        // Collected before mutating, matching `pruneToBurst` above. Iterating `keys` while
+        // dropping is actually well-defined — the view holds its own reference, so the
+        // mutation copies on write and the loop walks the pre-mutation snapshot — but that is
+        // a language guarantee a reader has to know to be sure of, and one file should not
+        // spell the same operation two ways.
         let named = Set(networks.map(\.id))
-        for id in next.networks.keys where !named.contains(id) {
-            next.dropNetwork(id)
-        }
+        let doomed = next.networks.keys.filter { !named.contains($0) }
+        for id in doomed { next.dropNetwork(id) }
         return next
     }
 

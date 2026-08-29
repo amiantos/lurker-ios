@@ -159,8 +159,13 @@ enum FrameParser {
     /// the two fields the roster needs, this one takes everything the networks screen and its
     /// form do. Two readers rather than one union type, because the roster is reduced into
     /// long-lived state on every connect and this is fetched, shown, and dropped.
-    static func parseNetworkConfigs(_ body: String) -> [NetworkConfig] {
-        guard let obj = object(from: body) else { return [] }
+    /// ⚠ Nil for an unreadable body, never an empty array — the same distinction
+    /// `parseNetworks` draws, for the caller's benefit rather than the store's. "No networks"
+    /// is a real answer and the screen's empty state invites you to add your first one;
+    /// "we couldn't read the reply" is an error. An empty array for both would show a fresh
+    /// account's welcome to someone whose request failed.
+    static func parseNetworkConfigs(_ body: String) -> [NetworkConfig]? {
+        guard let obj = object(from: body) else { return nil }
         return obj.objects("networks").map(parseNetworkConfig)
     }
 

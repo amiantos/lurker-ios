@@ -294,7 +294,7 @@ final class LurkerClient {
     /// add your first network.
     func networkConfigs() async -> [NetworkConfig]? {
         switch await rest("GET", "/api/networks") {
-        case .ok(let text): return FrameParser.parseNetworkConfigs(text)
+        case .ok(let text): return FrameParser.parseNetworkConfigs(text)  // nil if unreadable
         case .failure: return nil
         }
     }
