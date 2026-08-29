@@ -57,11 +57,15 @@ public enum BufferOrder {
     /// materializes a buffer from a key for exactly this reason, and the chat screen hydrates
     /// whatever it lands on.
     ///
-    /// It also means every network the user has appears in the list, which is what the web
-    /// does — its network header is the server buffer, so a network with nothing joined still
-    /// has a row and a way in. Before this a fully-parted network simply vanished.
+    /// ⚠ Only for a network that already has rows — this fills a gap in a section, it does
+    /// not conjure one. Synthesizing unconditionally would give every network a section
+    /// forever, which reads well (the web always lists every network) but kills two states
+    /// this list depends on: "Loading buffers…" never shows, because the roster is fetched
+    /// *before* the socket opens so a section always exists during the connect window, and
+    /// "No buffers yet" becomes unreachable, because having a network would imply having a
+    /// row. Making every network appear is a good idea and a separate one.
     public static func withServerLog(_ buffers: [Buffer], networkId: Int) -> [Buffer] {
-        guard !buffers.contains(where: { $0.kind == .server }) else { return buffers }
+        guard !buffers.isEmpty, !buffers.contains(where: { $0.kind == .server }) else { return buffers }
         return buffers + [Buffer(
             networkId: networkId, target: Buffer.serverTarget(networkId), kind: .server
         )]

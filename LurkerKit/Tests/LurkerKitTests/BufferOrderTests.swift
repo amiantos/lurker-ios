@@ -166,12 +166,14 @@ final class BufferOrderTests: XCTestCase {
         XCTAssertEqual(rows.first(where: { $0.kind == .server })?.unread, 7)
     }
 
-    func testANetworkWithNothingJoinedStillHasARow() {
-        // Which is what the web does — its network header IS the server buffer, so a network
-        // with nothing joined still appears and still has a way in. Before this, a fully
-        // parted network simply vanished from the list.
-        let rows = BufferOrder.withServerLog([], networkId: 4)
-        XCTAssertEqual(rows.map(\.target), [":server:4"])
+    func testANetworkWithNoRowsAtAllGetsNoRowInvented() {
+        // ⚠⚠ This fills a gap in a section, it does not conjure one. Synthesizing here would
+        // give every network a section forever, which kills two of the buffer list's states:
+        // "Loading buffers…" never shows (the roster is fetched before the socket opens, so a
+        // section would always exist during the connect window), and "No buffers yet" becomes
+        // unreachable (having a network would imply having a row). Making every network
+        // appear is a good idea and a separate one.
+        XCTAssertTrue(BufferOrder.withServerLog([], networkId: 4).isEmpty)
     }
 
     func testTheServerLogSortsLastWithinItsNetwork() {
