@@ -22,8 +22,14 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
     public var host: String
     public var port: Int
     public var tls: Bool
-    /// Accept a certificate this device wouldn't otherwise trust. Named as the server names
-    /// it; it means "don't verify", which is why the form has to say so out loud.
+    /// Whether the TLS certificate has to be a valid, trusted one.
+    ///
+    /// ⚠⚠ It reads like a permission to accept anything and it is the opposite: the server
+    /// passes it straight to `rejectUnauthorized` (`ircConnection.ts:4040`, and the column
+    /// defaults to 1), so **true means verify**. Turning it off is what lets a self-signed
+    /// certificate through. The default therefore has to be true — a draft that defaulted it
+    /// false would silently disable certificate verification on every network created from
+    /// this app, which is a security decision no default gets to make on the user's behalf.
     public var trustedCertificates: Bool
     public var nick: String
     public var username: String?
@@ -50,7 +56,8 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
         host: String,
         port: Int,
         tls: Bool,
-        trustedCertificates: Bool = false,
+        // True = verify, matching the column's own default. See the property's note.
+        trustedCertificates: Bool = true,
         nick: String,
         username: String? = nil,
         realname: String? = nil,
@@ -126,7 +133,10 @@ public struct NetworkDraft: Equatable, Sendable {
         host: String = "",
         port: Int = 6697,
         tls: Bool = true,
-        trustedCertificates: Bool = false,
+        // ⚠⚠ True = verify the certificate. See `NetworkConfig.trustedCertificates`: this
+        // reads like the permissive option and is the strict one, and the server's own
+        // default for a new network is the same. Matches the web's add form.
+        trustedCertificates: Bool = true,
         nick: String = "",
         username: String? = nil,
         realname: String? = nil,

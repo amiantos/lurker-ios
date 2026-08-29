@@ -89,6 +89,12 @@ public struct ChatState: Sendable {
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
     /// which layers the network's own connection state on top.
     public var peerPresence: [Int: [String: PresenceState]] = [:]
+    /// Pinned buffer targets per network, in the user's own order (`pins-changed`).
+    ///
+    /// A list the user arranged on the web and this app only renders — so it's held verbatim
+    /// rather than folded into the buffers themselves. Ordered, and a superset of what can be
+    /// shown: a pin row outlives its buffer being parted or closed.
+    public var pinned: [Int: [String]] = [:]
     /// Who is composing, keyed `BufferKey.id → lowercased nick → entry`.
     ///
     /// Purely ephemeral — there is no snapshot for it, so this starts empty on every connect
@@ -240,6 +246,7 @@ public struct ChatState: Sendable {
         for key in buffers.values.filter({ $0.networkId == id }).map(\.key.id) { dropBuffer(key) }
         networks[id] = nil
         peerPresence[id] = nil
+        pinned[id] = nil
     }
 
     /// Move everything keyed by `from` onto `to` — the rename mirror of
@@ -655,6 +662,13 @@ final class LurkerStore {
             var next = state
             next.networks[networkId]?.nick = nick
             return next
+        case .pinsChanged(let networkId, let pinned):
+            // Replaces wholesale, unlike most of this reducer's patches: the server re-sends
+            // the whole list on every pin, unpin and reorder, so it IS this network's set, and
+            // merging would keep a pin the user just dropped.
+            var next = state
+            next.pinned[networkId] = pinned
+            return next
         case .networkState(let networkId, let connection, let nick):
             // ⚠⚠ This one DOES materialize an unknown network, unlike `own-nick` and
             // `away-state`. Those describe a network the connect snapshot has already named;
@@ -961,9 +975,16 @@ final class LurkerStore {
     private static func applyNetworks(_ state: ChatState, _ networks: [Network]) -> ChatState {
         var next = state
         for network in networks {
-            // Merge the REST name in without clobbering any live state the snapshot set.
+            // Merge the REST fields in without clobbering any live state the snapshot set.
+            //
+            // ⚠ Both of them. `position` is REST-only data exactly like `name` — no frame
+            // carries it — so a merge that only took the name left every network the snapshot
+            // materialized stuck at the default, sorting by id for the life of the process.
+            // Reachable whenever the roster read loses a race with the socket: a failed
+            // initial fetch, or a network created while the app is running.
             if var existing = next.networks[network.id] {
                 existing.name = network.name
+                existing.position = network.position
                 next.networks[network.id] = existing
             } else {
                 next.networks[network.id] = network
@@ -1048,6 +1069,9 @@ final class LurkerStore {
             // The snapshot is authoritative for this network's presence — replace wholesale,
             // so a reconnect drops any stale rows for peers no longer watched.
             next.peerPresence[snapshot.id] = snapshot.peerPresence
+            // Same rule for pins, and the same reason: a pin dropped from the web while this
+            // device was away has to disappear here rather than survive as a leftover.
+            next.pinned[snapshot.id] = snapshot.pinned
         }
         return next
     }

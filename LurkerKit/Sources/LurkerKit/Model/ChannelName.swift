@@ -37,6 +37,23 @@ public enum ChannelName {
         target.first.map(sigils.contains) ?? false
     }
 
+    /// Whether this is a channel *name* at all, rather than punctuation and whitespace.
+    ///
+    /// The guard in front of every join: `ensurePrefix("#")` sends a JOIN for "#", which is a
+    /// request for a channel whose name is empty.
+    ///
+    /// ⚠⚠ `stripSigils`, not `fold`. `fold` drops exactly ONE leading sigil, so `##`, `#&`
+    /// and `&&` all fold to something non-empty and sail through — and `ensurePrefix` passes
+    /// them along untouched, which is a JOIN for a sigil-only target: precisely what this
+    /// guard exists to stop. `stripSigils` strips them all and still keeps a real `##anime`.
+    ///
+    /// Trims here so there is one rule rather than one per caller: the two that existed had
+    /// already drifted to `.whitespaces` and `.whitespacesAndNewlines` while a comment
+    /// asserted they agreed.
+    public static func namesAChannel(_ name: String) -> Bool {
+        !stripSigils(name.trimmingCharacters(in: .whitespacesAndNewlines)).isEmpty
+    }
+
     /// A bare name gets a leading `#`; an already-sigiled one is left alone. The web's
     /// `ensureChannelPrefix`.
     public static func ensurePrefix(_ name: String) -> String {

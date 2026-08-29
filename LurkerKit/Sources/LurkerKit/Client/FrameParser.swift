@@ -127,6 +127,13 @@ enum FrameParser {
                     merged: obj.bool("merged"),
                     mergedFromBufferId: obj.intOrNull("mergedFromBufferId")
                 )
+        case "pins-changed":
+            // `pinned` is the ordered target list; `pinnedIds` rides alongside it,
+            // parallel-indexed, and is ignored here — this client addresses buffers by
+            // (networkId, target) everywhere else, and reading both would be two spellings of
+            // one list to keep in step.
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            return .pinsChanged(networkId: networkId, pinned: (obj["pinned"] as? [String]) ?? [])
         case "buffer-closed":
             // `networkId` is genuinely nullable here (the system buffer), so read it as
             // optional rather than defaulting to 0 — `intOrNull` keeps a null distinct from
@@ -149,7 +156,14 @@ enum FrameParser {
     static func parseNetworks(_ body: String) -> ServerFrame {
         guard let obj = object(from: body) else { return .ignored }
         // REST carries no live state; the WS snapshot fills state/nick in.
-        let networks = obj.objects("networks").map { Network(id: $0.int("id"), name: $0.stringOrNull("name")) }
+        // `position` is the user's own ordering, which this endpoint is already sorted by.
+        // Read rather than inferred from the array index: the array is a snapshot of one
+        // response, and the store holds networks in a dictionary that has no order at all.
+        // Absent (an older server) reads as `Int.max`, so those networks sort last instead of
+        // all colliding at 0 and re-sorting by id.
+        let networks = obj.objects("networks").map {
+            Network(id: $0.int("id"), name: $0.stringOrNull("name"), position: $0.int("position", .max))
+        }
         return .networks(networks)
     }
 
@@ -178,7 +192,11 @@ enum FrameParser {
             // reads 0 — which is not a port. The server's own default is the honest stand-in.
             port: obj.int("port") == 0 ? 6697 : obj.int("port"),
             tls: obj.bool("tls"),
-            trustedCertificates: obj.bool("trusted_certificates"),
+            // ⚠ Defaults TRUE, unlike every other flag here. It means `rejectUnauthorized`,
+            // so an absent value read as false would report a network as not verifying its
+            // certificate when the server's column says it does — and the form would then
+            // save that misreading back.
+            trustedCertificates: obj.bool("trusted_certificates", true),
             nick: obj.string("nick"),
             username: obj.stringOrNull("username"),
             realname: obj.stringOrNull("realname"),
@@ -198,6 +216,32 @@ enum FrameParser {
     static func parseNetworkReply(_ body: String) -> NetworkConfig? {
         guard let obj = object(from: body), let row = obj["network"] as? [String: Any] else { return nil }
         return parseNetworkConfig(row)
+    }
+
+    /// Parse REST `GET /api/network-presets` — the networks this instance recommends, plus
+    /// whether users may connect to anything else (#298).
+    ///
+    /// ⚠ `allowUserDefined` defaults TRUE on a missing key. A server predating the lockdown
+    /// has no such policy, and reading its silence as "locked down" would hide the
+    /// custom-server path on every older instance — leaving an app that can't add a network,
+    /// which is the whole failure #11 exists to fix.
+    static func parseNetworkPresets(_ body: String) -> NetworkPresets? {
+        guard let obj = object(from: body) else { return nil }
+        return NetworkPresets(
+            instance: obj.objects("presets").map { preset in
+                NetworkPreset(
+                    name: preset.string("name"),
+                    host: preset.string("host"),
+                    port: preset.int("port", 6697),
+                    tls: preset.bool("tls", true),
+                    saslLikelyRequired: preset.bool("saslLikelyRequired"),
+                    recommendedChannels: (preset["channels"] as? [String]) ?? [],
+                    isInstance: true,
+                    instanceID: preset.intOrNull("id")
+                )
+            },
+            allowUserDefined: obj.bool("allowUserDefined", true)
+        )
     }
 
     /// Parse REST `GET /api/highlights` into a page. Each item is a `MessageEvent` spread
@@ -244,7 +288,8 @@ enum FrameParser {
                 peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any]),
                 ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule),
                 relayBots: network.objects("relayBots").compactMap(parseRelayBot),
-                away: parseAwayState(network["away"])
+                away: parseAwayState(network["away"]),
+                pinned: (network["pinned"] as? [String]) ?? []
             )
         }
         return .snapshot(networks, globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule))

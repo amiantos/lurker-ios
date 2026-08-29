@@ -159,6 +159,13 @@ final class SettingsViewController: UITableViewController {
     }
 
     private enum Section {
+        /// The account's IRC networks (#11) — a push, not a control.
+        ///
+        /// First, above every preference: it is the only thing on this screen that decides
+        /// whether the app can do anything at all, and the rest are adjustments to an app
+        /// that is already working. Unconditional, like `device`, because it needs no
+        /// registry — a server too old to describe its settings still has networks.
+        case networks
         case chat([SettingRow])
         case events([SettingRow])
         case smartFilter([SettingRow])
@@ -248,8 +255,8 @@ final class SettingsViewController: UITableViewController {
         // this screen that still works on a server too old (or too unreachable) to describe
         // itself.
         sections = rows.isEmpty
-            ? [.unavailable, .device, .account, .about]
-            : [.chat(rows)]
+            ? [.networks, .unavailable, .device, .account, .about]
+            : [.networks, .chat(rows)]
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
                 + (smartFilterRows.isEmpty ? [] : [.smartFilter(smartFilterRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
@@ -266,12 +273,13 @@ final class SettingsViewController: UITableViewController {
         case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
             rows.count
         case .device: DeviceSetting.allCases.count
-        case .unavailable, .account, .about: 1
+        case .networks, .unavailable, .account, .about: 1
         }
     }
 
     override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
         switch sections[section] {
+        case .networks: nil
         case .chat, .unavailable: "Chat"
         case .events: "Events"
         case .smartFilter: "Smart Filter"
@@ -310,6 +318,11 @@ final class SettingsViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
 
         switch sections[indexPath.section] {
+        case .networks:
+            content.text = "Networks"
+            content.image = UIImage(systemName: "network")
+            cell.accessoryType = .disclosureIndicator
+            cell.selectionStyle = .default
         case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
@@ -513,8 +526,21 @@ final class SettingsViewController: UITableViewController {
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard case .account = sections[indexPath.section] else { return }
-        confirmSignOut()
+        switch sections[indexPath.section] {
+        case .networks:
+            // Pushed, not presented: this is a place you go *inside* Settings and come back
+            // from. Note the sheet's Done goes with it — it lives on this screen's own
+            // `navigationItem` — so the way out is Back and then Done, which is the standard
+            // pattern and not something the pushed screen should paper over with a Done of
+            // its own.
+            navigationController?.pushViewController(
+                NetworksViewController(viewModel: viewModel), animated: true
+            )
+        case .account:
+            confirmSignOut()
+        default:
+            break
+        }
     }
 
     /// Sign-out asks first. It's one tap from a settings list, it ends the session on the

@@ -120,6 +120,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Snapshotted like `settings` above, and for the same reason: the typing ticker rebuilds
     /// rows with no `state` in hand, and both paths have to agree on what they're rendering.
     private var awayState: AwayState?
+    /// Whether the connect burst has finished, as of the last apply — snapshotted like
+    /// everything else this screen renders from, so the placeholder can't read it a frame
+    /// ahead of the buffer it is describing.
+    private var rosterSettled = false
     /// Who has spoken in this buffer and when, as of the last apply — what the `.smart` event
     /// tier (#63) judges churn against, and what ranks a truncated summary's names.
     ///
@@ -718,6 +722,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // BY KEY (launch restore, notification tap) at a buffer that was closed while
             // the phone was away. `sawBufferRow` never becomes true there, because the row
             // never existed on this run.
+            // ⚠⚠ A SERVER LOG's absence is not evidence of a close. It can't be closed —
+            // the swipe action and the server both refuse — so a missing row means "no row
+            // yet", which the buffer list now makes reachable: it offers a network's log
+            // whether or not one has arrived. Without this exemption, opening that row popped
+            // straight back to the list, because `sawBufferRow` is false and the roster is
+            // settled. Its row landing later fills the screen in on the ordinary path.
+            //
+            // Still gated on the NETWORK existing: deleting a network really does take its
+            // log with it, and a reader sitting on the log of a network that is gone should
+            // be shown the door like anyone else.
+            if buffer.kind == .server, let networkId = buffer.networkId,
+               state.networks[networkId] != nil {
+                return false
+            }
             guard sawBufferRow || state.rosterSettled else { return false }
             // Sign-out empties `buffers` too, via `store.reset()`. Leave that case entirely
             // to SceneDelegate, which swaps the whole stack for the login screen — popping
@@ -879,10 +897,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // so a buffer whose only change is exhausting its history still reaches us.
         hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
         hasMoreNewer = nowDetached
+        rosterSettled = state.rosterSettled
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
             hydratesOnDemand: buffer.kind.hydratesOnDemand,
-            bufferExists: state.buffers[buffer.key.id] != nil
+            bufferExists: state.buffers[buffer.key.id] != nil,
+            rosterSettled: state.rosterSettled
         )
         modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
         rebuildRows()
@@ -1373,7 +1393,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             hasMessages: hasMessages,
             hydrated: known?.hydrated ?? false,
             hydratesOnDemand: buffer.kind.hydratesOnDemand,
-            bufferExists: known != nil
+            bufferExists: known != nil,
+            // The snapshot's, not `viewModel.state`'s: `known` above comes from the state
+            // this pass is rendering, and reading one field a frame ahead of the rest is how
+            // a settled buffer flaps back to "Loading messages…" for a frame.
+            rosterSettled: rosterSettled
         )
         guard placeholder != shownPlaceholder else { return }
         shownPlaceholder = placeholder

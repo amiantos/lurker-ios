@@ -164,32 +164,62 @@ final class LurkerClient {
     }
 
     /// Reopen the socket after a drop, resuming from `since` so the server ships only the
-    /// gap (`?since=N`) rather than re-sending everything. Skips the roster re-fetch —
-    /// names don't change and the reconnect snapshot re-sends live network state anyway.
+    /// gap (`?since=N`) rather than re-sending everything.
+    ///
+    /// Settings and the network roster are both re-read here, and for the same reason: they
+    /// are the state with no resume path. `settings` frames are live fan-out only and are
+    /// never replayed (the resume slice carries messages), and the roster is REST-only —
+    /// nothing on the socket carries a network's name or its position.
+    ///
+    /// ⚠⚠ The roster read used to be skipped here, on the grounds that "names don't change".
+    /// True, and twice beside the point. The *set* of networks changes (#136 — a network
+    /// added elsewhere arrives nameless and stays that way), and so does their **order**: a
+    /// drag-reorder on the web writes `position` with no frame of any kind, unlike pins,
+    /// which at least have `pins-changed`. Skipped, the phone kept yesterday's order until
+    /// the app was relaunched — on a screen whose whole point is that the two clients agree.
+    ///
+    /// Not awaited: a slow or failing roster read must not hold the socket down. It lands as
+    /// a `networks` frame whenever it arrives, and the list re-sorts then.
     func reconnect(since: Int) {
-        // Settings are re-fetched here, unlike the network roster.
-        //
-        // They're the one piece of state with no resume path: `settings` frames are live
-        // fan-out only and are never replayed (the resume slice carries messages, not
-        // settings), so a change made on the web while this phone was backgrounded or in
-        // reconnect backoff would otherwise be invisible until the app was relaunched.
         Task { await fetchSettings() }
+        Task { await refreshNetworks() }
         openSocket(since: since)
     }
 
-    /// Returns false only when the token was rejected (401); true otherwise, including
-    /// transient errors where the socket is still worth trying.
-    private func fetchNetworks() async -> Bool {
+    /// Which roster read is the current one.
+    ///
+    /// ⚠⚠ Needed because `applyNetworks` is authoritative over membership in both directions
+    /// — a network absent from a response is deleted, buffers and pins with it — and several
+    /// reads can now be in flight at once (every reconnect attempt starts one, alongside the
+    /// ones a create, a delete or a nameless network start). Land them out of order and the
+    /// older answer wins: a network deleted a moment ago reappears in the buffer list, the
+    /// join menu and `on:` search, or one added on the web is dropped along with its buffers.
+    /// The networks screen keeps the same guard over its own fetches for the same reason.
+    private var rosterGeneration = 0
+
+    /// Returns false only when the token was rejected (401) *and* the caller asked to hear
+    /// about it; true otherwise, including transient errors where the socket is still worth
+    /// trying.
+    ///
+    /// `reportingUnauthorized` is true only for the connect-time read, which is the token
+    /// check — see `refreshNetworks` for why every other caller wants it off.
+    private func fetchNetworks(reportingUnauthorized: Bool = true) async -> Bool {
         guard let token, let url = URL(string: baseURL + "/api/networks") else { return true }
+        rosterGeneration += 1
+        let generation = rosterGeneration
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 401 {
+            if code == 401, reportingUnauthorized {
                 onFrame(.unauthorized)
                 return false
             }
+            // A read that a newer one has already superseded is dropped rather than applied:
+            // see `rosterGeneration`. Checked here rather than earlier so a 401 on the token
+            // check still reports, superseded or not.
+            guard generation == rosterGeneration else { return true }
             if (200..<300).contains(code), let text = String(data: data, encoding: .utf8) {
                 onFrame(FrameParser.parseNetworks(text))
             }
@@ -275,15 +305,17 @@ final class LurkerClient {
 
     // MARK: - Networks (#11)
 
-    /// Re-read the network roster. The connect path does this once; this is for the two
-    /// moments that invalidate it afterwards — a network created or deleted from this app,
-    /// and a `snapshot` naming a network we hold no name for (#136).
+    /// Re-read the network roster: after a network is created or deleted from this app, when
+    /// a `snapshot` names one we hold no name for (#136), and on every reconnect (see
+    /// `reconnect` for why that one is not the waste it looks like).
     ///
-    /// ⚠ `reconnect` deliberately does NOT call this, on the grounds that names don't change.
-    /// That reasoning is sound and is also why nothing repaired a roster that failed to load
-    /// the first time: the set of networks changes even when their names don't.
+    /// ⚠⚠ Does NOT report a 401, unlike the connect-time read. There it IS the token check
+    /// and a rejection has to end the session; here it is a background refresh that can run
+    /// during a flapping reconnect, and bouncing the user to sign-in over a roster GET is
+    /// exactly what `fetchSettings` refuses to do three functions down, for the same reason.
+    /// The socket is the thing that finds out whether the session is still good.
     func refreshNetworks() async {
-        _ = await fetchNetworks()
+        _ = await fetchNetworks(reportingUnauthorized: false)
     }
 
     /// `GET /api/networks`, read as editable configuration rather than as the roster.
@@ -295,6 +327,19 @@ final class LurkerClient {
     func networkConfigs() async -> [NetworkConfig]? {
         switch await rest("GET", "/api/networks") {
         case .ok(let text): return FrameParser.parseNetworkConfigs(text)  // nil if unreadable
+        case .failure: return nil
+        }
+    }
+
+    /// `GET /api/network-presets` — what this instance recommends, and whether anything else
+    /// is allowed.
+    ///
+    /// Nil is "we couldn't ask". The picker falls back to the bundled catalogue on nil rather
+    /// than showing an error: the builtins are already on the device, and a failed request
+    /// for the instance's *extra* suggestions is no reason to refuse to add a network.
+    func networkPresets() async -> NetworkPresets? {
+        switch await rest("GET", "/api/network-presets") {
+        case .ok(let text): return FrameParser.parseNetworkPresets(text)
         case .failure: return nil
         }
     }

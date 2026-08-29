@@ -46,11 +46,15 @@ public enum BufferPlaceholder: Equatable, Sendable {
         hasMessages: Bool,
         hydrated: Bool,
         hydratesOnDemand: Bool,
-        bufferExists: Bool
+        bufferExists: Bool,
+        rosterSettled: Bool = false
     ) -> BufferPlaceholder {
         if hasMessages { return .none }
         return historyLanded(
-            hydrated: hydrated, hydratesOnDemand: hydratesOnDemand, bufferExists: bufferExists
+            hydrated: hydrated,
+            hydratesOnDemand: hydratesOnDemand,
+            bufferExists: bufferExists,
+            rosterSettled: rosterSettled
         ) ? .empty : .loading
     }
 
@@ -59,11 +63,26 @@ public enum BufferPlaceholder: Equatable, Sendable {
     /// `dividerSeen` latch asks the same question (has the reader been shown the buffer's real
     /// history, or a stub that outran it?), and asking it as a bare `hydrated` strands the
     /// off-demand kinds on the wrong answer forever in both places.
+    /// `rosterSettled` — the connect burst has finished (`ChatState.rosterSettled`). It only
+    /// matters to the off-demand kinds, and only when their row never arrived.
+    ///
+    /// ⚠⚠ Without it, an off-demand buffer with no row waits forever. That used to be
+    /// unreachable: the only way to *open* a server log was to tap a row, and the row existed
+    /// only if the store had one. The buffer list now offers a network's log whether or not a
+    /// row has arrived — the web always has, its network header being that buffer — so
+    /// "no row" is now a thing a reader can be looking at, and `bufferExists` alone would
+    /// park them on a spinner that nothing can ever resolve, because a server buffer can't
+    /// hydrate on demand to correct it.
+    ///
+    /// Gated on the burst being *finished*, not on `backlogComplete` alone: that flag latches
+    /// true and stays true, so mid-resync it would answer "empty" for a buffer whose row is
+    /// still on its way.
     public static func historyLanded(
         hydrated: Bool,
         hydratesOnDemand: Bool,
-        bufferExists: Bool
+        bufferExists: Bool,
+        rosterSettled: Bool = false
     ) -> Bool {
-        hydratesOnDemand ? hydrated : bufferExists
+        hydratesOnDemand ? hydrated : (bufferExists || rosterSettled)
     }
 }

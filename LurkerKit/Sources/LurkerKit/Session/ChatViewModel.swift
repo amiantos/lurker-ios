@@ -677,6 +677,12 @@ public final class ChatViewModel {
         await client.networkConfigs()
     }
 
+    /// The networks this instance recommends, and whether users may add anything else.
+    /// Nil is "couldn't ask" — the picker still has the bundled catalogue.
+    public func networkPresets() async -> NetworkPresets? {
+        await client.networkPresets()
+    }
+
     /// Create a network. The server connects it immediately on success.
     ///
     /// The roster is re-read afterwards because nothing else will name the new network: it
@@ -759,7 +765,12 @@ public final class ChatViewModel {
         store.removeBuffer(key)
     }
 
-    /// The networks the user is on, for the join picker and buffer-list grouping.
+    /// The networks the user is on, unordered.
+    ///
+    /// ⚠ Unordered, so it is only good for a lookup by id — which is its one remaining caller
+    /// (`BufferInfoViewController`, resolving a buffer's network name). Anything that *lists*
+    /// networks wants `BufferOrder.networks`, which puts them in the order the user arranged
+    /// them in; the buffer list, the join sheet and the networks screen all do.
     public var networks: [Network] { Array(store.state.networks.values) }
 
     // MARK: - Favorites (the Friends/Contacts successor)

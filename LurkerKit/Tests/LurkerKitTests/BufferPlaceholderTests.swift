@@ -96,4 +96,44 @@ final class BufferPlaceholderTests: XCTestCase {
             BufferPlaceholder.historyLanded(hydrated: false, hydratesOnDemand: false, bufferExists: false)
         )
     }
+    // MARK: - A server log with no row
+
+    func testAnAbsentServerLogWaitsWhileTheBurstIsStillRunning() {
+        // Mid-burst its row may still be on its way, so "loading" is the honest answer.
+        XCTAssertEqual(
+            BufferPlaceholder.of(
+                hasMessages: false, hydrated: false, hydratesOnDemand: false,
+                bufferExists: false, rosterSettled: false
+            ),
+            .loading
+        )
+    }
+
+    func testAnAbsentServerLogIsEmptyOnceTheBurstHasFinished() {
+        // ⚠⚠ Otherwise it spins forever. The buffer list now offers a network's log whether
+        // or not a row has arrived — the web always has, its network header being that
+        // buffer — so "no row" is something a reader can be looking at, and a server buffer
+        // can't hydrate on demand to correct itself.
+        XCTAssertEqual(
+            BufferPlaceholder.of(
+                hasMessages: false, hydrated: false, hydratesOnDemand: false,
+                bufferExists: false, rosterSettled: true
+            ),
+            .empty
+        )
+    }
+
+    func testASettledRosterChangesNothingForAChannel() {
+        // On-demand kinds still key off `hydrated` alone: a channel shell exists long before
+        // its history, and reading a settled roster as "landed" would call it empty while its
+        // hydrate reply is in flight.
+        XCTAssertEqual(
+            BufferPlaceholder.of(
+                hasMessages: false, hydrated: false, hydratesOnDemand: true,
+                bufferExists: true, rosterSettled: true
+            ),
+            .loading
+        )
+    }
+
 }

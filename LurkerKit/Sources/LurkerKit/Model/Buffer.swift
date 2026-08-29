@@ -115,6 +115,16 @@ public struct Buffer: Equatable, Sendable {
     /// The server's sentinel target for the app-scoped system buffer.
     public static let systemTarget = ":system:"
 
+    /// A network's server-log target. The web's `serverTarget()`, and the same string the
+    /// server uses.
+    ///
+    /// ⚠ This client only ever *recognised* the prefix before, never built one — so a
+    /// network's server log appeared in the buffer list solely when a row for it happened to
+    /// arrive, and vanished when the connect burst's prune didn't name it. The web has no
+    /// such gap: its network header **is** the server buffer, addressed by a target it
+    /// constructs itself, so every network always has one visible way in.
+    public static func serverTarget(_ networkId: Int) -> String { ":server:\(networkId)" }
+
     /// The system buffer, constructed without the server. It's app-scoped and always
     /// exists, so the app can open it as its landing screen before any frame has arrived;
     /// the real one folds in over this when the backlog lands.

@@ -221,6 +221,13 @@ enum ServerFrame: Equatable, Sendable {
     /// drop: it is how "cleared" arrives.
     case awayState(networkId: Int, away: AwayState?)
 
+    /// WS `pins-changed`: this network's pinned buffers, in the user's order.
+    ///
+    /// Authoritative and wholesale — the server re-sends the whole list on every pin, unpin
+    /// and reorder — so the store replaces rather than patches. Sent per network, so it says
+    /// nothing about the others.
+    case pinsChanged(networkId: Int, pinned: [String])
+
     /// A `typing` ephemeral (rides `irc`, `type:"typing"`): a peer's `+typing` tag, scoped to
     /// the channel or DM they're composing in. `activity` is nil for `done` and for anything
     /// unrecognized, which the store reads as "stop showing them".
@@ -303,6 +310,13 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// `away-state` events then replace. Nil when the server reports none, which is the
     /// normal case for a user who has never been away.
     var away: AwayState?
+    /// The targets this network's buffers are pinned to, in the user's order — the
+    /// connect-time seed for what live `pins-changed` frames then replace.
+    ///
+    /// Ordered, so it's an array and not a set: the order IS the payload. It is also a
+    /// superset of what can be shown, since a pin row survives its buffer being parted or
+    /// closed.
+    var pinned: [String] = []
 }
 
 struct ChannelSnapshot: Equatable, Sendable {
