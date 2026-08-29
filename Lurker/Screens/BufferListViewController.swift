@@ -755,13 +755,17 @@ final class BufferListViewController: UICollectionViewController {
     /// first question for the person most likely to be asking it.
     private func showAddNetwork() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
-        var sheet: UINavigationController?
         let picker = NetworkPickerViewController(
             viewModel: viewModel,
             onCancel: { [weak self] in self?.dismiss(animated: true) }
         ) { [weak self] draft in
-            guard let self else { return }
-            sheet?.pushViewController(
+            // ⚠⚠ The sheet is reached through `self`, not through a captured local. Holding
+            // it in a `var` the closure closes over is a retain cycle — the capture box holds
+            // the navigation controller, which holds the picker, which holds this closure —
+            // and it leaks the whole sheet (search controller, 95-row table, any pushed form)
+            // on every single "Add Network", whether or not anything is picked.
+            guard let self, let sheet = presentedViewController as? UINavigationController else { return }
+            sheet.pushViewController(
                 NetworkFormViewController(viewModel: viewModel, draft: draft) { [weak self] in
                     // The whole sheet goes: this screen isn't a networks list, so there is
                     // nothing here to come back to — the new network's buffers arriving IS
@@ -772,7 +776,6 @@ final class BufferListViewController: UICollectionViewController {
             )
         }
         let navigation = UINavigationController(rootViewController: picker)
-        sheet = navigation
         navigation.sheetPresentationController?.prefersGrabberVisible = true
         navigation.sheetPresentationController?.detents = [.large()]
         present(navigation, animated: true)

@@ -200,6 +200,14 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
             ])
         }
         textView.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor).isActive = true
+        // ⚠ The placeholder gets a bottom constraint too, so it can push the row taller than
+        // the text view's floor. It is three lines and grows with Dynamic Type while an empty
+        // text view's intrinsic height does not, so at accessibility sizes it outgrew the
+        // 56pt box and its last line was clipped — a hint that stops being readable exactly
+        // for the readers who most need it.
+        placeholderLabel.bottomAnchor.constraint(
+            lessThanOrEqualTo: contentView.layoutMarginsGuide.bottomAnchor
+        ).isActive = true
         // Room for a couple of lines before anything is typed, so the row reads as a place
         // for several rather than as a one-line field that happens to wrap.
         textView.heightAnchor.constraint(greaterThanOrEqualToConstant: 56).isActive = true

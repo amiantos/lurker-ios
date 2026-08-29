@@ -395,18 +395,28 @@ final class NetworksViewController: UITableViewController {
     /// UIKit drops, and dropping it leaves a row that simply didn't change with no reason
     /// given. This is the settings screen's failed-write pattern, for the same reason.
     private func run(on id: Int, _ verb: @escaping () async -> String?) {
-        // Whatever the last attempt said is now stale — this is a new attempt at the same row.
-        if actionError?.id == id { actionError = nil; refreshRow(id) }
+        // Whatever the last attempt said is now stale — a new attempt is under way.
+        setActionError(nil)
         Task { [weak self] in
             guard let self, let message = await verb() else { return }
-            actionError = (id: id, message: message)
-            refreshRow(id)
+            setActionError((id: id, message: message))
         }
     }
 
-    private func refreshRow(_ id: Int) {
-        guard let row = configs.firstIndex(where: { $0.id == id }) else { return }
-        tableView.reconfigureRows(at: [IndexPath(row: row, section: 0)])
+    /// Move the single refusal slot, redrawing both the row losing it and the row gaining it.
+    ///
+    /// ⚠ Redrawing only the new row left the old one rendering a refusal the model no longer
+    /// held: two errors on screen where one existed, the stale one surviving until that cell
+    /// happened to be re-dequeued. Reachable in one gesture on a paused account (#18), where
+    /// every action is refused — tap Connect on one network, then on another.
+    private func setActionError(_ error: (id: Int, message: String)?) {
+        let affected = Set([actionError?.id, error?.id].compactMap { $0 })
+        actionError = error
+        let paths = affected.compactMap { id in
+            configs.firstIndex(where: { $0.id == id }).map { IndexPath(row: $0, section: 0) }
+        }
+        guard !paths.isEmpty else { return }
+        tableView.reconfigureRows(at: paths)
     }
 
     private func confirmDelete(_ config: NetworkConfig) {
@@ -425,8 +435,7 @@ final class NetworksViewController: UITableViewController {
             Task { [weak self] in
                 guard let self else { return }
                 if let message = await viewModel.deleteNetwork(id: config.id) {
-                    actionError = (id: config.id, message: message)
-                    refreshRow(config.id)
+                    setActionError((id: config.id, message: message))
                     return
                 }
                 // The roster re-read the delete triggers has already updated the store; this

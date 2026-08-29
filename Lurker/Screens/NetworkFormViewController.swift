@@ -312,20 +312,27 @@ final class NetworkFormViewController: UITableViewController {
         _ indexPath: IndexPath, _ label: String, saved: Bool, edit: SecretEdit,
         clearRow: Row, current: @escaping () -> SecretEdit, onChange: @escaping (SecretEdit) -> Void
     ) -> FormTextCell {
-        let value: String
-        if case .set(let typed) = edit { value = typed } else { value = "" }
-        let cell = text(
-            indexPath, label, value,
-            placeholder: {
-                if edit == .cleared { return "Will be removed" }
-                return saved ? "Saved — type to replace" : "Optional"
-            }()
-        ) { [weak self] text in
+        let cell = tableView.dequeueReusableCell(
+            withIdentifier: FormTextCell.reuseID, for: indexPath
+        ) as! FormTextCell
+        if case .set(let typed) = edit {
+            cell.configure(label: label, value: typed, placeholder: Self.placeholder(for: edit, saved: saved))
+        } else {
+            cell.configure(label: label, value: "", placeholder: Self.placeholder(for: edit, saved: saved))
+        }
+        cell.onChange = { [weak self, weak cell] text in
             // Typing supersedes an armed clear: the user is replacing the password now, not
             // removing it, and leaving the clear armed would throw the new value away on save.
             onChange(text.isEmpty ? .unchanged : .set(text))
-            // So the clear row, which now says the wrong thing, is re-drawn. That row only —
-            // a full rebuild would resign the keyboard on every keystroke.
+            // ⚠⚠ The placeholder is updated IN PLACE, not by reconfiguring this row — that
+            // would rebuild the cell the user is typing into and resign the keyboard. Without
+            // it, un-arming a clear by typing and then deleting left the field still saying
+            // "Will be removed" over a password Save was about to keep: the screen stating
+            // the opposite of what would happen, which is the divergence `restoreOnFocus`
+            // exists to prevent one field over.
+            cell?.field.placeholder = Self.placeholder(for: current(), saved: saved)
+            // The clear row, which now says the wrong thing too. That one isn't being typed
+            // into, so a reconfigure is safe.
             self?.reconfigure(clearRow)
         }
         cell.typedAsIdentifier()
@@ -336,6 +343,13 @@ final class NetworkFormViewController: UITableViewController {
         // thing — see `FormTextCell.restoreOnFocus`.
         cell.restoreOnFocus = { if case .set(let typed) = current() { return typed } else { return nil } }
         return cell
+    }
+
+    /// What an empty password field means right now — the one thing a blank secure field
+    /// cannot say for itself.
+    private static func placeholder(for edit: SecretEdit, saved: Bool) -> String {
+        if edit == .cleared { return "Will be removed" }
+        return saved ? "Saved — type to replace" : "Optional"
     }
 
     /// Redraw one row in place, leaving whatever is being typed into alone.
