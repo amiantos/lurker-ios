@@ -28,6 +28,61 @@ import UIKit
 /// "Denser" is spacing, not type size — one font size app-wide. The hierarchy is the card,
 /// a network line on the grid chips, weight, and order.
 ///
+
+/// Grid of chips, or inset-grouped list.
+nonisolated private enum Layout {
+    case list
+    case grid
+}
+
+/// What a section *is*, independent of where it currently sits.
+///
+/// ⚠⚠ The fix for a class of bug that cost a long QA session. This screen's sections are
+/// not interchangeable — Friends/Favorites/Recent are two-up grids of chips, the network
+/// rosters are inset-grouped lists — and they arrive in a different order than they
+/// finally sit in: during the connect burst the list is `Recent | libera | …` and
+/// moments later `Friends | Favorites | Recent | libera | …`, so index 1 stops being a
+/// list and becomes a grid.
+///
+/// Everything that used to key off the *index* — which layout to build, which title to
+/// draw, whether a drag may land — followed the position rather than the content, and a
+/// collection view caches geometry and self-sizing metrics by index path. The result was
+/// a list whose rows were each correct and whose picture was not: headers between the
+/// wrong rows, one drawn twice, networks apparently out of order. `reloadData`,
+/// `invalidateLayout` and even a fresh layout object all failed to fix it, because none
+/// of them addressed the reason: identity by position.
+nonisolated private enum SectionID: Hashable {
+    case friends
+    case favorites
+    case recent
+    /// A network's roster. `pinned` splits it into the two sections a network can have.
+    case network(Int, pinned: Bool)
+    /// Buffers whose network isn't in the roster yet (snapshot race).
+    case unrostered(Int, pinned: Bool)
+
+    var layout: Layout {
+        switch self {
+        case .friends, .favorites, .recent: .grid
+        case .network, .unrostered: .list
+        }
+    }
+
+    /// Whether these chips can be dragged into a new order (#53). Friends and Favorites,
+    /// the two views of the server's one global favorites order (lurker#721) — not
+    /// Recent, which is MRU-ordered, and not the rosters, which are the same sorted list
+    /// this screen has always shown; a drag in either would be undone by the next
+    /// rebuild.
+    var reorderable: Bool { self == .friends || self == .favorites }
+}
+
+/// One row's identity. Section-qualified because the same buffer legitimately appears
+/// twice — Recent keeps its rows in their network sections — and a diffable data source
+/// requires item identifiers to be unique across the whole snapshot.
+nonisolated private struct ItemID: Hashable {
+    let section: SectionID
+    let key: String
+}
+
 /// It reports the pick through `onSelect` and doesn't know what happens next.
 final class BufferListViewController: UICollectionViewController {
     private let viewModel: ChatViewModel
@@ -41,10 +96,6 @@ final class BufferListViewController: UICollectionViewController {
     /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
     private static let recentLimit = 4
 
-    private enum Layout {
-        case list
-        case grid
-    }
 
     private struct Row: Equatable {
         let buffer: Buffer
@@ -94,16 +145,13 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private struct Section {
+        let id: SectionID
         let title: String?
-        let layout: Layout
         var rows: [Row]
-        /// Whether these chips can be dragged into a new order (#53). Friends and Favorites,
-        /// the two views of the server's one global favorites order (lurker#721) — not
-        /// Recent, which is MRU-ordered, and not the rosters below, which are the same sorted
-        /// list this screen has always shown; a drag in either would be undone by the next
-        /// rebuild. Named for the capability rather than for the section, so the drag
-        /// delegates never have to recognize a section by its title.
-        var reorderable = false
+
+        var layout: Layout { id.layout }
+        var reorderable: Bool { id.reorderable }
+        var items: [ItemID] { rows.map { ItemID(section: id, key: $0.buffer.key.id) } }
     }
 
     private var state = ChatState()
@@ -171,6 +219,13 @@ final class BufferListViewController: UICollectionViewController {
         navigationItem.backButtonDisplayMode = .minimal
         navigationItem.largeTitleDisplayMode = .always
         collectionView.backgroundColor = .systemGroupedBackground
+        // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
+        // first thing that happens to touch it. `UICollectionViewController` installs itself
+        // as the collection view's data source in `loadView`; constructing the diffable one
+        // is what replaces it, and the layout's section provider asks the data source what a
+        // section is — so a lazy first touch from inside that provider would be answering a
+        // question about a data source that doesn't exist yet.
+        _ = dataSource
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
         // Drag-and-drop rather than `moveItemAt` + the standard interactive-movement gesture
@@ -362,44 +417,33 @@ final class BufferListViewController: UICollectionViewController {
             return
         }
         rebuildDeferredByDrag = false
-        let previous = sections
+        let previous = rowsByID
         sections = buildSections(state)
+        rowsByID = Dictionary(
+            sections.flatMap { section in
+                section.rows.map { (ItemID(section: section.id, key: $0.buffer.key.id), $0) }
+            },
+            // A section can't hold one buffer twice, and `ItemID` is section-qualified, so a
+            // collision here is impossible rather than merely unlikely — keep the first and
+            // move on rather than trapping on it in front of a user.
+            uniquingKeysWith: { first, _ in first }
+        )
         updatePlaceholder()
-        guard Self.sameStructure(previous, sections) else {
-            collectionView.reloadData()
-            // ⚠⚠ A brand-NEW layout object, not `reloadData` alone and not
-            // `invalidateLayout()` — both were tried and neither is enough.
-            //
-            // A collection view caches self-sizing metrics and section geometry **by index
-            // path**, and this screen's sections are not interchangeable: the top ones are
-            // two-up grids of chips sized `.estimated(44)`, the network ones are self-sizing
-            // inset-grouped lists. Their indices shift as sections arrive during the connect
-            // burst — `Recent | libera | …` becomes `Friends | Favorites | Recent | libera |
-            // …`, so index 1 stops being a list and becomes a grid — and the cached metrics
-            // go with the index, not with the content.
-            //
-            // The result is wrong GEOMETRY over right content: rows are each correct, but
-            // sections are drawn at overlapping offsets, so headers land between the wrong
-            // rows and one can be painted twice. It reads as "the buffer list is showing the
-            // wrong channels under the wrong networks", which sends you looking at the model,
-            // where there is nothing wrong to find.
-            //
-            // A fresh layout has no caches by construction. It also hides well: opening any
-            // buffer and coming back re-enters the window and forces a full layout pass, so
-            // the list is always correct the moment you go and look somewhere else.
-            collectionView.setCollectionViewLayout(makeLayout(), animated: false)
-            return
+
+        var snapshot = NSDiffableDataSourceSnapshot<SectionID, ItemID>()
+        snapshot.appendSections(sections.map(\.id))
+        for section in sections { snapshot.appendItems(section.items, toSection: section.id) }
+        // Identity alone can't see a row whose *contents* moved — an unread count, a friend's
+        // presence dot — because those don't change the item's identifier. Naming them keeps
+        // the cheap path cheap: everything else in the snapshot is left exactly as it is.
+        let restyled = snapshot.itemIdentifiers.filter { id in
+            guard let was = previous[id], let now = rowsByID[id] else { return false }
+            return was != now
         }
-        let changed = previous.indices.flatMap { section in
-            sections[section].rows.indices.compactMap { row in
-                // Compare the whole row, not just its buffer: a friend chip's presence and
-                // display name live on the row, so a dot flip has to reconfigure too.
-                previous[section].rows[row] != sections[section].rows[row]
-                    ? IndexPath(item: row, section: section)
-                    : nil
-            }
-        }
-        if !changed.isEmpty { collectionView.reconfigureItems(at: changed) }
+        if !restyled.isEmpty { snapshot.reconfigureItems(restyled) }
+        // Never animated: this runs on every frame that changes the roster, and a list that
+        // slides every time someone speaks is a list you can't read.
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     /// Show a centered placeholder when the list has no rows, so a blank screen always says
@@ -449,23 +493,6 @@ final class BufferListViewController: UICollectionViewController {
         }
     }
 
-    /// Whether two section models place the same buffers in the same order under the same
-    /// headers — i.e. nothing but per-buffer contents (unread, highlights) could have moved,
-    /// never the shape of the list. Compares buffer *keys*, not the buffers themselves, since
-    /// a count change is exactly what we want to fall through to a reconfigure.
-    private static func sameStructure(_ a: [Section], _ b: [Section]) -> Bool {
-        guard a.count == b.count else { return false }
-        for (x, y) in zip(a, b) {
-            guard x.title == y.title, x.layout == y.layout, x.rows.count == y.rows.count else {
-                return false
-            }
-            for (rx, ry) in zip(x.rows, y.rows) where rx.buffer.key != ry.buffer.key {
-                return false
-            }
-        }
-        return true
-    }
-
     // MARK: - Layout
 
     /// One scroll view, section by section: the per-network rosters lay out as grouped lists
@@ -473,17 +500,22 @@ final class BufferListViewController: UICollectionViewController {
     /// as a two-column grid of cards (under a boundary header). Every section carries a title.
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] index, environment in
-            guard let self, index < self.sections.count else { return nil }
-            let section = self.sections[index]
+            // ⚠⚠ By IDENTITY, not by index. This closure is called lazily and its result is
+            // cached per index, so reading a positional array here is what let a section keep
+            // another section's geometry when the two swapped places mid-burst.
+            guard let self, let id = self.dataSource.sectionIdentifier(for: index) else {
+                return nil
+            }
+            let hasTitle = self.sections.first { $0.id == id }?.title != nil
             let layoutSection: NSCollectionLayoutSection
 
-            switch section.layout {
+            switch id.layout {
             case .list:
                 var config = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
                 // The list's *own* header, not a manual boundary item: the native grouped
                 // header sits tight to the first row, whereas a hand-added header stacks on
                 // top of the list's top inset and leaves an oversized gap.
-                config.headerMode = section.title != nil ? .supplementary : .none
+                config.headerMode = hasTitle ? .supplementary : .none
                 config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
                     self?.trailingSwipe(at: indexPath)
                 }
@@ -519,7 +551,7 @@ final class BufferListViewController: UICollectionViewController {
                 grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 16, bottom: 18, trailing: 16)
                 // A grid has no list header of its own, so it carries a boundary one — the
                 // small gap this leaves reads fine above cards.
-                if section.title != nil {
+                if hasTitle {
                     let header = NSCollectionLayoutBoundarySupplementaryItem(
                         layoutSize: NSCollectionLayoutSize(
                             widthDimension: .fractionalWidth(1),
@@ -577,11 +609,55 @@ final class BufferListViewController: UICollectionViewController {
         .SupplementaryRegistration<UICollectionViewListCell>(
             elementKind: UICollectionView.elementKindSectionHeader
         ) { [weak self] view, _, indexPath in
-            guard let self, indexPath.section < self.sections.count else { return }
             var content = UIListContentConfiguration.header()
-            content.text = self.sections[indexPath.section].title
+            // ⚠⚠ Always assigned, even when there's nothing to say. Supplementary views are
+            // RECYCLED, so an early `return` here left the previous section's title on a
+            // header now sitting over a different section — which is what "the buffer list is
+            // showing two `local` headers" turned out to be.
+            content.text = self?.dataSource.sectionIdentifier(for: indexPath.section)
+                .flatMap { id in self?.sections.first { $0.id == id }?.title }
             view.contentConfiguration = content
         }
+
+    /// The list, handed over whole.
+    ///
+    /// ⚠⚠ Diffable rather than the manual data source this had, and the reason is identity.
+    /// The old one answered `numberOfSections`/`cellForItemAt` out of an array, so a section
+    /// *was* its index — and the indices shift as sections arrive during the connect burst.
+    /// Everything keyed off position went with them: the layout's grid-or-list decision, the
+    /// header's title, the collection view's cached self-sizing metrics. Rows stayed correct
+    /// and the picture didn't.
+    ///
+    /// `SectionID`/`ItemID` make identity explicit, so a section that moves takes its layout
+    /// and its geometry with it and UIKit computes the moves itself from one snapshot.
+    private lazy var dataSource: UICollectionViewDiffableDataSource<SectionID, ItemID> = {
+        let source = UICollectionViewDiffableDataSource<SectionID, ItemID>(
+            collectionView: collectionView
+        ) { [weak self] collectionView, indexPath, item in
+            guard let self, let row = rowsByID[item] else { return UICollectionViewCell() }
+            switch item.section.layout {
+            case .list:
+                return collectionView.dequeueConfiguredReusableCell(
+                    using: listRegistration, for: indexPath, item: row
+                )
+            case .grid:
+                return collectionView.dequeueConfiguredReusableCell(
+                    using: chipRegistration, for: indexPath, item: row
+                )
+            }
+        }
+        source.supplementaryViewProvider = { [weak self] _, _, indexPath in
+            guard let self else { return nil }
+            return collectionView.dequeueConfiguredReusableSupplementary(
+                using: headerRegistration, for: indexPath
+            )
+        }
+        return source
+    }()
+
+    /// Every row on screen, by identity — what the cell provider configures from, since a
+    /// snapshot carries identifiers and not content.
+    private var rowsByID: [ItemID: Row] = [:]
 
     // MARK: - Bar items
 
@@ -881,15 +957,15 @@ final class BufferListViewController: UICollectionViewController {
         // Both are reorderable since lurker#721 — the order is the server's global favorites
         // order, shared with the web client.
         if !friends.isEmpty {
-            sections.append(Section(title: "Friends", layout: .grid, rows: friends, reorderable: true))
+            sections.append(Section(id: .friends, title: "Friends", rows: friends))
         }
         if !favorites.isEmpty {
-            sections.append(Section(title: "Favorites", layout: .grid, rows: favorites, reorderable: true))
+            sections.append(Section(id: .favorites, title: "Favorites", rows: favorites))
         }
         // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
         // having no sidebar, so it sits below the two curated sections rather than pushing
         // them down with buffers you merely passed through.
-        if !recents.isEmpty { sections.append(Section(title: "Recent", layout: .grid, rows: recents)) }
+        if !recents.isEmpty { sections.append(Section(id: .recent, title: "Recent", rows: recents)) }
 
         // The user's own order, not ours: they arranged their networks on the web, and a
         // phone that re-alphabetises them is a phone you have to re-read every time you pick
@@ -903,14 +979,18 @@ final class BufferListViewController: UICollectionViewController {
             // coming and going with the connect burst's prune.
             let rows = BufferOrder.withServerLog(byNetwork[network.id] ?? [], networkId: network.id)
             let split = BufferOrder.split(rows, pinned: state.pinned[network.id] ?? [])
-            sections.append(contentsOf: networkSections(header(for: network), split, state))
+            sections.append(contentsOf: networkSections(
+                { .network(network.id, pinned: $0) }, header(for: network), split, state
+            ))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
             let split = BufferOrder.split(buffers, pinned: state.pinned[networkId] ?? [])
             // NOT the literal "network" this used to say — that was #136's placeholder
             // surviving in the one place the fix didn't reach, and it reads as a real name.
-            sections.append(contentsOf: networkSections(Network.unnamedDisplayName, split, state))
+            sections.append(contentsOf: networkSections(
+                { .unrostered(networkId, pinned: $0) }, Network.unnamedDisplayName, split, state
+            ))
         }
         return sections
     }
@@ -1102,7 +1182,10 @@ final class BufferListViewController: UICollectionViewController {
     /// Either section is dropped when empty, so a network with no pins looks exactly as it
     /// did, and a pin whose buffer isn't open costs nothing.
     private func networkSections(
-        _ header: String, _ split: (pinned: [Buffer], rest: [Buffer]), _ state: ChatState
+        _ id: (Bool) -> SectionID,
+        _ header: String,
+        _ split: (pinned: [Buffer], rest: [Buffer]),
+        _ state: ChatState
     ) -> [Section] {
         var sections: [Section] = []
         if !split.pinned.isEmpty {
@@ -1111,14 +1194,14 @@ final class BufferListViewController: UICollectionViewController {
                 // ("— offline", "— connecting…") — `UIListContentConfiguration.header()`
                 // renders the string as given, so the two would otherwise disagree in the
                 // same line: "Libera — offline — Pinned".
+                id: id(true),
                 title: "\(header) — pinned",
-                layout: .list,
                 rows: split.pinned.map { rosterRow($0, state) }
             ))
         }
         if !split.rest.isEmpty {
             sections.append(Section(
-                title: header, layout: .list, rows: split.rest.map { rosterRow($0, state) }
+                id: id(false), title: header, rows: split.rest.map { rosterRow($0, state) }
             ))
         }
         return sections
@@ -1135,39 +1218,9 @@ final class BufferListViewController: UICollectionViewController {
 
     // MARK: - Collection view data source
 
-    override func numberOfSections(in collectionView: UICollectionView) -> Int { sections.count }
-
-    override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        sections[section].rows.count
-    }
-
-    override func collectionView(
-        _ collectionView: UICollectionView,
-        cellForItemAt indexPath: IndexPath
-    ) -> UICollectionViewCell {
-        let section = sections[indexPath.section]
-        let row = section.rows[indexPath.row]
-        switch section.layout {
-        case .list:
-            return collectionView.dequeueConfiguredReusableCell(using: listRegistration, for: indexPath, item: row)
-        case .grid:
-            return collectionView.dequeueConfiguredReusableCell(using: chipRegistration, for: indexPath, item: row)
-        }
-    }
-
-    override func collectionView(
-        _ collectionView: UICollectionView,
-        viewForSupplementaryElementOfKind kind: String,
-        at indexPath: IndexPath
-    ) -> UICollectionReusableView {
-        collectionView.dequeueConfiguredReusableSupplementary(using: headerRegistration, for: indexPath)
-    }
-
-    // MARK: - Collection view delegate
-
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
-        let row = sections[indexPath.section].rows[indexPath.row]
+        guard let row = row(at: indexPath) else { return }
         // A friend's primary DM often isn't a materialized buffer — a DM that's closed
         // server-side has no row in `state.buffers`, and the chat screen's hydrate only fires
         // for a buffer that already has one. Send open-buffer explicitly here (as /query does)
@@ -1191,10 +1244,8 @@ final class BufferListViewController: UICollectionViewController {
     /// Trailing swipe on a roster row leaves/closes the buffer. Grid chips get nothing — the
     /// shortcut isn't the buffer's home, so leaving from it would be a surprise.
     private func trailingSwipe(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard indexPath.section < sections.count else { return nil }
-        let section = sections[indexPath.section]
-        guard section.layout == .list, indexPath.row < section.rows.count else { return nil }
-        let buffer = section.rows[indexPath.row].buffer
+        guard sectionID(at: indexPath)?.layout == .list, let buffer = row(at: indexPath)?.buffer
+        else { return nil }
         // The server log and the system buffer can't be closed.
         guard buffer.kind != .server, buffer.kind != .system else { return nil }
         let title = buffer.kind == .channel ? "Leave" : "Close"
@@ -1224,9 +1275,8 @@ final class BufferListViewController: UICollectionViewController {
         contextMenuConfigurationForItemAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        let row = sections[indexPath.section].rows[indexPath.row]
-        let buffer = row.buffer
-        guard buffer.kind != .system, buffer.kind != .server, let networkId = buffer.networkId
+        guard let buffer = row(at: indexPath)?.buffer, buffer.kind != .system,
+              buffer.kind != .server, let networkId = buffer.networkId
         else { return nil }
 
         // One favorites flag, two vocabularies (matching the web client): a DM is a
@@ -1325,7 +1375,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // refuses any session that didn't start here. Reordering a local list is the whole
         // feature — a favorite dragged into Mail should do nothing rather than paste a key.
         let item = UIDragItem(itemProvider: NSItemProvider())
-        item.localObject = sections[indexPath.section].rows[indexPath.item].buffer.key.id
+        item.localObject = row(at: indexPath)?.buffer.key.id
         dragSourceSection = indexPath.section
         return [item]
     }
@@ -1375,7 +1425,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
             // as an error where the honest answer is "nothing to drop onto".
             return UICollectionViewDropProposal(operation: .cancel)
         }
-        guard sections[destinationIndexPath.section].reorderable else {
+        guard sectionID(at: destinationIndexPath)?.reorderable == true else {
             // Over Recent or a roster row. `.forbidden` is the one that draws the
             // no-drop badge; `.cancel` is silent, which left the chip looking droppable
             // everywhere right up until it flew home. The rule is only discoverable if the
@@ -1406,10 +1456,10 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
     ) {
         guard let item = coordinator.items.first,
               let proposed = coordinator.destinationIndexPath,
-              sections.indices.contains(proposed.section),
-              sections[proposed.section].reorderable
+              let sectionID = sectionID(at: proposed), sectionID.reorderable,
+              let sectionIndex = sections.firstIndex(where: { $0.id == sectionID })
         else { return }
-        let rows = sections[proposed.section].rows
+        let rows = sections[sectionIndex].rows
         let visible = rows.map(\.buffer.key.id)
 
         // Resolved by KEY, not by `item.sourceIndexPath`. That index was captured when the chip
@@ -1448,16 +1498,25 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         optimisticFavoriteOrder = reorderedIds
 
         // The model moves with the view rather than being rebuilt: the echo would reach the
-        // same answer, but it reloads on a row-order change (`sameStructure` compares keys
-        // positionally), and a reload mid-drop drops the drag animation on the floor. A move
-        // inside one section can't change any other — Recent excludes favorites by
+        // same answer, but a full rebuild mid-drop drops the drag animation on the floor. A
+        // move inside one section can't change any other — Recent excludes favorites by
         // membership, not by order — so the two are equivalent here.
-        sections[source.section].rows.insert(
-            sections[source.section].rows.remove(at: source.item), at: destination.item
+        sections[sectionIndex].rows.insert(
+            sections[sectionIndex].rows.remove(at: source.item), at: destination.item
         )
-        collectionView.performBatchUpdates {
-            collectionView.moveItem(at: source, to: destination)
-        }
+        rowsByID = Dictionary(
+            sections.flatMap { section in
+                section.rows.map { (ItemID(section: section.id, key: $0.buffer.key.id), $0) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        // Through the data source, not `collectionView.moveItem`: it owns the item order now,
+        // and a view moved behind its back is a view the next snapshot would move back.
+        var snapshot = dataSource.snapshot()
+        let moved = sections[sectionIndex].items
+        snapshot.deleteItems(moved)
+        snapshot.appendItems(moved, toSection: sectionID)
+        dataSource.apply(snapshot, animatingDifferences: false)
         coordinator.drop(item.dragItem, toItemAt: destination)
     }
 
@@ -1475,10 +1534,21 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
 
     /// Whether this index path is a chip in a section that can be reordered, and still
     /// addresses a row at all.
+    /// The row at an index path, by identity.
+    ///
+    /// Every delegate callback goes through this rather than indexing `sections`: UIKit hands
+    /// back positions, and a position is the one thing about this list that isn't stable.
+    private func row(at indexPath: IndexPath) -> Row? {
+        dataSource.itemIdentifier(for: indexPath).flatMap { rowsByID[$0] }
+    }
+
+    /// What kind of section an index path lands in, by identity.
+    private func sectionID(at indexPath: IndexPath) -> SectionID? {
+        dataSource.sectionIdentifier(for: indexPath.section)
+    }
+
     private func reorderable(_ indexPath: IndexPath) -> Bool {
-        guard sections.indices.contains(indexPath.section) else { return false }
-        let section = sections[indexPath.section]
-        return section.reorderable && section.rows.indices.contains(indexPath.item)
+        sectionID(at: indexPath)?.reorderable == true && row(at: indexPath) != nil
     }
 }
 
