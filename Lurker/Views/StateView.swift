@@ -24,12 +24,25 @@ final class StateView: UIView {
         var title: String
         var subtitle: String?
         var isLoading: Bool
+        /// An optional way out of the state being described — "Try Again" on a failure, "Add
+        /// Network" on an empty list.
+        ///
+        /// Title only, no handler: the model is `Equatable` so callers can skip redundant
+        /// reconfigures, and a closure isn't. The handler is set separately on the view.
+        var actionTitle: String?
 
-        init(symbol: String? = nil, title: String, subtitle: String? = nil, isLoading: Bool = false) {
+        init(
+            symbol: String? = nil,
+            title: String,
+            subtitle: String? = nil,
+            isLoading: Bool = false,
+            actionTitle: String? = nil
+        ) {
             self.symbol = symbol
             self.title = title
             self.subtitle = subtitle
             self.isLoading = isLoading
+            self.actionTitle = actionTitle
         }
     }
 
@@ -38,6 +51,11 @@ final class StateView: UIView {
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let stack = UIStackView()
+    private let actionButton = UIButton(configuration: .borderless())
+
+    /// Run when the action button is tapped. Held separately from the model so the model can
+    /// stay `Equatable` — see `Model.actionTitle`.
+    var onAction: (() -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -72,8 +90,14 @@ final class StateView: UIView {
         stack.addArrangedSubview(spinner)
         stack.addArrangedSubview(titleLabel)
         stack.addArrangedSubview(subtitleLabel)
+        // A real button, not a tappable label: it's the one thing on this view a person is
+        // meant to do, and it has to look like it and carry a button's accessibility traits.
+        actionButton.addAction(UIAction { [weak self] _ in self?.onAction?() }, for: .touchUpInside)
+        actionButton.isHidden = true
+        stack.addArrangedSubview(actionButton)
         stack.setCustomSpacing(14, after: glyph)
         stack.setCustomSpacing(14, after: spinner)
+        stack.setCustomSpacing(10, after: subtitleLabel)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
 
@@ -103,5 +127,7 @@ final class StateView: UIView {
         titleLabel.text = model.title
         subtitleLabel.text = model.subtitle
         subtitleLabel.isHidden = model.subtitle == nil
+        actionButton.setTitle(model.actionTitle, for: .normal)
+        actionButton.isHidden = model.actionTitle == nil
     }
 }
