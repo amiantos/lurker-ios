@@ -97,6 +97,20 @@ enum ServerFrame: Equatable, Sendable {
     /// nick-completion's exclusion of ourselves — answers with a nick we no longer have.
     case ownNick(networkId: Int, nick: String)
 
+    /// A `state` event: this network's connection moved (`connecting` → `connected`, a drop
+    /// to `disconnected`, a `reconnecting` backoff).
+    ///
+    /// The server publishes one on every transition, including a re-assertion of the state
+    /// it was already in, precisely so a client that attached late is never wrong. Nothing
+    /// else carries this: the connect `snapshot` states each network's connection once, and
+    /// without this frame that value stands for the whole session — every status light
+    /// frozen at whatever was true when the socket opened.
+    ///
+    /// `nick` is nil except on the connect transition, where the server sends it alongside.
+    /// Nil means "unchanged", never "empty" — blanking `Network.nick` on a disconnect would
+    /// break every "is this me?" test the way a missing `own-nick` does.
+    case networkState(networkId: Int, state: ConnectionState, nick: String?)
+
     /// WS `read-state`: server-authoritative read counts for a buffer, broadcast to all of
     /// the user's devices (after a mark-read, or any countable event). The client mirrors
     /// these onto the buffer — it never derives unread/highlight counts locally.

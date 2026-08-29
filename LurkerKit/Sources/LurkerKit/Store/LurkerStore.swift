@@ -228,6 +228,20 @@ public struct ChatState: Sendable {
         unsent[key] = nil
     }
 
+    /// Forget a network and everything under it — the local half of a delete, whether it
+    /// happened here or on another client.
+    ///
+    /// Its buffers go with it: server-side the delete cascades, and a buffer whose network no
+    /// longer exists has no section to sit under, no connection to send to, and no way to be
+    /// closed. Everything else keyed by network id goes too, so a later network reusing the
+    /// id — ids are per-instance and a fresh row gets a fresh one, but this costs nothing —
+    /// cannot inherit the old one's presence.
+    mutating func dropNetwork(_ id: Int) {
+        for key in buffers.values.filter({ $0.networkId == id }).map(\.key.id) { dropBuffer(key) }
+        networks[id] = nil
+        peerPresence[id] = nil
+    }
+
     /// Move everything keyed by `from` onto `to` — the rename mirror of
     /// `dropBuffer`'s map set, plus `burstSeen` (a rename landing mid-burst
     /// must not let the closing prune delete the survivor) and the id index.
@@ -641,6 +655,34 @@ final class LurkerStore {
             var next = state
             next.networks[networkId]?.nick = nick
             return next
+        case .networkState(let networkId, let connection, let nick):
+            // ⚠⚠ This one DOES materialize an unknown network, unlike `own-nick` and
+            // `away-state`. Those describe a network the connect snapshot has already named;
+            // this one is also the first thing said about a network created *since* we
+            // connected — `POST /api/networks` starts the connection before it answers, so
+            // its `connecting` (and against a fast server its `connected`) can beat the
+            // roster re-read that would otherwise create the row. Dropped here, the network
+            // then appeared with `ConnectionState`'s default and read "offline" while
+            // genuinely connected, with no further transition coming to correct it.
+            //
+            // Nameless is a real state now (#136) and it is self-correcting: a network with
+            // no name makes `ChatViewModel` re-read the roster, which either names it or —
+            // since that read is authoritative — removes it again.
+            //
+            // The nick is applied only when the frame carried one — it rides the connect
+            // transition alone, and treating its absence as "" would blank the nick on every
+            // disconnect.
+            var next = state
+            if var existing = next.networks[networkId] {
+                existing.state = connection
+                if let nick { existing.nick = nick }
+                next.networks[networkId] = existing
+            } else {
+                next.networks[networkId] = Network(
+                    id: networkId, name: nil, state: connection, nick: nick ?? ""
+                )
+            }
+            return next
         case .history(
             let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer,
             let speakers
@@ -904,6 +946,18 @@ final class LurkerStore {
         return next
     }
 
+    /// `GET /api/networks` is the whole roster, so it decides membership as well as names.
+    ///
+    /// ⚠⚠ Authoritative in BOTH directions. Merging names in and never removing anything left
+    /// a deleted network on screen for the life of the process — its section header in the
+    /// buffer list, its entry in the join menu, its name resolving `on:` in search — with no
+    /// frame able to retract it: `pruneToBurst` prunes buffers only, and `applySnapshot`
+    /// merges. Deleting from this app couldn't reconcile its own delete, and a network deleted
+    /// from the web survived every reconnect.
+    ///
+    /// ⚠ This is why `parseNetworks` refuses an unreadable body instead of reporting an empty
+    /// roster: with removal in play, "we couldn't read the answer" would wipe every network
+    /// the user has.
     private static func applyNetworks(_ state: ChatState, _ networks: [Network]) -> ChatState {
         var next = state
         for network in networks {
@@ -915,6 +969,14 @@ final class LurkerStore {
                 next.networks[network.id] = network
             }
         }
+        // Collected before mutating, matching `pruneToBurst` above. Iterating `keys` while
+        // dropping is actually well-defined — the view holds its own reference, so the
+        // mutation copies on write and the loop walks the pre-mutation snapshot — but that is
+        // a language guarantee a reader has to know to be sure of, and one file should not
+        // spell the same operation two ways.
+        let named = Set(networks.map(\.id))
+        let doomed = next.networks.keys.filter { !named.contains($0) }
+        for id in doomed { next.dropNetwork(id) }
         return next
     }
 
@@ -953,8 +1015,16 @@ final class LurkerStore {
                 existing.away = snapshot.away
                 next.networks[snapshot.id] = existing
             } else {
+                // ⚠⚠ No name, rather than a placeholder that reads like one (#136). The
+                // snapshot carries no network names at all, so a network the roster hasn't
+                // named — a roster fetch that failed, or a network added from another client
+                // while this app was running — arrives here nameless. The literal `"network"`
+                // this used to store was indistinguishable downstream from a real name, which
+                // is why the bug presented as the app calling a network "network" forever
+                // instead of as a fetch that never happened. `ChatViewModel.handle` watches
+                // for a nil name and re-reads the roster.
                 next.networks[snapshot.id] = Network(
-                    id: snapshot.id, name: "network", state: snapshot.state, nick: snapshot.nick,
+                    id: snapshot.id, name: nil, state: snapshot.state, nick: snapshot.nick,
                     away: snapshot.away
                 )
             }

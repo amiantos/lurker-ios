@@ -273,6 +273,147 @@ final class LurkerClient {
         }
     }
 
+    // MARK: - Networks (#11)
+
+    /// Re-read the network roster. The connect path does this once; this is for the two
+    /// moments that invalidate it afterwards — a network created or deleted from this app,
+    /// and a `snapshot` naming a network we hold no name for (#136).
+    ///
+    /// ⚠ `reconnect` deliberately does NOT call this, on the grounds that names don't change.
+    /// That reasoning is sound and is also why nothing repaired a roster that failed to load
+    /// the first time: the set of networks changes even when their names don't.
+    func refreshNetworks() async {
+        _ = await fetchNetworks()
+    }
+
+    /// `GET /api/networks`, read as editable configuration rather than as the roster.
+    ///
+    /// Nil means no answer — unauthenticated, offline, unreadable — never "no networks",
+    /// which is an empty array and a legitimate state for a fresh account. The screen has to
+    /// tell those apart: one is an error, the other is the empty state that invites you to
+    /// add your first network.
+    func networkConfigs() async -> [NetworkConfig]? {
+        switch await rest("GET", "/api/networks") {
+        case .ok(let text): return FrameParser.parseNetworkConfigs(text)  // nil if unreadable
+        case .failure: return nil
+        }
+    }
+
+    /// `POST /api/networks`. The server connects the new network immediately, regardless of
+    /// `autoconnect` — that flag governs cold start, not this.
+    func createNetwork(_ draft: NetworkDraft) async -> NetworkSaveResult {
+        if let problem = draft.validationError { return .failure(message: problem) }
+        return await save("POST", "/api/networks", body: draft.jsonBody(includeDefaultChannel: true))
+    }
+
+    /// `PATCH /api/networks/:id`. Takes effect on the next connection: the server updates the
+    /// row, and an established connection keeps whatever it registered with.
+    func updateNetwork(id: Int, draft: NetworkDraft) async -> NetworkSaveResult {
+        // ⚠ Checked here and not only on create: `PATCH` sets whatever keys it is given and
+        // validates none of them, so this client is the only thing standing between an edit
+        // and a network stored with no name. See `NetworkDraft.validationError`.
+        if let problem = draft.validationError { return .failure(message: problem) }
+        return await save("PATCH", "/api/networks/\(id)", body: draft.jsonBody(includeDefaultChannel: false))
+    }
+
+    private func save(_ method: String, _ path: String, body: [String: Any]) async -> NetworkSaveResult {
+        switch await rest(method, path, body: body) {
+        case .ok(let text):
+            guard let config = FrameParser.parseNetworkReply(text) else {
+                // ⚠ A 2xx we can't read is a write that HAPPENED — its own case, so a caller
+                // can dismiss rather than invite the retry that creates the network twice.
+                // The roster is re-read here rather than in the caller's `.saved` branch:
+                // it's how a new network becomes visible at all, and nothing else fetches it
+                // before the next reconnect.
+                await refreshNetworks()
+                return .savedWithoutDetail
+            }
+            return .saved(config)
+        case .failure(let message):
+            return .failure(message: message)
+        }
+    }
+
+    /// Delete the network and everything under it. Nil on success, a message otherwise.
+    func deleteNetwork(id: Int) async -> String? {
+        await act("DELETE", "/api/networks/\(id)")
+    }
+
+    /// Start, stop, or restart the connection. Nil on success, a message otherwise.
+    ///
+    /// None of these returns the resulting state: the server answers `{ok:true}` the moment
+    /// it has told the connection manager, and the transition itself arrives over the socket
+    /// as `state` events. So the caller's job is to report a refusal, not to update a light.
+    func connectNetwork(id: Int) async -> String? {
+        await act("POST", "/api/networks/\(id)/connect")
+    }
+
+    func disconnectNetwork(id: Int, reason: String? = nil) async -> String? {
+        await act("POST", "/api/networks/\(id)/disconnect", body: reason.map { ["reason": $0] })
+    }
+
+    func reconnectNetwork(id: Int) async -> String? {
+        await act("POST", "/api/networks/\(id)/reconnect")
+    }
+
+    private func act(_ method: String, _ path: String, body: [String: Any]? = nil) async -> String? {
+        switch await rest(method, path, body: body) {
+        case .ok: return nil
+        case .failure(let message): return message
+        }
+    }
+
+    // MARK: - REST
+
+    private enum RestResult {
+        case ok(String)
+        case failure(String)
+    }
+
+    /// One authenticated JSON round trip: bearer header, optional JSON body, and a reply that
+    /// is either the 2xx body text or a message fit to put in front of the user.
+    ///
+    /// Written for #11, which adds seven endpoints to a file that had been hand-rolling the
+    /// same `URLRequest` per call. It is not a migration — the existing calls keep their own
+    /// bodies until something needs to touch them anyway — but nothing new should be adding
+    /// an eighth copy of bearer-plus-status-code.
+    ///
+    /// ⚠ A 401 bounces the session, matching `fetchNetworks`. Everything routed through here
+    /// is a deliberate user action, so a dead token has to end the session rather than read
+    /// as "that network wouldn't save". (`fetchSettings` deliberately does the opposite and
+    /// keeps its own path — see its note for why.)
+    private func rest(_ method: String, _ path: String, body: [String: Any]? = nil) async -> RestResult {
+        guard let token, let url = URL(string: baseURL + path) else {
+            return .failure("Not signed in.")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let body {
+            guard let payload = try? JSONSerialization.data(withJSONObject: body) else {
+                return .failure("Couldn't encode that request.")
+            }
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = payload
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let text = String(data: data, encoding: .utf8) ?? ""
+            if code == 401 {
+                onFrame(.unauthorized)
+                return .failure("Signed out.")
+            }
+            if (200..<300).contains(code) { return .ok(text) }
+            // The server explains its own refusals — a host the admin's allowlist excludes, a
+            // missing field, a paused account — and its wording is better than anything this
+            // layer could infer from a status code.
+            return .failure(FrameParser.errorMessage(from: text) ?? "The server refused that (\(code)).")
+        } catch {
+            return .failure("Couldn't reach the server.")
+        }
+    }
+
     /// A native client CAN set headers on the WS upgrade, so the session token rides as a
     /// bearer where a browser would need a cookie. `since > 0` resumes from that event id.
     private func openSocket(since: Int = 0) {

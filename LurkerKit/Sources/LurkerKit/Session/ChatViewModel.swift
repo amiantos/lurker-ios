@@ -357,7 +357,9 @@ public final class ChatViewModel {
         let networkId = query.network.isEmpty
             ? nil
             : store.state.networks.values
-                .filter { $0.name.caseInsensitiveCompare(query.network) == .orderedSame }
+                // A network we hold no name for matches no `on:` filter — it can't, and
+                // guessing would point the search at an arbitrary network (#136).
+                .filter { $0.name?.caseInsensitiveCompare(query.network) == .orderedSame }
                 .min(by: { $0.id < $1.id })?.id
         let page = await client.search(query, networkId: networkId, before: before)
         // Search rows carry the same `bookmarked` flag as any other message row, and this is
@@ -666,6 +668,60 @@ public final class ChatViewModel {
 
     public func markAllRead() {
         client.markAllRead()
+    }
+
+    // MARK: - Networks (#11)
+
+    /// The account's networks as editable configuration. Nil is "couldn't ask", never "none".
+    public func networkConfigs() async -> [NetworkConfig]? {
+        await client.networkConfigs()
+    }
+
+    /// Create a network. The server connects it immediately on success.
+    ///
+    /// The roster is re-read afterwards because nothing else will name the new network: it
+    /// reaches this client over the socket, and neither the `snapshot` nor any live frame
+    /// carries a network's name.
+    public func createNetwork(_ draft: NetworkDraft) async -> NetworkSaveResult {
+        let result = await client.createNetwork(draft)
+        // `savedWithoutDetail` re-reads the roster itself, at the point that knows the write
+        // landed — so only the ordinary success needs one here.
+        if case .saved = result { await client.refreshNetworks() }
+        return result
+    }
+
+    /// Edit a network. Takes effect on its next connection — an established one keeps what it
+    /// registered with — so a caller that changed the nick or host owes the user that fact.
+    public func updateNetwork(id: Int, draft: NetworkDraft) async -> NetworkSaveResult {
+        let result = await client.updateNetwork(id: id, draft: draft)
+        // `savedWithoutDetail` re-reads the roster itself, at the point that knows the write
+        // landed — so only the ordinary success needs one here.
+        if case .saved = result { await client.refreshNetworks() }
+        return result
+    }
+
+    /// Delete a network and everything under it. Nil on success, a message otherwise.
+    public func deleteNetwork(id: Int) async -> String? {
+        let error = await client.deleteNetwork(id: id)
+        if error == nil { await client.refreshNetworks() }
+        return error
+    }
+
+    /// Start / stop / restart one network's connection. Nil on success, a message otherwise.
+    ///
+    /// None of these reports the resulting state — the server acknowledges the instruction,
+    /// and the transition arrives separately as `state` events. A caller that wanted to show
+    /// "Connecting…" should read the network's state, not this return value.
+    public func connectNetwork(id: Int) async -> String? {
+        await client.connectNetwork(id: id)
+    }
+
+    public func disconnectNetwork(id: Int, reason: String? = nil) async -> String? {
+        await client.disconnectNetwork(id: id, reason: reason)
+    }
+
+    public func reconnectNetwork(id: Int) async -> String? {
+        await client.reconnectNetwork(id: id)
     }
 
     /// Emit a `typing` signal for `key`. Buffers with nobody on the other end — the system
@@ -1025,6 +1081,9 @@ public final class ChatViewModel {
             // the state this frame proved, not the one before it.
             store.apply(frame)
             onFavoritesSynced?()
+        case .snapshot, .networkState:
+            store.apply(frame)
+            refreshRosterIfAnyNetworkIsNameless()
         default:
             store.apply(frame)
         }
@@ -1038,6 +1097,37 @@ public final class ChatViewModel {
         // It also means the message frames prime against a store that already holds them, which
         // is the more obviously correct order even though those read their texts from the frame.
         primePreviews(frame)
+    }
+
+    /// Whether a roster re-read is already in flight. Without it a burst of `state` events
+    /// for one unnamed network would fire a GET each.
+    private var rosterRefreshInFlight = false
+
+    /// Re-read `GET /api/networks` when the store holds a network we have no name for (#136).
+    ///
+    /// ⚠⚠ The snapshot names every network the account has and names none of them: network
+    /// names live only in the REST roster, which runs once on connect and is deliberately
+    /// skipped on reconnect. So a network the roster doesn't hold — one added from another
+    /// client since we connected, one created here whose `state` event beat the create's own
+    /// re-read, or every one of them after a roster fetch that failed — lands nameless and,
+    /// before this, stayed that way for the life of the app.
+    ///
+    /// Keyed on a nil name rather than on "did the fetch fail", because the second question
+    /// misses every case but the last. Costs nothing in the ordinary case: the roster already
+    /// holds each id, so this asks nothing.
+    ///
+    /// Terminating without a retry bound, because the re-read is authoritative over
+    /// membership: it either names the network or removes it. Either way there is no nameless
+    /// network left to trigger another.
+    private func refreshRosterIfAnyNetworkIsNameless() {
+        guard !rosterRefreshInFlight,
+              store.state.networks.values.contains(where: { $0.name == nil })
+        else { return }
+        rosterRefreshInFlight = true
+        Task {
+            await client.refreshNetworks()
+            rosterRefreshInFlight = false
+        }
     }
 
     // MARK: - Reconnect
