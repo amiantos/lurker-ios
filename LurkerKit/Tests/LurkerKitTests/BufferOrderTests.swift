@@ -51,25 +51,35 @@ final class BufferOrderTests: XCTestCase {
 
     // MARK: - Pins
 
-    func testPinnedBuffersLeadInTheUsersPinOrder() {
+    func testPinnedBuffersComeBackInTheUsersPinOrder() {
         let buffers = [buffer("#aardvark"), buffer("#zulu"), buffer("#middle")]
-        let ordered = BufferOrder.buffers(buffers, pinned: ["#zulu", "#middle"])
-        XCTAssertEqual(ordered.map(\.target), ["#zulu", "#middle", "#aardvark"])
+        let split = BufferOrder.split(buffers, pinned: ["#zulu", "#middle"])
+        XCTAssertEqual(split.pinned.map(\.target), ["#zulu", "#middle"])
+        XCTAssertEqual(split.rest.map(\.target), ["#aardvark"])
     }
 
-    func testTheRestKeepsTheOrdinaryOrderBehindThePins() {
+    func testTheRestKeepsTheOrdinaryOrder() {
         let buffers = [buffer("bob", kind: .dm), buffer("#zulu"), buffer("#aardvark")]
-        let ordered = BufferOrder.buffers(buffers, pinned: ["#zulu"])
-        // Channels before DMs, alphabetical within — unchanged, just after the pins.
-        XCTAssertEqual(ordered.map(\.target), ["#zulu", "#aardvark", "bob"])
+        let split = BufferOrder.split(buffers, pinned: ["#zulu"])
+        // Channels before DMs, alphabetical within — unchanged, just without the pinned one.
+        XCTAssertEqual(split.rest.map(\.target), ["#aardvark", "bob"])
+    }
+
+    func testAPinnedOnlyNetworkHasNothingLeftOver() {
+        // The section the caller drops — and the case that would lose the network's
+        // connection state if only the unpinned header carried it.
+        let split = BufferOrder.split([buffer("#a"), buffer("#b")], pinned: ["#a", "#b"])
+        XCTAssertEqual(split.pinned.count, 2)
+        XCTAssertTrue(split.rest.isEmpty)
     }
 
     func testAPinWithNoOpenBufferContributesNothing() {
         // ⚠ A pin row outlives its buffer being parted or closed, so the pin list is a
         // superset of what can be shown. Mapping it blindly would render rows for buffers
         // that aren't there.
-        let ordered = BufferOrder.buffers([buffer("#here")], pinned: ["#gone", "#here"])
-        XCTAssertEqual(ordered.map(\.target), ["#here"])
+        let split = BufferOrder.split([buffer("#here")], pinned: ["#gone", "#here"])
+        XCTAssertEqual(split.pinned.map(\.target), ["#here"])
+        XCTAssertTrue(split.rest.isEmpty)
     }
 
     func testASigilIsPartOfTheTargetNotNoiseToFoldAway() {
@@ -78,29 +88,30 @@ final class BufferOrderTests: XCTestCase {
         // that key `#ops` and `&ops` collide: the pin could render the wrong one, and the
         // filter for "everything else", matching the same collided key, would drop the loser
         // out of the list altogether.
-        let ordered = BufferOrder.buffers([buffer("#ops"), buffer("&ops")], pinned: ["&ops"])
-        XCTAssertEqual(ordered.map(\.target), ["&ops", "#ops"])
+        let split = BufferOrder.split([buffer("#ops"), buffer("&ops")], pinned: ["&ops"])
+        XCTAssertEqual(split.pinned.map(\.target), ["&ops"])
+        XCTAssertEqual(split.rest.map(\.target), ["#ops"])
     }
 
     func testPinsMatchTargetsCaseInsensitively() {
         // The pin is stored under the spelling the server last saw and the buffer under the
         // one this client holds; IRC lets those differ. An exact match would silently drop a
         // pin after a CASEMAPPING refold.
-        let ordered = BufferOrder.buffers([buffer("#Zulu"), buffer("#aardvark")], pinned: ["#ZULU"])
-        XCTAssertEqual(ordered.map(\.target), ["#Zulu", "#aardvark"])
+        let split = BufferOrder.split([buffer("#Zulu"), buffer("#aardvark")], pinned: ["#ZULU"])
+        XCTAssertEqual(split.pinned.map(\.target), ["#Zulu"])
     }
 
     func testADuplicatedPinDoesNotPrintTheBufferTwice() {
-        let ordered = BufferOrder.buffers([buffer("#a"), buffer("#b")], pinned: ["#a", "#a"])
-        XCTAssertEqual(ordered.map(\.target), ["#a", "#b"])
+        let split = BufferOrder.split([buffer("#a"), buffer("#b")], pinned: ["#a", "#a"])
+        XCTAssertEqual(split.pinned.map(\.target), ["#a"])
+        XCTAssertEqual(split.rest.map(\.target), ["#b"])
     }
 
     func testNoPinsIsJustTheOrdinaryOrder() {
         let buffers = [buffer("#zulu"), buffer("bob", kind: .dm), buffer("#aardvark")]
-        XCTAssertEqual(
-            BufferOrder.buffers(buffers, pinned: []).map(\.target),
-            ["#aardvark", "#zulu", "bob"]
-        )
+        let split = BufferOrder.split(buffers, pinned: [])
+        XCTAssertTrue(split.pinned.isEmpty)
+        XCTAssertEqual(split.rest.map(\.target), ["#aardvark", "#zulu", "bob"])
     }
 
     // MARK: - What a network section lists
@@ -144,7 +155,7 @@ final class BufferOrderTests: XCTestCase {
             buffer("#chan"),
         ]
         XCTAssertEqual(
-            BufferOrder.buffers(buffers, pinned: []).map(\.target),
+            BufferOrder.split(buffers, pinned: []).rest.map(\.target),
             ["#chan", "bob", ":server:"]
         )
     }
@@ -154,7 +165,7 @@ final class BufferOrderTests: XCTestCase {
         // channels above every named one until lurker-ios#98, which the web never did.
         let buffers = [buffer("#zebra"), buffer("!aardvark"), buffer("+middle"), buffer("&bear")]
         XCTAssertEqual(
-            BufferOrder.buffers(buffers, pinned: []).map(\.target),
+            BufferOrder.split(buffers, pinned: []).rest.map(\.target),
             ["!aardvark", "&bear", "+middle", "#zebra"]
         )
     }

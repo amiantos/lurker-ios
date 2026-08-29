@@ -47,8 +47,14 @@ public enum BufferOrder {
         return grouped
     }
 
-    /// One network's buffers: pinned first in the user's pin order, then everything else in
-    /// the ordinary channels-then-DMs-then-server, sigil-stripped-alphabetical order.
+    /// One network's buffers as its two lists: the pinned ones in the user's pin order, and
+    /// everything else in the ordinary channels-then-DMs-then-server, sigil-stripped
+    /// alphabetical order.
+    ///
+    /// Split rather than concatenated because the two render as separate sections. A list
+    /// on iOS has no separator *inside* it — a section header is the separator — so pins
+    /// ordered first inside one section would have been an order with nothing to explain it,
+    /// which reads as a sort bug rather than as your own arrangement.
     ///
     /// ⚠ A pin whose buffer isn't open contributes nothing — the pin row survives on the
     /// server when a channel is parted or closed, so a pin list is a superset of what can be
@@ -65,8 +71,10 @@ public enum BufferOrder {
     /// `&ops` both fold to "ops", so a pin on one could render the other in its slot, and the
     /// `rest` filter below — matching the same collided key — would drop the loser out of the
     /// buffer list entirely.
-    public static func buffers(_ buffers: [Buffer], pinned: [String]) -> [Buffer] {
-        guard !pinned.isEmpty else { return buffers.sorted(by: order) }
+    public static func split(
+        _ buffers: [Buffer], pinned: [String]
+    ) -> (pinned: [Buffer], rest: [Buffer]) {
+        guard !pinned.isEmpty else { return ([], buffers.sorted(by: order)) }
         var byTarget: [String: Buffer] = [:]
         for buffer in buffers { byTarget[buffer.target.lowercased()] = buffer }
         var pinnedBuffers: [Buffer] = []
@@ -80,7 +88,7 @@ public enum BufferOrder {
             pinnedBuffers.append(buffer)
         }
         let rest = buffers.filter { !claimed.contains($0.target.lowercased()) }
-        return pinnedBuffers + rest.sorted(by: order)
+        return (pinnedBuffers, rest.sorted(by: order))
     }
 
     /// Channels, then DMs, then the server log; alphabetical within each.

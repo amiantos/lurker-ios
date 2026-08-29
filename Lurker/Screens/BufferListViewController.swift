@@ -893,19 +893,15 @@ final class BufferListViewController: UICollectionViewController {
         var seen = Set<Int>()
         for network in networks {
             seen.insert(network.id)
-            let buffers = BufferOrder.buffers(byNetwork[network.id] ?? [], pinned: state.pinned[network.id] ?? [])
-            guard !buffers.isEmpty else { continue }
-            sections.append(Section(title: header(for: network), layout: .list, rows: buffers.map { rosterRow($0, state) }))
+            let split = BufferOrder.split(byNetwork[network.id] ?? [], pinned: state.pinned[network.id] ?? [])
+            sections.append(contentsOf: networkSections(header(for: network), split, state))
         }
         // Buffers whose network isn't in the roster yet (snapshot race).
         for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
-            let rest = BufferOrder.buffers(buffers, pinned: state.pinned[networkId] ?? [])
-            guard !rest.isEmpty else { continue }
+            let split = BufferOrder.split(buffers, pinned: state.pinned[networkId] ?? [])
             // NOT the literal "network" this used to say — that was #136's placeholder
             // surviving in the one place the fix didn't reach, and it reads as a real name.
-            sections.append(Section(
-                title: Network.unnamedDisplayName, layout: .list, rows: rest.map { rosterRow($0, state) }
-            ))
+            sections.append(contentsOf: networkSections(Network.unnamedDisplayName, split, state))
         }
         return sections
     }
@@ -1079,6 +1075,44 @@ final class BufferListViewController: UICollectionViewController {
     /// See `Row.displayUnread` for what the badge then shows.
     private static func isMuted(_ buffer: Buffer, _ state: ChatState) -> Bool {
         state.ignores.mutesUnread(networkId: buffer.networkId, target: buffer.target)
+    }
+
+    /// A network's rows as one or two sections: its pinned buffers, then the rest.
+    ///
+    /// Two sections rather than one ordered list, because a list on iOS has no separator
+    /// *inside* it — the section header is the separator. Pins ordered first within a single
+    /// section would have been an arrangement with nothing to explain it, which reads as a
+    /// sort bug rather than as the order you set.
+    ///
+    /// ⚠ **Both** headers are built from the network's own, with " — pinned" appended to the
+    /// first. Putting the connection state on the unpinned header alone loses it entirely for
+    /// a network whose every open buffer is pinned — which is not a corner case, it's what
+    /// two pinned channels and nothing else looks like — and it would read as if the pinned
+    /// half were online while the rest wasn't.
+    ///
+    /// Either section is dropped when empty, so a network with no pins looks exactly as it
+    /// did, and a pin whose buffer isn't open costs nothing.
+    private func networkSections(
+        _ header: String, _ split: (pinned: [Buffer], rest: [Buffer]), _ state: ChatState
+    ) -> [Section] {
+        var sections: [Section] = []
+        if !split.pinned.isEmpty {
+            sections.append(Section(
+                // Lowercase, matching the connection suffixes this header already carries
+                // ("— offline", "— connecting…") — `UIListContentConfiguration.header()`
+                // renders the string as given, so the two would otherwise disagree in the
+                // same line: "Libera — offline — Pinned".
+                title: "\(header) — pinned",
+                layout: .list,
+                rows: split.pinned.map { rosterRow($0, state) }
+            ))
+        }
+        if !split.rest.isEmpty {
+            sections.append(Section(
+                title: header, layout: .list, rows: split.rest.map { rosterRow($0, state) }
+            ))
+        }
+        return sections
     }
 
     private func header(for network: Network) -> String {
