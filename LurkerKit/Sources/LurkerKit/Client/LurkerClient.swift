@@ -186,19 +186,40 @@ final class LurkerClient {
         openSocket(since: since)
     }
 
-    /// Returns false only when the token was rejected (401); true otherwise, including
-    /// transient errors where the socket is still worth trying.
-    private func fetchNetworks() async -> Bool {
+    /// Which roster read is the current one.
+    ///
+    /// ⚠⚠ Needed because `applyNetworks` is authoritative over membership in both directions
+    /// — a network absent from a response is deleted, buffers and pins with it — and several
+    /// reads can now be in flight at once (every reconnect attempt starts one, alongside the
+    /// ones a create, a delete or a nameless network start). Land them out of order and the
+    /// older answer wins: a network deleted a moment ago reappears in the buffer list, the
+    /// join menu and `on:` search, or one added on the web is dropped along with its buffers.
+    /// The networks screen keeps the same guard over its own fetches for the same reason.
+    private var rosterGeneration = 0
+
+    /// Returns false only when the token was rejected (401) *and* the caller asked to hear
+    /// about it; true otherwise, including transient errors where the socket is still worth
+    /// trying.
+    ///
+    /// `reportingUnauthorized` is true only for the connect-time read, which is the token
+    /// check — see `refreshNetworks` for why every other caller wants it off.
+    private func fetchNetworks(reportingUnauthorized: Bool = true) async -> Bool {
         guard let token, let url = URL(string: baseURL + "/api/networks") else { return true }
+        rosterGeneration += 1
+        let generation = rosterGeneration
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 401 {
+            if code == 401, reportingUnauthorized {
                 onFrame(.unauthorized)
                 return false
             }
+            // A read that a newer one has already superseded is dropped rather than applied:
+            // see `rosterGeneration`. Checked here rather than earlier so a 401 on the token
+            // check still reports, superseded or not.
+            guard generation == rosterGeneration else { return true }
             if (200..<300).contains(code), let text = String(data: data, encoding: .utf8) {
                 onFrame(FrameParser.parseNetworks(text))
             }
@@ -284,15 +305,17 @@ final class LurkerClient {
 
     // MARK: - Networks (#11)
 
-    /// Re-read the network roster. The connect path does this once; this is for the two
-    /// moments that invalidate it afterwards — a network created or deleted from this app,
-    /// and a `snapshot` naming a network we hold no name for (#136).
+    /// Re-read the network roster: after a network is created or deleted from this app, when
+    /// a `snapshot` names one we hold no name for (#136), and on every reconnect (see
+    /// `reconnect` for why that one is not the waste it looks like).
     ///
-    /// ⚠ `reconnect` deliberately does NOT call this, on the grounds that names don't change.
-    /// That reasoning is sound and is also why nothing repaired a roster that failed to load
-    /// the first time: the set of networks changes even when their names don't.
+    /// ⚠⚠ Does NOT report a 401, unlike the connect-time read. There it IS the token check
+    /// and a rejection has to end the session; here it is a background refresh that can run
+    /// during a flapping reconnect, and bouncing the user to sign-in over a roster GET is
+    /// exactly what `fetchSettings` refuses to do three functions down, for the same reason.
+    /// The socket is the thing that finds out whether the session is still good.
     func refreshNetworks() async {
-        _ = await fetchNetworks()
+        _ = await fetchNetworks(reportingUnauthorized: false)
     }
 
     /// `GET /api/networks`, read as editable configuration rather than as the roster.
