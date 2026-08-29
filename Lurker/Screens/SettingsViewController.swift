@@ -529,10 +529,12 @@ final class SettingsViewController: UITableViewController {
         switch sections[indexPath.section] {
         case .networks:
             // Pushed, not presented: this is a place you go *inside* Settings and come back
-            // from, and it owes the back button its own title. Hence `showsDoneButton: false`
-            // — Settings' own Done is still up there dismissing the whole sheet.
+            // from. Note the sheet's Done goes with it — it lives on this screen's own
+            // `navigationItem` — so the way out is Back and then Done, which is the standard
+            // pattern and not something the pushed screen should paper over with a Done of
+            // its own.
             navigationController?.pushViewController(
-                NetworksViewController(viewModel: viewModel, showsDoneButton: false), animated: true
+                NetworksViewController(viewModel: viewModel), animated: true
             )
         case .account:
             confirmSignOut()
