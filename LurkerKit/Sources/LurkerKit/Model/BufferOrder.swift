@@ -57,15 +57,23 @@ public enum BufferOrder {
     /// materializes a buffer from a key for exactly this reason, and the chat screen hydrates
     /// whatever it lands on.
     ///
-    /// ⚠ Only for a network that already has rows — this fills a gap in a section, it does
-    /// not conjure one. Synthesizing unconditionally would give every network a section
-    /// forever, which reads well (the web always lists every network) but kills two states
-    /// this list depends on: "Loading buffers…" never shows, because the roster is fetched
-    /// *before* the socket opens so a section always exists during the connect window, and
-    /// "No buffers yet" becomes unreachable, because having a network would imply having a
-    /// row. Making every network appear is a good idea and a separate one.
-    public static func withServerLog(_ buffers: [Buffer], networkId: Int) -> [Buffer] {
-        guard !buffers.isEmpty, !buffers.contains(where: { $0.kind == .server }) else { return buffers }
+    /// ⚠ Only for a network that is *in use* — this fills a gap in a section, it does not
+    /// conjure one. Synthesizing unconditionally would give every network a section forever,
+    /// which reads well (the web always lists every network) but makes "No buffers yet"
+    /// unreachable, because having a network would imply having a row. Making every network
+    /// appear is a good idea and a separate one.
+    ///
+    /// ⚠⚠ "In use" is not the same as "has rows here", and the difference is a network that
+    /// disappears. Favorites are lifted out of their network's section, so a network whose
+    /// only open buffer is a favorited channel contributes no rows — and if its `:server:`
+    /// row happens to be one of the ones the burst didn't name, the whole network vanishes:
+    /// no header, no connection state, no way into its log. `networkHasOpenBuffers` is asked
+    /// *before* the favorites exclusion for exactly that case.
+    public static func withServerLog(
+        _ buffers: [Buffer], networkId: Int, networkHasOpenBuffers: Bool = false
+    ) -> [Buffer] {
+        guard !buffers.isEmpty || networkHasOpenBuffers else { return buffers }
+        guard !buffers.contains(where: { $0.kind == .server }) else { return buffers }
         return buffers + [Buffer(
             networkId: networkId, target: Buffer.serverTarget(networkId), kind: .server
         )]

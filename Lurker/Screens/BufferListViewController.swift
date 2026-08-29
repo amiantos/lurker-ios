@@ -151,7 +151,25 @@ final class BufferListViewController: UICollectionViewController {
 
         var layout: Layout { id.layout }
         var reorderable: Bool { id.reorderable }
-        var items: [ItemID] { rows.map { ItemID(section: id, key: $0.buffer.key.id) } }
+        /// ⚠⚠ De-duplicated. A diffable snapshot raises `NSInternalInconsistencyException` on
+        /// a repeated item identifier, and `rowsByID` one level up deliberately tolerates a
+        /// collision ("keep the first and move on rather than trapping in front of a user") —
+        /// so without this the tolerant path was dead and the outcome was a crash instead.
+        ///
+        /// It is reachable: the store's nick-change handler rewrites a favorite's target by
+        /// `bufferId` and leaves merge dedupe to the `favorites-changed` that follows, so
+        /// being friends with both `alice` and `bob` and watching `bob` rename to `alice`
+        /// puts two entries with one key in `favorites` for a frame. The old data source drew
+        /// the chip twice for that frame; this drops the second, which is the same answer
+        /// without the crash.
+        var items: [ItemID] {
+            var seen = Set<String>()
+            return rows.compactMap { row in
+                seen.insert(row.buffer.key.id).inserted
+                    ? ItemID(section: id, key: row.buffer.key.id)
+                    : nil
+            }
+        }
     }
 
     private var state = ChatState()
@@ -432,7 +450,16 @@ final class BufferListViewController: UICollectionViewController {
         // populated screen, and blanking it to a spinner because the server is re-sending
         // what we already have would be the same flicker wearing the opposite hat — the list
         // stays true while the burst runs and updates when it settles.
-        if !state.backlogComplete { hasRenderedList = false } // a fresh session waits again
+        //
+        // ⚠⚠ `hasRenderedList` is NEVER reset here. It used to be cleared whenever
+        // `backlogComplete` was false — meant as "a fresh session waits again" — which
+        // silently disarmed the fallback below: the timer set the flag, called `rebuild`, and
+        // this line cleared it again, so the list blanked and re-armed on a 4-second loop
+        // forever. On a server that never sends the terminator that is a permanent flashing
+        // spinner over a full store: the exact failure the fallback exists to prevent, caused
+        // by the fallback. A new session gets a new screen anyway — sign-out replaces the
+        // navigation stack and sign-in builds this controller fresh — so the instance's own
+        // `false` is the reset, and nothing has to notice a session change to do it.
         guard state.rosterSettled || hasRenderedList else {
             sections = []
             rowsByID = [:]
@@ -994,7 +1021,11 @@ final class BufferListViewController: UICollectionViewController {
     private func join(network: Network, channel typed: String) {
         // A bare sigil is not a name: `ensurePrefix("#")` would send a JOIN for "#".
         guard ChannelName.namesAChannel(typed) else { return }
-        let channel = ChannelName.ensurePrefix(typed)
+        // ⚠ The TRIMMED name. `namesAChannel` trims before testing — that's the point of it
+        // owning the rule — so passing the raw string on means " #swift" clears the guard and
+        // then gets a sigil prepended to a leading space: `JOIN "# #swift"`. Latent only
+        // because the join sheet happens to trim first.
+        let channel = ChannelName.ensurePrefix(typed.trimmingCharacters(in: .whitespacesAndNewlines))
         viewModel.joinChannel(networkId: network.id, channel: channel)
         // `buffer(for:)` rather than a hand-built one: the kind must come from the one
         // classifier (`BufferKind.of`, the full sigil set) — hardcoding `.channel` here
@@ -1024,6 +1055,9 @@ final class BufferListViewController: UICollectionViewController {
         let favoriteKeys = Set(orderedFavorites.map(\.key.id))
 
         let byNetwork = BufferOrder.byNetwork(state.buffers.values, excluding: favoriteKeys)
+        // Before the favorites exclusion, because a network whose every open buffer is
+        // favorited still exists and still has a log — see `withServerLog`.
+        let networksInUse = Set(state.buffers.values.compactMap(\.networkId))
 
         var sections: [Section] = []
 
@@ -1073,7 +1107,11 @@ final class BufferListViewController: UICollectionViewController {
             // `withServerLog`, so a network always has at least its log and therefore always
             // has a row — the web's network header is that buffer, and iOS's server row was
             // coming and going with the connect burst's prune.
-            let rows = BufferOrder.withServerLog(byNetwork[network.id] ?? [], networkId: network.id)
+            let rows = BufferOrder.withServerLog(
+                byNetwork[network.id] ?? [],
+                networkId: network.id,
+                networkHasOpenBuffers: networksInUse.contains(network.id)
+            )
             let split = BufferOrder.split(rows, pinned: state.pinned[network.id] ?? [])
             sections.append(contentsOf: networkSections(
                 { .network(network.id, pinned: $0) }, header(for: network), split, state

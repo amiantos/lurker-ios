@@ -166,6 +166,15 @@ final class BufferOrderTests: XCTestCase {
         XCTAssertEqual(rows.first(where: { $0.kind == .server })?.unread, 7)
     }
 
+    func testANetworkWhoseOnlyBufferIsFavoritedKeepsItsSection() {
+        // ⚠⚠ Favorites are lifted out of their network's section, so this network contributes
+        // no rows — and with its `:server:` row not yet in the store it would vanish from the
+        // list entirely: no header, no connection state, no way into its log. "In use" is
+        // asked before the favorites exclusion for exactly this.
+        let rows = BufferOrder.withServerLog([], networkId: 4, networkHasOpenBuffers: true)
+        XCTAssertEqual(rows.map(\.target), [":server:4"])
+    }
+
     func testANetworkWithNoRowsAtAllGetsNoRowInvented() {
         // ⚠⚠ This fills a gap in a section, it does not conjure one. Synthesizing here would
         // give every network a section forever, which kills two of the buffer list's states:
