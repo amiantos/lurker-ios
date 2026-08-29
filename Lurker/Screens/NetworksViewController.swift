@@ -47,6 +47,8 @@ final class NetworksViewController: UITableViewController {
     /// counted as "changed" on every state emission — which quietly retired a refusal pinned
     /// under a row nobody had touched, before its owner could scroll back and read it.
     private var shownRows: [Int: NetworkRow] = [:]
+    /// The list as last drawn, so a re-read that changed nothing doesn't redraw it.
+    private var shownConfigs: [NetworkConfig] = []
     /// Which fetch is the current one. Three call sites can start one — every appearance, a
     /// completed delete, and Try Again — and they are not ordered by anything.
     private var loadGeneration = 0
@@ -159,9 +161,18 @@ final class NetworksViewController: UITableViewController {
         let live = Set(configs.map(\.id))
         shownRows = shownRows.filter { live.contains($0.key) }
         if let error = actionError, !live.contains(error.id) { actionError = nil }
-        tableView.reloadData()
-        // After the reload, so "what's drawn" is what's actually drawn — including the rows
-        // below the fold, which are drawn from the same data whether or not a cell exists yet.
+        // ⚠⚠ Only when the list actually changed. `reloadData` replaces every visible cell and
+        // dismisses an open action menu with it — the failure `applyLiveStatuses` below avoids
+        // by reconfiguring, reintroduced here by the path that re-reads on every appearance.
+        // Open a row's menu, and a re-read that lands half a second later on a slow link
+        // closes it under your finger, having changed nothing.
+        if configs != shownConfigs {
+            shownConfigs = configs
+            tableView.reloadData()
+        }
+        // Unconditional, unlike the reload above: this records what is drawn, and it has to
+        // stay true on the pass that decided not to redraw. Covers the rows below the fold
+        // too, which are drawn from the same data whether or not a cell exists for them yet.
         for config in configs { shownRows[config.id] = row(for: config) }
         updatePlaceholder()
     }
