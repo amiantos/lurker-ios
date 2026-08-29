@@ -417,6 +417,37 @@ final class BufferListViewController: UICollectionViewController {
             return
         }
         rebuildDeferredByDrag = false
+
+        // ⚠⚠ Nothing is drawn until the connect burst has finished.
+        //
+        // The burst arrives a frame at a time and each one lands here, so the list used to
+        // assemble itself in front of the reader: a network's roster before its name, a
+        // favorite still sitting in its network section until the favorites frame landed, a
+        // whole network appearing halfway through. Eight visible states on the way to the
+        // right one, and only the last is true. The spinner exists for exactly this and never
+        // got the chance — `BufferListPlaceholder.of` returns `.none` the moment any buffer
+        // exists, which during a burst is almost immediately.
+        //
+        // Only for the FIRST list of a session. After that a resync re-opens the burst with a
+        // populated screen, and blanking it to a spinner because the server is re-sending
+        // what we already have would be the same flicker wearing the opposite hat — the list
+        // stays true while the burst runs and updates when it settles.
+        if !state.backlogComplete { hasRenderedList = false } // a fresh session waits again
+        guard state.rosterSettled || hasRenderedList else {
+            sections = []
+            rowsByID = [:]
+            shownTitles = [:]
+            if !dataSource.snapshot().sectionIdentifiers.isEmpty {
+                dataSource.apply(NSDiffableDataSourceSnapshot<SectionID, ItemID>(), animatingDifferences: false)
+            }
+            updatePlaceholder()
+            armBurstFallback()
+            return
+        }
+        burstFallback?.cancel()
+        burstFallback = nil
+        hasRenderedList = true
+
         let previous = rowsByID
         sections = buildSections(state)
         rowsByID = Dictionary(
@@ -682,6 +713,39 @@ final class BufferListViewController: UICollectionViewController {
         }
         return source
     }()
+
+    /// Gives up waiting for `backlog-complete` and draws whatever has arrived.
+    ///
+    /// ⚠⚠ Not belt-and-braces — the terminator genuinely may not come. It was added as an
+    /// ADDITIVE frame with no protocol-version bump and no capability signal (lurker#640), so
+    /// a self-hosted server older than it simply never sends one, and this is a product whose
+    /// operators upgrade on their own schedule. A current server withholds it too when a
+    /// burst throws part-way, which is deliberate: it is emitted from inside
+    /// `sendSnapshotInner` precisely so a failed burst isn't declared complete.
+    ///
+    /// Without this, waiting for it would trade a flicker for a permanent spinner over a
+    /// fully populated store — a far worse trade. The wait is the optimization; drawing is
+    /// the correct behaviour, so the fallback is the one that has to be unconditional.
+    private var burstFallback: DispatchWorkItem?
+    /// Long enough that any burst worth waiting for lands first, short enough that a server
+    /// which never terminates one isn't a broken app.
+    private static let burstWait: TimeInterval = 4
+
+    private func armBurstFallback() {
+        guard burstFallback == nil else { return } // already counting
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !hasRenderedList else { return }
+            burstFallback = nil
+            hasRenderedList = true
+            rebuild()
+        }
+        burstFallback = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.burstWait, execute: work)
+    }
+
+    /// Whether a settled list has been drawn this session — see the wait at the top of
+    /// `rebuild`. Reset when the store is, so signing into another account waits again.
+    private var hasRenderedList = false
 
     /// The title each section was last drawn with, so a rename can be spotted — see the note
     /// in `rebuild`. Not derivable from the snapshot, which holds identifiers and not titles.
