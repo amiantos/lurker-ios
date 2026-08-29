@@ -17,6 +17,14 @@ import UIKit
 final class NetworkFormViewController: UITableViewController {
 
     private enum Row: Equatable {
+        /// Why the last save was refused, when there was one.
+        ///
+        /// ⚠ A row rather than the section footer it started as. Colouring a footer means
+        /// reaching for `UITableViewHeaderFooterView.textLabel`, which is deprecated and nil
+        /// for a UIKit-configured footer — so the refusal could silently render in the same
+        /// grey as the guidance footer two sections down, which is exactly what it must not
+        /// look like. A row's appearance is ours.
+        case error
         case name, host, port, tls
         case nick, realname
         case saslAccount, saslPassword, clearSaslPassword
@@ -98,8 +106,8 @@ final class NetworkFormViewController: UITableViewController {
         sections = [
             Section(
                 header: "Connection",
-                footer: error,
-                rows: [.name, .host, .port, .tls]
+                footer: nil,
+                rows: (error == nil ? [] : [.error]) + [.name, .host, .port, .tls]
             ),
             Section(header: "You", footer: nil, rows: [.nick, .realname]),
             Section(
@@ -146,18 +154,19 @@ final class NetworkFormViewController: UITableViewController {
         sections[section].footer
     }
 
-    override func tableView(
-        _ tableView: UITableView, willDisplayFooterView view: UIView, forSection section: Int
-    ) {
-        // The save error rides in the first section's footer, so it has to look like an error
-        // rather than like guidance. Colouring it here beats a custom footer view for one
-        // line of red.
-        guard let footer = view as? UITableViewHeaderFooterView else { return }
-        footer.textLabel?.textColor = (section == 0 && error != nil) ? Palette.bad : .secondaryLabel
-    }
-
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         switch sections[indexPath.section].rows[indexPath.row] {
+        case .error:
+            let cell = tableView.dequeueReusableCell(withIdentifier: "plain", for: indexPath)
+            var content = cell.defaultContentConfiguration()
+            content.text = error
+            content.textProperties.color = Palette.bad
+            content.textProperties.numberOfLines = 0
+            content.image = UIImage(systemName: "exclamationmark.triangle.fill")
+            content.imageProperties.tintColor = Palette.bad
+            cell.contentConfiguration = content
+            cell.selectionStyle = .none
+            return cell
         case .name:
             return text(indexPath, "Name", draft.name, placeholder: "Libera") { [weak self] in
                 self?.draft.name = $0
@@ -169,7 +178,12 @@ final class NetworkFormViewController: UITableViewController {
             cell.typedAsIdentifier(keyboard: .URL)
             return cell
         case .port:
-            let cell = text(indexPath, "Port", String(draft.port)) { [weak self] in
+            // Zero renders as empty, not as a literal "0" the user has to delete: a cleared
+            // field parses to 0, and after a failed save the rebuild would otherwise hand
+            // back a field they have to clear again before retyping.
+            let cell = text(
+                indexPath, "Port", draft.port == 0 ? "" : String(draft.port), placeholder: "6697"
+            ) { [weak self] in
                 // A cleared field is 0, not the old value: an empty port is a port the user is
                 // in the middle of retyping, and `validationError` refuses 0 if they stop
                 // there. Silently keeping the previous number would save something they can't
@@ -201,12 +215,14 @@ final class NetworkFormViewController: UITableViewController {
         case .saslPassword:
             return secret(
                 indexPath, "Password", saved: existing?.hasSaslPassword == true,
-                edit: draft.saslPassword, clearRow: .clearSaslPassword
+                edit: draft.saslPassword, clearRow: .clearSaslPassword,
+                current: { [weak self] in self?.draft.saslPassword ?? .unchanged }
             ) { [weak self] in self?.draft.saslPassword = $0 }
         case .serverPassword:
             return secret(
                 indexPath, "Server password", saved: existing?.hasPassword == true,
-                edit: draft.password, clearRow: .clearServerPassword
+                edit: draft.password, clearRow: .clearServerPassword,
+                current: { [weak self] in self?.draft.password ?? .unchanged }
             ) { [weak self] in self?.draft.password = $0 }
         case .clearSaslPassword:
             return clearRow(indexPath, isArmed: draft.saslPassword == .cleared, what: "SASL Password")
@@ -225,6 +241,7 @@ final class NetworkFormViewController: UITableViewController {
             // Raw wire lines, not slash commands, and `WAIT` in context — a worked example
             // beats a sentence describing the format.
             cell.configure(
+                label: "Connect commands",
                 value: draft.connectCommands ?? "",
                 placeholder: "PRIVMSG NickServ :IDENTIFY hunter2\nWAIT 5\nOPER admin hunter2"
             )
@@ -291,7 +308,7 @@ final class NetworkFormViewController: UITableViewController {
     /// has to say what a blank field is going to do.
     private func secret(
         _ indexPath: IndexPath, _ label: String, saved: Bool, edit: SecretEdit,
-        clearRow: Row, onChange: @escaping (SecretEdit) -> Void
+        clearRow: Row, current: @escaping () -> SecretEdit, onChange: @escaping (SecretEdit) -> Void
     ) -> FormTextCell {
         let value: String
         if case .set(let typed) = edit { value = typed } else { value = "" }
@@ -312,6 +329,10 @@ final class NetworkFormViewController: UITableViewController {
         cell.typedAsIdentifier()
         cell.field.isSecureTextEntry = true
         cell.field.textContentType = .password
+        // UIKit blanks a secure field on every focus and reports no change for it. Put the
+        // typed value back, so what the field shows and what Save will send stay the same
+        // thing — see `FormTextCell.restoreOnFocus`.
+        cell.restoreOnFocus = { if case .set(let typed) = current() { return typed } else { return nil } }
         return cell
     }
 
@@ -341,6 +362,13 @@ final class NetworkFormViewController: UITableViewController {
     private func save() {
         guard !saving else { return }
         view.endEditing(true) // land the field being typed into before reading the draft
+        // Whatever the last attempt was refused for is now stale — the user has had a chance
+        // to fix it, and leaving it up next to a disabled Add button tells them a field they
+        // just corrected is still wrong for the length of the round trip.
+        if error != nil {
+            error = nil
+            rebuild()
+        }
         if let problem = draft.validationError {
             show(error: problem)
             return

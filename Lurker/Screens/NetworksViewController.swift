@@ -39,9 +39,14 @@ final class NetworksViewController: UITableViewController {
     private let placeholderView = StateView()
     /// What's on screen now, so a state change that doesn't move it doesn't reconfigure it.
     private var shownPlaceholder: StateView.Model?
-    /// The status each row was last built with, so a live transition reconfigures only the
-    /// rows it actually moved — see `applyLiveStatuses`.
-    private var shownStatuses: [Int: NetworkRowStatus] = [:]
+    /// The row model each network was last drawn with, so a live transition reconfigures only
+    /// the networks it actually moved — see `applyLiveStatuses`.
+    ///
+    /// ⚠ Kept for the whole list, not just the visible cells. Populated from `cellForRowAt`
+    /// it had no entry for any row that had never been scrolled to, so every one of those
+    /// counted as "changed" on every state emission — which quietly retired a refusal pinned
+    /// under a row nobody had touched, before its owner could scroll back and read it.
+    private var shownRows: [Int: NetworkRow] = [:]
     /// Which fetch is the current one. Three call sites can start one — every appearance, a
     /// completed delete, and Try Again — and they are not ordered by anything.
     private var loadGeneration = 0
@@ -152,9 +157,12 @@ final class NetworksViewController: UITableViewController {
         // A list that no longer holds a network shouldn't keep its refusal or its last status
         // around to attach to whatever takes its place.
         let live = Set(configs.map(\.id))
-        shownStatuses = shownStatuses.filter { live.contains($0.key) }
+        shownRows = shownRows.filter { live.contains($0.key) }
         if let error = actionError, !live.contains(error.id) { actionError = nil }
         tableView.reloadData()
+        // After the reload, so "what's drawn" is what's actually drawn — including the rows
+        // below the fold, which are drawn from the same data whether or not a cell exists yet.
+        for config in configs { shownRows[config.id] = row(for: config) }
         updatePlaceholder()
     }
 
@@ -166,17 +174,15 @@ final class NetworksViewController: UITableViewController {
     /// list is enough to do it. The buffer list learned this on its join button and wrote it
     /// down: rebuilding is the bug.
     private func applyLiveStatuses() {
-        let changed = configs.enumerated()
-            .filter { shownStatuses[$0.element.id] != status(of: $0.element) }
-            .map { IndexPath(row: $0.offset, section: 0) }
-        guard !changed.isEmpty else { return }
+        let moved = configs.enumerated().filter { shownRows[$0.element.id] != row(for: $0.element) }
+        guard !moved.isEmpty else { return }
         // A row that moved on its own has retired whatever refusal was pinned under it — the
         // state it was describing is no longer the state.
-        if let error = actionError,
-           changed.contains(where: { configs[$0.row].id == error.id }) {
+        if let error = actionError, moved.contains(where: { $0.element.id == error.id }) {
             actionError = nil
         }
-        tableView.reconfigureRows(at: changed)
+        for (_, config) in moved { shownRows[config.id] = row(for: config) }
+        tableView.reconfigureRows(at: moved.map { IndexPath(row: $0.offset, section: 0) })
     }
 
     private func updatePlaceholder() {
@@ -228,9 +234,7 @@ final class NetworksViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "network", for: indexPath)
         let config = configs[indexPath.row]
-        let status = status(of: config)
-
-        shownStatuses[config.id] = status
+        let row = row(for: config)
 
         var content = cell.defaultContentConfiguration()
         content.text = config.name
@@ -241,20 +245,30 @@ final class NetworksViewController: UITableViewController {
             content.secondaryText = error.message
             content.secondaryTextProperties.color = Palette.bad
         } else {
-            content.secondaryText = "\(config.host):\(config.port) · \(Self.label(for: status))"
+            content.secondaryText = Self.subtitle(for: config, row: row)
             content.secondaryTextProperties.color = .secondaryLabel
         }
         content.secondaryTextProperties.numberOfLines = 0
         // The dot carries the state; the words repeat it for anyone who can't use colour.
         content.image = UIImage(systemName: "circle.fill")
-        content.imageProperties.tintColor = Palette.color(for: status.light)
+        content.imageProperties.tintColor = Palette.color(for: row.light)
         content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 10)
         cell.contentConfiguration = content
 
         // The tap edits; the button is for everything that changes the connection rather than
         // the configuration. Splitting them this way is what lets the menu be a menu — the
         // primary action of a row in a list of things you configure is to configure it.
-        cell.accessoryView = actionButton(for: config)
+        //
+        // ⚠⚠ The button is REUSED, never replaced. `reconfigureRows` re-runs this method for a
+        // cell already on screen, and assigning a new `accessoryView` removes the old button
+        // from the hierarchy — which dismisses its open menu. That is precisely the failure
+        // the deferred menu below exists to prevent, reintroduced one line above it: a
+        // `connecting` network reaching `connected` a second after you opened its menu would
+        // close it under your finger. Only the id it points at changes.
+        let button = (cell.accessoryView as? NetworkActionButton) ?? makeActionButton()
+        button.networkID = config.id
+        button.accessibilityLabel = "Actions for \(config.name)"
+        cell.accessoryView = button
         return cell
     }
 
@@ -300,25 +314,34 @@ final class NetworksViewController: UITableViewController {
         )
     }
 
-    private func status(of config: NetworkConfig) -> NetworkRowStatus {
-        NetworkRowStatus.of(
+    private func row(for config: NetworkConfig) -> NetworkRow {
+        NetworkRow(
             connection: viewModel.state.networks[config.id]?.state ?? .disconnected,
-            blocked: config.blocked
+            isBlocked: config.blocked
         )
     }
 
-    private func actionButton(for config: NetworkConfig) -> UIButton {
-        let button = UIButton(type: .system)
+    /// A button that knows which network it is pointing at, so one instance can serve a cell
+    /// for the life of that cell rather than being replaced whenever the row is redrawn.
+    private final class NetworkActionButton: UIButton {
+        var networkID = 0
+    }
+
+    private func makeActionButton() -> NetworkActionButton {
+        let button = NetworkActionButton(type: .system)
         button.setImage(UIImage(systemName: "ellipsis.circle"), for: .normal)
         // ⚠ Deferred, so which actions the menu offers is decided when it's opened rather
-        // than when the cell was last built. Same reasoning as the buffer list's join menu:
-        // a network that transitions between the two moments would otherwise offer Connect
-        // on a connected network, and the alternative — rebuilding the button on every
-        // transition — is what closes an open menu out from under whoever is reading it.
-        button.menu = UIMenu(title: config.name, children: [
-            UIDeferredMenuElement.uncached { [weak self] completion in
-                guard let self else { return completion([]) }
-                completion(status(of: config).actions.map { action in
+        // than when the cell was last drawn — and so this button never needs rebuilding to
+        // stay correct. Same reasoning as the buffer list's join menu: a network that
+        // transitions between those two moments would otherwise offer Connect on a connected
+        // network, and rebuilding to fix that is what closes an open menu out from under
+        // whoever is reading it. The id is read at open time for the same reason.
+        button.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self, weak button] completion in
+                guard let self, let id = button?.networkID,
+                      let config = configs.first(where: { $0.id == id })
+                else { return completion([]) }
+                completion(row(for: config).actions.map { action in
                     UIAction(
                         title: Self.label(for: action),
                         image: UIImage(systemName: Self.symbol(for: action)),
@@ -328,7 +351,6 @@ final class NetworksViewController: UITableViewController {
             },
         ])
         button.showsMenuAsPrimaryAction = true
-        button.accessibilityLabel = "Actions for \(config.name)"
         button.sizeToFit()
         return button
     }
@@ -415,13 +437,21 @@ final class NetworksViewController: UITableViewController {
 
     // MARK: - Copy
 
-    private static func label(for status: NetworkRowStatus) -> String {
-        switch status {
+    /// `host:port · state`, plus the allowlist when it applies — appended rather than
+    /// substituted, since a blocked network can be connected and the connection is the more
+    /// urgent of the two facts.
+    private static func subtitle(for config: NetworkConfig, row: NetworkRow) -> String {
+        var parts = ["\(config.host):\(config.port)", label(for: row.connection)]
+        if row.isBlocked { parts.append("not allowed here") }
+        return parts.joined(separator: " · ")
+    }
+
+    private static func label(for connection: ConnectionState) -> String {
+        switch connection {
         case .connected: "Connected"
         case .connecting: "Connecting…"
         case .reconnecting: "Reconnecting…"
         case .disconnected: "Offline"
-        case .blocked: "Not allowed here"
         }
     }
 

@@ -28,6 +28,16 @@ final class FormTextCell: UITableViewCell {
     /// a form that read its values from cells would lose whatever the user typed above the
     /// fold.
     var onChange: ((String) -> Void)?
+    /// What the field should be showing when it regains focus, asked at that moment.
+    ///
+    /// ⚠⚠ Exists for secure fields. `UITextField` blanks a secure field every time it becomes
+    /// first responder — `clearsOnBeginEditing` is documented as ignored while
+    /// `isSecureTextEntry` is set — and that programmatic clear fires no `editingChanged`. So
+    /// a password typed, scrolled away from and tapped again showed empty while the form's
+    /// draft still held it: the screen and the value about to be saved disagreed, in the one
+    /// place this form is careful everywhere else to keep them together. Returning nil (the
+    /// default) leaves the field alone.
+    var restoreOnFocus: (() -> String?)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -42,6 +52,12 @@ final class FormTextCell: UITableViewCell {
         field.addAction(
             UIAction { [weak self] _ in self?.onChange?(self?.field.text ?? "") }, for: .editingChanged
         )
+        // Added once, here, not per configure: `addAction` accumulates, and a cell that
+        // gained a handler on every dequeue would fire the same work N times.
+        field.addAction(UIAction { [weak self] _ in
+            guard let self, field.text?.isEmpty ?? true, let restored = restoreOnFocus?() else { return }
+            field.text = restored
+        }, for: .editingDidBegin)
 
         let stack = UIStackView(arrangedSubviews: [label, field])
         stack.axis = .horizontal
@@ -71,7 +87,10 @@ final class FormTextCell: UITableViewCell {
         field.keyboardType = .default
         field.autocapitalizationType = .sentences
         field.autocorrectionType = .default
+        field.spellCheckingType = .default
         field.textContentType = nil
+        field.clearsOnBeginEditing = false
+        restoreOnFocus = nil
     }
 
     func configure(label text: String, value: String, placeholder: String? = nil) {
@@ -133,6 +152,7 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
 
     private let textView = UITextView()
     private let placeholderLabel = UILabel()
+    private let titleLabel = UILabel()
     var onChange: ((String) -> Void)?
     /// Called when the intrinsic height changes, so the table can re-measure without a
     /// full reload — which would resign the keyboard mid-typing.
@@ -156,13 +176,27 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         placeholderLabel.textColor = .placeholderText
         placeholderLabel.numberOfLines = 0
 
+        // ⚠ A real, visible label. Without one this is the only row in a form of labelled
+        // rows with no name — an unlabelled box between two switches — and VoiceOver was
+        // reading it out as its own placeholder, announcing the example script as if it were
+        // the field's name.
+        titleLabel.font = .preferredFont(forTextStyle: .body)
+        titleLabel.adjustsFontForContentSizeCategory = true
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(titleLabel)
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            titleLabel.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            titleLabel.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+        ])
+
         for view in [textView, placeholderLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             contentView.addSubview(view)
             NSLayoutConstraint.activate([
                 view.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
                 view.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
-                view.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+                view.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6),
             ])
         }
         textView.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor).isActive = true
@@ -181,11 +215,14 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         onHeightChange = nil
     }
 
-    func configure(value: String, placeholder: String) {
+    func configure(label: String, value: String, placeholder: String) {
+        titleLabel.text = label
         textView.text = value
         placeholderLabel.text = placeholder
         placeholderLabel.isHidden = !value.isEmpty
-        textView.accessibilityLabel = placeholder
+        // The field's NAME, not its example. VoiceOver reads the placeholder as a hint of its
+        // own accord; announcing it as the label left the box called "PRIVMSG NickServ…".
+        textView.accessibilityLabel = label
     }
 
     func textViewDidChange(_ textView: UITextView) {
