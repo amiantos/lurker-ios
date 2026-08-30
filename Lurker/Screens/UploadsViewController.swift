@@ -14,6 +14,12 @@ import UIKit
 /// composer of the conversation you came from in one tap, with no second copy of the bytes
 /// anywhere.
 ///
+/// **Tap copies the address; press-and-hold carries everything else, viewing included.** The other
+/// way round is the obvious arrangement and the wrong one here — you come to this screen to SEND
+/// something you already have, so the free gesture should be the one that gets it into a message.
+/// Viewing is the occasional case (*which* of these three screenshots was it), and that is what a
+/// press-and-hold is for.
+///
 /// A REST read like Bookmarks and Search (`GET /api/uploads`), paged by a `before` cursor. It is
 /// deliberately NOT a `HistoryFeedViewController` despite the family resemblance: that base is
 /// built around a message row and its jump-to-conversation, and an upload is a file rather than a
@@ -436,18 +442,36 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     // MARK: - Opening
 
-    /// Tap a tile → look at the file.
+    /// Put the file's address on the pasteboard, and say so.
+    ///
+    /// ⚠ The toast is not decoration. Copying changes nothing on screen, so without a word for it
+    /// the tap is indistinguishable from a missed touch and the reader taps again — which, for the
+    /// primary gesture on every tile of this screen, is the difference between the feature working
+    /// and the feature seeming broken.
+    private func copyLink(_ item: UploadItem) {
+        guard !item.removed else { return reportTombstone() }
+        UIPasteboard.general.string = item.url
+        ToastView.show("Link Copied", symbol: "link", over: view)
+    }
+
+    /// The bytes are gone, so there is nothing to copy, view, or share. Said rather than left as a
+    /// gesture that visibly did nothing — the tile is dimmed and captioned "Removed", but a tap
+    /// that silently does nothing still reads as a missed touch.
+    private func reportTombstone() {
+        report(
+            title: "Upload Removed",
+            message: "This file was removed by the server's operator. The record is kept, but the "
+                + "file itself is gone."
+        )
+    }
+
+    /// Look at the file, from the menu.
     ///
     /// The viewer opens as a GALLERY over every viewable row currently in the grid, positioned on
-    /// the one that was tapped — which means the filters double as a way to scope it: narrow to
+    /// the one that was picked — which means the filters double as a way to scope it: narrow to
     /// Images, search "march", and left/right walks exactly those.
     private func open(_ item: UploadItem) {
-        guard !item.removed else {
-            report(title: "Upload Removed", message:
-                "This file was removed by the server's operator. The record is kept, but the file "
-                + "itself is gone.")
-            return
-        }
+        guard !item.removed else { return reportTombstone() }
         let gallery = items.compactMap(Self.preview)
         if let start = gallery.firstIndex(where: { $0.url == item.url }) {
             present(
@@ -658,10 +682,17 @@ extension UploadsViewController: UICollectionViewDataSource, UICollectionViewDel
         if indexPath.item >= items.count - Self.prefetchThreshold { loadMore() }
     }
 
+    /// Tap copies the address. Looking at the file is in the menu.
+    ///
+    /// The other way round is the obvious arrangement and the wrong one for this screen. You come
+    /// here to SEND something you already have — you know what the file is, you had it — so the
+    /// gesture that costs nothing should be the one that gets it into a message, not the one that
+    /// puts it full-screen. Viewing is the occasional case (which of these three screenshots was
+    /// it), and the occasional case is what a press-and-hold is for.
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: false)
         guard items.indices.contains(indexPath.item) else { return }
-        open(items[indexPath.item])
+        copyLink(items[indexPath.item])
     }
 
     /// Everything you can do to one file, on a press-and-hold.
@@ -683,7 +714,20 @@ extension UploadsViewController: UICollectionViewDataSource, UICollectionViewDel
 
     private func actions(for item: UploadItem) -> [UIMenuElement] {
         var actions: [UIMenuElement] = []
-        // First, because it is the reason this screen exists on a phone.
+        // First, because it is what the tap used to do — the menu is where viewing lives now, and
+        // the entry a reader who taps and gets a "Link Copied" toast will come looking for.
+        //
+        // ⚠ Named for what will actually happen. Text uploads and anything App Transport Security
+        // refuses have no page in the viewer and hand off to the browser instead, and a "View"
+        // that leaves the app is a worse surprise than a button that says so.
+        if !item.removed {
+            let viewable = Self.preview(item) != nil
+            actions.append(
+                UIAction(
+                    title: viewable ? "View" : "Open in Browser",
+                    image: UIImage(systemName: viewable ? "eye" : "safari")
+                ) { [weak self] _ in self?.open(item) })
+        }
         if let onInsert, !item.removed {
             actions.append(
                 UIAction(title: "Add to Message", image: UIImage(systemName: "arrow.turn.down.left")) {
@@ -707,9 +751,12 @@ extension UploadsViewController: UICollectionViewDataSource, UICollectionViewDel
                 ) { [weak self] _ in self?.toggleStar(item) })
         }
         if !item.removed {
+            // Kept even though a tap does it: the menu is meant to be the complete list of what
+            // can be done to a file, and a reader who opens it looking for "copy" should find one
+            // rather than have to know about the gesture.
             actions.append(
-                UIAction(title: "Copy Link", image: UIImage(systemName: "doc.on.doc")) { _ in
-                    UIPasteboard.general.string = item.url
+                UIAction(title: "Copy Link", image: UIImage(systemName: "doc.on.doc")) {
+                    [weak self] _ in self?.copyLink(item)
                 })
             actions.append(
                 UIAction(title: "Share…", image: UIImage(systemName: "square.and.arrow.up")) {
