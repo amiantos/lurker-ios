@@ -85,6 +85,15 @@ public enum CommandEffect: Equatable, Sendable {
     case setRelayBot(networkId: Int, nick: String, marked: Bool, pattern: String, receipt: String)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
+    /// Open a person's profile (#12) — what `/whois` does now.
+    ///
+    /// ⚠ Deliberately NOT paired with a `.raw("WHOIS …")`. The profile asks for itself on
+    /// open, through `requestWhois`, which owns the in-flight bookkeeping; sending one here
+    /// too would put two WHOIS on the wire for one command, and the second would be dropped
+    /// by that very bookkeeping. The server buffer still gets the raw numerics either way —
+    /// they arrive by the default-show `raw` path, not because of who asked.
+    case showProfile(nick: String)
+
     case info(String)
 }
 

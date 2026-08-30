@@ -26,7 +26,7 @@ final class MessageActionsTests: XCTestCase {
 
     func testSpeechOffersReplyCopyBookmark() {
         let actions = build(msg())
-        XCTAssertEqual(actions.map(\.key), [.reply, .copy, .bookmark])
+        XCTAssertEqual(actions.map(\.key), [.reply, .copy, .bookmark, .profile])
         XCTAssertEqual(actions.first?.title, "Reply to alice")
     }
 
@@ -34,8 +34,8 @@ final class MessageActionsTests: XCTestCase {
     /// and an action renders as a full-width line, but that's a layout difference, not a
     /// difference in what you can do with them.
     func testNoticeAndActionAreEligible() {
-        XCTAssertEqual(build(msg(type: .notice)).map(\.key), [.reply, .copy, .bookmark])
-        XCTAssertEqual(build(msg(type: .action)).map(\.key), [.reply, .copy, .bookmark])
+        XCTAssertEqual(build(msg(type: .notice)).map(\.key), [.reply, .copy, .bookmark, .profile])
+        XCTAssertEqual(build(msg(type: .action)).map(\.key), [.reply, .copy, .bookmark, .profile])
     }
 
     /// The server's own output — MOTD, system, error — is not speech, so no Reply. But it is the
@@ -44,6 +44,11 @@ final class MessageActionsTests: XCTestCase {
     ///
     /// Copy is the ONLY thing that divergence buys. Bookmark keeps the web's speech gate: the
     /// feed is for things people said, not for a saved MOTD or connection error.
+    ///
+    /// ⚠ Profile is out too, and this is the case that decides its gate. These lines carry a
+    /// nick-shaped field that is not a person — a MOTD's is the server — so gating Profile on
+    /// "has a nick" would offer a whois for a hostname. Note the fixture gives every type the
+    /// nick `alice`, which is exactly why the gate can't be about whether one is there.
     func testServerTextOffersCopyOnly() {
         for type: EventType in [.system, .motd, .error, .ctcp, .e2e, .other] {
             XCTAssertEqual(
@@ -56,18 +61,24 @@ final class MessageActionsTests: XCTestCase {
     /// A NOTICE is speech, so it stays bookmarkable even though it's most often seen in a
     /// server buffer — matching the web, whose gate is the message type and not the buffer.
     func testNoticeStaysBookmarkable() {
-        XCTAssertEqual(build(msg(type: .notice)).map(\.key), [.reply, .copy, .bookmark])
+        XCTAssertEqual(build(msg(type: .notice)).map(\.key), [.reply, .copy, .bookmark, .profile])
     }
 
-    /// Activity narration offers nothing. Its `text` is a fragment of what's on screen — a part
-    /// reason, a topic — because the line is synthesized from structured fields, so Copy would put
-    /// something other than the pressed line on the pasteboard. Bookmark is out for a related
-    /// reason: churn isn't content, and one saved "alice joined" says nothing on its own.
-    func testActivityNarrationOffersNothing() {
+    /// Activity narration offers Profile and nothing else.
+    ///
+    /// The three it still refuses each have their own reason, and none of them generalises to
+    /// "narration is inert": you can't address a sentence (Reply), its `text` is a fragment of
+    /// what's on screen so Copy would paste something other than the pressed line, and churn
+    /// isn't content so one saved "alice joined" says nothing on its own.
+    ///
+    /// Profile has no such reason (#12). The nick in a join or a kick is a real person on this
+    /// network, and "who is that" is exactly what you want to ask about a nick you just watched
+    /// arrive — which used to be a line you could not interact with at all.
+    func testActivityNarrationOffersOnlyProfile() {
         for type: EventType in [.join, .part, .quit, .nick, .kick, .mode, .topic, .invite, .chghost] {
-            XCTAssertTrue(
-                build(msg(type: type, text: "brb")).isEmpty,
-                "\(type) should offer no actions"
+            XCTAssertEqual(
+                build(msg(type: type, text: "brb")).map(\.key), [.profile],
+                "\(type) should offer Profile and nothing else"
             )
         }
     }
@@ -76,14 +87,75 @@ final class MessageActionsTests: XCTestCase {
     /// never heard of it doesn't make its text less copyable, so Reply and Copy stay. Bookmark is
     /// the one that genuinely needs the id, and it's the one that drops.
     func testEphemeralLineStillOffersCopy() {
-        XCTAssertEqual(build(msg(id: 0)).map(\.key), [.reply, .copy])
+        XCTAssertEqual(build(msg(id: 0)).map(\.key), [.reply, .copy, .profile])
         XCTAssertEqual(build(msg(id: 0, type: .system, nick: nil)).map(\.key), [.copy])
+    }
+
+    // MARK: - Profile (#12)
+
+    func testProfileNamesWhoItWillLookUp() {
+        // The title carries the subject because on a relayed line it is not the nick on
+        // screen — see below. Naming it always keeps the two cases reading the same way.
+        XCTAssertEqual(
+            build(msg()).first(where: { $0.key == .profile })?.title,
+            "Profile of alice"
+        )
+    }
+
+    func testProfileNeedsANetworkToAskOn() {
+        // A system-buffer line is app-scoped and has no connection; a whois there has nowhere
+        // to go. Same gate Bookmark needs, for a different reason.
+        let actions = MessageActions.build(
+            for: msg(), scope: MessageActionScope(networkId: nil, isBookmarked: false)
+        )
+        XCTAssertFalse(actions.contains { $0.key == .profile })
+    }
+
+    func testProfileNeedsANick() {
+        XCTAssertFalse(build(msg(nick: nil)).contains { $0.key == .profile })
+        XCTAssertFalse(build(msg(nick: "")).contains { $0.key == .profile })
+    }
+
+    func testYourOwnLineStillOffersAProfile() {
+        // Unlike Reply. Your own whois is how you check your host and your modes.
+        XCTAssertTrue(build(msg(isSelf: true)).contains { $0.key == .profile })
+    }
+
+    func testARelayedLineProfilesTheBridgeNotTheSpeaker() {
+        // ⚠⚠ On a re-attributed line the nick on screen is somebody on the far side of a
+        // bridge, with no IRC presence at all — a whois for them answers `not_found` every
+        // time. The bot is the only thing here the network has heard of, which is the same
+        // rule the action sheet's own header follows ("alice via relaybot").
+        let relayed = msg(nick: "relaybot", text: "<alice> hi")
+            .relayed(to: "alice", text: "hi", via: "relaybot", source: "Discord")
+        XCTAssertEqual(MessageActions.profileSubject(of: relayed), "relaybot")
+        // And the title says so, so the offer is legible beside a row that reads "alice".
+        XCTAssertEqual(
+            build(relayed).first(where: { $0.key == .profile })?.title,
+            "Profile of relaybot"
+        )
+    }
+
+    func testRunningProfileHandsBackTheBridgeToo() {
+        let relayed = msg(nick: "relaybot", text: "<alice> hi")
+            .relayed(to: "alice", text: "hi", via: "relaybot", source: nil)
+        var asked: String?
+        run(.profile, on: relayed, context: context(
+            showProfile: { asked = $0 }
+        ))
+        XCTAssertEqual(asked, "relaybot")
+    }
+
+    func testProfileIsANoOpOnALineThatDoesNotOfferIt() {
+        // `run`'s standing guarantee: an action the line doesn't have does nothing. A MOTD
+        // carries a nick-shaped field, so without the gate this would whois a server.
+        run(.profile, on: msg(type: .motd), context: context())
     }
 
     // MARK: - Per-action gating
 
     func testOwnMessageOffersNoReply() {
-        XCTAssertEqual(build(msg(isSelf: true)).map(\.key), [.copy, .bookmark])
+        XCTAssertEqual(build(msg(isSelf: true)).map(\.key), [.copy, .bookmark, .profile])
     }
 
     func testNicklessMessageOffersNoReply() {
@@ -94,8 +166,8 @@ final class MessageActionsTests: XCTestCase {
     /// An upload with no caption, say: nothing to put on the pasteboard, but still someone to
     /// reply to and still a line worth keeping.
     func testTextlessMessageOffersNoCopy() {
-        XCTAssertEqual(build(msg(text: nil)).map(\.key), [.reply, .bookmark])
-        XCTAssertEqual(build(msg(text: "")).map(\.key), [.reply, .bookmark])
+        XCTAssertEqual(build(msg(text: nil)).map(\.key), [.reply, .bookmark, .profile])
+        XCTAssertEqual(build(msg(text: "")).map(\.key), [.reply, .bookmark, .profile])
     }
 
     // MARK: - Running
@@ -271,8 +343,13 @@ final class MessageActionsTests: XCTestCase {
         copy: @escaping (String) -> Void = { text in XCTFail("unexpected copy: \(text)") },
         setBookmark: @escaping (Int, Bool) -> Void = { id, saved in
             XCTFail("unexpected bookmark: \(id) saved=\(saved)")
+        },
+        showProfile: @escaping (String) -> Void = { nick in
+            XCTFail("unexpected profile: \(nick)")
         }
     ) -> MessageActionContext {
-        MessageActionContext(reply: reply, copy: copy, setBookmark: setBookmark)
+        MessageActionContext(
+            reply: reply, copy: copy, setBookmark: setBookmark, showProfile: showProfile
+        )
     }
 }

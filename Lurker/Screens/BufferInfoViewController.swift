@@ -13,7 +13,7 @@ import UIKit
 /// here and not straight in a whois — whois is about a *person*, and a person is one of
 /// the things a DM is about, not the whole of it. It gets a row that leads there (#12),
 /// the same way a channel's members do, so the pill keeps one meaning and whois still has
-/// somewhere to live.
+/// somewhere to live. That row is live now.
 ///
 /// Notification rows are placeholders and say so. The per-channel flag they'll drive
 /// (`notify_always`) already exists server-side and already rides the snapshot, but the
@@ -32,6 +32,10 @@ final class BufferInfoViewController: UITableViewController {
     /// Search, scoped to this buffer. Handed back for the same reason members is: presenting
     /// belongs to the chat screen, which owns the one-sheet-at-a-time rule.
     var onSearchBuffer: ((String) -> Void)?
+
+    /// Go to a conversation — what the profile pushed from the Whois row needs when its Send
+    /// Message or a channel row is tapped. Passed straight through.
+    var onOpenBuffer: ((BufferKey) -> Void)?
 
     private var sections: [Section] = []
 
@@ -205,10 +209,9 @@ final class BufferInfoViewController: UITableViewController {
             // … amiantos" row under an "amiantos" title just says it twice.
             content.text = "Whois"
             content.image = UIImage(systemName: "person.crop.circle")
-            // Dimmed and inert: the whois screen is #12. Shown anyway so the panel says
-            // what a DM *is* about, rather than being one lonely placeholder switch.
-            content.textProperties.color = .tertiaryLabel
             cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            cell.selectionStyle = .default
 
         case .search:
             var content = UIListContentConfiguration.cell()
@@ -243,7 +246,18 @@ final class BufferInfoViewController: UITableViewController {
             dismiss(animated: true) { [onShowMembers] in onShowMembers?() }
         case .search(let scope):
             dismiss(animated: true) { [onSearchBuffer] in onSearchBuffer?(scope) }
-        case .topic, .whois, .notifyPlaceholder:
+        case .whois:
+            // Pushed into this sheet rather than dismissing first, unlike Members and Search
+            // above. Those two hand back to the chat screen because it owns presenting them;
+            // a profile has no such owner and no reason to close the panel you opened it from,
+            // so Back returns here.
+            guard let networkId = buffer.networkId else { return }
+            let profile = UserProfileViewController(
+                viewModel: viewModel, networkId: networkId, nick: buffer.target
+            )
+            profile.onOpenBuffer = onOpenBuffer
+            navigationController?.pushViewController(profile, animated: true)
+        case .topic, .notifyPlaceholder:
             break
         }
     }

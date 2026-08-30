@@ -1971,6 +1971,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if case .activate(let key) = outcome { navigate(to: key) }
         // `/join` asked us to switch once the channel is real — see `awaitJoin`.
         if case .awaitJoin(let key) = outcome { awaitJoin(key) }
+        // `/whois` — open the profile rather than leaving the numerics in the server buffer as
+        // the only answer.
+        if case .showProfile(let networkId, let who) = outcome {
+            showProfile(networkId: networkId, nick: who)
+        }
     }
 
     /// Switch to a channel we just asked to join, the moment its buffer materializes.
@@ -2005,6 +2010,31 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Switch to another buffer — what `/msg` and `/query` ask for once the DM is open. The
     /// target may not be in state yet (a brand-new DM whose `open-buffer` reply is still in
     /// flight), which is what `buffer(for:)` synthesizes for.
+    /// A profile inside a sheet asked to go somewhere — Send Message, or one of the channels
+    /// the whois listed.
+    ///
+    /// Dismiss, then navigate. Replacing the stack while a sheet is still up leaves the sheet
+    /// hanging over a screen that no longer presented it, and the navigation happens in the
+    /// completion so it can't race the dismissal.
+    private func leaveSheet(to key: BufferKey) {
+        dismiss(animated: true) { [weak self] in self?.navigate(to: key) }
+    }
+
+    /// Someone's profile, on its own sheet — the `/whois` and message-action route in. The two
+    /// sheet-borne routes push instead, so the profile arrives inside the list you came from.
+    ///
+    /// Medium first like its siblings: it's a glance about a person in the conversation behind
+    /// it, so it leaves that conversation on screen.
+    private func showProfile(networkId: Int, nick: String) {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        let profile = UserProfileViewController(viewModel: viewModel, networkId: networkId, nick: nick)
+        profile.onOpenBuffer = { [weak self] key in self?.leaveSheet(to: key) }
+        let sheet = UINavigationController(rootViewController: profile)
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
+    }
+
     private func navigate(to key: BufferKey) {
         guard key != buffer.key else { return }
         navigationController?.showBuffer(
@@ -2471,6 +2501,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             guard let self else { return }
             showSearch(viewModel: viewModel, seed: scope)
         }
+        info.onOpenBuffer = { [weak self] key in self?.leaveSheet(to: key) }
         let sheet = UINavigationController(rootViewController: info)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
@@ -2481,9 +2512,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// replaces this screen, so there's no VC about to be deallocated under the sheet.
     private func showMemberList() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
-        let sheet = UINavigationController(
-            rootViewController: MemberListViewController(viewModel: viewModel, buffer: buffer)
-        )
+        let members = MemberListViewController(viewModel: viewModel, buffer: buffer)
+        members.onOpenBuffer = { [weak self] key in self?.leaveSheet(to: key) }
+        let sheet = UINavigationController(rootViewController: members)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         // Medium first: a nick list is a glance, and half-height keeps the conversation
         // you're reading it against on screen behind it.
@@ -2787,6 +2818,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 copy: { UIPasteboard.general.string = $0 },
                 setBookmark: { [weak self] id, saved in
                     self?.viewModel.setBookmark(messageId: id, saved: saved)
+                },
+                showProfile: { [weak self] nick in
+                    // Safe to present straight away: the action sheet runs this from its own
+                    // dismissal completion ("dismiss first, act second"), so nothing is on
+                    // screen to refuse a second presentation.
+                    guard let self, let networkId = buffer.networkId else { return }
+                    showProfile(networkId: networkId, nick: nick)
                 }
             )
         )

@@ -174,12 +174,17 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/nick newname"), [.raw(line: "NICK newname")])
     }
 
-    func testWhoisRawsTheNick() {
-        XCTAssertEqual(effects("/whois bob"), [.raw(line: "WHOIS bob")])
+    /// `/whois` opens the profile rather than sending the line itself (#12).
+    ///
+    /// ⚠ No `.raw` beside it, deliberately. The profile asks on open through `requestWhois`,
+    /// which owns the in-flight bookkeeping; a second WHOIS here would be dropped by that very
+    /// bookkeeping, and the server buffer gets the raw numerics either way.
+    func testWhoisOpensTheProfile() {
+        XCTAssertEqual(effects("/whois bob"), [.showProfile(nick: "bob")])
     }
 
     func testBareWhoisInADmTargetsThePeer() {
-        XCTAssertEqual(effects("/whois", target: "bob"), [.raw(line: "WHOIS bob")])
+        XCTAssertEqual(effects("/whois", target: "bob"), [.showProfile(nick: "bob")])
     }
 
     func testInviteDefaultsChannelToCurrentBuffer() {

@@ -233,6 +233,16 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         textView.accessibilityLabel = label
     }
 
+    /// Put the caret in the field, for a screen whose only content IS this field — asking for
+    /// a tap there is asking for a tap to get to the one thing on screen.
+    ///
+    /// Caret to the end rather than selecting everything: this is used to *resume* editing an
+    /// existing note, and a select-all means the first keystroke silently replaces it.
+    func focus() {
+        textView.becomeFirstResponder()
+        textView.selectedRange = NSRange(location: textView.text.utf16.count, length: 0)
+    }
+
     func textViewDidChange(_ textView: UITextView) {
         placeholderLabel.isHidden = !textView.text.isEmpty
         onChange?(textView.text)
