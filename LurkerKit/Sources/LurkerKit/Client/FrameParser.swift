@@ -118,10 +118,17 @@ enum FrameParser {
             guard let networkId = obj.intOrNull("networkId"), !noteNick.isEmpty else {
                 return .ignored
             }
+            // ⚠⚠ `note` must be PRESENT, not merely readable. An empty note is a delete, and
+            // `string("note")` folds a missing or non-string field to `""` — so a malformed
+            // frame would silently destroy something the user typed. An absent field is not a
+            // statement that the note is empty (the same rule `InstanceFeatures` follows), and
+            // the asymmetry decides it: refusing costs a missed update, accepting costs the
+            // note. A real clear still passes, because `""` is present.
+            guard obj.has("note"), let note = obj["note"] as? String else { return .ignored }
             return .nickNoteUpdated(
                 networkId: networkId,
                 nick: noteNick,
-                note: obj.string("note"),
+                note: note,
                 updatedAt: ISOTime.parse(obj.stringOrNull("updatedAt"))
             )
         case "buffer-renamed":

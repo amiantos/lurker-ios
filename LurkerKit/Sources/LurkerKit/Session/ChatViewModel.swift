@@ -837,7 +837,17 @@ public final class ChatViewModel {
     /// no RPL_ENDOFWHOIS produces no signal at all (see `WhoisResult.isNotFound`), and such a
     /// lookup stays pending — the same behaviour the web has. Worth revisiting with evidence
     /// of a server that does it, not before.
+    /// ⚠ Trimmed first, and the trimmed nick is what's both sent and keyed. Two reasons, and
+    /// the second outlives the first:
+    /// - `WHOIS " "` draws ERR_NONICKNAMEGIVEN, which irc-framework doesn't map at all — so no
+    ///   `whois_result` ever arrives and, with no timeout, that slot is claimed for good;
+    /// - keying on the padded form while the server answers with the bare one means the reply
+    ///   frees a slot nobody claimed, and the claimed one is never freed. Same wedge, reachable
+    ///   without any malformed input at all.
+    ///
+    /// `setNickNote` trims for the first reason too; both entry points here now agree.
     public func requestWhois(networkId: Int, nick: String) {
+        let nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !nick.isEmpty, !store.state.isWhoisPending(networkId: networkId, nick: nick)
         else { return }
         if client.sendRaw(networkId: networkId, line: "WHOIS \(nick)") {

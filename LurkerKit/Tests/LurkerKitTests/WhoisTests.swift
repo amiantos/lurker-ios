@@ -285,8 +285,26 @@ final class WhoisTests: XCTestCase {
 
     func testRequestingAWhoisForNobodyDoesNothing() {
         let model = viewModel()
-        model.requestWhois(networkId: 1, nick: "")
+        for nobody in ["", " ", "\n", "   \t "] {
+            model.requestWhois(networkId: 1, nick: nobody)
+        }
         XCTAssertTrue(model.state.whoisPending.isEmpty)
+    }
+
+    func testAPaddedNickIsKeyedTheWayTheServerWillAnswerIt() {
+        // ⚠⚠ The reply names the bare nick, so keying the slot on the padded form would free
+        // a slot nobody claimed and leave the claimed one held forever — the wedge again,
+        // reachable with no malformed input at all. Asserted at the store, since the send that
+        // would claim it needs a socket.
+        let store = LurkerStore()
+        store.markWhoisPending(networkId: 1, nick: "alice")
+        store.apply(.whoisResult(networkId: 1, whois: WhoisResult(nick: "alice")))
+        XCTAssertTrue(store.state.whoisPending.isEmpty)
+        // And the trimmed spelling is what `requestWhois` would have keyed.
+        XCTAssertEqual(
+            ChatState.whoisKey(networkId: 1, nick: "  Alice  ".trimmingCharacters(in: .whitespacesAndNewlines)),
+            ChatState.whoisKey(networkId: 1, nick: "alice")
+        )
     }
 
     func testASocketDropFreesEveryLookupThatWasOutOverIt() {
@@ -399,6 +417,25 @@ final class WhoisTests: XCTestCase {
         ] {
             XCTAssertEqual(FrameParser.parseWs(bad), .ignored, bad)
         }
+    }
+
+    func testAFrameWithNoReadableNoteIsRefusedRatherThanTreatedAsAClear() {
+        // ⚠⚠ An empty note is a DELETE, so folding an absent or non-string `note` to `""`
+        // would let a malformed frame destroy something the user typed. Absent is not a
+        // statement that the note is empty. The asymmetry settles it: refusing costs a missed
+        // update, accepting costs the note.
+        for bad in [
+            ##"{"kind":"nick-note-updated","networkId":7,"nick":"alice"}"##,
+            ##"{"kind":"nick-note-updated","networkId":7,"nick":"alice","note":null}"##,
+            ##"{"kind":"nick-note-updated","networkId":7,"nick":"alice","note":42}"##,
+        ] {
+            XCTAssertEqual(FrameParser.parseWs(bad), .ignored, bad)
+        }
+        // The real clear still lands — `""` is present.
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"nick-note-updated","networkId":7,"nick":"alice","note":""}"##),
+            .nickNoteUpdated(networkId: 7, nick: "alice", note: "", updatedAt: nil)
+        )
     }
 
     func testTheNoteUpdateFramePatchesOneNick() {
