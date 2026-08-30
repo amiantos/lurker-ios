@@ -978,6 +978,13 @@ final class LurkerStore {
             // reconnect and show a peer composing when we've heard nothing from them since
             // before the drop.
             next.typing = [:]
+            // ⚠⚠ And no WHOIS still out over that socket is going to be answered either. This
+            // is the third in-flight set cleared on a drop — the view model does the same to
+            // `loadingOlder`/`loadingNewer` — and leaving it claimed is the wedge documented on
+            // `whoisPending`, arriving by the most ordinary route there is: a reconnect between
+            // asking and RPL_ENDOFWHOIS. `requestWhois` would then refuse that nick for the rest
+            // of the session, leaving the profile on "waiting…" with an inert Refresh.
+            next.whoisPending = []
             return next
         case .unauthorized, .ignored:
             // Session-level / no-op; the view model intercepts `.unauthorized` first.

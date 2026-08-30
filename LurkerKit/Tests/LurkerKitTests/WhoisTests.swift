@@ -289,6 +289,24 @@ final class WhoisTests: XCTestCase {
         XCTAssertTrue(model.state.whoisPending.isEmpty)
     }
 
+    func testASocketDropFreesEveryLookupThatWasOutOverIt() {
+        // ⚠⚠ The most ordinary route to the wedge: a reconnect between asking and
+        // RPL_ENDOFWHOIS. No reply is coming over the socket that closed, so a slot left
+        // claimed here would make `requestWhois` refuse that nick for the rest of the session —
+        // profile stuck on "waiting…", Refresh inert. `typing` is cleared beside it for the
+        // same reason.
+        let store = LurkerStore()
+        store.markWhoisPending(networkId: 1, nick: "alice")
+        store.markWhoisPending(networkId: 2, nick: "bob")
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertTrue(store.state.whoisPending.isEmpty)
+        // Cached replies survive: they're answers we already have, not requests waiting on a
+        // socket. The screen re-asks on open anyway.
+        store.apply(.whoisResult(networkId: 1, whois: WhoisResult(nick: "alice")))
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertNotNil(store.state.whoisResult(networkId: 1, nick: "alice"))
+    }
+
     // MARK: - Nick notes
 
     func testNotesFoldCaseButKeepTheirStoredCasingForDisplay() {
@@ -350,14 +368,19 @@ final class WhoisTests: XCTestCase {
     }
 
     func testParsesTheNoteUpdateFrame() {
+        // ⚠⚠ `"2026-08-29 12:00:00"` — a space, no zone — is what the server actually sends.
+        // `user_nick_notes.updated_at` is `DEFAULT (datetime('now'))` and `nickNotes.ts` echoes
+        // the column verbatim, unlike the tables declared with an explicit
+        // `strftime('%Y-%m-%dT%H:%M:%fZ')`. Feeding this an ISO string is a test that passes
+        // over a broken production path — which is what the first cut of it did.
         XCTAssertEqual(
             FrameParser.parseWs(##"""
             {"kind":"nick-note-updated","networkId":7,"nick":"Alice","note":"hi",
-             "updatedAt":"2026-08-29T12:00:00.000Z"}
+             "updatedAt":"2026-08-29 12:00:00"}
             """##),
             .nickNoteUpdated(
                 networkId: 7, nick: "Alice", note: "hi",
-                updatedAt: ISOTime.parse("2026-08-29T12:00:00.000Z")
+                updatedAt: Date(timeIntervalSince1970: 1_788_004_800)
             )
         )
         // The clear arrives as the same frame with an empty note and no timestamp.
@@ -390,12 +413,15 @@ final class WhoisTests: XCTestCase {
     func testTheSnapshotSeedsNotesAndDropsUnusableRows() {
         let frame = FrameParser.parseWs(##"""
         {"kind":"snapshot","networks":[{"networkId":7,"state":"connected","nick":"me","channels":[],
-         "nickNotes":[{"nick":"Alice","note":"lives in Berlin","updatedAt":"2026-08-29T12:00:00.000Z"},
+         "nickNotes":[{"nick":"Alice","note":"lives in Berlin","updatedAt":"2026-08-29 12:00:00"},
                       {"nick":"","note":"x"},{"nick":"bob","note":""}]}]}
         """##)
         guard case let .snapshot(networks, _) = frame else { return XCTFail("expected a snapshot") }
         XCTAssertEqual(networks.first?.nickNotes.map(\.nick), ["Alice"])
-        XCTAssertEqual(networks.first?.nickNotes.first?.updatedAt, ISOTime.parse("2026-08-29T12:00:00.000Z"))
+        XCTAssertEqual(
+            networks.first?.nickNotes.first?.updatedAt,
+            Date(timeIntervalSince1970: 1_788_004_800)
+        )
     }
 
     func testTheSnapshotReplacesNotesWholesale() {

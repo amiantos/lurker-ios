@@ -631,9 +631,15 @@ final class LurkerClient {
     /// ⚠ **An empty `note` is the delete**, and that's the server's encoding rather than a
     /// convention chosen here: `set_nick_note` drops the row for an empty string and echoes
     /// back `note: ''`, so the clear and the write are one verb and one frame shape.
+    /// ⚠ Refuses a blank nick rather than sending one. The server trims and throws
+    /// `invalid_input`, and the WS handler swallows that throw (`wsHub.ts:3491`) — so no frame
+    /// comes back, and since nothing is written optimistically the editor would show a save
+    /// that silently did nothing. Same guard `requestWhois` makes, for the same reason.
     @discardableResult
     func setNickNote(networkId: Int, nick: String, note: String) -> Bool {
-        send(
+        let nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nick.isEmpty else { return false }
+        return send(
             ["type": "set-nick-note", "networkId": networkId, "nick": nick, "note": note],
             surfacesFailure: true
         )
