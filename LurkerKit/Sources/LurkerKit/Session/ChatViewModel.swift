@@ -819,6 +819,39 @@ public final class ChatViewModel {
         client.unfavoriteBuffer(networkId: networkId, target: target)
     }
 
+    /// Ask the network who `nick` is (#12) — what the profile screen sends on open, and what
+    /// its Refresh does.
+    ///
+    /// Always re-asks rather than trusting the cache: presence, idle time and channel list go
+    /// stale within minutes, so the cached reply is there to render *immediately* while this
+    /// round trip is out, not to save it.
+    ///
+    /// ⚠⚠ The two guards are not interchangeable and both are load-bearing (lurker#818):
+    /// - skipping while a lookup for this exact nick is already out keeps a reopen from
+    ///   spamming the server, **without** leaving a failed lookup un-retryable — a `not_found`
+    ///   frees the slot on arrival like any other answer;
+    /// - claiming the slot only when the send returns true keeps a WHOIS that never left the
+    ///   socket from wedging that nick forever, since no reply is coming to free it.
+    ///
+    /// There is deliberately no timeout. A server that answers ERR_NOSUCHNICK and then sends
+    /// no RPL_ENDOFWHOIS produces no signal at all (see `WhoisResult.isNotFound`), and such a
+    /// lookup stays pending — the same behaviour the web has. Worth revisiting with evidence
+    /// of a server that does it, not before.
+    public func requestWhois(networkId: Int, nick: String) {
+        guard !nick.isEmpty, !store.state.isWhoisPending(networkId: networkId, nick: nick)
+        else { return }
+        if client.sendRaw(networkId: networkId, line: "WHOIS \(nick)") {
+            store.markWhoisPending(networkId: networkId, nick: nick)
+        }
+    }
+
+    /// Write or clear the note about a nick (#12). No local mutation — the note appears when
+    /// the server's `nick-note-updated` echo folds in, like every other server-authoritative
+    /// list here. An empty `note` deletes it.
+    public func setNickNote(networkId: Int, nick: String, note: String) {
+        client.setNickNote(networkId: networkId, nick: nick, note: note)
+    }
+
     /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
     public func reorderFavorites(bufferIds: [Int]) {
         client.reorderFavorites(bufferIds: bufferIds)
