@@ -189,6 +189,11 @@ final class UserProfileViewController: UITableViewController {
             "Connected from",
             [whois.actualHostname, whois.actualIP].compactMap(\.self).joined(separator: " ")
         )
+        // ⚠ Only ever "secure", never "not secure". RPL_WHOISSECURE is sent only when the
+        // connection IS one, and plenty of servers never send it at all — so an absent flag
+        // is silence, not a denial, and a row reading "Not secure" would be inventing an
+        // answer nobody gave. Same rule as `Connected from` above.
+        if whois.isSecure { add("Connection", "Secure (TLS)") }
         add("Account", whois.account)
         // ⚠ Gated on `server`, not on `serverInfo`. The two are independent optional fields on
         // the wire, so a server that sends the description without the name would otherwise
@@ -201,15 +206,17 @@ final class UserProfileViewController: UITableViewController {
         return rows
     }
 
-    /// The standing facts, each carrying the server's own wording where it gave us one —
-    /// "is an IRC Operator" says more than a chip reading "Operator", and it costs nothing to
-    /// keep since the numeric's trailing text is what the field holds.
+    /// What the network *asserts* about them, in its own words — "is an IRC Operator" says
+    /// more than a chip reading "Operator", and it costs nothing to keep, since the numeric's
+    /// trailing text is exactly what the field holds.
+    ///
+    /// These are sentences, which is why they are rows of their own rather than metadata: they
+    /// have no label half. TLS used to sit here and doesn't any more — it is a property of the
+    /// connection with a name and a value, so it reads as a metadata row like `Connected
+    /// from`, beside which it belongs.
     private func flags(_ whois: WhoisResult?, state: ChatState) -> [Row] {
         var rows: [Row] = []
         if let whois {
-            if whois.isSecure {
-                rows.append(.flag(title: "Connected over TLS", symbol: "lock"))
-            }
             if let text = whois.registeredNick {
                 rows.append(.flag(title: text, symbol: "checkmark.seal"))
             }
@@ -319,10 +326,22 @@ final class UserProfileViewController: UITableViewController {
             content.imageProperties.tintColor = .secondaryLabel
 
         case .detail(let title, let value, let copyable):
-            content = UIListContentConfiguration.valueCell()
+            // Label above, value below — on every row, not just the ones long enough to wrap.
+            // A `valueCell` puts the two on one line and truncates, so the moment one value
+            // needed room (a hostmask does, always) the list held two different shapes and
+            // read as though something had gone wrong with the long one.
+            //
+            // Inverted against the stock subtitle style: the LABEL is the quiet caption and
+            // the VALUE is body text. What you came to read is the value; the label is only
+            // there to say what it is.
+            content = UIListContentConfiguration.subtitleCell()
             content.text = title
+            content.textProperties.font = .preferredFont(forTextStyle: .footnote)
+            content.textProperties.color = .secondaryLabel
             content.secondaryText = value
-            // A hostmask is long and the row is narrow, so let it take the width it needs
+            content.secondaryTextProperties.font = .preferredFont(forTextStyle: .body)
+            content.secondaryTextProperties.color = .label
+            // A hostmask is long and the row is narrow, so let it take the height it needs
             // rather than truncating the half that identifies them.
             content.secondaryTextProperties.numberOfLines = 0
             if copyable {
