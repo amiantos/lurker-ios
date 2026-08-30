@@ -28,18 +28,31 @@ public struct UploadsFilter: Sendable, Equatable {
     /// haven't uploaded anything".
     public var isNarrowed: Bool { !query.isEmpty || kind != nil || favoritesOnly }
 
-    /// The filter in words, for an empty-state line — `“march” in starred images`.
+    /// What this filter is narrowed to, as a NOUN PHRASE — `uploads`, `starred uploads`,
+    /// `image uploads`, `starred video uploads`.
     ///
-    /// ⚠ The scope has to name `starred` as well as the kind. "Nothing matches images" sent the
-    /// reader hunting for a search term they never typed when the empty view was really the
-    /// starred one.
-    public var summary: String {
-        let scope = [favoritesOnly ? "starred" : nil, kind?.label.lowercased()]
-            .compactMap { $0 }
-            .joined(separator: " ")
-        if !query.isEmpty, !scope.isEmpty { return "“\(query)” in \(scope)" }
-        if !query.isEmpty { return "“\(query)”" }
-        return scope.isEmpty ? "that filter" : scope
+    /// ⚠⚠ Always ends in the head noun, and the narrowings are adjectives in front of it. Built as
+    /// a bare list of what was set, it produced "Nothing in your uploads matches starred." — which
+    /// is not a sentence. Anything that gets dropped into running prose has to be a phrase that
+    /// can survive being dropped into running prose, and the empty state is the one place a
+    /// reader meets these words at all.
+    ///
+    /// ⚠ The kind contributes its raw name (`video`) rather than its chip label (`Video`), because
+    /// the labels are plural where the grammar wants a modifier: "No videos uploads" is the other
+    /// way to get this wrong.
+    ///
+    /// ⚠ `starred` must be named as well as the kind. "No image uploads match" sent the reader
+    /// hunting for the wrong thing when the empty view was really the starred one.
+    public var scope: String {
+        let narrowings = [favoritesOnly ? "starred" : nil, kind?.rawValue].compactMap { $0 }
+        return (narrowings + ["uploads"]).joined(separator: " ")
+    }
+
+    /// The line under an empty grid when a search found nothing — `No starred image uploads match
+    /// “march”.` Only for the case where something was actually typed; a filter with no query has
+    /// nothing to report *not matching*, and reads as "you have none of these" instead.
+    public var noMatchesLine: String {
+        "No \(scope) match “\(query)”."
     }
 }
 

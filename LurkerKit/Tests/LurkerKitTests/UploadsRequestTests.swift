@@ -104,14 +104,34 @@ struct UploadsRequestTests {
         #expect(UploadsRequest.outcome(status: 500) == .failed)
     }
 
-    @Test("the empty-state line names the starred scope, not just the kind")
-    func summaryNamesEveryActiveFilter() {
-        // ⚠ "Nothing matches images" sends the reader hunting for a search term they never typed
-        // when the empty view was really the starred one.
-        #expect(UploadsFilter(kind: .image, favoritesOnly: true).summary == "starred images")
-        #expect(UploadsFilter(query: "march", kind: .video).summary == "“march” in video")
-        #expect(UploadsFilter(query: "march").summary == "“march”")
+    @Test("the scope is a noun phrase, so it survives being dropped into a sentence")
+    func scopeIsANounPhrase() {
+        // ⚠⚠ The regression this exists for: built as a bare list of what was set, a starred-only
+        // filter described itself as "starred", and the empty state read "Nothing in your uploads
+        // matches starred." — which is not a sentence. Every one of these has to end in the head
+        // noun with the narrowings in front of it.
+        #expect(UploadsFilter(favoritesOnly: true).scope == "starred uploads")
+        #expect(UploadsFilter(kind: .image).scope == "image uploads")
+        #expect(UploadsFilter(kind: .image, favoritesOnly: true).scope == "starred image uploads")
+        #expect(UploadsFilter().scope == "uploads")
+        // ⚠ The RAW name, not the chip label: the labels are plural where the grammar wants a
+        // modifier, and "No videos uploads" is the other way to get this wrong.
+        #expect(UploadsFilter(kind: .video).scope == "video uploads")
+    }
+
+    @Test("the no-matches line names what was searched as well as what for")
+    func noMatchesLineReadsAsASentence() {
+        #expect(
+            UploadsFilter(query: "march", kind: .video, favoritesOnly: true).noMatchesLine
+                == "No starred video uploads match “march”.")
+        #expect(UploadsFilter(query: "march").noMatchesLine == "No uploads match “march”.")
+    }
+
+    @Test("a filter with nothing set is not narrowed")
+    func narrowing() {
         #expect(!UploadsFilter().isNarrowed)
         #expect(UploadsFilter(favoritesOnly: true).isNarrowed)
+        #expect(UploadsFilter(kind: .text).isNarrowed)
+        #expect(UploadsFilter(query: "a").isNarrowed)
     }
 }

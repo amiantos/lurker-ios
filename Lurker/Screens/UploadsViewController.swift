@@ -420,15 +420,34 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
                     title: "Couldn't load uploads",
                     subtitle: "Pull to try again."
                 ))
-        } else if filter.isNarrowed {
+        } else if !filter.query.isEmpty {
             // ⚠ Names what is filtered, in words. With the filter living in a menu the reader
-            // can't see it, so an unqualified "no uploads" would send someone hunting for files
-            // that are right there behind a chip they forgot they set.
+            // can't see it, an unqualified "no matches" would send someone hunting for files that
+            // are right there behind a narrowing they forgot they set — so the line says which
+            // uploads were searched as well as what for.
             placeholder.configure(
                 StateView.Model(
                     symbol: "magnifyingglass",
                     title: "No matches",
-                    subtitle: "Nothing in your uploads matches \(filter.summary)."
+                    subtitle: filter.noMatchesLine
+                ))
+        } else if filter.favoritesOnly {
+            // Names the gesture, the way the Bookmarks feed does. An empty starred view is what
+            // somebody who has never starred anything sees, and telling them the list is empty
+            // without telling them how to put something in it is the least useful true statement
+            // available.
+            placeholder.configure(
+                StateView.Model(
+                    symbol: "star",
+                    title: "No \(filter.scope)",
+                    subtitle: "Press and hold an upload, then Star, to keep it here."
+                ))
+        } else if filter.isNarrowed {
+            placeholder.configure(
+                StateView.Model(
+                    symbol: "line.3.horizontal.decrease.circle",
+                    title: "No \(filter.scope)",
+                    subtitle: "Nothing you've uploaded is under this filter."
                 ))
         } else {
             placeholder.configure(
