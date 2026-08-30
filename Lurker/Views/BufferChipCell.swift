@@ -290,39 +290,18 @@ final class BufferChipCell: UICollectionViewCell {
         } else {
             badgeContainer.isHidden = true
             presenceDot.isHidden = presence == nil
-            if let presence { presenceDot.backgroundColor = Self.presenceColor(presence) }
+            if let presence { presenceDot.backgroundColor = presence.dotColor }
         }
 
         // The FULL network name, on every chip, hint or no hint: the hint is a visual
         // shorthand for a collision you can see, and "which network is this" is a question a
         // screen-reader user can't answer by glancing at the chip beside it.
         var summary = networkName.map { "\(name), \($0)" } ?? name
-        if let presence { summary += ", \(Self.presenceLabel(presence))" }
+        if let presence { summary += ", \(presence.accessibilityLabel)" }
         if unread > 0 {
             summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"
         }
         accessibilityLabel = summary
     }
 
-    private static func presenceColor(_ presence: FriendPresence) -> UIColor {
-        switch presence {
-        // Present/away take the theme's own signal colors, the same two the connection banner
-        // and the title-bar status light use, so "online" is one color across the whole app and
-        // both clients. Absent/unknown stay on the system greys: they aren't signals, they're
-        // the lack of one, and the palette has no token for that.
-        case .online: return Palette.good
-        case .away: return Palette.warn
-        case .offline: return .tertiaryLabel
-        case .unknown: return .quaternaryLabel
-        }
-    }
-
-    private static func presenceLabel(_ presence: FriendPresence) -> String {
-        switch presence {
-        case .online: return "online"
-        case .away: return "away"
-        case .offline: return "offline"
-        case .unknown: return "status unknown"
-        }
-    }
 }

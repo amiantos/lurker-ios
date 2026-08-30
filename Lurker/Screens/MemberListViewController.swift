@@ -7,8 +7,13 @@ import UIKit
 
 /// The nick list, summoned by a swipe in from the right edge.
 ///
-/// Deliberately a placeholder for the real member list (#12): it shows who's here, ranked,
-/// with away state — and nothing else. No whois, no per-member actions.
+/// Shows who's here, ranked, with away state; a row opens that person's profile (#12). It was
+/// a placeholder until there was somewhere for a row to go — the list itself was finished, and
+/// what made it a placeholder was `selectionStyle = .none`.
+///
+/// A search field appears once the channel is big enough to need one. Filtering is on the nick
+/// only, not on the rank glyph: `@` is a fact about the row, not part of the name, and matching
+/// it would make searching for a literal `@` return every operator.
 ///
 /// The list is live (#30): the store folds join/part/quit/kick/nick into
 /// `ChatState.members` and applies the server's `names`/`member-update` broadcasts, so
@@ -18,7 +23,21 @@ final class MemberListViewController: UITableViewController {
     private let buffer: Buffer
     private var cancellables = Set<AnyCancellable>()
 
+    /// Everyone in the channel, ranked. The table draws `visible`, which is this filtered by
+    /// the search field.
     private var members: [Member] = []
+    private var visible: [Member] = []
+
+    /// Below this, the field is clutter: every nick already fits on a screen or two, and
+    /// scrolling finds them faster than typing does. Above it, scanning stops working.
+    private static let searchThreshold = 20
+
+    /// Passed through to the profile a row opens, for its Send Message and channel rows.
+    ///
+    /// Handed back for the same reason `BufferInfoViewController` hands its rows back: this
+    /// screen is inside a sheet, and the presenter owns what happens to that sheet. Nil means
+    /// the profile simply doesn't offer those rows — see `UserProfileViewController`.
+    var onOpenBuffer: ((BufferKey) -> Void)?
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -61,9 +80,54 @@ final class MemberListViewController: UITableViewController {
     private func apply(_ state: ChatState) {
         members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key))
         title = members.isEmpty ? "Members" : "Members (\(members.count))"
-        tableView.backgroundView = members.isEmpty ? emptyLabel : nil
+        // The field appears and disappears with the channel's size, so a room that empties out
+        // below the threshold stops offering one. Assigned only on change: reassigning
+        // `searchController` mid-edit dismisses the keyboard.
+        let wantsSearch = members.count >= Self.searchThreshold
+        if wantsSearch != (navigationItem.searchController != nil) {
+            // ⚠⚠ Clear the field BEFORE detaching it. `refilter` reads the search bar whether
+            // or not it is on screen, so a netsplit that drops a filtered channel under the
+            // threshold would take the field away and leave the list filtered to a query with
+            // nothing left to clear it — possibly to "No members match." over a populated
+            // channel. (Detaching a controller that is still `isActive` is not a state UIKit
+            // handles gracefully either.)
+            if !wantsSearch {
+                searchController.isActive = false
+                searchController.searchBar.text = ""
+            }
+            navigationItem.searchController = wantsSearch ? searchController : nil
+        }
+        refilter()
+    }
+
+    /// Narrow to what the field asks for, and say so when nothing matches.
+    ///
+    /// Case-insensitive substring rather than prefix: you rarely remember which end of a nick
+    /// you know, and a nicklist is short enough that the looser match costs nothing.
+    private func refilter() {
+        let query = (searchController.searchBar.text ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        visible = query.isEmpty
+            ? members
+            : members.filter { $0.nick.lowercased().contains(query) }
+        tableView.backgroundView = visible.isEmpty ? emptyLabel : nil
+        if visible.isEmpty { emptyLabel.text = emptyText(searching: !query.isEmpty) }
         tableView.reloadData()
     }
+
+    private lazy var searchController: UISearchController = {
+        let search = UISearchController(searchResultsController: nil)
+        search.searchResultsUpdater = self
+        // The nicklist stays put and filters in place — there is no second results screen to
+        // dim toward, and dimming the very list being filtered hides the answer.
+        search.obscuresBackgroundDuringPresentation = false
+        search.searchBar.placeholder = "Filter members"
+        search.searchBar.autocapitalizationType = .none
+        search.searchBar.autocorrectionType = .no
+        search.searchBar.spellCheckingType = .no
+        return search
+    }()
 
     /// Says which of the two reasons the list is empty, because they need different things
     /// from the user: a DM has nobody to list and never will, while a channel with no
@@ -73,26 +137,33 @@ final class MemberListViewController: UITableViewController {
     /// every state change that reaches us.
     private lazy var emptyLabel: UILabel = {
         let label = UILabel()
-        switch buffer.kind {
-        case .channel: label.text = "No members yet."
-        case .dm: label.text = "Direct messages have no member list."
-        case .server, .system: label.text = "This buffer has no member list."
-        }
+        label.text = emptyText(searching: false)
         label.textColor = .secondaryLabel
         label.textAlignment = .center
         label.numberOfLines = 0
         return label
     }()
 
+    /// A filter that matched nothing is a different fact from a channel with nobody in it, and
+    /// the two need different things from the reader — one is "type less", the other is "wait".
+    private func emptyText(searching: Bool) -> String {
+        if searching { return "No members match." }
+        switch buffer.kind {
+        case .channel: return "No members yet."
+        case .dm: return "Direct messages have no member list."
+        case .server, .system: return "This buffer has no member list."
+        }
+    }
+
     // MARK: - Table
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        members.count
+        visible.count
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "member", for: indexPath)
-        let member = members[indexPath.row]
+        let member = visible[indexPath.row]
         var content = UIListContentConfiguration.cell()
         let prefix = MemberPrefix.of(member.modes)
         // Away members stay in place rather than sorting to the bottom — you look for a
@@ -139,8 +210,23 @@ final class MemberListViewController: UITableViewController {
             content.attributedText = attributed
         }
         cell.contentConfiguration = content
-        cell.selectionStyle = .none
         return cell
+    }
+
+    /// A row opens that person's profile (#12) — whois, their note, and the way to DM them.
+    ///
+    /// This is the tap the list was missing. Pushed onto the sheet's own navigation controller
+    /// rather than presented, so the profile arrives *inside* the nicklist sheet and Back
+    /// returns to the list you were scanning — one sheet, two depths, which is also what keeps
+    /// it clear of the chat screen's one-sheet-at-a-time rule.
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard let networkId = buffer.networkId, indexPath.row < visible.count else { return }
+        let profile = UserProfileViewController(
+            viewModel: viewModel, networkId: networkId, nick: visible[indexPath.row].nick
+        )
+        profile.onOpenBuffer = onOpenBuffer
+        navigationController?.pushViewController(profile, animated: true)
     }
 
     /// Long-press a member to add them to Friends — straight off a nick you're looking at
@@ -153,8 +239,8 @@ final class MemberListViewController: UITableViewController {
         contextMenuConfigurationForRowAt indexPath: IndexPath,
         point: CGPoint
     ) -> UIContextMenuConfiguration? {
-        guard let networkId = buffer.networkId, indexPath.row < members.count else { return nil }
-        let nick = members[indexPath.row].nick
+        guard let networkId = buffer.networkId, indexPath.row < visible.count else { return nil }
+        let nick = visible[indexPath.row].nick
         let isFriend = viewModel.state.isFavorite(BufferKey(networkId: networkId, target: nick))
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             UIMenu(children: [
@@ -173,5 +259,11 @@ final class MemberListViewController: UITableViewController {
                     },
             ])
         }
+    }
+}
+
+extension MemberListViewController: UISearchResultsUpdating {
+    func updateSearchResults(for searchController: UISearchController) {
+        refilter()
     }
 }

@@ -9,6 +9,9 @@ public enum MessageActionKey: String, Sendable {
     case reply
     case copy
     case bookmark
+    /// Open the profile of the person the line is *from* (#12) — which on a re-attributed
+    /// relay line is the bridge, not the speaker. See `profileSubject`.
+    case profile
     // A long press that lands on a link is about the link, not the line it's in — see
     // `MessageActions.build(for url:)`.
     case openLink
@@ -63,15 +66,20 @@ public struct MessageActionContext {
     /// from the same `MessageActionScope` that produced the menu's label, so what fires is
     /// always what the row the user tapped said it would do.
     public let setBookmark: (Int, Bool) -> Void
+    /// Open a profile for this nick. Only called with a nick that has an IRC presence — see
+    /// `profileSubject`.
+    public let showProfile: (String) -> Void
 
     public init(
         reply: @escaping (String) -> Void,
         copy: @escaping (String) -> Void,
-        setBookmark: @escaping (Int, Bool) -> Void
+        setBookmark: @escaping (Int, Bool) -> Void,
+        showProfile: @escaping (String) -> Void
     ) {
         self.reply = reply
         self.copy = copy
         self.setBookmark = setBookmark
+        self.showProfile = showProfile
     }
 }
 
@@ -174,7 +182,61 @@ public enum MessageActions {
             )
         }
 
+        // Profile — whois, their note, and the way to DM them.
+        //
+        // ⚠⚠ The subject is `profileSubject`, NOT `message.nick`. On a relay-re-attributed
+        // line those differ, and the nick on screen is a person on Discord or Matrix with no
+        // IRC presence at all: a whois for them answers "not_found" every time. The action
+        // sheet's header already draws this distinction ("alice via relaybot") on the grounds
+        // that the bot is the only thing there with an IRC presence, and this follows it.
+        //
+        // The title names whoever that turns out to be, so a relayed line offers "Profile of
+        // relaybot" under a header reading "alice via relaybot" — which is the honest offer,
+        // and legible next to it.
+        //
+        // ⚠ Speech OR activity, which is a narrower gate than "has a nick" and has to be.
+        // Server text carries a nick-shaped field that is not a person — a MOTD's is the
+        // server itself — so a bare nick check offers "Profile of irc.example.org", a whois
+        // for a hostname. The two categories here are exactly the lines whose nick is a USER.
+        //
+        // Activity is deliberately included, unlike Reply/Copy/Bookmark above. Each of those
+        // has its own reason to skip narration — you can't address a sentence, its `text` is a
+        // fragment, churn isn't content — and none of them is a reason to refuse "who is that",
+        // which is a perfectly ordinary thing to ask about a nick you just watched join.
+        //
+        // Not gated on self: your own whois is how you check your host and modes. The network
+        // gate is real though — a system-buffer line has no connection to ask on.
+        if scope.networkId != nil,
+           message.type.isSpeech || message.type.isActivity,
+           let subject = profileSubject(of: message) {
+            actions.append(
+                MessageAction(
+                    key: .profile,
+                    title: "Profile of \(subject)",
+                    symbol: "person.crop.circle"
+                )
+            )
+        }
+
         return actions
+    }
+
+    /// The nick on a line that actually has an IRC presence, or nil when there is none.
+    ///
+    /// A relay bot's re-attributed line shows the embedded speaker as its author, but that
+    /// person exists on the far side of a bridge — the bot is the IRC entity. Anything that
+    /// addresses the *network* about a line therefore has to ask about the bot.
+    public static func profileSubject(of message: Message) -> String? {
+        if let bot = message.relayBot, !bot.isEmpty { return bot }
+        // ⚠⚠ A nick-change line's `nick` is the OLD name — it is what the sentence is about,
+        // not who is there now. Asking the network about it answers `not_found` every time,
+        // so the profile would say "bob isn't on this network" about somebody standing right
+        // there under a new name. The person is the same person; only the handle moved.
+        if message.type == .nick, let renamed = message.newNick, !renamed.isEmpty {
+            return renamed
+        }
+        guard let nick = message.nick, !nick.isEmpty else { return nil }
+        return nick
     }
 
     /// The actions for a link, when the press landed on one rather than on the line around it.
@@ -198,7 +260,7 @@ public enum MessageActions {
         case .openLink: context.open(url)
         case .copyLink: context.copy(url)
         case .shareLink: context.share(url)
-        case .reply, .copy, .bookmark: break
+        case .reply, .copy, .bookmark, .profile: break
         }
     }
 
@@ -233,6 +295,12 @@ public enum MessageActions {
             // offered. Re-reading the store here instead would invert the button under the
             // user: the row says "Save Message" and an unsave goes out.
             context.setBookmark(message.id, !scope.isBookmarked)
+        case .profile:
+            // `build` already refused a line with no IRC subject, and this re-derives from the
+            // same function rather than restating its rule — the drift `run`'s own gate exists
+            // to prevent.
+            guard let subject = profileSubject(of: message) else { return }
+            context.showProfile(subject)
         case .openLink, .copyLink, .shareLink:
             // A link's keys, dispatched by the `URL` overload. Ignored rather than trapped: one
             // screen renders both menus, and a mismatch is a caller bug, not a reason to crash.

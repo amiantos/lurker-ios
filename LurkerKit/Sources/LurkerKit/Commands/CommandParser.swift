@@ -228,7 +228,7 @@ public enum CommandParser {
             // A bare `/whois` in a DM whoises the peer; in a channel it needs a nick.
             let who = rest.first ?? (isNickTarget(target) ? target : "")
             guard !who.isEmpty else { return [.info("usage: /whois <nick>")] }
-            return [.raw(line: "WHOIS \(who)")]
+            return [.showProfile(nick: who)]
         case "invite":
             guard let who = rest.first else { return [.info("usage: /invite <nick> [channel]")] }
             // The channel defaults to the current buffer, but only if that's a channel — an

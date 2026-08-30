@@ -462,6 +462,10 @@ public final class ChatViewModel {
         /// UI waits for the row and navigates then; a refused join simply never fires,
         /// leaving the user where they typed with the error printed in front of them.
         case awaitJoin(BufferKey)
+        /// `/whois` — open this person's profile. Carries the network because a profile is
+        /// about a person *on a connection*, and the buffer the command was typed in is the
+        /// only thing that knows which one.
+        case showProfile(networkId: Int, nick: String)
     }
 
     /// Which composer line each outstanding `send-result` is answering — see
@@ -567,6 +571,11 @@ public final class ChatViewModel {
                     || wentNowhere
             case .raw(let line):
                 client.sendRaw(networkId: networkId, line: line)
+            case .showProfile(let who):
+                // Nothing goes out here — the screen asks when it opens. A `/whois` typed in
+                // the system buffer has no connection to ask on and is silently no-op'd, the
+                // same as every other network-scoped effect there.
+                if let networkId { outcome = .showProfile(networkId: networkId, nick: who) }
             case .join(let channel, let joinKey):
                 if let networkId {
                     client.joinChannel(networkId: networkId, channel: channel, key: joinKey)
