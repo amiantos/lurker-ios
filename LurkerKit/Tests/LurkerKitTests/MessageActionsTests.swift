@@ -146,6 +146,26 @@ final class MessageActionsTests: XCTestCase {
         XCTAssertEqual(asked, "relaybot")
     }
 
+    func testANickChangeProfilesTheNewNameNotTheOldOne() {
+        // ⚠⚠ A nick line's `nick` is what the sentence is ABOUT, not who is there now. Asking
+        // the network about it answers `not_found` every time, so the profile would report
+        // "bob isn't on this network" about somebody standing right there as bob_afk.
+        let renamed = Message(id: 1, type: .nick, nick: "bob", text: nil, newNick: "bob_afk")
+        XCTAssertEqual(MessageActions.profileSubject(of: renamed), "bob_afk")
+        XCTAssertEqual(
+            MessageActions.build(for: renamed, scope: scope())
+                .first(where: { $0.key == .profile })?.title,
+            "Profile of bob_afk"
+        )
+    }
+
+    func testANickChangeWithNoNewNameFallsBackToTheOldOne() {
+        // A malformed frame shouldn't cost the row entirely — the old nick is still the best
+        // guess about who the line is about.
+        let renamed = Message(id: 1, type: .nick, nick: "bob", text: nil)
+        XCTAssertEqual(MessageActions.profileSubject(of: renamed), "bob")
+    }
+
     func testProfileIsANoOpOnALineThatDoesNotOfferIt() {
         // `run`'s standing guarantee: an action the line doesn't have does nothing. A MOTD
         // carries a nick-shaped field, so without the gate this would whois a server.

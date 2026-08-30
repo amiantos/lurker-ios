@@ -1974,6 +1974,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // `/whois` — open the profile rather than leaving the numerics in the server buffer as
         // the only answer.
         if case .showProfile(let networkId, let who) = outcome {
+            // ⚠ The keyboard is ALWAYS up here — the command was just typed, and
+            // `composer.clear()` blanks the field without resigning it. A `.medium()` detent is
+            // about keyboard height, so the sheet would land behind it. Same call
+            // `messageLongPressed` makes, for the same reason, in the case where it's optional.
+            composer.resignFirstResponder()
             showProfile(networkId: networkId, nick: who)
         }
     }

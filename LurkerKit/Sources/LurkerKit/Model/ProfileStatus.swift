@@ -60,13 +60,25 @@ public struct ProfileStatus: Equatable, Sendable {
         // not on the network" — is the one the status line below must use.
         let peerIsOffline = peer == .offline
 
-        // The dot. MONITOR wins where it has an opinion; the reply settles it where MONITOR has
-        // none. ⚠ The `isNotFound` branch matters: without it a nick nobody is using reads
+        // The dot. MONITOR wins where it has an opinion; the reply settles it where MONITOR
+        // has none.
+        //
+        // ⚠⚠ Every MONITOR branch is tested before the reply's `away` — including `.online`,
+        // which is the one that is easy to get wrong and the reason this isn't a
+        // straight port. A whois reply is a snapshot from whenever it was asked, and iOS
+        // keeps no live away *message*: `FrameParser` flattens the `peer-presence` blob to the
+        // state alone, so a peer who came back is `.online` here while `whois.away` still
+        // holds the reason they gave an hour ago. Testing the reply first pins the dot to
+        // "Away — lunch" for somebody MONITOR has already told us is back.
+        //
+        // ⚠ The `isNotFound` branch matters too: without it a nick nobody is using reads
         // "unknown", which is the one status we can actually rule out.
         let presence: FriendPresence = {
             if peerIsOffline { return .offline }
-            if peer == .away || (away?.isEmpty == false) { return .away }
+            if peer == .away { return .away }
             if peer == .online { return .online }
+            // No MONITOR opinion — fall back to what the reply said.
+            if away?.isEmpty == false { return .away }
             if isNotFound { return .offline }
             return whois != nil ? .online : .unknown
         }()
@@ -92,7 +104,10 @@ public struct ProfileStatus: Equatable, Sendable {
 
         return ProfileStatus(
             presence: presence,
-            awayMessage: (away?.isEmpty == false) ? away : nil,
+            // Only alongside an away dot. Carrying it while MONITOR says they're back would
+            // put a stale "lunch" under an "Online" heading — the reason is only ever as
+            // fresh as the reply it came in.
+            awayMessage: (presence == .away && away?.isEmpty == false) ? away : nil,
             statusLine: statusLine,
             // A DM to yourself is meaningless, and one to somebody who isn't there bounces —
             // whether MONITOR says so or the lookup did. THIS is where the two verdicts are

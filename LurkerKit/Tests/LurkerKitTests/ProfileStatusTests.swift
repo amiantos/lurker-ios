@@ -50,6 +50,26 @@ final class ProfileStatusTests: XCTestCase {
         XCTAssertEqual(resolve(peer: .unknown, whois: away).awayMessage, "back later")
     }
 
+    func testAPeerWhoCameBackIsNotPinnedAwayByAStaleReply() {
+        // ⚠⚠ The reply is a snapshot from whenever it was asked, and iOS keeps no live away
+        // *message* — `FrameParser` flattens the peer-presence blob to the state alone. So
+        // after alice `/away lunch`, you open her profile, and she comes back, MONITOR says
+        // `.online` while `whois.away` still holds "lunch". Testing the reply first would pin
+        // the dot to "Away — lunch" for someone we have been told is back.
+        let stale = WhoisResult(nick: "alice", hostname: "example.org", away: "lunch")
+        let status = resolve(peer: .online, whois: stale)
+        XCTAssertEqual(status.presence, .online)
+        // And the reason goes with it: a stale "lunch" under an "Online" heading is worse
+        // than no reason at all.
+        XCTAssertNil(status.awayMessage)
+    }
+
+    func testMonitorOfflineAlsoBeatsAStaleAwayReason() {
+        let stale = WhoisResult(nick: "alice", hostname: "example.org", away: "lunch")
+        XCTAssertEqual(resolve(peer: .offline, whois: stale).presence, .offline)
+        XCTAssertNil(resolve(peer: .offline, whois: stale).awayMessage)
+    }
+
     func testBeingAwayWithNoReasonIsStillBeingAway() {
         // ⚠ Deliberately NOT the web's `awayLabel`, which returns nothing when away is active
         // with no reason — an indicator that vanishes for the most common spelling of `/away`

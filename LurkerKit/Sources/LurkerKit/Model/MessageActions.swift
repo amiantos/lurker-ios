@@ -228,6 +228,13 @@ public enum MessageActions {
     /// addresses the *network* about a line therefore has to ask about the bot.
     public static func profileSubject(of message: Message) -> String? {
         if let bot = message.relayBot, !bot.isEmpty { return bot }
+        // ⚠⚠ A nick-change line's `nick` is the OLD name — it is what the sentence is about,
+        // not who is there now. Asking the network about it answers `not_found` every time,
+        // so the profile would say "bob isn't on this network" about somebody standing right
+        // there under a new name. The person is the same person; only the handle moved.
+        if message.type == .nick, let renamed = message.newNick, !renamed.isEmpty {
+            return renamed
+        }
         guard let nick = message.nick, !nick.isEmpty else { return nil }
         return nick
     }

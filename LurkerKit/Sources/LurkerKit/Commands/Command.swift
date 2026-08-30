@@ -83,8 +83,6 @@ public enum CommandEffect: Equatable, Sendable {
     /// rides along and is withheld when the verb never reached a socket, exactly as it does for
     /// the two ignore effects above.
     case setRelayBot(networkId: Int, nick: String, marked: Bool, pattern: String, receipt: String)
-    /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
-    /// usage hint, or a "not in the app yet" note. Never touches the network.
     /// Open a person's profile (#12) — what `/whois` does now.
     ///
     /// ⚠ Deliberately NOT paired with a `.raw("WHOIS …")`. The profile asks for itself on
@@ -93,7 +91,8 @@ public enum CommandEffect: Equatable, Sendable {
     /// by that very bookkeeping. The server buffer still gets the raw numerics either way —
     /// they arrive by the default-show `raw` path, not because of who asked.
     case showProfile(nick: String)
-
+    /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
+    /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
 }
 

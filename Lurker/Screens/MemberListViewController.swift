@@ -32,10 +32,11 @@ final class MemberListViewController: UITableViewController {
     /// scrolling finds them faster than typing does. Above it, scanning stops working.
     private static let searchThreshold = 20
 
-    /// Opening a profile is handed back for the same reason `BufferInfoViewController` hands
-    /// its rows back: this screen is inside a sheet, and the presenter owns what happens to
-    /// that sheet. Nil means push onto our own navigation controller, which is what the sheet
-    /// this normally lives in wants.
+    /// Passed through to the profile a row opens, for its Send Message and channel rows.
+    ///
+    /// Handed back for the same reason `BufferInfoViewController` hands its rows back: this
+    /// screen is inside a sheet, and the presenter owns what happens to that sheet. Nil means
+    /// the profile simply doesn't offer those rows — see `UserProfileViewController`.
     var onOpenBuffer: ((BufferKey) -> Void)?
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
@@ -84,6 +85,16 @@ final class MemberListViewController: UITableViewController {
         // `searchController` mid-edit dismisses the keyboard.
         let wantsSearch = members.count >= Self.searchThreshold
         if wantsSearch != (navigationItem.searchController != nil) {
+            // ⚠⚠ Clear the field BEFORE detaching it. `refilter` reads the search bar whether
+            // or not it is on screen, so a netsplit that drops a filtered channel under the
+            // threshold would take the field away and leave the list filtered to a query with
+            // nothing left to clear it — possibly to "No members match." over a populated
+            // channel. (Detaching a controller that is still `isActive` is not a state UIKit
+            // handles gracefully either.)
+            if !wantsSearch {
+                searchController.isActive = false
+                searchController.searchBar.text = ""
+            }
             navigationItem.searchController = wantsSearch ? searchController : nil
         }
         refilter()

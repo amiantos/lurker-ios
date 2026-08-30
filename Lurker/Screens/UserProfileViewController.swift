@@ -28,6 +28,10 @@ final class UserProfileViewController: UITableViewController {
     /// Go to a conversation. Handed back rather than done here for the same reason
     /// `BufferInfoViewController` hands back its rows: this screen may be inside a sheet, and
     /// the presenter owns dismissing itself before anything replaces the stack behind it.
+    ///
+    /// ⚠ Without one, Send Message and the channel rows are dead taps — they'd ask the server
+    /// for the buffer and then go nowhere. So the rows that need it are only offered when it
+    /// is set, rather than trusting every future caller to remember.
     var onOpenBuffer: ((BufferKey) -> Void)?
 
     private var sections: [Section] = []
@@ -76,6 +80,13 @@ final class UserProfileViewController: UITableViewController {
                     && old.nickNotes === new.nickNotes
                     && old.presence(networkId: networkId, nick: nick)
                         == new.presence(networkId: networkId, nick: nick)
+                    // Drawn by the relay-bot flag row. Compared by identity for the same
+                    // reason as the notes — the set is only ever replaced.
+                    && old.relayBots === new.relayBots
+                    // Drawn indirectly: our own nick decides `isSelf`, which decides whether
+                    // Send Message is offered at all. A `/nick` while this is open would
+                    // otherwise leave the row inviting you to DM yourself.
+                    && old.networks[networkId]?.nick == new.networks[networkId]?.nick
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -123,13 +134,20 @@ final class UserProfileViewController: UITableViewController {
         if let line = status.statusLine {
             built.append(Section(header: nil, footer: nil, rows: [.status(line)]))
         }
-        if !details(whois).isEmpty {
-            built.append(Section(header: nil, footer: nil, rows: details(whois)))
+        // Each built once. `flags` re-reads the relay set and `whois.channels` re-splits the
+        // channels line on every access, so testing one call's emptiness and then making a
+        // second did the work twice per rebuild.
+        let detailRows = details(whois)
+        if !detailRows.isEmpty {
+            built.append(Section(header: nil, footer: nil, rows: detailRows))
         }
-        if !flags(whois, state: state).isEmpty {
-            built.append(Section(header: nil, footer: nil, rows: flags(whois, state: state)))
+        let flagRows = flags(whois, state: state)
+        if !flagRows.isEmpty {
+            built.append(Section(header: nil, footer: nil, rows: flagRows))
         }
-        let channels = whois?.channels ?? []
+        // Channels are a navigation offer, so they need somewhere to navigate — same rule as
+        // Send Message below.
+        let channels = onOpenBuffer == nil ? [] : (whois?.channels ?? [])
         if !channels.isEmpty {
             built.append(
                 Section(header: "Channels", footer: nil, rows: channels.map { .channel($0) })
@@ -159,10 +177,12 @@ final class UserProfileViewController: UITableViewController {
             [whois.actualHostname, whois.actualIP].compactMap(\.self).joined(separator: " ")
         )
         add("Account", whois.account)
-        add(
-            "Server",
-            whois.serverInfo.map { "\(whois.server ?? "") (\($0))" } ?? whois.server
-        )
+        // ⚠ Gated on `server`, not on `serverInfo`. The two are independent optional fields on
+        // the wire, so a server that sends the description without the name would otherwise
+        // render a row reading " (Example Network)" — leading space and all.
+        if let name = whois.server {
+            add("Server", whois.serverInfo.map { "\(name) (\($0))" } ?? name)
+        }
         add("Idle", whois.idleSeconds.flatMap(Self.duration))
         add("Signed on", whois.signedOn.map(Self.dateTime.string(from:)))
         return rows
@@ -215,7 +235,7 @@ final class UserProfileViewController: UITableViewController {
 
     private var actionsSection: Section {
         var rows: [Row] = []
-        if status.canSendDirectMessage { rows.append(.sendDirectMessage) }
+        if status.canSendDirectMessage, onOpenBuffer != nil { rows.append(.sendDirectMessage) }
         rows.append(.refresh)
         return Section(header: nil, footer: nil, rows: rows)
     }
@@ -340,6 +360,11 @@ final class UserProfileViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "profile", for: indexPath)
         cell.accessoryType = .none
+        // ⚠ Reset too, and it is the one that bites: only the copyable Hostmask row sets an
+        // accessory view, so a recycled cell carries its copy glyph onto "Account" or a
+        // channel — and since `accessoryView` wins over `accessoryType`, that channel row
+        // silently loses its disclosure chevron as well.
+        cell.accessoryView = nil
         cell.selectionStyle = .none
         var content = UIListContentConfiguration.cell()
 
