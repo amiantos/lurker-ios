@@ -35,7 +35,10 @@ enum UploadsGrid {
 
     /// Sized from the CONTAINER, not the screen: a split view or a Stage Manager window gets the
     /// column count its own width deserves rather than the device's.
-    static func makeLayout() -> UICollectionViewCompositionalLayout {
+    /// `showsFooter` is read on every layout pass rather than captured as a value: the starred
+    /// view's truncation disclosure comes and goes with the filter, and the section provider
+    /// re-runs on each `reloadData`.
+    static func makeLayout(showsFooter: @escaping () -> Bool) -> UICollectionViewCompositionalLayout {
         UICollectionViewCompositionalLayout { _, environment in
             let width = environment.container.effectiveContentSize.width
             let columns = columns(forWidth: width)
@@ -73,6 +76,18 @@ enum UploadsGrid {
             )
             let section = NSCollectionLayoutSection(group: group)
             section.contentInsets = sectionInsets
+            if showsFooter() {
+                section.boundarySupplementaryItems = [
+                    NSCollectionLayoutBoundarySupplementaryItem(
+                        layoutSize: NSCollectionLayoutSize(
+                            widthDimension: .fractionalWidth(1),
+                            heightDimension: .estimated(36)
+                        ),
+                        elementKind: UICollectionView.elementKindSectionFooter,
+                        alignment: .bottom
+                    )
+                ]
+            }
             return section
         }
     }

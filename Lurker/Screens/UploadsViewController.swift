@@ -65,11 +65,11 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     private let placeholder = StateView()
     private lazy var collectionView = UICollectionView(
-        frame: .zero, collectionViewLayout: UploadsGrid.makeLayout())
-    private let truncationLabel = UILabel()
-    /// Holds the disclosure line, and is what actually gets hidden: a stack REMOVES a hidden
-    /// arranged subview from layout, where hiding the label alone would leave its margins behind.
-    private let footer = UIStackView()
+        frame: .zero,
+        // Read at layout time rather than captured: the disclosure comes and goes with the
+        // starred filter, and the section provider re-runs on every `reloadData`.
+        collectionViewLayout: UploadsGrid.makeLayout { [weak self] in self?.isTruncated ?? false }
+    )
 
     /// Fetch the next page once a tile this far from the end comes on screen, so the grid extends
     /// before the reader hits the bottom rather than stalling on it.
@@ -114,34 +114,29 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         // should be the one the reader is already making.
         collectionView.keyboardDismissMode = .onDrag
         collectionView.register(UploadTileCell.self, forCellWithReuseIdentifier: UploadTileCell.reuseID)
+        collectionView.register(
+            UploadsFooterView.self,
+            forSupplementaryViewOfKind: UICollectionView.elementKindSectionFooter,
+            withReuseIdentifier: UploadsFooterView.reuseID
+        )
         collectionView.backgroundView = placeholder
         collectionView.refreshControl = UIRefreshControl()
         collectionView.refreshControl?.addAction(
             UIAction { [weak self] _ in self?.reload() }, for: .valueChanged)
 
-        // ⚠ A strip under the grid rather than a section footer. The disclosure appears and
-        // disappears with the starred filter, and a boundary supplementary that comes and goes
-        // means invalidating the layout to say one sentence.
-        truncationLabel.font = .preferredFont(forTextStyle: .caption1)
-        truncationLabel.adjustsFontForContentSizeCategory = true
-        truncationLabel.textColor = .secondaryLabel
-        truncationLabel.textAlignment = .center
-        truncationLabel.numberOfLines = 0
-        footer.addArrangedSubview(truncationLabel)
-        footer.isLayoutMarginsRelativeArrangement = true
-        footer.directionalLayoutMargins = NSDirectionalEdgeInsets(
-            top: 6, leading: 20, bottom: 6, trailing: 20)
-        footer.isHidden = true
-
-        let column = UIStackView(arrangedSubviews: [collectionView, footer])
-        column.axis = .vertical
-        column.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(column)
+        // ⚠⚠ Pinned to the VIEW's edges, not the safe area's. The grid has to run underneath the
+        // navigation bar at the top and the search bar at the bottom so content scrolls under the
+        // translucent chrome, which is what every scrolling screen on this platform does — the
+        // safe area's job here is the content INSET (which UIKit adjusts itself), not a clip.
+        // Constrained to the safe area, the grid stopped dead above the search field and the
+        // last row sat against a hard edge with nothing passing behind it.
+        collectionView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(collectionView)
         NSLayoutConstraint.activate([
-            column.topAnchor.constraint(equalTo: view.topAnchor),
-            column.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            column.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            column.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            collectionView.topAnchor.constraint(equalTo: view.topAnchor),
+            collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         installSearchBar()
@@ -290,9 +285,13 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         isLoading = true
         loadFailed = false
         // Cleared now, not when the page lands: it describes the list the PREVIOUS filter
-        // produced, and leaving it up over a grid that is being replaced would caption the wrong
-        // one for as long as the request takes.
-        isTruncated = false
+        // produced, and leaving it up under a grid that is being replaced would caption the wrong
+        // one for as long as the request takes. The layout has to be told, since the section
+        // provider only re-runs on a reload it has no reason to do yet.
+        if isTruncated {
+            isTruncated = false
+            collectionView.collectionViewLayout.invalidateLayout()
+        }
         renderPlaceholder()
         loadTask = Task { [weak self] in
             guard let self, generation == loadGeneration else { return }
@@ -400,11 +399,6 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     /// The three states a grid with nothing in it can be in, plus the starred view's truncation
     /// disclosure. Every path that changes `items` ends here.
     private func renderPlaceholder() {
-        footer.isHidden = !isTruncated || items.isEmpty
-        truncationLabel.text = isTruncated
-            ? "Showing your \(items.count) most recently starred uploads."
-            : nil
-
         guard items.isEmpty else {
             placeholder.isHidden = true
             return
@@ -637,6 +631,24 @@ extension UploadsViewController: UICollectionViewDataSource, UICollectionViewDel
             tile.configure(items[indexPath.item], model: viewModel)
         }
         return cell
+    }
+
+    /// The starred view's truncation disclosure, at the END of the grid.
+    ///
+    /// ⚠ In the content rather than pinned under it. The line says "there may be more starred
+    /// uploads than these", which is an answer to having reached the bottom — so the bottom is
+    /// where it should be read. Pinning it above the search bar also meant the grid could not run
+    /// underneath that bar, which cost every screenful the scroll-under the platform expects.
+    func collectionView(
+        _ collectionView: UICollectionView,
+        viewForSupplementaryElementOfKind kind: String,
+        at indexPath: IndexPath
+    ) -> UICollectionReusableView {
+        let view = collectionView.dequeueReusableSupplementaryView(
+            ofKind: kind, withReuseIdentifier: UploadsFooterView.reuseID, for: indexPath)
+        (view as? UploadsFooterView)?.text =
+            "Showing your \(items.count) most recently starred uploads."
+        return view
     }
 
     func collectionView(
