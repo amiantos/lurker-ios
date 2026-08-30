@@ -184,6 +184,35 @@ public struct ChatState: Sendable {
     /// same place for the same reason: `ChatViewController.apply` re-attributes at *render* time,
     /// so marking a bot re-labels the backlog already held and unmarking hands it straight back.
     public var relayBots: RelayBotSet = .empty
+    /// The account's notes about nicks (#12). Seeded by the connect `snapshot` — one list per
+    /// network blob — and patched a nick at a time by `nick-note-updated`, exactly like
+    /// `relayBots` above and for the same reason: both are user-authored, server-stored, and
+    /// fanned to every device.
+    public var nickNotes: NickNoteSet = .empty
+    /// Cached WHOIS replies, `networkId → folded nick → reply` (#12).
+    ///
+    /// ⚠ Volatile by nature and deliberately not persisted: who is on a network, idle for how
+    /// long and in which channels is stale within minutes, and a stale answer presented as a
+    /// current one is worse than none. It survives a reconnect within a session (matching the
+    /// web) because the screen re-asks on every open anyway — the cache exists to render
+    /// something *immediately* while that round trip is out, not to save the round trip.
+    public var whois: [Int: [String: WhoisResult]] = [:]
+    /// The lookups currently out, as `networkId::folded nick`.
+    ///
+    /// ⚠⚠ **"A lookup is in flight", not "we asked once."** Three rules, each of which was a
+    /// shipped bug on the web (lurker#818) before it was a rule:
+    ///
+    /// 1. Freed when the lookup answers — **including a `not_found`, which IS an answer**.
+    ///    Leaving it claimed is what made a failed lookup un-retryable for the session.
+    /// 2. Claimed only when the WHOIS actually left the socket. A slot held for a request that
+    ///    never went out wedges identically: no reply is coming to free it.
+    /// 3. Readable per (network, nick), so a screen can demote a **cached miss** back to
+    ///    "waiting" while a refresh is out — otherwise reopening a profile seconds after that
+    ///    nick connected asserts they aren't on the network for a whole round trip.
+    ///
+    /// A `Set` rather than the web's single slot: this app pushes profiles onto a navigation
+    /// stack, so two can be waiting at once.
+    public var whoisPending: Set<String> = []
     /// The user's server-side settings (#65). Seeded by `/api/settings/bootstrap` and patched
     /// by live `settings` frames, so a change made on the web takes effect here without a
     /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
@@ -247,6 +276,13 @@ public struct ChatState: Sendable {
         networks[id] = nil
         peerPresence[id] = nil
         pinned[id] = nil
+        nickNotes = nickNotes.removing(networkId: id)
+        whois[id] = nil
+        // Nothing is coming back to free these: the connection they were asked over is gone.
+        // Left behind, they'd be a permanent "waiting for whois reply…" on every nick that had
+        // a lookup out at the moment the network was deleted — and, if the id were reused, on
+        // whoever now answers to those nicks.
+        whoisPending = whoisPending.filter { !$0.hasPrefix("\(id)::") }
     }
 
     /// Move everything keyed by `from` onto `to` — the rename mirror of
@@ -395,6 +431,26 @@ public struct ChatState: Sendable {
         }
     }
 
+    /// The one spelling of a `(network, nick)` cache key, so `whois` and `whoisPending` can't
+    /// drift into folding differently — the two have to agree for a pending lookup to be
+    /// matched with the reply that answers it.
+    public static func whoisKey(networkId: Int, nick: String) -> String {
+        "\(networkId)::\(nick.lowercased())"
+    }
+
+    /// The last WHOIS reply for this nick, or nil if we've never had one. A `not_found` reply
+    /// is cached like any other — it is an answer, and `WhoisResult.isNotFound` is how a caller
+    /// tells the two apart.
+    public func whoisResult(networkId: Int, nick: String) -> WhoisResult? {
+        whois[networkId]?[nick.lowercased()]
+    }
+
+    /// Whether a lookup for this nick is still out. See `whoisPending` for why callers need
+    /// this to tell "no answer yet" from "the answer was nobody".
+    public func isWhoisPending(networkId: Int, nick: String) -> Bool {
+        whoisPending.contains(Self.whoisKey(networkId: networkId, nick: nick))
+    }
+
     /// Whether this line is saved. See `bookmarkedIds` for why an unknown id reads as
     /// unsaved rather than unknown.
     public func isBookmarked(_ messageId: Int) -> Bool { bookmarkedIds.contains(messageId) }
@@ -531,6 +587,18 @@ final class LurkerStore {
     func reset() {
         var next = ChatState()
         next.reachable = subject.value.reachable
+        subject.value = next
+    }
+
+    /// Claim the in-flight slot for a WHOIS that **has already gone out**.
+    ///
+    /// ⚠⚠ Call this only after the send returned true. Claiming first and sending second is
+    /// the wedge described on `whoisPending`: nothing frees a slot whose request never left
+    /// the socket, so that nick's lookup declines to retry for the rest of the session.
+    /// `ChatViewModel.requestWhois` is the only caller, and holds that order.
+    func markWhoisPending(networkId: Int, nick: String) {
+        var next = subject.value
+        next.whoisPending.insert(ChatState.whoisKey(networkId: networkId, nick: nick))
         subject.value = next
     }
 
@@ -740,6 +808,27 @@ final class LurkerStore {
                 networkId: networkId, nick: nick, marked: marked, pattern: pattern
             )
             return next
+        case .nickNoteUpdated(let networkId, let nick, let note, let updatedAt):
+            // A patch, like the relay mark above. Fanned to every device including the one
+            // that asked, so the editor writes nothing locally — this frame IS the save, and
+            // a note written in a browser reaches the phone by exactly this route.
+            var next = state
+            next.nickNotes = state.nickNotes.applying(
+                networkId: networkId, nick: nick, note: note, updatedAt: updatedAt
+            )
+            return next
+        case .whoisResult(let networkId, let whois):
+            var next = state
+            var byNick = next.whois[networkId] ?? [:]
+            // Keyed by the server's spelling of the nick, folded. Not by what was asked for:
+            // a reply can name a different casing, and the asker's key has to find it.
+            byNick[whois.nick.lowercased()] = whois
+            next.whois[networkId] = byNick
+            // ⚠⚠ The lookup answered, so the slot is free — and a `not_found` answered too.
+            // Not freeing it here is the whole of lurker#818: the slot stayed claimed for the
+            // session, so reopening the same nick declined to retry forever.
+            next.whoisPending.remove(ChatState.whoisKey(networkId: networkId, nick: whois.nick))
+            return next
         case .bufferClosed(let networkId, let target):
             // The live half: a close on another device while this one is connected. The
             // offline half — a close we were never told about — is `pruneToBurst`.
@@ -889,6 +978,13 @@ final class LurkerStore {
             // reconnect and show a peer composing when we've heard nothing from them since
             // before the drop.
             next.typing = [:]
+            // ⚠⚠ And no WHOIS still out over that socket is going to be answered either. This
+            // is the third in-flight set cleared on a drop — the view model does the same to
+            // `loadingOlder`/`loadingNewer` — and leaving it claimed is the wedge documented on
+            // `whoisPending`, arriving by the most ordinary route there is: a reconnect between
+            // asking and RPL_ENDOFWHOIS. `requestWhois` would then refuse that nick for the rest
+            // of the session, leaving the profile on "waiting…" with an inert Refresh.
+            next.whoisPending = []
             return next
         case .unauthorized, .ignored:
             // Session-level / no-op; the view model intercepts `.unauthorized` first.
@@ -1025,6 +1121,14 @@ final class LurkerStore {
             relayBotsByNetwork[snapshot.id] = snapshot.relayBots
         }
         next.relayBots = RelayBotSet(byNetwork: relayBotsByNetwork)
+        // Notes replace wholesale for the same reason: the snapshot is the account's whole set,
+        // so a note cleared on the web while this device was away has to be gone here rather
+        // than survive as a leftover the profile screen would keep showing.
+        var nickNotesByNetwork: [Int: [NickNote]] = [:]
+        for snapshot in networks where !snapshot.nickNotes.isEmpty {
+            nickNotesByNetwork[snapshot.id] = snapshot.nickNotes
+        }
+        next.nickNotes = NickNoteSet(byNetwork: nickNotesByNetwork)
         for snapshot in networks {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state

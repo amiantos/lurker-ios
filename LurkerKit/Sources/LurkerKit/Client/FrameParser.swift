@@ -110,6 +110,27 @@ enum FrameParser {
                 marked: obj.bool("marked"),
                 pattern: obj.string("pattern")
             )
+        case "nick-note-updated":
+            // Refused on a missing half for the same reason as the relay mark above: a note
+            // keyed on network 0, or on the empty nick, is a note about nobody that every
+            // nick-less lookup would then find.
+            let noteNick = obj.string("nick")
+            guard let networkId = obj.intOrNull("networkId"), !noteNick.isEmpty else {
+                return .ignored
+            }
+            // ⚠⚠ `note` must be PRESENT, not merely readable. An empty note is a delete, and
+            // `string("note")` folds a missing or non-string field to `""` — so a malformed
+            // frame would silently destroy something the user typed. An absent field is not a
+            // statement that the note is empty (the same rule `InstanceFeatures` follows), and
+            // the asymmetry decides it: refusing costs a missed update, accepting costs the
+            // note. A real clear still passes, because `""` is present.
+            guard obj.has("note"), let note = obj["note"] as? String else { return .ignored }
+            return .nickNoteUpdated(
+                networkId: networkId,
+                nick: noteNick,
+                note: note,
+                updatedAt: ISOTime.parse(obj.stringOrNull("updatedAt"))
+            )
         case "buffer-renamed":
             // Same trust posture as buffer-closed below: empty names can't
             // identify anything, so refuse rather than rename an arbitrary
@@ -318,6 +339,7 @@ enum FrameParser {
                 peerPresence: parsePeerPresence(network["peerPresence"] as? [String: Any]),
                 ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule),
                 relayBots: network.objects("relayBots").compactMap(parseRelayBot),
+                nickNotes: network.objects("nickNotes").compactMap(parseNickNote),
                 away: parseAwayState(network["away"]),
                 pinned: (network["pinned"] as? [String]) ?? []
             )
@@ -357,6 +379,68 @@ enum FrameParser {
     private static func parseRelayBot(_ obj: [String: Any]) -> RelayBot? {
         let nick = obj.string("nick")
         return nick.isEmpty ? nil : RelayBot(nick: nick, pattern: obj.string("pattern"))
+    }
+
+    /// One stored nick note (#12) — the same `{nick, note, updatedAt}` row in the snapshot's
+    /// per-network `nickNotes` and in a `nick-note-updated` frame.
+    ///
+    /// A row with no nick is about nobody; an empty note is the server's spelling of "no note"
+    /// (`set_nick_note` deletes the row rather than storing a blank), so neither becomes an
+    /// entry. Dropping the blank here is what keeps `hasNote` from answering yes to a note that
+    /// was cleared.
+    private static func parseNickNote(_ obj: [String: Any]) -> NickNote? {
+        let nick = obj.string("nick")
+        let note = obj.string("note")
+        guard !nick.isEmpty, !note.isEmpty else { return nil }
+        return NickNote(nick: nick, note: note, updatedAt: ISOTime.parse(obj.stringOrNull("updatedAt")))
+    }
+
+    /// The `whois` payload of a `whois_result` frame (#12).
+    ///
+    /// ⚠⚠ The field names are **irc-framework's**, not Lurker's: the server does not reshape
+    /// this object, it forwards the one irc-framework assembled from the RPL_WHOIS* numerics
+    /// (`ircConnection.ts:2912`). `real_name`, `actual_ip`, `server_info` and
+    /// `registered_nick` are its spellings and are load-bearing here.
+    ///
+    /// ⚠⚠ `idle` and `logon` are **numeric-valued strings**, not numbers. irc-framework assigns
+    /// them straight off `command.params` (`user.js:238`), and IRC parameters are text — so a
+    /// bare `as? Int` reads nil on every real reply. `numericField` takes either.
+    private static func parseWhois(_ obj: [String: Any]) -> WhoisResult {
+        WhoisResult(
+            nick: obj.string("nick"),
+            ident: obj.stringOrNull("ident"),
+            hostname: obj.stringOrNull("hostname"),
+            realName: obj.stringOrNull("real_name"),
+            actualHostname: obj.stringOrNull("actual_hostname"),
+            actualIP: obj.stringOrNull("actual_ip"),
+            server: obj.stringOrNull("server"),
+            serverInfo: obj.stringOrNull("server_info"),
+            account: obj.stringOrNull("account"),
+            channelsLine: obj.stringOrNull("channels"),
+            modes: obj.stringOrNull("modes"),
+            isOperator: obj.stringOrNull("operator"),
+            helpop: obj.stringOrNull("helpop"),
+            bot: obj.stringOrNull("bot"),
+            registeredNick: obj.stringOrNull("registered_nick"),
+            isSecure: obj.bool("secure"),
+            certfp: obj.stringOrNull("certfp"),
+            away: obj.stringOrNull("away"),
+            idleSeconds: numericField(obj["idle"]),
+            // Unix seconds. Distinguished from "absent" rather than defaulted, because a
+            // signon at the epoch would render as 1970 — plausible-looking and wrong, where a
+            // missing row simply doesn't draw.
+            signedOn: numericField(obj["logon"]).map {
+                Date(timeIntervalSince1970: TimeInterval($0))
+            },
+            error: obj.stringOrNull("error")
+        )
+    }
+
+    /// A wire number that may have arrived as a string. See `parseWhois` for why that happens.
+    private static func numericField(_ value: Any?) -> Int? {
+        if let int = value as? Int { return int }
+        if let string = value as? String { return Int(string) }
+        return nil
     }
 
     /// The snapshot's `peerPresence` blob — `lowercased nick → {nick, state, stateAt,
@@ -599,6 +683,21 @@ enum FrameParser {
                 state: ConnectionState.from(obj.stringOrNull("state")),
                 nick: nick.isEmpty ? nil : nick
             )
+        }
+        // `whois_result` is about a *person on a network*, not about a conversation, so it
+        // carries no target at all — like `own-nick`, and unlike the `:server:<id>` carriers
+        // above. Below the guard it folds to `.other` and is discarded, which is why `/whois`
+        // has never done anything on this client but write numerics to the server buffer.
+        //
+        // With no `nick` there is nothing to key it on. The server can't send one — even a
+        // miss carries it, synthesized at RPL_ENDOFWHOIS — and a reply we can't address is one
+        // no screen can be waiting for.
+        if obj.string("type") == "whois_result" {
+            guard let networkId = obj.intOrNull("networkId"),
+                  let payload = obj["whois"] as? [String: Any],
+                  !payload.string("nick").isEmpty
+            else { return .ignored }
+            return .whoisResult(networkId: networkId, whois: parseWhois(payload))
         }
         let target = obj.string("target")
         if target.isEmpty { return .ignored }

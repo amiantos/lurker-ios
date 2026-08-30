@@ -610,9 +610,39 @@ final class LurkerClient {
 
     /// A raw IRC line — the escape hatch behind `/nick`, `/mode`, `/kick`, `/whois`, the
     /// service messages, the server queries, and every unrecognized command.
-    func sendRaw(networkId: Int?, line: String) {
-        guard let networkId else { return }
-        send(["type": "raw", "networkId": networkId, "line": line], surfacesFailure: true)
+    ///
+    /// **Returns false when it went nowhere.** Most callers rightly ignore that — a raw line
+    /// is fire-and-forget and its answer is whatever the server buffer prints. The WHOIS
+    /// behind the profile screen is the exception, and it is why this returns at all: it
+    /// claims an in-flight slot that only a reply can free, so a line that never left the
+    /// socket would wedge that nick's lookup for the session (see `whoisPending`).
+    @discardableResult
+    func sendRaw(networkId: Int?, line: String) -> Bool {
+        guard let networkId else { return false }
+        return send(["type": "raw", "networkId": networkId, "line": line], surfacesFailure: true)
+    }
+
+    /// Write or clear the account's note about a nick (#12).
+    ///
+    /// Fire-and-ask, exactly like `setRelayBot` above: the server caps the note at 4 KB,
+    /// stores it, and fans a `nick-note-updated` back to every device — the note exists only
+    /// once that lands. Nothing is written locally, so a save the server refuses never appears.
+    ///
+    /// ⚠ **An empty `note` is the delete**, and that's the server's encoding rather than a
+    /// convention chosen here: `set_nick_note` drops the row for an empty string and echoes
+    /// back `note: ''`, so the clear and the write are one verb and one frame shape.
+    /// ⚠ Refuses a blank nick rather than sending one. The server trims and throws
+    /// `invalid_input`, and the WS handler swallows that throw (`wsHub.ts:3491`) — so no frame
+    /// comes back, and since nothing is written optimistically the editor would show a save
+    /// that silently did nothing. Same guard `requestWhois` makes, for the same reason.
+    @discardableResult
+    func setNickNote(networkId: Int, nick: String, note: String) -> Bool {
+        let nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nick.isEmpty else { return false }
+        return send(
+            ["type": "set-nick-note", "networkId": networkId, "nick": nick, "note": note],
+            surfacesFailure: true
+        )
     }
 
     /// Part a channel with an optional reason. The buffer survives (dimmed); `/close` drops it.

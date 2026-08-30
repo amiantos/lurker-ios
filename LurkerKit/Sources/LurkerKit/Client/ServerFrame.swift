@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Foundation
+
 /// A parsed, typed update from the server — REST or WS — for the store to fold in.
 /// Parsing the raw JSON into these here keeps the JSON layer an implementation detail
 /// the store and UI never see.
@@ -207,6 +209,25 @@ enum ServerFrame: Equatable, Sendable {
     /// connection, so there is no global bucket for a nil to mean.
     case relayBotUpdated(networkId: Int, nick: String, marked: Bool, pattern: String)
 
+    /// WS `nick-note-updated`: the note about one nick was written or cleared (#12).
+    ///
+    /// Same shape and same rules as `relayBotUpdated` above — one nick per frame, fanned to
+    /// every device including the one that asked, so nothing is applied optimistically. An
+    /// empty `note` is the clear; that's the server's own encoding (`setNickNote.ts` deletes
+    /// the row for an empty string and echoes `note: ''`), not a convention invented here.
+    case nickNoteUpdated(networkId: Int, nick: String, note: String, updatedAt: Date?)
+
+    /// A `whois_result` ephemeral (rides `irc`, `type:"whois_result"`) — a WHOIS reply (#12).
+    ///
+    /// ⚠⚠ It carries **no target**, so it has to be recognised above `parseIrc`'s target guard
+    /// or it is dropped. It is about a person on a network, not about a conversation: the
+    /// screen that asked is the one waiting for it, and the server buffer separately gets the
+    /// raw numerics through the ordinary `raw` path.
+    ///
+    /// A reply whose `error` is `not_found` IS an answer — see `WhoisResult.isNotFound` for
+    /// where that signal actually comes from, which is not where it looks like it comes from.
+    case whoisResult(networkId: Int, whois: WhoisResult)
+
     /// A `peer-presence` ephemeral (rides `irc`, `type:"peer-presence"`, network-scoped via a
     /// `:server:<id>` target): a watched nick changed state. `state` is nil when the server
     /// reports no known state, which the store reads as `unknown`.
@@ -306,6 +327,9 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// live `relay-bot-updated` frames then patch. Defaulted, like the fields above it, so the
     /// snapshot call sites that predate the feature don't have to name it.
     var relayBots: [RelayBot] = []
+    /// This account's notes about nicks on this network (#12) — the connect-time seed that live
+    /// `nick-note-updated` frames then patch. Defaulted like its neighbours.
+    var nickNotes: [NickNote] = []
     /// Your own away state on this network (#68) — the connect-time seed for what live
     /// `away-state` events then replace. Nil when the server reports none, which is the
     /// normal case for a user who has never been away.

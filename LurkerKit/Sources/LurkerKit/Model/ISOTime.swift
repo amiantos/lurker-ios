@@ -23,13 +23,42 @@ public enum ISOTime {
         return formatter
     }()
 
+    /// SQLite's `datetime('now')` — `"2026-08-29 12:00:00"`, a space instead of the `T` and no
+    /// zone at all — which `ISO8601DateFormatter` refuses in every option combination.
+    ///
+    /// ⚠⚠ Some server columns are declared `DEFAULT (datetime('now'))` and some
+    /// `DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))`, and the values reach clients
+    /// **verbatim**. So which shape a timestamp arrives in is a property of the column it came
+    /// from, not of the wire, and a reader that handles only the ISO one silently returns nil
+    /// for the others — a blank "Updated …" row rather than an error. That is exactly what
+    /// `user_nick_notes.updated_at` did (#12).
+    ///
+    /// ⚠ It is UTC — `datetime('now')` always is — so the zone is fixed here rather than left
+    /// to the device's. Reading it as local time is the JS-side bug the web works around in
+    /// `parseServerTimestamp`, and is not worth porting.
+    ///
+    /// ⚠ `en_US_POSIX`, because a fixed format string parsed under the user's own locale can
+    /// pick up a non-Gregorian calendar and misread the year.
+    private static let sqliteDateTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+
     /// Parse, or nil if absent/unparseable. Never throws — an unreadable timestamp costs
     /// a rendered clock, not a dropped message.
+    ///
+    /// Ordered by how often each shape actually arrives: nearly every timestamp on the wire is
+    /// an event `time`, which carries fractional seconds.
     public static func parse(_ iso: String?) -> Date? {
         guard let iso else { return nil }
         lock.lock()
         defer { lock.unlock() }
-        return withFraction.date(from: iso) ?? plain.date(from: iso)
+        return withFraction.date(from: iso)
+            ?? plain.date(from: iso)
+            ?? sqliteDateTime.date(from: iso)
     }
 
     /// The other direction, for the one field this client sends as a timestamp: an ignore
