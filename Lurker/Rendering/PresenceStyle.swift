@@ -7,10 +7,9 @@ import UIKit
 /// How a peer's presence looks and reads, in one place.
 ///
 /// Lifted out of `BufferChipCell`, where it was private, when the profile screen (#12) became
-/// the second surface that draws a presence dot. Two copies of this would be two answers to
-/// "what colour is online" — the exact drift `Palette` exists to prevent — and the dot in a
-/// friend row and the dot on that friend's profile disagreeing is the kind of thing nobody
-/// files a bug about and everybody notices.
+/// a second reader of the same fact. The two take different halves — the chip wants a colour,
+/// the profile says it in words — and keeping both here is what stops "online" from being one
+/// thing in a friend row and another on that friend's profile.
 extension FriendPresence {
 
     /// The dot's fill.
@@ -38,12 +37,11 @@ extension FriendPresence {
         }
     }
 
-    /// Capitalised, for standing alone as a line of its own on the profile.
+    /// Capitalised, for a labelled row's value on the profile.
     ///
-    /// ⚠ "Unknown" rather than a guess. It is the honest answer on a network with no MONITOR
-    /// and no whois reply yet, and it is also the one status a not-found lets us rule out —
-    /// see `ProfileStatus`, which is what decides this is never shown for a nick we've asked
-    /// about and heard back on.
+    /// ⚠ "Unknown" is here for completeness and the profile deliberately never renders it: a
+    /// row saying we don't know, directly under a line saying we're finding out, is the same
+    /// fact told twice. `UserProfileViewController` drops the row instead.
     var title: String {
         switch self {
         case .online: return "Online"

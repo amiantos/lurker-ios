@@ -53,7 +53,6 @@ final class UserProfileViewController: UITableViewController {
         super.viewDidLoad()
         title = nick
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "profile")
-        tableView.tableHeaderView = header
 
         // A pushed profile keeps the stack's own back button; a presented one is the root of
         // its sheet and needs a way out.
@@ -137,7 +136,7 @@ final class UserProfileViewController: UITableViewController {
         // Each built once. `flags` re-reads the relay set and `whois.channels` re-splits the
         // channels line on every access, so testing one call's emptiness and then making a
         // second did the work twice per rebuild.
-        let detailRows = details(whois)
+        let detailRows = details(whois)  // status leads it — see `details`
         if !detailRows.isEmpty {
             built.append(Section(header: nil, footer: nil, rows: detailRows))
         }
@@ -157,17 +156,31 @@ final class UserProfileViewController: UITableViewController {
         built.append(actionsSection)
 
         sections = built
-        updateHeader()
         tableView.reloadData()
     }
 
+    /// The facts, status first.
+    ///
+    /// Status is a row here rather than a heading with a coloured dot over it. The navigation
+    /// bar already says whose profile this is, so a header repeating the nick was saying it
+    /// twice — and once the nick goes, a lone dot has nothing to sit beside. As a labelled row
+    /// it reads the same way as everything under it, and it says its state in words, which is
+    /// what a colour was only standing in for.
     private func details(_ whois: WhoisResult?) -> [Row] {
-        guard let whois else { return [] }
         var rows: [Row] = []
         func add(_ title: String, _ value: String?, copyable: Bool = false) {
             guard let value, !value.isEmpty else { return }
             rows.append(.detail(title: title, value: value, copyable: copyable))
         }
+        // ⚠ Omitted rather than shown as "Unknown" while we're still asking. The status LINE
+        // above already says "Looking up alice…", and a row asserting we don't know, directly
+        // under a line saying we're finding out, is the same fact told twice — the second time
+        // less usefully. `ProfileStatus` is what guarantees `.unknown` means exactly that.
+        if status.presence != .unknown {
+            add("Status", status.awayMessage.map { "\(status.presence.title) — \($0)" }
+                ?? status.presence.title)
+        }
+        guard let whois else { return rows }
         add("Real name", whois.realName)
         add("Hostmask", whois.hostmask, copyable: true)
         // Only opers and the account itself are told this, so it's absent far more often than
@@ -238,82 +251,6 @@ final class UserProfileViewController: UITableViewController {
         if status.canSendDirectMessage, onOpenBuffer != nil { rows.append(.sendDirectMessage) }
         rows.append(.refresh)
         return Section(header: nil, footer: nil, rows: rows)
-    }
-
-    // MARK: - Header
-
-    private let dot = UIView()
-    private let nameLabel = UILabel()
-    private let statusLabel = UILabel()
-
-    /// Nick over status, centred, with the presence dot beside the nick — the same shape the
-    /// message action sheet uses, because this is the same kind of object: a subject, then what
-    /// you can do about it.
-    private lazy var header: UIView = {
-        nameLabel.font = .preferredFont(forTextStyle: .title2)
-        nameLabel.adjustsFontForContentSizeCategory = true
-        nameLabel.numberOfLines = 1
-        nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.text = nick
-
-        dot.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: 10),
-            dot.heightAnchor.constraint(equalTo: dot.widthAnchor),
-        ])
-        dot.layer.cornerRadius = 5
-        // The dot is decoration for a fact the status line under it already states in words;
-        // announcing it too would read the status twice.
-        dot.isAccessibilityElement = false
-
-        statusLabel.font = .preferredFont(forTextStyle: .subheadline)
-        statusLabel.adjustsFontForContentSizeCategory = true
-        statusLabel.textColor = .secondaryLabel
-        statusLabel.textAlignment = .center
-        statusLabel.numberOfLines = 2
-
-        let name = UIStackView(arrangedSubviews: [dot, nameLabel])
-        name.axis = .horizontal
-        name.spacing = 8
-        name.alignment = .center
-        let stack = UIStackView(arrangedSubviews: [name, statusLabel])
-        stack.axis = .vertical
-        stack.alignment = .center
-        stack.spacing = 4
-        stack.isLayoutMarginsRelativeArrangement = true
-        stack.directionalLayoutMargins = NSDirectionalEdgeInsets(
-            top: 20, leading: 24, bottom: 16, trailing: 24
-        )
-        return stack
-    }()
-
-    private func updateHeader() {
-        dot.backgroundColor = status.presence.dotColor
-        statusLabel.text = status.awayMessage.map { "\(status.presence.title) — \($0)" }
-            ?? status.presence.title
-        nameLabel.accessibilityLabel = "\(nick), \(status.presence.accessibilityLabel)"
-        sizeHeader()
-    }
-
-    /// A `tableHeaderView` does not self-size; without this it keeps the zero height it was
-    /// given and the header is invisible.
-    private func sizeHeader() {
-        guard let header = tableView.tableHeaderView, tableView.bounds.width > 0 else { return }
-        let width = tableView.bounds.width
-        let height = header.systemLayoutSizeFitting(
-            CGSize(width: width, height: 0),
-            withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel
-        ).height
-        guard abs(header.frame.height - height) > 0.5 || abs(header.frame.width - width) > 0.5
-        else { return }
-        header.frame = CGRect(x: 0, y: 0, width: width, height: height)
-        tableView.tableHeaderView = header // reassignment is what commits the new height
-    }
-
-    override func viewDidLayoutSubviews() {
-        super.viewDidLayoutSubviews()
-        sizeHeader()
     }
 
     // MARK: - Formatting
