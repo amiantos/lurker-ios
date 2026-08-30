@@ -33,6 +33,25 @@ extension UIViewController {
         )
     }
 
+    /// The uploads browser (#138). App-scoped like Highlights and Bookmarks — what you have
+    /// uploaded spans every network — and reached from the same menus.
+    ///
+    /// `onInsert` is what makes this screen different from the other three: given one, a file can
+    /// go straight into the composer you came from. The buffer list passes nil, because there is
+    /// no composer behind it and an insert would land nowhere.
+    func showUploads(viewModel: ChatViewModel, onInsert: ((String) -> Void)? = nil) {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil
+        else { return }
+        let uploads = UploadsViewController(viewModel: viewModel)
+        uploads.onInsert = onInsert
+        let sheet = UINavigationController(rootViewController: uploads)
+        sheet.navigationBar.prefersLargeTitles = true
+        sheet.sheetPresentationController?.prefersGrabberVisible = true
+        // Presented from the navigation controller for the same reason the feeds are: this is a
+        // full-height reading surface, and a presenter torn down underneath it would take it down.
+        navigationController?.present(sheet, animated: true)
+    }
+
     /// Say that the row points into a buffer that isn't open, instead of navigating into a
     /// screen that would immediately throw the user back out.
     ///
