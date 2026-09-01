@@ -166,6 +166,15 @@ final class NickCompletionTests: XCTestCase {
                        "a server too old to know the key, or the window before bootstrap")
     }
 
+    func testTheStoredValueNormalisesTheSameWayForAControlAsForTheCompletion() {
+        // The settings pull-down matches the stored value against the forms it offers with
+        // this overload, so a `", "` written from the web checks the `","` row rather than
+        // showing up as a custom value beside an identical-looking one.
+        XCTAssertEqual(NickCompletion.addressPunctuation(", "), ",")
+        XCTAssertEqual(NickCompletion.addressPunctuation(" "), "")
+        XCTAssertEqual(NickCompletion.addressPunctuation("->"), "->")
+    }
+
     func testTrailingWhitespaceInTheSettingIsDroppedNotDoubled() {
         // The description shows the form as `nick: `, so typing exactly that in is the
         // natural mistake; and a quoted " " is the natural way to ask for "space only".

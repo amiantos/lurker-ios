@@ -174,7 +174,15 @@ public enum NickCompletion {
     /// this happens at *apply* time, not write time — a value written by the web keeps its
     /// spaces on the server, and both clients trim on the way out.
     public static func addressPunctuation(_ settings: Settings) -> String {
-        var punctuation = settings.string("input.completion.nick_suffix", default: ":")
+        addressPunctuation(settings.string("input.completion.nick_suffix", default: ":"))
+    }
+
+    /// The applied form of an already-read `input.completion.nick_suffix` — the trim above,
+    /// on its own. Split out so a control that OFFERS values can match the stored one against
+    /// them the same way the completion matches it: a value the web wrote as `", "` is the
+    /// `","` choice, and a picker that couldn't see that would show the row as "custom".
+    public static func addressPunctuation(_ stored: String) -> String {
+        var punctuation = stored
         while let last = punctuation.unicodeScalars.last, isWhitespace(last) {
             punctuation.unicodeScalars.removeLast()
         }

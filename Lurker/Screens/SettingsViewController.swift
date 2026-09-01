@@ -43,6 +43,40 @@ final class SettingsViewController: UITableViewController {
     private static let chatSettings: [(key: String, label: String)] = [
         ("chat.send_typing_notifications", "Send typing notifications"),
         ("chat.keep_position_on_send", "Stay put when you send"),
+        // Composing rather than reading, which is the one row here that isn't about what the
+        // app does with a message that ARRIVES. It sits under Chat anyway: one row is not a
+        // section, and an "Input" header over a single pull-down would be filing for its own
+        // sake. It earns the row under this screen's rule now that both the @ picker and Reply
+        // honour it (#133).
+        ("input.completion.nick_suffix", "Address nicks with"),
+    ]
+
+    /// Curated choices for a `string` key the phone offers as a pull-down.
+    ///
+    /// A `string` setting is free-form on the web, where `/set` takes any value; the phone has
+    /// no `/set` and a text field in a table row that rebuilds on every settings echo would
+    /// fight the finger holding it. Offering the values people actually pick — with the label
+    /// this screen writes, like every other row — is the phone-shaped half of a free-form key,
+    /// and a value from outside the list is still shown honestly (see `menuButton`) rather
+    /// than reported as one of these.
+    ///
+    /// `normalize` is how the FEATURE reads the stored value, so a control can match it the
+    /// same way. Without it a suffix the web stored as `", "` — the trailing space is dropped
+    /// at apply time, not at write time — would show as a custom value next to the identical
+    /// `","` choice.
+    private struct StringChoices {
+        let values: [(value: String, label: String)]
+        let normalize: (String) -> String
+    }
+
+    private static let stringChoices: [String: StringChoices] = [
+        // Labelled as the form each one produces rather than by naming the punctuation
+        // ("Colon", "Comma"): the question is what your line will look like, and the sample
+        // answers it without the user having to picture it.
+        "input.completion.nick_suffix": StringChoices(
+            values: [(":", "nick:"), (",", "nick,"), (";", "nick;"), ("", "nick")],
+            normalize: NickCompletion.addressPunctuation
+        )
     ]
 
     /// Join/part/quit/nick/host-change/mode lines: whether you see them, how they're folded,
@@ -423,42 +457,77 @@ final class SettingsViewController: UITableViewController {
             )
             cell.accessoryView = stack
         case .enum:
-            // A pull-down button, not a segmented control: the choices are full phrases
-            // ("Hide from quiet users"), and three of those never fit a compact-width segment
-            // without truncating to uselessness. The button shows the current choice, which is
-            // what the row needs to say when nothing is being touched.
-            let current = viewModel.state.settings.effective(option.key)?.stringValue
-                ?? option.default.stringValue ?? ""
-            let button = UIButton(type: .system)
-            button.showsMenuAsPrimaryAction = true
-            // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
-            // the write still goes through `write`, and the authoritative value arrives back
-            // on the `settings` frame.
-            button.changesSelectionAsPrimaryAction = true
             // Every choice is offered, with the registry's own wording — this app implements
             // all three rungs of the event tier (#63 closed the last one), and nothing else
             // here is device-specific. Choice labels come from the registry
             // (`SettingOption.label(forChoice:)`), so the phone says what the web says without
             // a second copy to keep in step.
-            button.menu = UIMenu(children: option.choices.map { choice in
-                UIAction(
-                    title: option.label(forChoice: choice), state: choice == current ? .on : .off
-                ) { [weak self] _ in
-                    self?.write(option.key, .string(choice))
-                }
-            })
-            // Set the title before measuring. `changesSelectionAsPrimaryAction` derives it
-            // from the `.on` menu child, but that propagates on the button's next
-            // configuration-update pass — after this synchronous `sizeToFit()`, which would
-            // leave `accessoryView` fitted to an empty button and the control clipped on the
-            // first render of this screen. Same class of trap as the stack-view sizing above.
-            button.setTitle(option.label(forChoice: current), for: .normal)
-            button.isEnabled = enabled
-            button.sizeToFit()
-            cell.accessoryView = button
+            let current = viewModel.state.settings.effective(option.key)?.stringValue
+                ?? option.default.stringValue ?? ""
+            cell.accessoryView = menuButton(
+                current: current,
+                choices: option.choices.map { ($0, option.label(forChoice: $0)) },
+                enabled: enabled
+            ) { [weak self] choice in self?.write(option.key, .string(choice)) }
+        case .string:
+            // Only a key this screen has curated choices for. A `string` with no list gets a
+            // plain row rather than a control that can't offer anything — the same rule the
+            // `default` arm applies to the types no row uses.
+            guard let curated = Self.stringChoices[option.key] else {
+                cell.accessoryType = .none
+                return
+            }
+            let stored = viewModel.state.settings.effective(option.key)?.stringValue
+                ?? option.default.stringValue ?? ""
+            let current = curated.normalize(stored)
+            var choices = curated.values.map { (value: $0.value, label: $0.label) }
+            // A value the web set that isn't one of ours is shown as itself and checked,
+            // never silently rounded to a neighbour: the row has to say what is actually in
+            // force, and picking one of the offered forms is how you leave it. It is dropped
+            // from the list again as soon as it is, because it is only ever the stored value.
+            if !choices.contains(where: { $0.value == current }) {
+                choices.append((current, "nick\(current)"))
+            }
+            cell.accessoryView = menuButton(
+                current: current, choices: choices, enabled: enabled
+            ) { [weak self] choice in self?.write(option.key, .string(choice)) }
         default:
             cell.accessoryType = .none
         }
+    }
+
+    /// A pull-down showing the value in force, offering `choices`.
+    ///
+    /// A button, not a segmented control: the event tier's choices are full phrases ("Hide
+    /// from quiet users"), and three of those never fit a compact-width segment without
+    /// truncating to uselessness. The button shows the current choice, which is what the row
+    /// needs to say when nothing is being touched.
+    private func menuButton(
+        current: String,
+        choices: [(value: String, label: String)],
+        enabled: Bool,
+        onPick: @escaping (String) -> Void
+    ) -> UIButton {
+        let button = UIButton(type: .system)
+        button.showsMenuAsPrimaryAction = true
+        // Let UIKit track the selection so the checkmark follows a tap without a rebuild;
+        // the write still goes through `write`, and the authoritative value arrives back
+        // on the `settings` frame.
+        button.changesSelectionAsPrimaryAction = true
+        button.menu = UIMenu(children: choices.map { choice in
+            UIAction(title: choice.label, state: choice.value == current ? .on : .off) { _ in
+                onPick(choice.value)
+            }
+        })
+        // Set the title before measuring. `changesSelectionAsPrimaryAction` derives it from
+        // the `.on` menu child, but that propagates on the button's next configuration-update
+        // pass — after this synchronous `sizeToFit()`, which would leave `accessoryView`
+        // fitted to an empty button and the control clipped on the first render of this
+        // screen. Same class of trap as the stack-view sizing above.
+        button.setTitle(choices.first { $0.value == current }?.label ?? current, for: .normal)
+        button.isEnabled = enabled
+        button.sizeToFit()
+        return button
     }
 
     /// Whether this row's control is live.
