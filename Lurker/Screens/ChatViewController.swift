@@ -387,7 +387,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             switch activeCompletion {
             case .command: composer.completeCommand(name: suggestion.value)
             case .channelArg, .nickArg: composer.completeArgument(value: suggestion.value)
-            case .mention: composer.completeMention(with: suggestion.value)
+            case .mention:
+                composer.completeMention(with: suggestion.value, punctuation: addressPunctuation)
             case nil: break
             }
         }
@@ -2694,6 +2695,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         settings.bool("chat.keep_position_on_send", default: false) && !isNearBottom
     }
 
+    /// The punctuation a nick picks up when it is completed — or Replied to — at the head of a
+    /// line, per `input.completion.nick_suffix` (#133).
+    ///
+    /// Read off the store rather than this screen's `settings` copy, which is a snapshot taken
+    /// in `apply(_:)`. That copy is current only because the dedupe predicate in
+    /// `subscribeToState` happens to compare `settings` — a list that exists to keep this
+    /// screen from rebuilding, has been narrowed twice already for exactly that reason, and
+    /// says nothing about this. Settings is a sheet presented OVER this screen, so it is alive
+    /// while the value changes; going to the store makes the freshness true by construction
+    /// instead of by a neighbouring optimization's current shape.
+    private var addressPunctuation: String {
+        NickCompletion.addressPunctuation(viewModel.state.settings)
+    }
+
     @objc private func keyboardWillHide() {
         keyboardOverlap = 0
         composerBottom.constant = 0
@@ -2819,7 +2834,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         MessageActions.run(
             key, on: message, scope: scope,
             context: MessageActionContext(
-                reply: { [weak self] nick in self?.composer.address(nick) },
+                reply: { [weak self] nick in
+                    guard let self else { return }
+                    composer.address(nick, punctuation: addressPunctuation)
+                },
                 copy: { UIPasteboard.general.string = $0 },
                 setBookmark: { [weak self] id, saved in
                     self?.viewModel.setBookmark(messageId: id, saved: saved)
