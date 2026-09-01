@@ -222,6 +222,16 @@ final class NickCompletionTests: XCTestCase {
         XCTAssertFalse(NickCompletion.isAddressed("bob2: hi", to: "bob", punctuation: ":"))
     }
 
+    func testTheNickCharacterSetIsExactlyTheWebs() {
+        // `\p{L}\p{N}` and nothing else. A COMBINING mark is not `\p{L}`, so the web reads
+        // `bob` + punctuation here and this must agree — no real draft opens this way, which
+        // is precisely why a quiet divergence would never be found again.
+        XCTAssertTrue(NickCompletion.isAddressed("bob\u{0301} hi", to: "bob", punctuation: ":"))
+        // `Ⅳ` is `Nl` and `²` is `No` — digits to `\p{N}`, but not to `.decimalDigits`.
+        XCTAssertFalse(NickCompletion.isAddressed("bob\u{2163} hi", to: "bob", punctuation: ":"))
+        XCTAssertFalse(NickCompletion.isAddressed("bob\u{00B2} hi", to: "bob", punctuation: ":"))
+    }
+
     func testAMultiCharacterMarkIsRecognisedVerbatim() {
         // `->` ends in a nick special, so the punctuation-run arm can't see it; the
         // configured mark counts on its own, whatever it is.

@@ -236,13 +236,23 @@ public enum NickCompletion {
 
     /// A scalar that cannot continue a nick, which is what "punctuation after the nick" has to
     /// mean above: not a letter or digit, not whitespace, and not one of the RFC 2812 nick
-    /// specials. Mirrors the web's `NOT_NICK_CHAR`, whose `\p{L}\p{N}` this reads as
-    /// `.alphanumerics` — Unicode, because ASCII-only `\w` would let `bobł` parse as bob plus
-    /// a mark.
+    /// specials. Mirrors the web's `NOT_NICK_CHAR`, whose `\p{L}\p{N}` is Unicode rather than
+    /// ASCII `\w` — or `bobł` would parse as bob plus a mark, and `bobł` is somebody else.
+    ///
+    /// The general categories are spelled out rather than reached through a `CharacterSet`,
+    /// because none of them is the same set: `.alphanumerics` is `L* ∪ M* ∪ N*` (a combining
+    /// mark would read as part of the nick where the web reads it as punctuation) and
+    /// `.decimalDigits` is `Nd` alone (dropping `Nl`/`No`). Both divergences are unreachable
+    /// in a real draft, which is exactly why they'd never be found again once written.
     private static func isMarkScalar(_ scalar: Unicode.Scalar) -> Bool {
         if isWhitespace(scalar) { return false }
-        if CharacterSet.alphanumerics.contains(scalar) { return false }
-        return !nickSpecials.contains(scalar)
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter,
+             .decimalNumber, .letterNumber, .otherNumber:
+            return false
+        default:
+            return !nickSpecials.contains(scalar)
+        }
     }
 
     private static let nickSpecials = Set("_[]\\`^{|}-".unicodeScalars)
