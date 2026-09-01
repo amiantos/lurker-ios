@@ -85,6 +85,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// told us, not the absence of an answer. Same default the parser applies for the same
     /// reason (`FrameParser.swift:220`).
     private var hasMoreOlder = true
+    /// The `/clear` marker's mirror of the store (#121) — the boundary and its instant, kept
+    /// beside `hasMoreOlder` because they are read together by `rebuildRows`.
+    private var clearedBeforeId = 0
+    private var clearedAt: Date?
     /// Whether this buffer is detached — showing an `around` slice below the live tail (#42) —
     /// as of the last apply. Snapshotted rather than read live for the same reason as
     /// `settings` below: the typing ticker rebuilds rows with no `state` in hand.
@@ -898,6 +902,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // so a buffer whose only change is exhausting its history still reaches us.
         hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
         hasMoreNewer = nowDetached
+        // Same arm covers the `/clear` marker (#121) — which is what makes a clear issued on
+        // the WEB redraw this screen, rather than waiting for the next unrelated frame.
+        clearedBeforeId = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
+        clearedAt = state.buffers[buffer.key.id]?.clearedAt
         rosterSettled = state.rosterSettled
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
@@ -1502,6 +1510,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             dividerAfterId: dividerAfterId,
             hasMoreOlder: hasMoreOlder,
             hasMoreNewer: hasMoreNewer,
+            clearedBeforeId: clearedBeforeId,
+            clearedAt: clearedAt,
             typists: typists,
             settings: settings,
             speakers: speakers,
@@ -2865,6 +2875,33 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         listRenderer.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
+    }
+
+    /// The cleared divider is the only row in this list you can tap (#121).
+    ///
+    /// A message row is acted on by LONG press — the actions sheet (#60) — and left plain on
+    /// tap deliberately, so that reading a buffer never selects anything and a stray touch
+    /// while scrolling does nothing. This one row is a control rather than a line of
+    /// conversation, so it takes a tap; everything else refuses selection below, which is what
+    /// keeps that promise rather than relying on this method to be the only handler.
+    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
+        guard rows.indices.contains(indexPath.row),
+              case .clearedDivider = rows[indexPath.row]
+        else { return nil }
+        return indexPath
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        // Nothing stays selected: the row is a button, and a highlighted marker left behind
+        // would read as state.
+        tableView.deselectRow(at: indexPath, animated: false)
+        guard rows.indices.contains(indexPath.row),
+              case .clearedDivider = rows[indexPath.row]
+        else { return }
+        // The same wire verb `/clear off` sends — but not through the composer's path, which
+        // parses a line and records input history. Neither should happen because someone
+        // tapped a divider.
+        viewModel.clearBuffer(buffer.key, undo: true)
     }
 
     /// What the renderer needs from this screen to draw a row.

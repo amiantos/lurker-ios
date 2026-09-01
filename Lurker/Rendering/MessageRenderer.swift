@@ -824,6 +824,27 @@ enum MessageRenderer {
         return "You're back — away \(gone)"
     }
 
+    /// The label on the `/clear` marker (#121), carrying its own undo affordance.
+    ///
+    /// The two halves are one string because the whole row is the tap target: a label that
+    /// only said "cleared 3:42 PM" would be a row the reader has no reason to touch, and the
+    /// hidden conversation would stay hidden behind a `/clear off` nobody knew to type.
+    ///
+    /// Date *and* time, not just time: a clear is undone days later as often as minutes later,
+    /// and "cleared 3:42 PM" on a marker from last Tuesday reads as today.
+    static func clearedLabel(at date: Date) -> String {
+        "cleared \(clearedFormatter.string(from: date)) · Show earlier messages"
+    }
+
+    /// Short date + short time, in the reader's locale and calendar. Built once — `DateFormatter`
+    /// is expensive to construct and this one is read on every rebuild of a cleared buffer.
+    private static let clearedFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
     /// How long an away lasted, abbreviated and localized ("45m", "1h 5m", "2d 3h").
     ///
     /// Clamped up to a minute rather than shown as "0s": the marker is about a span the reader

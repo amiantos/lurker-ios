@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Foundation
+
 /// A conversation surface: a channel, a DM, a per-network server buffer, or the
 /// app-scoped system buffer. Identified on the wire by `bufferId` — the server's
 /// stable integer that survives renames (protocol §5.2) — with `(networkId,
@@ -50,6 +52,25 @@ public struct Buffer: Equatable, Sendable {
     /// jump-to-latest pill re-attaches by fetching the latest. A normal (latest) buffer is at
     /// the tail, so this defaults false.
     public var hasMoreNewer: Bool
+    /// The `/clear` marker's boundary: the highest message id hidden from the live view
+    /// (#121). 0 means the buffer has never been cleared, or the user undid it.
+    ///
+    /// Server-side and per-user, so it is shared with every other device — which is why this
+    /// is honoured whether or not this client can *issue* a clear. It survives a close and
+    /// reopen: the server keeps it on `buffer_reads`, which closing doesn't touch.
+    ///
+    /// ⚠⚠ The filter is suppressed while the buffer is **detached**. A jump to a search hit or
+    /// a highlight shows context around its anchor regardless of the marker — the user asked
+    /// to see that message, and hiding it would answer their tap with an empty screen. Same
+    /// rule as the web (`MessageList.vue:1064`), and the reason the filter lives at row-build
+    /// time rather than in the store: the messages are still there, they are just not drawn.
+    public var clearedBeforeId: Int
+    /// When the clear was issued, for the divider's label. Nil exactly when `clearedBeforeId`
+    /// is 0.
+    ///
+    /// An instant rather than a formatted string, like `awayDivider`'s: what the label says is
+    /// a render-time decision, so a redraw corrects it when the locale or the day changes.
+    public var clearedAt: Date?
     /// A channel's topic, when it has one. Nil on a channel with no topic set *and* on
     /// every other kind — nothing but a channel has one.
     ///
@@ -70,6 +91,8 @@ public struct Buffer: Equatable, Sendable {
         readStateKnown: Bool = false,
         hasMoreOlder: Bool = true,
         hasMoreNewer: Bool = false,
+        clearedBeforeId: Int = 0,
+        clearedAt: Date? = nil,
         topic: String? = nil,
         bufferId: Int? = nil
     ) {
@@ -85,10 +108,28 @@ public struct Buffer: Equatable, Sendable {
         self.readStateKnown = readStateKnown
         self.hasMoreOlder = hasMoreOlder
         self.hasMoreNewer = hasMoreNewer
+        self.clearedBeforeId = clearedBeforeId
+        self.clearedAt = clearedAt
         self.topic = topic
     }
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }
+
+    /// Move the `/clear` marker (#121) — a `buffer-cleared` frame, from this device or another.
+    ///
+    /// The two fields move together or not at all: a boundary with no instant would draw a
+    /// divider with no date, and an instant with no boundary would hide nothing while claiming
+    /// to. `beforeId <= 0` is the UNDO and clears both, which is exactly what the server sends
+    /// for `/clear off`.
+    mutating func applyCleared(beforeId: Int, at: Date?) {
+        guard beforeId > 0 else {
+            clearedBeforeId = 0
+            clearedAt = nil
+            return
+        }
+        clearedBeforeId = beforeId
+        clearedAt = at
+    }
 
     /// This buffer under a new name — the rename primitive's client half. Same
     /// id (that's the point), same counts and read state; `kind` re-derives in
@@ -107,6 +148,8 @@ public struct Buffer: Equatable, Sendable {
             readStateKnown: readStateKnown,
             hasMoreOlder: hasMoreOlder,
             hasMoreNewer: hasMoreNewer,
+            clearedBeforeId: clearedBeforeId,
+            clearedAt: clearedAt,
             topic: topic,
             bufferId: bufferId
         )

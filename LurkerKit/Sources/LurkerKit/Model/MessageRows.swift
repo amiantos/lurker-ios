@@ -25,6 +25,13 @@ public enum MessageRow: Equatable, Sendable {
     /// "You've reached the beginning", once the buffer has no older history left. The honest
     /// counterpart to a loading placeholder: "nothing more" vs "still fetching".
     case startOfHistory
+    /// The `/clear` boundary (#121) — everything above it is hidden, and this row is the way
+    /// back. Carries the instant the clear was issued, for the same reason `awayDivider` does.
+    ///
+    /// Drawn even when it is the ONLY row. Clearing a buffer you then can't un-clear without
+    /// typing `/clear off` blind is the one outcome this feature must not have, so an empty
+    /// visible region still gets the divider.
+    case clearedDivider(at: Date)
     /// Where your own `/away` falls in this buffer (#68) — the point past which the
     /// conversation carried on without you. Carries the away reason when one was given.
     ///
@@ -55,7 +62,8 @@ public enum MessageRow: Equatable, Sendable {
         case .bubble(let message, _): id = message.id
         case .line(let message): id = message.id
         case .consolidated(let summary): id = summary.lastId
-        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: return nil
+        case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
+             .typing: return nil
         }
         return id > 0 ? id : nil
     }
@@ -67,7 +75,8 @@ public enum MessageRow: Equatable, Sendable {
     public var message: Message? {
         switch self {
         case .bubble(let message, _), .line(let message): message
-        case .consolidated, .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: nil
+        case .consolidated, .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
+             .typing: nil
         }
     }
 
@@ -81,7 +90,8 @@ public enum MessageRow: Equatable, Sendable {
         switch self {
         case .consolidated: true
         case .line(let message): message.type.isActivity
-        case .bubble, .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: false
+        case .bubble, .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
+             .typing: false
         }
     }
 
@@ -92,7 +102,8 @@ public enum MessageRow: Equatable, Sendable {
         case .bubble(let message, _): message.id == id
         case .line(let message): message.id == id
         case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
-        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider, .typing: false
+        case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
+             .typing: false
         }
     }
 }
@@ -137,8 +148,21 @@ public enum MessageRows {
     ///     "no more history" has to be something the server told us, not the absence of an
     ///     answer, or an unhydrated buffer claims to have reached its beginning.
     ///   - hasMoreNewer: whether the loaded slice sits *below* the live tail — the buffer is
-    ///     detached (#42), showing an `around` window around some older message. Only the
-    ///     presence markers' foot fallback reads it, and only to suppress itself: see there.
+    ///     detached (#42), showing an `around` window around some older message. The presence
+    ///     markers' foot fallback reads it to suppress itself (see there), and it suppresses
+    ///     the `/clear` filter outright (see `clearedBeforeId`).
+    ///   - clearedBeforeId: the `/clear` boundary (#121); every message at or below it is
+    ///     hidden. 0 for a buffer that has never been cleared.
+    ///
+    ///     ⚠⚠ Suppressed entirely while DETACHED. A jump to a search hit or a highlight shows
+    ///     context around its anchor regardless of the marker — the user asked to see that
+    ///     message, and answering the tap with an empty screen because it predates a clear
+    ///     would be obeying the wrong instruction. Same rule as the web
+    ///     (`MessageList.vue:1064`), and the reason the filter lives here rather than in the
+    ///     store: the messages are still held, they are just not drawn.
+    ///   - clearedAt: when the clear was issued, for the divider's label. The divider is drawn
+    ///     iff this is non-nil, so a boundary with no instant hides rows and says nothing —
+    ///     which is why `Buffer.applyCleared` moves the two together.
     ///   - typists: who is composing right now, for the foot of the list.
     ///   - settings: the user's settings, for the event tier and the two consolidation keys.
     ///   - speakers: who has spoken in this buffer and when. Feeds both the `.smart` tier and
@@ -157,6 +181,8 @@ public enum MessageRows {
         dividerAfterId: Int?,
         hasMoreOlder: Bool,
         hasMoreNewer: Bool = false,
+        clearedBeforeId: Int = 0,
+        clearedAt: Date? = nil,
         typists: [String] = [],
         settings: Settings = Settings(),
         speakers: SpeakerMap = SpeakerMap(),
@@ -184,6 +210,11 @@ public enum MessageRows {
         // All server-side (#65), so the phone agrees with whatever the user set on the web.
         // The fallbacks match the registry's own defaults, so behavior doesn't shift under the
         // user when bootstrap lands a moment after launch.
+        // The `/clear` marker, unless the buffer is detached — see the parameter's note. Both
+        // halves are read through these, so a detached view can't half-apply the marker.
+        let clearBoundary = hasMoreNewer ? 0 : clearedBeforeId
+        let clearInstant = hasMoreNewer ? nil : clearedAt
+
         let eventMode = EventFilter.mode(settings)
         // At `.none` there are no event rows left to fold, so the consolidation pass is
         // skipped outright rather than run over a stream it can't match.
@@ -197,7 +228,16 @@ public enum MessageRows {
         // specifically: a filtered-out event that reached a summary would inflate its counts
         // and name people whose own lines are hidden.
         let messages = EventFilter.visible(
-            messages, settings: settings, speakers: speakers, ownNick: ownNick
+            // The clear boundary applies FIRST, above even the event tier: a cleared message
+            // is not a row that was filtered, it is a row the user has said they are done
+            // with. Feeding hidden lines to the tier or to consolidation would let them
+            // inflate a summary's counts and name people whose own lines are gone.
+            //
+            // A message with no persisted id (a locally synthesized system line) has id 0 and
+            // is never hidden — it has no place in the server's ordering to be above or below
+            // the boundary, and it postdates the clear by construction.
+            clearBoundary > 0 ? messages.filter { $0.id == 0 || $0.id > clearBoundary } : messages,
+            settings: settings, speakers: speakers, ownNick: ownNick
         )
 
         // Who to float to the front of a summary that had to truncate its name list: the
@@ -225,7 +265,22 @@ public enum MessageRows {
 
         // Above everything, including the first date: the buffer's history is exhausted.
         // Suppressed on an empty buffer, where the empty-state placeholder says it better.
-        if !hasMoreOlder && !messages.isEmpty { rows.append(.startOfHistory) }
+        //
+        // ⚠ And suppressed while a clear is in force, where it would be a lie of a useful
+        // kind: `hasMoreOlder` answers "is there more to FETCH", but what the row SAYS is
+        // "there is nothing above this" — and above this there is a buffer's worth of hidden
+        // conversation the divider below is offering to bring back.
+        if !hasMoreOlder && !messages.isEmpty && clearInstant == nil { rows.append(.startOfHistory) }
+
+        // The clear divider tops the visible region — above the first date, so the reader sees
+        // "cleared at …" before any day (the web's ordering, `MessageList.vue:1222`).
+        //
+        // Emitted here rather than lazily at the first surviving row because the filter above
+        // has already run: what remains IS the visible set, so its top is this. That also
+        // covers the case the web has to special-case at the end of its loop — a clear that
+        // hid everything leaves this row alone on screen, which is the whole point. Without
+        // it the buffer would go blank with no way back but typing `/clear off` blind.
+        if let clearInstant { rows.append(.clearedDivider(at: clearInstant)) }
 
         var segment: [Message] = []
         var currentDay: Date?

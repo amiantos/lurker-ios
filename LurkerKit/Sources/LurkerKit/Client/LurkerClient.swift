@@ -1050,6 +1050,24 @@ final class LurkerClient {
         send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
+    /// Move or drop this buffer's `/clear` marker (#121) — `clear-buffer` / `unclear-buffer`.
+    ///
+    /// The server anchors the boundary at the current tail and fans a `buffer-cleared` back to
+    /// every device, so the reply is what actually moves the marker here.
+    ///
+    /// ⚠ No-op for the app-scoped system buffer (networkId nil), which has no server-side
+    /// buffer row to carry a marker — the same guard `closeBuffer` needs. The `:server:` log
+    /// IS clearable, unlike closing: a network's log is a real buffer with real read state,
+    /// and hiding a wall of connection noise is exactly what someone would want there.
+    func clearBuffer(networkId: Int?, target: String, undo: Bool) {
+        guard let networkId else { return }
+        send([
+            "type": undo ? "unclear-buffer" : "clear-buffer",
+            "networkId": networkId,
+            "target": target,
+        ])
+    }
+
     /// Favorite a buffer (`favorite-buffer`). One flag, two UI surfaces: a channel lands
     /// under Favorites, a DM under Friends. The server refuses pseudo-buffers and CLOSED
     /// buffers, drops any pin the buffer held (one placement per buffer), and echoes the

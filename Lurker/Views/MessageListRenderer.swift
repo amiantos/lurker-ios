@@ -163,7 +163,8 @@ struct MessageListRenderer {
                 endsBlock: endsBlock(at: index, context: context),
                 traits: context.traits
             )
-        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider:
+        case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider,
+             .backDivider:
             preconditionFailure("markers are handled above")
         }
         return cell
@@ -377,6 +378,16 @@ enum MessageListMarker {
             cell(MessageRenderer.dayLabel(day), color: Palette.fgMuted, bold: false, in: tableView)
         case .startOfHistory:
             cell("— start of history —", color: Palette.fgFaint, bold: false, in: tableView)
+        case .clearedDivider(let at):
+            // `.tintColor`, not a `Palette` grey: this is the one marker here that is also a
+            // CONTROL, and a row the reader is meant to tap has to look unlike the rows they
+            // read past. The tint is what this app already uses for a tappable label
+            // (`UserProfileViewController`), so it reads as an action without inventing a
+            // token. Still not `Palette.bad` — the unread divider keeps that, and a second
+            // loud row would cost the first its meaning (see this method's note).
+            cell(
+                MessageRenderer.clearedLabel(at: at), color: .tintColor, bold: false,
+                in: tableView)
         case .awayDivider(_, let message):
             cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)
         case .backDivider(let awayAt, let backAt):

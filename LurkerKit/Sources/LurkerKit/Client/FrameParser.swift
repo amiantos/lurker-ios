@@ -44,6 +44,16 @@ enum FrameParser {
                 parseSettingValues(obj["changes"]),
                 maxUploadBytes: advertisedUploadCap(obj)
             )
+        case "buffer-cleared":
+            // The `/clear` marker's fan-out — this device's own ack AND every other device's
+            // notice, which is the whole reason the marker is server-side (#121).
+            let target = obj.string("target")
+            return target.isEmpty ? .ignored : .bufferCleared(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                clearedBeforeId: clearedBoundary(obj),
+                clearedAt: ISOTime.parse(obj.stringOrNull("clearedAt"))
+            )
         case "error":
             return .serverError(obj.string("text"))
         case "favorites-changed":
@@ -646,6 +656,8 @@ enum FrameParser {
             // `Buffer.readStateKnown`.
             readStateKnown: obj.has("lastReadId"),
             hasMoreOlder: hasMoreOlder,
+            clearedBeforeId: clearedBoundary(obj),
+            clearedAt: ISOTime.parse(obj.stringOrNull("clearedAt")),
             // The connect burst doubles as the id directory (§5.2): every
             // backlog frame carries the buffer's stable id.
             bufferId: obj.intOrNull("bufferId")
@@ -654,6 +666,16 @@ enum FrameParser {
             buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append,
             speakers: parseSpeakers(obj)
         )
+    }
+
+    /// The `/clear` boundary off a frame that carries one (#121).
+    ///
+    /// ⚠ Negatives are floored to 0 — "never cleared" — rather than passed through. The server
+    /// treats `<= 0` as no marker (`bufferReads.ts`: "boundary id <= 0 clears the marker"), and
+    /// a negative reaching the row filter as-is would compare against every id and hide
+    /// nothing anyway; making it 0 means the divider and the filter agree about that.
+    private static func clearedBoundary(_ obj: [String: Any]) -> Int {
+        max(0, obj.int("clearedBeforeId"))
     }
 
     private static func parseLive(_ obj: [String: Any]) -> ServerFrame {

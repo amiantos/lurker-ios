@@ -211,6 +211,16 @@ public enum CommandParser {
                     .join(channel: target, key: nil)]
         case "close":
             return [.close(target: target)]
+        case "clear":
+            // `/clear`            — hide everything up to now, behind an undoable marker;
+            // `/clear off|undo`   — drop the marker so the hidden messages come back.
+            //
+            // Anything else is read as a plain clear rather than refused. `/clear` takes no
+            // other argument, and the alternative — an error for `/clear all`, which is what
+            // a user reaching for "clear everything" would type — would refuse the thing they
+            // asked for on the grounds that they were too specific about it.
+            let arg = argLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return [.clear(target: target, undo: arg == "off" || arg == "undo")]
         case "topic":
             // `/topic` reads the current channel's topic; `/topic text` sets it; a leading
             // `#chan` retargets. Interior spacing of the body is preserved by slicing.

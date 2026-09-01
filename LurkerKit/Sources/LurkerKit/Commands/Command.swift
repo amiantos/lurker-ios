@@ -44,6 +44,12 @@ public enum CommandEffect: Equatable, Sendable {
     case part(channel: String, reason: String?)
     /// Close a buffer (parts a channel / untracks a DM).
     case close(target: String)
+    /// Hide this buffer's history behind a `/clear` marker, or drop the marker (#121).
+    ///
+    /// Server-side and per-user, so it takes effect on every device — and NOT a local wipe:
+    /// nothing is deleted, the messages are hidden behind a boundary the user can undo from
+    /// the divider or with `/clear off`.
+    case clear(target: String, undo: Bool)
     /// User-scoped away; an empty message clears it (the server treats `/away` with no text
     /// as `/back`).
     case away(message: String)
@@ -250,6 +256,11 @@ public enum CommandRegistry {
         CommandSpec(["cycle", "hop"], .channels, "Part and rejoin this channel",
                     args: [ArgSpec("reason", .text, optional: true, rest: true)]),
         CommandSpec(["close"], .channels, "Close this buffer"),
+        // The argument is spelled as a literal rather than left free text: `off` and `undo`
+        // are the whole vocabulary, and anything else means "clear" — so offering it as
+        // free text would suggest arguments that silently do the opposite of what they read.
+        CommandSpec(["clear"], .channels, "Hide this buffer's history (undo with /clear off)",
+                    args: [ArgSpec("off", .text, optional: true)]),
         CommandSpec(["topic"], .channels, "View or set the channel topic",
                     args: [ArgSpec("new topic", .text, optional: true, rest: true)]),
         CommandSpec(["nick"], .channels, "Change your nick",

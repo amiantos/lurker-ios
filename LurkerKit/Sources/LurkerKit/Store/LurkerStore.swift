@@ -736,6 +736,14 @@ final class LurkerStore {
             )
         case .channelTopic(let networkId, let target, let topic):
             return applyChannelTopic(state, networkId: networkId, target: target, topic: topic)
+        case .bufferCleared(let networkId, let target, let clearedBeforeId, let clearedAt):
+            // Patched onto a buffer we already hold, never conjuring one: the marker is a
+            // property OF a buffer, and a clear for a row this client has never seen has
+            // nothing to hide. The backlog that brings the row carries the marker itself.
+            var next = state
+            next.buffers[BufferKey(networkId: networkId, target: target).id]?
+                .applyCleared(beforeId: clearedBeforeId, at: clearedAt)
+            return next
         case .channelMembers(let networkId, let target, let members):
             return applyChannelMembers(state, networkId: networkId, target: target, members: members)
         case .memberUpdate(let networkId, let target, let member):
@@ -1260,6 +1268,12 @@ final class LurkerStore {
         // Never un-learn the id either: a frame from a pre-id server (or a
         // synthesized row) hasn't retracted the id a real frame stated.
         buffer.bufferId = frameBuffer.bufferId ?? prior?.bufferId
+        // ⚠ The `/clear` marker is deliberately NOT rescued from `prior` the way the three
+        // above are. It rides the server's `bufferStateFields`, which every backlog frame
+        // shares — `buildBufferBacklog`, `buildBufferShell` and the snapshot loop alike — so
+        // even a shell states it, and the frame is authoritative. Rescuing it would keep a
+        // marker the server has since dropped: an unclear on another device fans out a
+        // `buffer-cleared`, but a reconnect right after it would restore the stale boundary.
         // A resync shell (hasMoreOlder defaults true) must not reset the paging or detach
         // state of a buffer we've already paged into or jumped within (#42) — and neither may
         // a real backlog while we're detached, for the reasons above. Only a hydrated backlog
