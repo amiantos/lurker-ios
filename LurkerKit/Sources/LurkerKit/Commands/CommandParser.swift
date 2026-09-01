@@ -304,10 +304,21 @@ public enum CommandParser {
             // sensible answer to `/relay` in the system buffer.
             return resolveRelay(argLine: argLine, networkId: networkId, relayBots: relayBots)
 
-        // Network lifecycle — deferred to network management (#11). Intercepted rather than
-        // left to the raw fallback, where `/quit` would send a real IRC QUIT.
-        case "quit", "reconnect", "connect", "disconnect", "server":
-            return [.info("Connecting and disconnecting networks isn't in the app yet — it's coming with network management.")]
+        // Connection lifecycle (#152) — REST verbs on this buffer's network, never raw lines
+        // (see `CommandEffect.disconnect` for why a raw QUIT is the one thing /quit must not
+        // be). Below the network gate: the system buffer has no connection to start or stop.
+        case "connect":
+            return [.connect]
+        case "disconnect", "quit":
+            // The whole argument line is the reason, interior spacing kept — it's a quit
+            // message. Empty means "let the server pick its default".
+            return [.disconnect(reason: argLine.isEmpty ? nil : argLine)]
+        case "reconnect":
+            return [.reconnect]
+        case "server":
+            // Intercepted rather than rawed: `SERVER` is a server-to-server command, and the
+            // thing people mean by it is a form on this client.
+            return [.info("Networks are added and edited in Settings → Networks.")]
 
         default:
             // Anything unrecognized goes raw, exactly as the web's `default`. The original

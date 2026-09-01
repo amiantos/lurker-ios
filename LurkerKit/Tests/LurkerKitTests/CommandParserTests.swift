@@ -299,10 +299,53 @@ final class CommandParserTests: XCTestCase {
         XCTAssertTrue(text.contains("needs an active network"))
     }
 
-    func testQuitIsInterceptedRatherThanRawed() {
-        // A bare /quit must NOT reach the raw fallback, where it would fire a real IRC QUIT.
-        guard case .info = effects("/quit").first else {
-            return XCTFail("expected /quit to be intercepted with a note")
+    // MARK: - Connection lifecycle (#152)
+
+    func testConnectStartsThisNetwork() {
+        XCTAssertEqual(effects("/connect"), [.connect])
+    }
+
+    func testDisconnectStopsThisNetworkWithAnOptionalReason() {
+        XCTAssertEqual(effects("/disconnect"), [.disconnect(reason: nil)])
+        // The whole line is the reason, interior spacing kept — it's a quit message.
+        XCTAssertEqual(effects("/disconnect back  later"), [.disconnect(reason: "back  later")])
+    }
+
+    func testQuitIsAnAliasOfDisconnect() {
+        XCTAssertEqual(effects("/quit going home"), [.disconnect(reason: "going home")])
+        XCTAssertEqual(effects("/quit"), effects("/disconnect"))
+        XCTAssertEqual(CommandRegistry.spec(for: "quit")?.name, "disconnect")
+    }
+
+    func testReconnectRestartsThisNetwork() {
+        XCTAssertEqual(effects("/reconnect"), [.reconnect])
+    }
+
+    func testQuitNeverReachesTheWireAsARawLine() {
+        // A raw QUIT leaves the server's requested-disconnect flag unset, so the close reads
+        // as unexpected and the network reconnects on its own — the one outcome /quit must
+        // never have. From the system buffer it's gated, not rawed.
+        for (networkId, target) in [(1, "#chan"), (nil, ":system:")] as [(Int?, String)] {
+            for effect in effects("/quit bye", networkId: networkId, target: target) {
+                if case .raw = effect { XCTFail("/quit went raw from \(target)") }
+            }
+        }
+    }
+
+    func testLifecycleVerbsAreGatedInTheSystemBuffer() {
+        // Nothing there to start or stop.
+        for line in ["/connect", "/disconnect", "/reconnect"] {
+            guard case .info(let text) = effects(line, networkId: nil, target: ":system:").first else {
+                return XCTFail("expected a gate message for \(line)")
+            }
+            XCTAssertTrue(text.contains("needs an active network"), text)
+        }
+    }
+
+    func testServerIsInterceptedRatherThanRawed() {
+        // `SERVER` is a server-to-server command; what people mean by it is the networks screen.
+        guard case .info = effects("/server irc.example.org").first else {
+            return XCTFail("expected /server to be intercepted with a note")
         }
     }
 

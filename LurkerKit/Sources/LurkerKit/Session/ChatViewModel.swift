@@ -618,12 +618,40 @@ public final class ChatViewModel {
                     receipt,
                     in: key
                 )
+            case .connect:
+                lifecycle(key, verb: "connect") { [client] id in await client.connectNetwork(id: id) }
+            case .disconnect(let reason):
+                lifecycle(key, verb: "disconnect") { [client] id in
+                    await client.disconnectNetwork(id: id, reason: reason)
+                }
+            case .reconnect:
+                lifecycle(key, verb: "reconnect") { [client] id in await client.reconnectNetwork(id: id) }
             case .info(let text):
                 store.appendLocal(key, text: text)
             }
         }
         if wentNowhere, let lineId { refuse(lineId) }
         return outcome
+    }
+
+    /// Run one of the REST connection verbs on `key`'s network and print its refusal, if any,
+    /// into the buffer the command was typed in (#152).
+    ///
+    /// Nothing on success, on purpose. These answer `{ok:true}` the moment the server has told
+    /// its connection manager, and the transition arrives separately as `state` events: the
+    /// pill light and the buffer list's section header move on their own, and the server
+    /// buffer narrates "Connecting to …" and "Disconnected" itself. A receipt here would be the
+    /// app's own word for something the server hasn't done yet — the reason the networks
+    /// screen applies nothing optimistically, and the silence the web's `/quit` keeps.
+    ///
+    /// Not routed through `report`: that one gates on the *socket*, because the verbs it
+    /// covers go nowhere without one. These go over HTTP and answer for themselves.
+    private func lifecycle(_ key: BufferKey, verb: String, _ call: @escaping (Int) async -> String?) {
+        guard let networkId = key.networkId else { return }
+        Task { [weak self] in
+            guard let refusal = await call(networkId), let self else { return }
+            store.appendLocal(key, text: "/\(verb) failed: \(refusal)")
+        }
     }
 
     /// Print a command's receipt, or say why there isn't one.

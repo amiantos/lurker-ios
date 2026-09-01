@@ -857,11 +857,18 @@ final class LurkerStoreTests: XCTestCase {
         let store = LurkerStore()
         // Snapshot arrives first (name unknown), then the REST roster supplies it.
         store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: []))
-        store.apply(.networks([Network(id: 1, name: "Libera")]))
+        store.apply(.networks([Network(id: 1, name: "Libera", blocked: true)]))
 
         let network = store.state.networks[1]!
         XCTAssertEqual(network.name, "Libera")
         XCTAssertEqual(network.state, .connected, "live state must survive the name merge")
+        XCTAssertTrue(network.blocked, "blocked is REST-only like the name, and merges in beside it")
+
+        // Authoritative in both directions, like the name: an admin widening the allowlist
+        // shows up on the next roster read rather than sticking for the life of the process.
+        store.apply(.networks([Network(id: 1, name: "Libera")]))
+        XCTAssertFalse(store.state.networks[1]!.blocked)
+        XCTAssertEqual(store.state.networks[1]!.state, .connected)
     }
 
     func testConnectionStatusMovesConnectingToConnectedToReconnecting() {

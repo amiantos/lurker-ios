@@ -36,6 +36,18 @@ public struct Network: Equatable, Sendable {
     /// is user-scoped — every connected network carries the same value. Nil means the server
     /// hasn't reported one, which is also what it sends for a user who has never been away.
     public var away: AwayState?
+    /// True when the instance admin's allowlist excludes this network's host (#298).
+    ///
+    /// REST-only like `name` and `position` — no frame carries it — and held here rather than
+    /// left to `NetworkConfig` because it is a fact about what a *rendered* network can be
+    /// asked to do: the server buffer's info sheet decides whether to offer Connect off this,
+    /// live from the store, rather than re-reading the roster every time it opens (#152). It
+    /// gates only *new* connections, so a network can be blocked and connected at once — see
+    /// `NetworkRow.isBlocked`.
+    ///
+    /// Absent reads as "not blocked": an older server has no allowlist to be excluded from,
+    /// and a network the roster hasn't described yet has nothing to say about it.
+    public var blocked: Bool
 
     public init(
         id: Int,
@@ -43,7 +55,8 @@ public struct Network: Equatable, Sendable {
         position: Int = .max,
         state: ConnectionState = .disconnected,
         nick: String = "",
-        away: AwayState? = nil
+        away: AwayState? = nil,
+        blocked: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -51,6 +64,7 @@ public struct Network: Equatable, Sendable {
         self.state = state
         self.nick = nick
         self.away = away
+        self.blocked = blocked
     }
 
     /// What to call this network wherever the user sees one named.

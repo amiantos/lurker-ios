@@ -15,8 +15,8 @@ import Foundation
 ///  - `/network` `/net` — network CRUD is REST-heavy and owns its own issue (#11).
 ///  - `/highlight` `/unhighlight` — highlight-rule management, still unported (#13).
 ///  - `/dcc` `/e2e` `/list` `/jitsi` `/clear` — web-specific or unbuilt features.
-///  - `/quit` `/reconnect` — network lifecycle (#11); intercepted with a note rather than
-///    left to the raw fallback, where a bare `/quit` would fire a real IRC `QUIT`.
+///  - `/server` — adding a network is a form on this client (the networks screen), not a
+///    command; intercepted with a note rather than left to the raw fallback.
 
 // MARK: - Effects
 
@@ -91,6 +91,23 @@ public enum CommandEffect: Equatable, Sendable {
     /// by that very bookkeeping. The server buffer still gets the raw numerics either way —
     /// they arrive by the default-show `raw` path, not because of who asked.
     case showProfile(nick: String)
+    /// Start the issuing buffer's network — `/connect` (#152).
+    ///
+    /// The three lifecycle effects are REST verbs (`POST /api/networks/:id/connect` and its
+    /// siblings), not socket frames: they answer with a refusal or with nothing, and the
+    /// transition itself arrives later as `state` events. They carry no network id for the
+    /// same reason the wire effects don't — the executor supplies the issuing buffer's.
+    case connect
+    /// Stop the issuing buffer's network — `/disconnect`, `/quit`. A nil reason lets the
+    /// server send its default quit message, the same line an auto-disconnect uses.
+    ///
+    /// ⚠ Never a `.raw("QUIT …")`. A raw QUIT leaves irc-framework's `requested_disconnect`
+    /// flag unset, so the close looks unexpected and the server reconnects on its own; the
+    /// disconnect endpoint is what records the intent (the web learned this in lurker#785).
+    case disconnect(reason: String?)
+    /// Restart the issuing buffer's network — `/reconnect`. Idempotent server-side: it works
+    /// whether the network is up, mid-retry, or stopped after a `/disconnect`.
+    case reconnect
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -306,6 +323,14 @@ public enum CommandRegistry {
                     args: [ArgSpec("nick", .text, optional: true, rest: true)]),
         CommandSpec(["help"], .server, "Ask the server for help",
                     args: [ArgSpec("topic", .text, optional: true, rest: true)]),
+        // Connection lifecycle (#152): REST verbs on this buffer's network, never raw lines —
+        // see `CommandEffect.disconnect`. `/disconnect` is the canonical name here because it
+        // pairs with `/connect` and with the networks screen's own label; the web lists
+        // `/quit` first and `/disconnect` as its alias. Same verbs either way.
+        CommandSpec(["connect"], .server, "Connect this network"),
+        CommandSpec(["disconnect", "quit"], .server, "Disconnect this network",
+                    args: [ArgSpec("reason", .text, optional: true, rest: true)]),
+        CommandSpec(["reconnect"], .server, "Reconnect this network"),
 
         // Status / app
         CommandSpec(["away"], .status, "Set yourself away on every network",

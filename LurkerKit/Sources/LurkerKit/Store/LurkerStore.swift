@@ -1073,14 +1073,16 @@ final class LurkerStore {
         for network in networks {
             // Merge the REST fields in without clobbering any live state the snapshot set.
             //
-            // ⚠ Both of them. `position` is REST-only data exactly like `name` — no frame
-            // carries it — so a merge that only took the name left every network the snapshot
-            // materialized stuck at the default, sorting by id for the life of the process.
-            // Reachable whenever the roster read loses a race with the socket: a failed
-            // initial fetch, or a network created while the app is running.
+            // ⚠ All of them. `position` and `blocked` are REST-only data exactly like `name`
+            // — no frame carries them — so a merge that only took the name left every network
+            // the snapshot materialized stuck at the defaults: sorting by id for the life of
+            // the process, and offering Connect on a host the admin has blocked. Reachable
+            // whenever the roster read loses a race with the socket: a failed initial fetch,
+            // or a network created while the app is running.
             if var existing = next.networks[network.id] {
                 existing.name = network.name
                 existing.position = network.position
+                existing.blocked = network.blocked
                 next.networks[network.id] = existing
             } else {
                 next.networks[network.id] = network

@@ -9,8 +9,8 @@
 /// connection state, not about table cells, and it's the part with cases a person can get
 /// wrong. It's also the part you can't see in a screenshot — an action that shouldn't be
 /// there is only found by tapping it and reading the server's refusal, and one that should be
-/// there and isn't is found by needing it. The strings stay in the view controller; copy is
-/// the screen's business.
+/// there and isn't is found by needing it. The strings stay in the app target
+/// (`NetworkCopy.swift`); copy is the screens' business.
 public struct NetworkRow: Equatable, Sendable {
     public let connection: ConnectionState
     /// True when the instance admin's allowlist excludes this network's host (#298).
@@ -67,6 +67,12 @@ public struct NetworkRow: Equatable, Sendable {
         actions.append(.delete)
         return actions
     }
+
+    /// `actions` without the destructive one: what a surface that manages the *connection*
+    /// but not the row offers — the server buffer's info sheet (#152). Deleting a network is
+    /// the networks screen's business, where the confirmation and the roster re-read live.
+    /// Can be empty (blocked and offline), and the surface says why rather than padding it.
+    public var connectionActions: [NetworkAction] { actions.filter { !$0.isDestructive } }
 }
 
 /// One thing a networks-screen row can do. Editing isn't here: it's the row's own tap, not an

@@ -7,7 +7,8 @@ import UIKit
 
 /// What this buffer *is*, rather than what's been said in it — the title pill expands into
 /// this. A channel gets its topic, a count of who's here, and how it notifies; a DM gets
-/// the person and how it notifies.
+/// the person and how it notifies; a server log gets the connection behind it and the
+/// verbs that change it (#152).
 ///
 /// The pill means the same thing on every buffer: "about this one". That's why a DM lands
 /// here and not straight in a whois — whois is about a *person*, and a person is one of
@@ -38,6 +39,13 @@ final class BufferInfoViewController: UITableViewController {
     var onOpenBuffer: ((BufferKey) -> Void)?
 
     private var sections: [Section] = []
+
+    /// The most recent refusal of a connection verb, shown under the Connection section.
+    ///
+    /// A footer rather than an alert, for the reason the networks screen uses the row's
+    /// subtitle: the answer arrives on its own schedule, and an alert competing with whatever
+    /// the user did during the round trip is one UIKit drops. It clears on the next attempt.
+    private var actionError: String?
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -76,6 +84,11 @@ final class BufferInfoViewController: UITableViewController {
                 old.buffers[key]?.topic == new.buffers[key]?.topic
                     && old.visibleMembers(in: bufferKey).count
                         == new.visibleMembers(in: bufferKey).count
+                    // The third live thing, for a server log: the connection it's about. Read
+                    // as the row model so a state change and a blocked flag flipping under a
+                    // roster re-read both repaint, and nothing else about the network does.
+                    && Self.connectionRow(in: old, networkId: bufferKey.networkId)
+                        == Self.connectionRow(in: new, networkId: bufferKey.networkId)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -93,6 +106,11 @@ final class BufferInfoViewController: UITableViewController {
         /// query field with.
         case search(scope: String)
         case notifyPlaceholder(title: String)
+        /// The network's connection, as a status line.
+        case connection(NetworkRow)
+        /// One verb that changes it. Only the non-destructive ones reach this sheet — see
+        /// `NetworkRow.connectionActions`.
+        case networkAction(NetworkAction)
     }
 
     private struct Section {
@@ -130,17 +148,48 @@ final class BufferInfoViewController: UITableViewController {
                 Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
                 notifications,
             ]
-        case .server, .system:
-            // Nothing here is a setting: a server log and the app's own buffer have no topic, no
-            // members, and nothing to notify about.
+        case .server:
+            // A server log has no topic or members; the one thing it is *about* is the
+            // connection behind it, so this is where that connection is managed (#152) — the
+            // same verbs as the networks screen, minus Delete, which belongs with the roster.
+            sections = connectionSection(in: state).map { [$0] } ?? []
+        case .system:
+            // Nothing here is a setting: the app's own buffer has no topic, no members, no
+            // connection of its own, and nothing to notify about.
             sections = []
         }
         tableView.backgroundView = sections.isEmpty ? emptyLabel : nil
         tableView.reloadData()
     }
 
-    /// Shown instead of an empty table for a server log or the system buffer, which have no topic,
-    /// no members and nothing to notify about.
+    /// The connection behind a server log, and what can be done to it right now.
+    ///
+    /// Nil only when the store has no row for the network — a transient, since a server buffer
+    /// belongs to a network the snapshot named. The sheet then shows its empty label rather
+    /// than a Connect offer for a network it can't describe.
+    private func connectionSection(in state: ChatState) -> Section? {
+        guard let row = Self.connectionRow(in: state, networkId: buffer.networkId) else { return nil }
+        // The refusal takes the footer, as it takes the subtitle on the networks screen: what
+        // the server just said beats a standing note. Blocked gets the sentence that screen
+        // uses, whether or not anything is offered — a connected-but-blocked network still
+        // needs to say why Reconnect is missing.
+        let footer = actionError
+            ?? (row.isBlocked ? "This server's administrator limits which networks can be connected to." : nil)
+        return Section(
+            header: "Connection", footer: footer,
+            rows: [.connection(row)] + row.connectionActions.map { .networkAction($0) }
+        )
+    }
+
+    /// The network's connection as the model the networks screen draws, or nil when the store
+    /// doesn't hold the network. `networkId` is optional because the system buffer has none.
+    private static func connectionRow(in state: ChatState, networkId: Int?) -> NetworkRow? {
+        guard let networkId, let network = state.networks[networkId] else { return nil }
+        return NetworkRow(connection: network.state, isBlocked: network.blocked)
+    }
+
+    /// Shown instead of an empty table for the system buffer, which has no topic, no members,
+    /// no connection of its own and nothing to notify about.
     ///
     /// The pill opens this sheet from every buffer — that consistency is the point of the pill —
     /// so the honest answer to "what is there to configure here" has to be a sentence rather than
@@ -232,6 +281,25 @@ final class BufferInfoViewController: UITableViewController {
             toggle.isOn = false
             toggle.isEnabled = false
             cell.accessoryView = toggle
+
+        case .connection(let row):
+            var content = UIListContentConfiguration.valueCell()
+            content.text = "Status"
+            content.secondaryText = row.connection.label
+            // The dot carries the state and the words repeat it for anyone who can't use
+            // colour — the networks screen's row in miniature, and the same light the pill
+            // behind this sheet is showing.
+            content.image = UIImage(systemName: "circle.fill")
+            content.imageProperties.tintColor = Palette.color(for: row.light)
+            content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 10)
+            cell.contentConfiguration = content
+
+        case .networkAction(let action):
+            var content = UIListContentConfiguration.cell()
+            content.text = action.title
+            content.image = UIImage(systemName: action.symbolName)
+            cell.contentConfiguration = content
+            cell.selectionStyle = .default
         }
         return cell
     }
@@ -257,8 +325,39 @@ final class BufferInfoViewController: UITableViewController {
             )
             profile.onOpenBuffer = onOpenBuffer
             navigationController?.pushViewController(profile, animated: true)
-        case .topic, .notifyPlaceholder:
+        case .networkAction(let action):
+            perform(action)
+        case .topic, .notifyPlaceholder, .connection:
             break
         }
+    }
+
+    /// Run a connection verb and pin its refusal under the section.
+    ///
+    /// Nothing is applied optimistically, for the reason the networks screen applies nothing:
+    /// the server acknowledges the instruction and the transition arrives separately as
+    /// `state` events, so the rows move — Connect becoming Disconnect — when the store says
+    /// they have, not when the tap did. The sheet stays up so that is visible.
+    private func perform(_ action: NetworkAction) {
+        guard let networkId = buffer.networkId else { return }
+        // Whatever the last attempt said is now stale — a new attempt is under way.
+        setActionError(nil)
+        Task { [weak self] in
+            guard let self else { return }
+            let refusal: String?
+            switch action {
+            case .connect: refusal = await viewModel.connectNetwork(id: networkId)
+            case .disconnect: refusal = await viewModel.disconnectNetwork(id: networkId)
+            case .reconnect: refusal = await viewModel.reconnectNetwork(id: networkId)
+            case .delete: return  // never offered here — see `NetworkRow.connectionActions`
+            }
+            if let refusal { setActionError(refusal) }
+        }
+    }
+
+    private func setActionError(_ message: String?) {
+        guard actionError != message else { return }
+        actionError = message
+        apply(viewModel.state)
     }
 }
