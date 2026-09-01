@@ -65,7 +65,7 @@ final class SettingsViewController: UITableViewController {
     /// at apply time, not at write time — would show as a custom value next to the identical
     /// `","` choice.
     private struct StringChoices {
-        let values: [(value: String, label: String)]
+        let values: [MenuChoice]
         let normalize: (String) -> String
     }
 
@@ -73,11 +73,32 @@ final class SettingsViewController: UITableViewController {
         // Labelled as the form each one produces rather than by naming the punctuation
         // ("Colon", "Comma"): the question is what your line will look like, and the sample
         // answers it without the user having to picture it.
+        //
+        // Which is exactly why every one of them needs a spoken label. The four differ ONLY by
+        // a trailing mark, and VoiceOver does not speak trailing punctuation at its default
+        // verbosity — read aloud, the sample labels are four identical "nick"s and a row whose
+        // value never changes. The name is the readable form, so that is what is spoken.
         "input.completion.nick_suffix": StringChoices(
-            values: [(":", "nick:"), (",", "nick,"), (";", "nick;"), ("", "nick")],
+            values: [
+                MenuChoice(value: ":", label: "nick:", spoken: "Colon"),
+                MenuChoice(value: ",", label: "nick,", spoken: "Comma"),
+                MenuChoice(value: ";", label: "nick;", spoken: "Semicolon"),
+                MenuChoice(value: "", label: "nick", spoken: "Space only"),
+            ],
             normalize: NickCompletion.addressPunctuation
         )
     ]
+
+    /// One value a pull-down offers: what it stores, what the row shows, and what VoiceOver
+    /// says when the visible label can't be read aloud.
+    private struct MenuChoice {
+        let value: String
+        let label: String
+        /// nil when `label` speaks for itself — the event tier's choices are full phrases, and
+        /// a second copy of "Hide from quiet users" would only be one more thing to keep in
+        /// step with the registry.
+        var spoken: String?
+    }
 
     /// Join/part/quit/nick/host-change/mode lines: whether you see them, how they're folded,
     /// and how much detail each carries. Its own section, mirroring the web's Events category
@@ -466,7 +487,9 @@ final class SettingsViewController: UITableViewController {
                 ?? option.default.stringValue ?? ""
             cell.accessoryView = menuButton(
                 current: current,
-                choices: option.choices.map { ($0, option.label(forChoice: $0)) },
+                choices: option.choices.map {
+                    MenuChoice(value: $0, label: option.label(forChoice: $0), spoken: nil)
+                },
                 enabled: enabled
             ) { [weak self] choice in self?.write(option.key, .string(choice)) }
         case .string:
@@ -480,13 +503,17 @@ final class SettingsViewController: UITableViewController {
             let stored = viewModel.state.settings.effective(option.key)?.stringValue
                 ?? option.default.stringValue ?? ""
             let current = curated.normalize(stored)
-            var choices = curated.values.map { (value: $0.value, label: $0.label) }
+            var choices = curated.values
             // A value the web set that isn't one of ours is shown as itself and checked,
             // never silently rounded to a neighbour: the row has to say what is actually in
             // force, and picking one of the offered forms is how you leave it. It is dropped
             // from the list again as soon as it is, because it is only ever the stored value.
+            //
+            // Spoken as "Custom" — the mark itself is arbitrary punctuation and no more
+            // audible than the four above, and the web (where it was set, since this is the
+            // only control the phone has) is where it can be read back exactly.
             if !choices.contains(where: { $0.value == current }) {
-                choices.append((current, "nick\(current)"))
+                choices.append(MenuChoice(value: current, label: "nick\(current)", spoken: "Custom"))
             }
             cell.accessoryView = menuButton(
                 current: current, choices: choices, enabled: enabled
@@ -504,7 +531,7 @@ final class SettingsViewController: UITableViewController {
     /// needs to say when nothing is being touched.
     private func menuButton(
         current: String,
-        choices: [(value: String, label: String)],
+        choices: [MenuChoice],
         enabled: Bool,
         onPick: @escaping (String) -> Void
     ) -> UIButton {
@@ -515,16 +542,22 @@ final class SettingsViewController: UITableViewController {
         // on the `settings` frame.
         button.changesSelectionAsPrimaryAction = true
         button.menu = UIMenu(children: choices.map { choice in
-            UIAction(title: choice.label, state: choice.value == current ? .on : .off) { _ in
-                onPick(choice.value)
-            }
+            let action = UIAction(
+                title: choice.label, state: choice.value == current ? .on : .off
+            ) { _ in onPick(choice.value) }
+            action.accessibilityLabel = choice.spoken
+            return action
         })
         // Set the title before measuring. `changesSelectionAsPrimaryAction` derives it from
         // the `.on` menu child, but that propagates on the button's next configuration-update
         // pass — after this synchronous `sizeToFit()`, which would leave `accessoryView`
         // fitted to an empty button and the control clipped on the first render of this
         // screen. Same class of trap as the stack-view sizing above.
-        button.setTitle(choices.first { $0.value == current }?.label ?? current, for: .normal)
+        let selected = choices.first { $0.value == current }
+        button.setTitle(selected?.label ?? current, for: .normal)
+        // The button announces the value in force the same way its menu row does, or the row
+        // reads as "nick" whatever it is set to.
+        button.accessibilityLabel = selected?.spoken
         button.isEnabled = enabled
         button.sizeToFit()
         return button

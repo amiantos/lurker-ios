@@ -2696,11 +2696,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// The punctuation a nick picks up when it is completed — or Replied to — at the head of a
-    /// line, per `input.completion.nick_suffix` (#133). Read at the moment of the insertion
-    /// rather than cached: this screen outlives the Settings sheet presented over it, so a
-    /// cached copy would be the value the buffer was opened with.
+    /// line, per `input.completion.nick_suffix` (#133).
+    ///
+    /// Read off the store rather than this screen's `settings` copy, which is a snapshot taken
+    /// in `apply(_:)`. That copy is current only because the dedupe predicate in
+    /// `subscribeToState` happens to compare `settings` — a list that exists to keep this
+    /// screen from rebuilding, has been narrowed twice already for exactly that reason, and
+    /// says nothing about this. Settings is a sheet presented OVER this screen, so it is alive
+    /// while the value changes; going to the store makes the freshness true by construction
+    /// instead of by a neighbouring optimization's current shape.
     private var addressPunctuation: String {
-        NickCompletion.addressPunctuation(settings)
+        NickCompletion.addressPunctuation(viewModel.state.settings)
     }
 
     @objc private func keyboardWillHide() {
