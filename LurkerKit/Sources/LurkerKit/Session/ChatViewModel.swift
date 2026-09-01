@@ -703,14 +703,16 @@ public final class ChatViewModel {
     /// Returns whether a page was actually requested, so a caller that shows a spinner while
     /// one lands doesn't show one for a request that was refused.
     @discardableResult
-    public func loadOlder(_ key: BufferKey) -> Bool {
+    public func loadOlder(_ key: BufferKey, showingClearedHistory: Bool = false) -> Bool {
         guard !loadingOlder.contains(key.id),
               let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
               let oldest = store.state.messages[key.id]?.first(where: { $0.id != 0 })?.id
         else { return false }
         // ⚠⚠ Never page past a `/clear` boundary (#121) — see `olderPageCouldBeVisible`, which
         // holds the rule (and the reason) where it can be tested.
-        guard buffer.olderPageCouldBeVisible(oldestHeldId: oldest) else { return false }
+        guard buffer.olderPageCouldBeVisible(
+            oldestHeldId: oldest, showingClearedHistory: showingClearedHistory)
+        else { return false }
         loadingOlder.insert(key.id)
         client.loadOlder(networkId: key.networkId, target: key.target, before: oldest, countBy: historyCountBy)
         return true
@@ -728,15 +730,6 @@ public final class ChatViewModel {
         else { return }
         loadingNewer.insert(key.id)
         client.loadNewer(networkId: key.networkId, target: key.target, after: newest, countBy: historyCountBy)
-    }
-
-    /// Suppress a buffer's `/clear` filter so a jump can land on a row it is hiding (#121).
-    ///
-    /// No fetch: the anchor is already loaded, and showing it is the whole of what it needs.
-    /// See `LurkerStore.revealClearedHistory` for why neither an `around` fetch nor a detach
-    /// is a substitute.
-    public func revealClearedHistory(_ key: BufferKey) {
-        store.revealClearedHistory(key)
     }
 
     /// Fetch a history slice centered on `anchorId` — the message a jump lands on (#42). The

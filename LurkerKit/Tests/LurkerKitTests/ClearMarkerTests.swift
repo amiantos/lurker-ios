@@ -264,9 +264,8 @@ struct ClearMarkerTests {
 
     @Test("so does a revealed one — the reader can scroll up through what was hidden")
     func aRevealedBufferPages() {
-        var buffer = cleared(50)
-        buffer.showsClearedHistory = true
-        #expect(buffer.olderPageCouldBeVisible(oldestHeldId: 10))
+        #expect(
+            cleared(50).olderPageCouldBeVisible(oldestHeldId: 10, showingClearedHistory: true))
     }
 
     // MARK: - Jumping to a hidden message
@@ -287,61 +286,16 @@ struct ClearMarkerTests {
             "no marker either — a revealed buffer is not a half-cleared one")
     }
 
-    @Test("⚠⚠ revealing does NOT claim there is newer history")
-    func revealingDoesNotTouchPagingState() {
-        // The whole reason this is its own flag. `hasMoreNewer` drives paging: on a buffer that
-        // already holds the tail — which is every buffer you have just cleared — claiming it
-        // makes the near-bottom `loadNewer` fire immediately, and the empty reply carries
-        // `hasMoreNewer: false`, which re-hides everything a frame later. That was the
-        // "messages flash and then disappear" bug.
-        let store = LurkerStore()
-        let key = BufferKey(networkId: 1, target: "#lurker")
-        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
-        buffer.applyCleared(beforeId: 50, at: clearedAt)
-        store.apply(
-            .backlog(
-                buffer: buffer, messages: [msg(10), msg(20)], hydrated: true, append: false,
-                speakers: nil))
-
-        store.revealClearedHistory(key)
-        #expect(store.state.buffers[key.id]?.showsClearedHistory == true)
-        #expect(
-            store.state.buffers[key.id]?.hasMoreNewer == false,
-            "paging state is untouched, so nothing fetches and nothing re-hides")
-        #expect(
-            store.state.messages[key.id]?.map(\.id) == [10, 20],
-            "and the slice is untouched — nothing was fetched or dropped")
-    }
-
-    @Test("a return-to-live slice ends the reveal, so a reopen is cleared again")
-    func returningToLiveEndsTheReveal() {
-        let store = LurkerStore()
-        let key = BufferKey(networkId: 1, target: "#lurker")
-        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
-        buffer.applyCleared(beforeId: 50, at: clearedAt)
-        store.apply(
-            .backlog(
-                buffer: buffer, messages: [msg(10)], hydrated: true, append: false, speakers: nil))
-        store.revealClearedHistory(key)
-
-        store.apply(
-            .history(
-                networkId: 1, target: "#lurker", events: [msg(10)], mode: .latest,
-                hasMoreOlder: false, hasMoreNewer: false, speakers: nil))
-        #expect(store.state.buffers[key.id]?.showsClearedHistory == false)
-    }
-
-    @Test("revealing twice is a no-op")
-    func revealingIsIdempotent() {
-        let store = LurkerStore()
-        let key = BufferKey(networkId: 1, target: "#lurker")
-        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
-        buffer.showsClearedHistory = true
-        store.apply(
-            .backlog(
-                buffer: buffer, messages: [msg(10)], hydrated: true, append: false, speakers: nil))
-        store.revealClearedHistory(key)
-        #expect(store.state.buffers[key.id]?.showsClearedHistory == true)
+    @Test("⚠⚠ the marker itself is untouched by a reveal, so a reopen is cleared again")
+    func aRevealNeverTouchesTheMarker() {
+        // The reveal is SCREEN state (`ChatViewController.showsClearedHistory`), which is why
+        // nothing here can express it: `BufferNavigation` builds a fresh screen per open, so it
+        // retires itself. A flag on the buffer had no natural retirement — one jump peeled the
+        // buffer open for good and reopening never restored the clear, which is the bug that
+        // moved it out of the store.
+        let state = clearedBuffer()
+        #expect(state.buffers["1::#lurker"]?.clearedBeforeId == 42)
+        #expect(state.buffers["1::#lurker"]?.hasMoreNewer == false, "and paging state is its own")
     }
 
     // MARK: - The command

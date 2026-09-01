@@ -89,8 +89,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// beside `hasMoreOlder` because they are read together by `rebuildRows`.
     private var clearedBeforeId = 0
     private var clearedAt: Date?
-    /// Whether this screen is deliberately showing what the marker hides — a jump landed on a
-    /// row below the boundary. See `Buffer.showsClearedHistory` for why it is not `hasMoreNewer`.
+    /// Whether this screen is deliberately showing what the `/clear` marker hides — a jump
+    /// landed on a row below the boundary (#121).
+    ///
+    /// ⚠⚠ Screen state, not store state, and not `hasMoreNewer`. Both of those were tried:
+    ///
+    ///  - `hasMoreNewer` drives paging, so claiming it on a buffer that holds the tail fires
+    ///    the near-bottom `loadNewer`, whose empty reply re-hides everything a frame later;
+    ///  - a flag on `Buffer` outlives the reading of it — nothing in the store is a natural
+    ///    place to retire it, so one jump peeled the buffer open for good and reopening it
+    ///    never restored the clear.
+    ///
+    /// Here it has exactly the right lifetime for free: `BufferNavigation` builds a fresh
+    /// screen per open (and rebuilds on a jump), so leaving and coming back is cleared again —
+    /// which is what the web does, and what the marker being SERVER state means.
     private var showsClearedHistory = false
     /// Whether this buffer is detached — showing an `around` slice below the live tail (#42) —
     /// as of the last apply. Snapshotted rather than read live for the same reason as
@@ -910,7 +922,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the WEB redraw this screen, rather than waiting for the next unrelated frame.
         clearedBeforeId = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
         clearedAt = state.buffers[buffer.key.id]?.clearedAt
-        showsClearedHistory = state.buffers[buffer.key.id]?.showsClearedHistory ?? false
         rosterSettled = state.rosterSettled
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
@@ -1366,11 +1377,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func detachIfJumpTargetHidden(_ state: ChatState) {
         guard let anchor = pendingJumpId,
               let known = state.buffers[buffer.key.id],
-              known.hidesClearedHistory,
+              !known.hasMoreNewer, !showsClearedHistory,
               known.clearedBeforeId > 0, anchor <= known.clearedBeforeId,
               (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor })
         else { return }
-        viewModel.revealClearedHistory(buffer.key)
+        showsClearedHistory = true
+        // Nothing published this, so nothing will redraw on its own — and the rows currently on
+        // screen are the filtered ones the jump can't land in.
+        rebuildRows()
+        tableView.reloadData()
     }
 
     /// The placeholder currently installed, so a fresh `apply` on every live message
@@ -1420,7 +1435,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Report what `loadOlder` actually did, not what we asked it to. It refuses to page
         // past a `/clear` boundary (#121), and claiming a page was on its way would pin
         // "Loading messages…" over a buffer where nothing is coming.
-        return viewModel.loadOlder(buffer.key)
+        return viewModel.loadOlder(buffer.key, showingClearedHistory: showsClearedHistory)
     }
 
     /// Whether the table has more content than viewport to show it in — i.e. whether a scroll,
@@ -1680,7 +1695,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard !messages.isEmpty else { return }
         // Near the top → pull older history. The view model guards `hasMoreOlder` and an
         // in-flight page, so firing this on every scroll tick is safe.
-        if scrollView.contentOffset.y < 300 { viewModel.loadOlder(buffer.key) }
+        if scrollView.contentOffset.y < 300 {
+            viewModel.loadOlder(buffer.key, showingClearedHistory: showsClearedHistory)
+        }
         // Near the bottom of a detached slice → pull NEWER history, walking the reader forward
         // toward live (#45). The mirror of the loadOlder prefetch; the view model guards
         // `hasMoreNewer` and an in-flight page. Reaching the tail re-attaches and resumes live.

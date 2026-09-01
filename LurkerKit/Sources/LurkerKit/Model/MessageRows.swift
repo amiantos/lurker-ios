@@ -158,7 +158,11 @@ public enum MessageRows {
     ///     a jump landed on a row below the boundary (#121). Suppresses the filter exactly like
     ///     detachment does, and is a SEPARATE flag for a reason: `hasMoreNewer` drives paging,
     ///     and claiming it on a buffer holding the tail makes the near-bottom `loadNewer` fire
-    ///     and re-hide everything a frame later. See `Buffer.showsClearedHistory`.
+    ///     and re-hide everything a frame later.
+    ///
+    ///     Passed in rather than read off the buffer because it belongs to the SCREEN, not the
+    ///     account: a fresh one is built per open, so the reveal retires itself and a buffer
+    ///     reopened later is cleared again. See `ChatViewController.showsClearedHistory`.
     ///
     ///     ⚠⚠ Suppressed entirely while DETACHED. A jump to a search hit or a highlight shows
     ///     context around its anchor regardless of the marker — the user asked to see that

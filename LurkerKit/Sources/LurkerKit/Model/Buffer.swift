@@ -52,21 +52,6 @@ public struct Buffer: Equatable, Sendable {
     /// jump-to-latest pill re-attaches by fetching the latest. A normal (latest) buffer is at
     /// the tail, so this defaults false.
     public var hasMoreNewer: Bool
-    /// Whether this buffer is currently showing what its `/clear` marker hides (#121) — set
-    /// when a jump lands on a message below the boundary, so the row the reader asked for can
-    /// actually render.
-    ///
-    /// ⚠⚠ Deliberately NOT `hasMoreNewer`, which was the first two attempts at this. That flag
-    /// means "the slice sits below the live tail" and drives paging: setting it on a buffer
-    /// that already holds the tail makes `scrollViewDidScroll` fire `loadNewer` the moment the
-    /// reader is near the bottom — which they are, having just landed near it — and the empty
-    /// reply carries `hasMoreNewer: false`, which re-attaches and re-hides everything. That is
-    /// the "messages flash then disappear" bug. "I am looking at hidden history" and "there is
-    /// more history below me" are two different facts and need two different flags.
-    ///
-    /// Reset by a `latest` history slice — the return-to-live fetch a reopen makes — so the
-    /// clear takes hold again next time the buffer is opened.
-    public var showsClearedHistory: Bool
     /// The `/clear` marker's boundary: the highest message id hidden from the live view
     /// (#121). 0 means the buffer has never been cleared, or the user undid it.
     ///
@@ -108,7 +93,6 @@ public struct Buffer: Equatable, Sendable {
         hasMoreNewer: Bool = false,
         clearedBeforeId: Int = 0,
         clearedAt: Date? = nil,
-        showsClearedHistory: Bool = false,
         topic: String? = nil,
         bufferId: Int? = nil
     ) {
@@ -126,7 +110,6 @@ public struct Buffer: Equatable, Sendable {
         self.hasMoreNewer = hasMoreNewer
         self.clearedBeforeId = clearedBeforeId
         self.clearedAt = clearedAt
-        self.showsClearedHistory = showsClearedHistory
         self.topic = topic
     }
 
@@ -146,14 +129,15 @@ public struct Buffer: Equatable, Sendable {
     ///
     /// Detached is exempt because the FILTER is exempt: a jump slice shows its context
     /// regardless of the marker, so those pages are visible and worth fetching.
-    func olderPageCouldBeVisible(oldestHeldId: Int) -> Bool {
-        guard hidesClearedHistory, clearedBeforeId > 0 else { return true }
+    /// `showingClearedHistory` is the reader's own decision to look past the marker — a jump
+    /// landed on a hidden row — and it re-arms paging, because they can now scroll up through
+    /// what was hidden. It is view state, owned by the screen (see `ChatViewController`), which
+    /// is why it arrives as an argument rather than living here: it lasts exactly as long as
+    /// the screen does, and a buffer reopened later is cleared again.
+    func olderPageCouldBeVisible(oldestHeldId: Int, showingClearedHistory: Bool = false) -> Bool {
+        guard !hasMoreNewer, !showingClearedHistory, clearedBeforeId > 0 else { return true }
         return oldestHeldId > clearedBeforeId
     }
-
-    /// Whether the `/clear` filter is actually in force right now — a marker is set, and this
-    /// view is neither detached nor deliberately showing what it hides.
-    public var hidesClearedHistory: Bool { !hasMoreNewer && !showsClearedHistory }
 
     /// Move the `/clear` marker (#121) — a `buffer-cleared` frame, from this device or another.
     ///
@@ -192,7 +176,6 @@ public struct Buffer: Equatable, Sendable {
             hasMoreNewer: hasMoreNewer,
             clearedBeforeId: clearedBeforeId,
             clearedAt: clearedAt,
-            showsClearedHistory: showsClearedHistory,
             topic: topic,
             bufferId: bufferId
         )

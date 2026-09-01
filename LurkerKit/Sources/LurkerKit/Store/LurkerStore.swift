@@ -663,29 +663,6 @@ final class LurkerStore {
         subject.value = next
     }
 
-    /// Show what a buffer's `/clear` marker hides, without fetching anything — the client's own
-    /// decision, so like `appendLocal` it sits here rather than pretending to be a frame.
-    ///
-    /// One caller: a jump to a message that is already loaded but hidden behind a `/clear`
-    /// marker (#121). Suppressing the filter is all that row needs to render — the web does the
-    /// same thing (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`) and for the same
-    /// reason: there is nothing to fetch.
-    ///
-    /// ⚠⚠ Fetching an `around` slice is not a substitute: `hasMoreNewer` comes from the
-    /// server's answer, so a slice that reaches the live tail — a small buffer, or one cleared
-    /// moments ago — comes back `hasMoreNewer: false` and the anchor stays hidden.
-    ///
-    /// ⚠⚠ Nor is setting `hasMoreNewer` here, which was the attempt after that. It drives
-    /// paging: on a buffer that already holds the tail it makes the near-bottom `loadNewer`
-    /// fire immediately, and the empty reply's `hasMoreNewer: false` re-hides everything a
-    /// frame later. See `Buffer.showsClearedHistory`.
-    func revealClearedHistory(_ key: BufferKey) {
-        guard subject.value.buffers[key.id]?.showsClearedHistory == false else { return }
-        var next = subject.value
-        next.buffers[key.id]?.showsClearedHistory = true
-        subject.value = next
-    }
-
     /// Mirror the OS's view of network reachability into the state. Not a `ServerFrame`
     /// because it isn't one — it comes from the device, not the server — so it sits
     /// alongside the other direct mutations rather than lying in `reduce`.
@@ -1591,12 +1568,7 @@ final class LurkerStore {
             // older within whatever attachment we already have, so it's left untouched.
             switch mode {
             case .around, .after: buffer.hasMoreNewer = hasMoreNewer
-            case .latest:
-                buffer.hasMoreNewer = false
-                // Return-to-live also ends a `/clear` reveal (#121): this is the fetch a reopen
-                // makes, so the marker takes hold again next time the buffer is opened rather
-                // than staying peeled back forever because of one jump.
-                buffer.showsClearedHistory = false
+            case .latest: buffer.hasMoreNewer = false
             case .before: break
             }
             next.buffers[key] = buffer
