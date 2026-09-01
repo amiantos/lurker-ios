@@ -69,7 +69,6 @@ final class BufferInfoViewController: UITableViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = buffer.displayName(networkName: viewModel.networks.first { $0.id == buffer.networkId }?.name)
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             systemItem: .done, primaryAction: UIAction { [weak self] _ in
                 self?.dismiss(animated: true)
@@ -126,6 +125,12 @@ final class BufferInfoViewController: UITableViewController {
 
     /// Draw `state`, if it changes anything on screen.
     private func render(_ state: ChatState) {
+        // The title follows state like everything else here, rather than being read once: a
+        // network the snapshot named before the roster did has no name yet (#136), and now
+        // that a server buffer's sheet re-reads the roster on open, the name can land while
+        // this sheet is up — a title read in `viewDidLoad` would keep saying "Server".
+        let name = buffer.displayName(networkName: buffer.networkId.flatMap { state.networks[$0]?.name })
+        if title != name { title = name }
         // A refusal is about the connection as it was when the verb was sent. Once the
         // connection moves — the network's own retry succeeding under a failed Disconnect, say
         // — the footer would sit under rows that contradict it, with no way to clear it short
@@ -368,12 +373,19 @@ final class BufferInfoViewController: UITableViewController {
         // late refusal (a timeout, say) would otherwise land under the second.
         attempt += 1
         let mine = attempt
+        let sentAgainst = shownConnection
         setActionError(nil)
         Task { [weak self, viewModel] in
             let refusal = await viewModel.perform(action, on: networkId)
             // `self` resolved after the await, not before: a sheet dismissed mid-round-trip is
             // released rather than kept alive to paint a footer nobody can see.
-            guard let self, mine == attempt, let refusal else { return }
+            //
+            // The connection check is the other half of "a refusal is about the connection as
+            // it was when the verb was sent". `render` retires a refusal when the connection
+            // moves, but one that arrives AFTER the move would still land: a Disconnect whose
+            // reply timed out after the server had already acted on it would print "Disconnect
+            // failed" under a row that says Offline.
+            guard let self, mine == attempt, shownConnection == sentAgainst, let refusal else { return }
             setActionError(refusal)
         }
     }
