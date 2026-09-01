@@ -189,6 +189,32 @@ public enum NickCompletion {
         return punctuation
     }
 
+    /// How the addressing punctuation should be READ ALOUD — for a settings control, whose
+    /// visible label is a sample of the form (`nick:`) and so is nearly all punctuation.
+    ///
+    /// VoiceOver does not speak trailing punctuation at its default verbosity, so left alone
+    /// every choice announces as "nick" and the row's value never changes however it is set.
+    ///
+    /// Derived from the Unicode names rather than a table of the marks we happen to offer: the
+    /// value is free-form on the web, so a phone that could only name the four would be mute
+    /// on exactly the value it can't otherwise explain — the setting a user would most need
+    /// read back. A letter or digit is left as itself, because those already read aloud and
+    /// "latin small letter p" is not an improvement on "p".
+    public static func spokenPunctuation(_ punctuation: String) -> String {
+        guard !punctuation.isEmpty else { return "Space only" }
+        var spoken = punctuation.unicodeScalars.map { scalar -> (text: String, isName: Bool) in
+            if CharacterSet.alphanumerics.contains(scalar) { return (String(scalar), false) }
+            return (scalar.properties.name?.lowercased() ?? String(scalar), true)
+        }
+        // Sentence case, but only when the first piece is a NAME. Capitalising a character
+        // kept as itself would change it: `p;` reads as a capital P, which is a different
+        // suffix from the one that is set.
+        if let first = spoken.first, first.isName {
+            spoken[0].text = first.text.prefix(1).uppercased() + first.text.dropFirst()
+        }
+        return spoken.map(\.text).joined(separator: " ")
+    }
+
     /// Whether `draft` already opens by addressing `nick`, so Reply is idempotent. A port of
     /// the web's `isAddressedTo` (`MessageInput.vue`), and it deliberately accepts more than
     /// the configured form:

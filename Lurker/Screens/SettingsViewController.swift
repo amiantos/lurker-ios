@@ -65,8 +65,12 @@ final class SettingsViewController: UITableViewController {
     /// at apply time, not at write time — would show as a custom value next to the identical
     /// `","` choice.
     private struct StringChoices {
-        let values: [MenuChoice]
+        let values: [(value: String, label: String)]
         let normalize: (String) -> String
+        /// How VoiceOver reads a value of this key — every value, including one set from the
+        /// web that isn't offered here. A function rather than a name per row, so the value
+        /// this control can't otherwise explain is the one value it can't fail to read.
+        let spoken: (String) -> String
     }
 
     private static let stringChoices: [String: StringChoices] = [
@@ -74,18 +78,14 @@ final class SettingsViewController: UITableViewController {
         // ("Colon", "Comma"): the question is what your line will look like, and the sample
         // answers it without the user having to picture it.
         //
-        // Which is exactly why every one of them needs a spoken label. The four differ ONLY by
-        // a trailing mark, and VoiceOver does not speak trailing punctuation at its default
-        // verbosity — read aloud, the sample labels are four identical "nick"s and a row whose
-        // value never changes. The name is the readable form, so that is what is spoken.
+        // Which is exactly why the key needs a `spoken`. The four differ ONLY by a trailing
+        // mark, and VoiceOver does not speak trailing punctuation at its default verbosity —
+        // read aloud, the sample labels are four identical "nick"s and a row whose value never
+        // changes however it is set. `spokenPunctuation` names the mark instead.
         "input.completion.nick_suffix": StringChoices(
-            values: [
-                MenuChoice(value: ":", label: "nick:", spoken: "Colon"),
-                MenuChoice(value: ",", label: "nick,", spoken: "Comma"),
-                MenuChoice(value: ";", label: "nick;", spoken: "Semicolon"),
-                MenuChoice(value: "", label: "nick", spoken: "Space only"),
-            ],
-            normalize: NickCompletion.addressPunctuation
+            values: [(":", "nick:"), (",", "nick,"), (";", "nick;"), ("", "nick")],
+            normalize: NickCompletion.addressPunctuation,
+            spoken: NickCompletion.spokenPunctuation
         )
     ]
 
@@ -503,17 +503,18 @@ final class SettingsViewController: UITableViewController {
             let stored = viewModel.state.settings.effective(option.key)?.stringValue
                 ?? option.default.stringValue ?? ""
             let current = curated.normalize(stored)
-            var choices = curated.values
+            var values = curated.values
             // A value the web set that isn't one of ours is shown as itself and checked,
             // never silently rounded to a neighbour: the row has to say what is actually in
             // force, and picking one of the offered forms is how you leave it. It is dropped
             // from the list again as soon as it is, because it is only ever the stored value.
-            //
-            // Spoken as "Custom" — the mark itself is arbitrary punctuation and no more
-            // audible than the four above, and the web (where it was set, since this is the
-            // only control the phone has) is where it can be read back exactly.
-            if !choices.contains(where: { $0.value == current }) {
-                choices.append(MenuChoice(value: current, label: "nick\(current)", spoken: "Custom"))
+            if !values.contains(where: { $0.value == current }) {
+                values.append((current, "nick\(current)"))
+            }
+            // Read aloud through the SAME function as the four, so the one value this control
+            // can't otherwise explain is not the one it declines to name.
+            let choices = values.map {
+                MenuChoice(value: $0.value, label: $0.label, spoken: curated.spoken($0.value))
             }
             cell.accessoryView = menuButton(
                 current: current, choices: choices, enabled: enabled

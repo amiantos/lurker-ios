@@ -184,6 +184,31 @@ final class NickCompletionTests: XCTestCase {
         XCTAssertEqual(suffix(0, "@al", NickCompletion.addressPunctuation(settings(" "))), " ")
     }
 
+    func testThePunctuationIsNamedForVoiceOver() {
+        // The settings pull-down's labels are samples of the form — `nick:`, `nick,` — which
+        // differ only by a trailing mark, and VoiceOver reads none of them at its default
+        // verbosity. Names are what it reads instead.
+        XCTAssertEqual(NickCompletion.spokenPunctuation(":"), "Colon")
+        XCTAssertEqual(NickCompletion.spokenPunctuation(","), "Comma")
+        XCTAssertEqual(NickCompletion.spokenPunctuation(";"), "Semicolon")
+        XCTAssertEqual(NickCompletion.spokenPunctuation(""), "Space only")
+    }
+
+    func testAFreeFormPunctuationIsNamedByTheSameRule() {
+        // The value is free-form on the web, and a mark the phone doesn't offer is exactly the
+        // one a VoiceOver user can't discover any other way — naming only the four would leave
+        // this one mute, or announced as "custom", which says nothing about what is in force.
+        XCTAssertEqual(NickCompletion.spokenPunctuation(";p"), "Semicolon p")
+        XCTAssertEqual(NickCompletion.spokenPunctuation("->"), "Hyphen-minus greater-than sign")
+        XCTAssertEqual(NickCompletion.spokenPunctuation("!"), "Exclamation mark")
+        // A letter or a digit already reads aloud; "latin small letter p" is not an
+        // improvement. Nor is sentence case, which would announce a capital P — a different
+        // suffix from the one that is set.
+        XCTAssertEqual(NickCompletion.spokenPunctuation("p"), "p")
+        XCTAssertEqual(NickCompletion.spokenPunctuation("2"), "2")
+        XCTAssertEqual(NickCompletion.spokenPunctuation("p;"), "p semicolon")
+    }
+
     // MARK: - Reply's already-addressed test
 
     func testReplyRecognisesADraftAddressedUnderTheConfiguredForm() {
