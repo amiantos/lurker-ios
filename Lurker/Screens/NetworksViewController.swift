@@ -237,9 +237,7 @@ final class NetworksViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         // Said once, under the list, rather than in every blocked row's subtitle: it explains
         // a policy, and a policy repeated per row reads as a per-row problem.
-        configs.contains(where: \.blocked)
-            ? "This server's administrator limits which networks can be connected to."
-            : nil
+        configs.contains(where: \.blocked) ? NetworkRow.blockedExplanation : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -260,10 +258,7 @@ final class NetworksViewController: UITableViewController {
             content.secondaryTextProperties.color = .secondaryLabel
         }
         content.secondaryTextProperties.numberOfLines = 0
-        // The dot carries the state; the words repeat it for anyone who can't use colour.
-        content.image = UIImage(systemName: "circle.fill")
-        content.imageProperties.tintColor = Palette.color(for: row.light)
-        content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 10)
+        content.setStatusDot(row.light)
         cell.contentConfiguration = content
 
         // The tap edits; the button is for everything that changes the connection rather than
@@ -384,12 +379,8 @@ final class NetworksViewController: UITableViewController {
         switch action {
         case .delete:
             confirmDelete(config)
-        case .connect:
-            run(on: config.id) { [viewModel] in await viewModel.connectNetwork(id: config.id) }
-        case .disconnect:
-            run(on: config.id) { [viewModel] in await viewModel.disconnectNetwork(id: config.id) }
-        case .reconnect:
-            run(on: config.id) { [viewModel] in await viewModel.reconnectNetwork(id: config.id) }
+        case .connect, .disconnect, .reconnect:
+            run(on: config.id) { [viewModel] in await viewModel.perform(action, on: config.id) }
         }
     }
 
@@ -445,7 +436,7 @@ final class NetworksViewController: UITableViewController {
             guard let self else { return }
             Task { [weak self] in
                 guard let self else { return }
-                if let message = await viewModel.deleteNetwork(id: config.id) {
+                if let message = await viewModel.perform(.delete, on: config.id) {
                     setActionError((id: config.id, message: message))
                     return
                 }

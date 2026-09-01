@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import LurkerKit
+import UIKit
 
 /// The words for a network's connection and for the verbs that change it.
 ///
@@ -38,5 +39,22 @@ extension NetworkAction {
         case .reconnect: "arrow.clockwise"
         case .delete: "trash"
         }
+    }
+}
+
+extension NetworkRow {
+    /// Why Connect and Reconnect are missing on a blocked network — said once per screen,
+    /// under the list or the section, because it explains a policy, and a policy repeated
+    /// per row reads as a per-row problem.
+    static let blockedExplanation = "This server's administrator limits which networks can be connected to."
+}
+
+extension UIListContentConfiguration {
+    /// The status dot both screens lead with. The colour carries the state; the text beside
+    /// it repeats the state for anyone who can't use colour.
+    mutating func setStatusDot(_ light: StatusLight) {
+        image = UIImage(systemName: "circle.fill")
+        imageProperties.tintColor = Palette.color(for: light)
+        imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 10)
     }
 }

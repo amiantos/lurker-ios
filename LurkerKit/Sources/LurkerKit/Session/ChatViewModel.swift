@@ -619,13 +619,11 @@ public final class ChatViewModel {
                     in: key
                 )
             case .connect:
-                lifecycle(key, verb: "connect") { [client] id in await client.connectNetwork(id: id) }
+                lifecycle(.connect, in: key)
             case .disconnect(let reason):
-                lifecycle(key, verb: "disconnect") { [client] id in
-                    await client.disconnectNetwork(id: id, reason: reason)
-                }
+                lifecycle(.disconnect, in: key, reason: reason)
             case .reconnect:
-                lifecycle(key, verb: "reconnect") { [client] id in await client.reconnectNetwork(id: id) }
+                lifecycle(.reconnect, in: key)
             case .info(let text):
                 store.appendLocal(key, text: text)
             }
@@ -646,11 +644,17 @@ public final class ChatViewModel {
     ///
     /// Not routed through `report`: that one gates on the *socket*, because the verbs it
     /// covers go nowhere without one. These go over HTTP and answer for themselves.
-    private func lifecycle(_ key: BufferKey, verb: String, _ call: @escaping (Int) async -> String?) {
+    ///
+    /// The failure line names the action rather than the command — `/quit` is an alias of
+    /// `/disconnect`, and "/disconnect failed" under a line that said `/quit` reads as the
+    /// app answering a different question.
+    private func lifecycle(_ action: NetworkAction, in key: BufferKey, reason: String? = nil) {
         guard let networkId = key.networkId else { return }
         Task { [weak self] in
-            guard let refusal = await call(networkId), let self else { return }
-            store.appendLocal(key, text: "/\(verb) failed: \(refusal)")
+            guard let self, let refusal = await perform(action, on: networkId, reason: reason) else {
+                return
+            }
+            store.appendLocal(key, text: "\(action.rawValue.capitalized) failed: \(refusal)")
         }
     }
 
@@ -768,28 +772,42 @@ public final class ChatViewModel {
         return result
     }
 
-    /// Delete a network and everything under it. Nil on success, a message otherwise.
-    public func deleteNetwork(id: Int) async -> String? {
-        let error = await client.deleteNetwork(id: id)
-        if error == nil { await client.refreshNetworks() }
-        return error
-    }
-
-    /// Start / stop / restart one network's connection. Nil on success, a message otherwise.
+    /// Start, stop, restart or delete a network. Nil on success, a message otherwise.
     ///
-    /// None of these reports the resulting state — the server acknowledges the instruction,
-    /// and the transition arrives separately as `state` events. A caller that wanted to show
-    /// "Connecting…" should read the network's state, not this return value.
-    public func connectNetwork(id: Int) async -> String? {
-        await client.connectNetwork(id: id)
+    /// One entry for the four verbs whoever issues them — the networks screen's menu, the
+    /// server buffer's sheet, a slash command — so an action maps to its REST call in one
+    /// place instead of a switch per surface.
+    ///
+    /// None of the connection verbs reports the resulting state: the server acknowledges the
+    /// instruction, and the transition arrives separately as `state` events. A caller that
+    /// wanted to show "Connecting…" should read the network's state, not this return value.
+    /// `reason` is the quit message, read by `disconnect` alone.
+    public func perform(_ action: NetworkAction, on id: Int, reason: String? = nil) async -> String? {
+        switch action {
+        case .connect:
+            return await client.connectNetwork(id: id)
+        case .disconnect:
+            return await client.disconnectNetwork(id: id, reason: reason)
+        case .reconnect:
+            return await client.reconnectNetwork(id: id)
+        case .delete:
+            // Everything under it goes too. The roster is re-read on success because nothing
+            // else will retract the network: no frame carries a removal.
+            let error = await client.deleteNetwork(id: id)
+            if error == nil { await client.refreshNetworks() }
+            return error
+        }
     }
 
-    public func disconnectNetwork(id: Int, reason: String? = nil) async -> String? {
-        await client.disconnectNetwork(id: id, reason: reason)
-    }
-
-    public func reconnectNetwork(id: Int) async -> String? {
-        await client.reconnectNetwork(id: id)
+    /// Re-read the roster (`GET /api/networks`) into the store: names, order, and whether the
+    /// admin's allowlist blocks each host.
+    ///
+    /// For a screen that wants the roster's *current* word before offering to connect a
+    /// network — the server buffer's sheet — rather than the copy read when the socket last
+    /// opened. The networks screen re-reads on every appearance for the same reason; without
+    /// this the two could disagree about an allowlist change for the life of the socket.
+    public func refreshNetworks() async {
+        await client.refreshNetworks()
     }
 
     /// Emit a `typing` signal for `key`. Buffers with nobody on the other end — the system

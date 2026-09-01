@@ -135,6 +135,13 @@ public enum CommandParser {
         // force-unwrapping. Nothing else past this point reads it: the wire effects carry a target
         // and let the executor supply the network.
         guard let networkId else {
+            // The connection verbs (#152) act on a network rather than on a conversation, and
+            // the server buffer is as good a place to type them as a channel — so their gate
+            // says so, instead of sending someone with an offline network to a channel they
+            // can't join yet.
+            if ["connect", "disconnect", "quit", "reconnect"].contains(verb) {
+                return [.info("/\(verb) needs a network — open one of its buffers first, or use Settings → Networks.")]
+            }
             return [.info("/\(verb) needs an active network — switch to a channel or DM first.")]
         }
 
@@ -311,8 +318,11 @@ public enum CommandParser {
             return [.connect]
         case "disconnect", "quit":
             // The whole argument line is the reason, interior spacing kept — it's a quit
-            // message. Empty means "let the server pick its default".
-            return [.disconnect(reason: argLine.isEmpty ? nil : argLine)]
+            // message. Empty means "let the server pick its default". Line breaks fold to
+            // spaces: the reason is the tail of one IRC line, and a pasted break would end it
+            // early and put the rest on the wire as a command of its own.
+            let reason = argLine.split(whereSeparator: \.isNewline).joined(separator: " ")
+            return [.disconnect(reason: reason.isEmpty ? nil : reason)]
         case "reconnect":
             return [.reconnect]
         case "server":

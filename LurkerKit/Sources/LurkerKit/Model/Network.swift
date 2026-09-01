@@ -67,6 +67,20 @@ public struct Network: Equatable, Sendable {
         self.blocked = blocked
     }
 
+    /// Take the roster's word for the REST-only fields — `name`, `position`, `blocked` — and
+    /// keep everything the socket said.
+    ///
+    /// Here, beside the declarations, rather than as assignments in the store's merge: the
+    /// store's copy of this list was missed once (`position` didn't survive a merge until a
+    /// review caught it, f69c30a) and extended by hand once more (`blocked`). A field added
+    /// above and to `FrameParser.parseNetworks` has one more place to be added, and it's the
+    /// next line down.
+    public mutating func mergeRoster(_ roster: Network) {
+        name = roster.name
+        position = roster.position
+        blocked = roster.blocked
+    }
+
     /// What to call this network wherever the user sees one named.
     ///
     /// Shared so the fallback can't drift between the join menu, the networks screen and
