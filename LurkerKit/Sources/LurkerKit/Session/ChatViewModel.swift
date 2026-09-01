@@ -730,6 +730,14 @@ public final class ChatViewModel {
         client.loadNewer(networkId: key.networkId, target: key.target, after: newest, countBy: historyCountBy)
     }
 
+    /// Suppress a buffer's `/clear` filter so a jump can land on a row it is hiding (#121).
+    ///
+    /// No fetch: the anchor is already loaded, and detaching is the whole of what it needs to
+    /// render. See `LurkerStore.detachForJump` for why an `around` fetch is not a substitute.
+    public func detachForJump(_ key: BufferKey) {
+        store.detachForJump(key)
+    }
+
     /// Fetch a history slice centered on `anchorId` — the message a jump lands on (#42). The
     /// reply (`history` mode `around`) replaces the buffer's slice with the anchor in the
     /// middle; the screen scrolls to it once it lands. Distinct from `loadOlder`: this

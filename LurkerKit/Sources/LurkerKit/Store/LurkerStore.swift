@@ -663,6 +663,32 @@ final class LurkerStore {
         subject.value = next
     }
 
+    /// Detach a buffer without fetching anything — the client's own decision, so like
+    /// `appendLocal` it sits here rather than pretending to be a frame.
+    ///
+    /// One caller: a jump to a message that is already loaded but hidden behind a `/clear`
+    /// marker (#121). Detaching suppresses the clear filter, which is all that row needs to
+    /// render — the web does exactly this (`useJumpToMessage.ts`, `hiddenByClear` →
+    /// `detachForJump`) and for the same reason: there is nothing to fetch.
+    ///
+    /// ⚠⚠ Fetching an `around` slice instead does NOT reliably detach. `hasMoreNewer` comes
+    /// from the server's answer, so a slice that reaches the live tail — a small buffer, or one
+    /// cleared moments ago — comes back `hasMoreNewer: false`, the buffer stays attached, the
+    /// filter still hides the anchor, and the jump lands nowhere. That was the bug this
+    /// replaced.
+    ///
+    /// ⚠ `hasMoreNewer` is iOS's detached flag as well as its "more below" flag, and here the
+    /// slice may well already hold the tail. That conflation is benign and self-correcting: the
+    /// live log is held out (right — the reader is in history), the re-attach pill appears
+    /// (right), and a scroll-down pages `after` the newest id, whose reply carries
+    /// `hasMoreNewer: false` and re-attaches.
+    func detachForJump(_ key: BufferKey) {
+        guard subject.value.buffers[key.id]?.hasMoreNewer == false else { return }
+        var next = subject.value
+        next.buffers[key.id]?.hasMoreNewer = true
+        subject.value = next
+    }
+
     /// Mirror the OS's view of network reachability into the state. Not a `ServerFrame`
     /// because it isn't one — it comes from the device, not the server — so it sits
     /// alongside the other direct mutations rather than lying in `reduce`.

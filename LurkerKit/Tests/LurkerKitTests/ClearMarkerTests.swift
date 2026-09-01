@@ -261,6 +261,55 @@ struct ClearMarkerTests {
         #expect(cleared(50, detached: true).olderPageCouldBeVisible(oldestHeldId: 10))
     }
 
+    // MARK: - Jumping to a hidden message
+
+    @Test("⚠⚠ detaching is what makes a hidden anchor renderable — a fetch is not")
+    func detachingRevealsAHiddenAnchor() {
+        // A bookmark or search hit from before a clear. The row is loaded and filtered out, so
+        // there is nothing to fetch — only the filter to suppress.
+        let hidden = rows([msg(10), msg(20)], clearedBeforeId: 50, clearedAt: clearedAt)
+        #expect(hidden.compactMap(\.message?.id) == [], "hidden while attached")
+
+        let detached = rows(
+            [msg(10), msg(20)], clearedBeforeId: 50, clearedAt: clearedAt, hasMoreNewer: true)
+        #expect(detached.compactMap(\.message?.id) == [10, 20], "and visible once detached")
+    }
+
+    @Test("the local detach flips the flag without touching the slice")
+    func theLocalDetachOnlyFlipsTheFlag() {
+        // ⚠ Deliberately NOT an `around` fetch: `hasMoreNewer` would come from the server, and
+        // a slice reaching the live tail — a small buffer, or one cleared moments ago — comes
+        // back `hasMoreNewer: false`, leaving the buffer attached and the anchor hidden.
+        let store = LurkerStore()
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
+        buffer.applyCleared(beforeId: 50, at: clearedAt)
+        store.apply(
+            .backlog(
+                buffer: buffer, messages: [msg(10), msg(20)], hydrated: true, append: false,
+                speakers: nil))
+        #expect(store.state.buffers[key.id]?.hasMoreNewer == false)
+
+        store.detachForJump(key)
+        #expect(store.state.buffers[key.id]?.hasMoreNewer == true)
+        #expect(
+            store.state.messages[key.id]?.map(\.id) == [10, 20],
+            "the slice is untouched — nothing was fetched or dropped")
+    }
+
+    @Test("an already-detached buffer is left alone")
+    func detachingIsIdempotent() {
+        let store = LurkerStore()
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
+        buffer.hasMoreNewer = true
+        store.apply(
+            .backlog(
+                buffer: buffer, messages: [msg(10)], hydrated: true, append: false, speakers: nil))
+        store.detachForJump(key)
+        #expect(store.state.buffers[key.id]?.hasMoreNewer == true)
+    }
+
     // MARK: - The command
 
     private func parse(_ line: String) -> [CommandEffect] {

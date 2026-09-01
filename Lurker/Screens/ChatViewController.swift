@@ -1326,23 +1326,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             aroundRequestedAtGeneration = nil
         }
         guard aroundRequestedAtGeneration == nil else { return }
-        // Already held AND renderable? No fetch — land against what's loaded.
+        // Already held? No fetch — land against what's loaded.
         //
-        // ⚠⚠ "Held" is not enough once a `/clear` is in force (#121). A message below the
-        // boundary is in `messages` and filtered out of `rows`, so landing against what's
-        // loaded would look for a row that will never exist: `beginJumpLanding` finds nothing,
-        // no request is in flight to explain it, and `pendingJumpId` is never cleared — which
-        // also disables hydrate, the initial landing, and the top-up, for the life of the
-        // screen. Tapping a bookmark or a search hit from before a clear wedged the buffer.
+        // ⚠⚠ But a message below a `/clear` boundary is held and NOT renderable (#121): it sits
+        // in `messages` and is filtered out of `rows`. Landing against what's loaded would look
+        // for a row that will never exist — `beginJumpLanding` finds nothing, no request is in
+        // flight to explain it, and `pendingJumpId` is never cleared, which also disables
+        // hydrate, the initial landing and the top-up for the life of the screen. Tapping a
+        // bookmark from before a clear wedged the buffer.
         //
-        // Fetching instead of exempting the row is deliberate, and is what the web does
-        // (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`): the slice DETACHES the
-        // buffer, and a detached buffer ignores the marker entirely, so the reader gets the
-        // anchor with its context around it rather than one lone line among hidden neighbours.
-        let held = (state.messages[buffer.key.id] ?? []).contains { $0.id == anchor }
-        let hiddenByClear = (state.buffers[buffer.key.id]?.clearedBeforeId ?? 0) >= anchor
-            && (state.buffers[buffer.key.id]?.clearedBeforeId ?? 0) > 0
-        if held && !hiddenByClear { return }
+        // Detaching is the whole fix, and it needs no fetch: a detached buffer ignores the
+        // marker, so the row renders and the jump lands on it in context. The web does exactly
+        // this (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`).
+        //
+        // ⚠⚠ An `around` FETCH is not a substitute, which is how this was first written.
+        // `hasMoreNewer` comes from the server's answer, so a slice reaching the live tail — a
+        // small buffer, or one cleared moments ago — returns `hasMoreNewer: false`, the buffer
+        // stays attached, the filter still hides the anchor, and the jump lands nowhere at all.
+        let cleared = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
+        if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) {
+            if cleared > 0, anchor <= cleared { viewModel.detachForJump(buffer.key) }
+            return
+        }
         aroundRequestedAtGeneration = state.burstGeneration
         aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
         aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
