@@ -47,9 +47,14 @@ enum VideoCompressor {
     ///
     /// Throws `UploadError.cannotCompressEnough` when even the smallest preset stays over the
     /// cap, or `.compressionFailed` when the export itself errors.
+    ///
+    /// ⚠⚠ `maxBytes` is required, and is the server's advertised cap — pass
+    /// `ChatViewModel.uploadCapBytes`. It used to default to a hardcoded 90 MiB, which meant
+    /// every instance that isn't ours got the wrong answer in one direction or the other
+    /// (#149); a default would let a call site silently go back to that.
     static func prepare(
         source: URL,
-        maxBytes: Int = Uploads.maxBytes,
+        maxBytes: Int,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Prepared {
         if fileSize(source) <= maxBytes {

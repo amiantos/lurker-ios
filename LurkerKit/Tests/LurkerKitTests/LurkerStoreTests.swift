@@ -490,7 +490,7 @@ final class LurkerStoreTests: XCTestCase {
                     ),
                 ]
             ),
-        ], globalIgnores: []))
+        ], globalIgnores: [], maxUploadBytes: nil))
 
         let state = store.state
         XCTAssertEqual(state.networks[1]!.state, .connected)
@@ -513,7 +513,7 @@ final class LurkerStoreTests: XCTestCase {
                 id: 1, state: .connected, nick: "me",
                 channels: [ChannelSnapshot(name: "#lurker", topic: nil, members: members)]
             ),
-        ], globalIgnores: []))
+        ], globalIgnores: [], maxUploadBytes: nil))
     }
 
     func testAJoinAddsAMemberAndAPartRemovesThem() {
@@ -856,7 +856,7 @@ final class LurkerStoreTests: XCTestCase {
     func testRestNamesMergeOntoSnapshotCreatedNetworksWithoutDroppingLiveState() {
         let store = LurkerStore()
         // Snapshot arrives first (name unknown), then the REST roster supplies it.
-        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: []))
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: [], maxUploadBytes: nil))
         store.apply(.networks([Network(id: 1, name: "Libera", blocked: true)]))
 
         let network = store.state.networks[1]!
@@ -1172,7 +1172,7 @@ final class LurkerStoreTests: XCTestCase {
         // terminal prune would read the new key as "unlisted" and delete the buffer the
         // user is looking at.
         let store = LurkerStore()
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         store.apply(dmBuffer("alice", bufferId: 7, messages: [msg(1, "hi")]))
         store.apply(
             .bufferRenamed(
@@ -1216,7 +1216,7 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertNotNil(store.state.buffers[chanKey])
 
         // A fresh burst that doesn't mention #lurker.
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         store.apply(
             .backlog(
                 buffer: Buffer(networkId: 1, target: "#other", kind: .channel, hydrated: true),
@@ -1232,7 +1232,7 @@ final class LurkerStoreTests: XCTestCase {
 
     func testBacklogCompleteKeepsEverythingTheBurstDidList() {
         let store = LurkerStore()
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         store.apply(channelBuffer(hydrated: true, messages: [msg(1, "hi")]))
         store.apply(.backlogComplete)
 
@@ -1254,7 +1254,7 @@ final class LurkerStoreTests: XCTestCase {
         // The row was created after the server enumerated the roster, so the burst can't
         // name it. Pruning it would drop a DM the moment it arrived.
         let store = LurkerStore()
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         store.apply(
             .live(networkId: 1, target: "bob", message: msg(7, "hey"))
         )
@@ -1270,7 +1270,7 @@ final class LurkerStoreTests: XCTestCase {
         let store = LurkerStore()
         XCTAssertFalse(store.state.rosterSettled, "nothing has arrived yet")
 
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         XCTAssertFalse(store.state.rosterSettled, "burst in flight")
 
         store.apply(.backlogComplete)
@@ -1278,7 +1278,7 @@ final class LurkerStoreTests: XCTestCase {
 
         // A later burst reopens the window: `backlogComplete` latches for the session, so
         // it alone would keep claiming proof while `buffers` is mid-rebuild.
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         XCTAssertTrue(store.state.backlogComplete, "still latched...")
         XCTAssertFalse(store.state.rosterSettled, "...but the roster is being rebuilt")
     }
@@ -1292,13 +1292,13 @@ final class LurkerStoreTests: XCTestCase {
         let store = LurkerStore()
         XCTAssertEqual(store.state.burstGeneration, 0)
 
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         XCTAssertEqual(store.state.burstGeneration, 1)
         store.apply(.backlogComplete)
         XCTAssertEqual(store.state.burstGeneration, 1, "only a snapshot advances it")
 
         // A reconnect's burst — the moment anything asked over the old socket is void.
-        store.apply(.snapshot([], globalIgnores: []))
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
         XCTAssertEqual(store.state.burstGeneration, 2)
     }
 

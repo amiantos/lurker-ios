@@ -88,7 +88,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"peerPresence":{"darc":{"nick":"darc","state":"away","stateAt":null,"awayMessage":"brb"}}}]}"##
         )
-        guard case let .snapshot(networks, _) = frame else {
+        guard case let .snapshot(networks, _, _) = frame else {
             return XCTFail("expected snapshot, got \(frame)")
         }
         XCTAssertEqual(networks.first?.peerPresence["darc"], .away)
@@ -130,7 +130,7 @@ final class ContactsAndPresenceTests: XCTestCase {
     private func connectedNetwork(_ id: Int, presence: [String: PresenceState] = [:]) -> ServerFrame {
         .snapshot(
             [NetworkSnapshot(id: id, state: .connected, nick: "me", channels: [], peerPresence: presence)],
-            globalIgnores: []
+            globalIgnores: [], maxUploadBytes: nil
         )
     }
 
@@ -188,7 +188,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         // there is unreachable → offline, even if a stale row said otherwise.
         store.apply(.snapshot([
             NetworkSnapshot(id: 2, state: .reconnecting, nick: "me", channels: [], peerPresence: ["darc": .online]),
-        ], globalIgnores: []))
+        ], globalIgnores: [], maxUploadBytes: nil))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline)
     }
 
@@ -207,7 +207,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         store.apply(.snapshot([
             NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], peerPresence: ["darc": .away]),
             NetworkSnapshot(id: 3, state: .connected, nick: "me", channels: [], peerPresence: ["darc": .online]),
-        ], globalIgnores: []))
+        ], globalIgnores: [], maxUploadBytes: nil))
         // A Friends chip reads the presence of ITS network's peer — the same nick elsewhere
         // is a different person as far as the dot is concerned.
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .away)

@@ -2330,7 +2330,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if picked.isVideo {
             uploadStatus.update(.compressing(0), in: batch)
             do {
-                let prepared = try await VideoCompressor.prepare(source: picked.url) { fraction in
+                // The server's advertised cap, read now rather than when this screen was
+                // built: it is refreshed on every reconnect (#149).
+                let prepared = try await VideoCompressor.prepare(
+                    source: picked.url, maxBytes: viewModel.uploadCapBytes
+                ) { fraction in
                     Task { @MainActor [weak self] in
                         // Same staleness gate as the upload legs: a tick landing after this
                         // file is done would stamp its position over the next one's readout.

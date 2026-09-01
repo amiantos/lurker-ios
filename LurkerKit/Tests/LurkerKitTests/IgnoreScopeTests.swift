@@ -125,7 +125,7 @@ final class IgnoreScopeTests: XCTestCase {
                         ignoredMasks: [rule(mask: "local")]
                     ),
                 ],
-                globalIgnores: [rule(mask: "spammer")]
+                globalIgnores: [rule(mask: "spammer")], maxUploadBytes: nil
             )
         )
         XCTAssertTrue(store.state.ignores.isHidden(networkId: 1, input(nick: "spammer")))
@@ -136,7 +136,7 @@ final class IgnoreScopeTests: XCTestCase {
         store.apply(
             .snapshot(
                 [NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
-                globalIgnores: []
+                globalIgnores: [], maxUploadBytes: nil
             )
         )
         XCTAssertTrue(store.state.ignores.isEmpty(for: 1))
@@ -152,7 +152,7 @@ final class IgnoreScopeTests: XCTestCase {
                         ignoredMasks: [rule(mask: "local")]
                     ),
                 ],
-                globalIgnores: [rule(mask: "spammer")]
+                globalIgnores: [rule(mask: "spammer")], maxUploadBytes: nil
             )
         )
         // networkId nil is the GLOBAL bucket here — not the system buffer, which is what a nil
@@ -229,7 +229,7 @@ final class IgnoreScopeTests: XCTestCase {
            "levels":["ALL"],"isExcept":false,"expiresAt":null}
         ]}
         """##)
-        guard case let .snapshot(_, globalIgnores) = frame else {
+        guard case let .snapshot(_, globalIgnores, _) = frame else {
             return XCTFail("expected snapshot, got \(frame)")
         }
         XCTAssertEqual(globalIgnores.count, 1)

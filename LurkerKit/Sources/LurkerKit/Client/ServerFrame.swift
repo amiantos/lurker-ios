@@ -21,7 +21,17 @@ enum ServerFrame: Equatable, Sendable {
     /// apply on every network, so they belong to no network blob. Spelled out as its own
     /// value rather than hidden in a default because a snapshot that dropped it would leave
     /// the most common kind of rule silently inert until the next time one was edited.
-    case snapshot([NetworkSnapshot], globalIgnores: [IgnoreRule])
+    ///
+    /// `maxUploadBytes` is the account's advertised upload cap (lurker#627), refreshed on
+    /// every reconnect. **nil is "the server didn't say", not "no cap"** — an instance older
+    /// than the field is a normal condition, and reading its silence as a number would be the
+    /// guess this replaced. See `Uploads.compressionTarget(advertised:)`.
+    ///
+    /// It belongs to the account rather than to any network, so it rides the frame the way
+    /// `globalIgnores` does. It is the second such field; a third (#17's `protocolVersion`,
+    /// also on this frame) is the point at which these want to be a struct rather than a
+    /// longer tuple.
+    case snapshot([NetworkSnapshot], globalIgnores: [IgnoreRule], maxUploadBytes: Int?)
 
     /// WS `backlog-complete`: the terminal frame of a snapshot burst (lurker #635).
     ///
@@ -272,7 +282,13 @@ enum ServerFrame: Equatable, Sendable {
 
     /// WS `settings`: the keys that just changed, fanned out to every device (including the
     /// echo of this client's own `PATCH`). A patch, never a full set.
-    case settingsChanged([String: SettingValue])
+    ///
+    /// ⚠⚠ `maxUploadBytes` rides this frame **only when the cap was actually touched** — the
+    /// server recomputes and re-sends it when `uploads.image.max_upload_mb` is among the
+    /// changes, and omits it otherwise. So nil here means "unchanged", NOT "no cap", and the
+    /// store must patch it conditionally rather than assign it. Overwriting with nil would
+    /// drop the advertised cap on every unrelated settings change the user made.
+    case settingsChanged([String: SettingValue], maxUploadBytes: Int?)
 
     /// The `{values}` a REST reply carries (`PATCH /api/settings`) — the user's complete
     /// stored set, which REPLACES what we hold rather than merging into it. See

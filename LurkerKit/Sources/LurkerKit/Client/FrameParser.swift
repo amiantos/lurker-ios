@@ -37,7 +37,13 @@ enum FrameParser {
         case "settings":
             // `changes` carries only what moved. An empty object is legal (the server sends
             // `changes || {}`) and simply patches nothing.
-            return .settingsChanged(parseSettingValues(obj["changes"]))
+            //
+            // `maxUploadBytes` is present only when the cap itself was touched — absent means
+            // unchanged, which is why it stays optional all the way to the store.
+            return .settingsChanged(
+                parseSettingValues(obj["changes"]),
+                maxUploadBytes: advertisedUploadCap(obj)
+            )
         case "error":
             return .serverError(obj.string("text"))
         case "favorites-changed":
@@ -349,7 +355,23 @@ enum FrameParser {
                 pinned: (network["pinned"] as? [String]) ?? []
             )
         }
-        return .snapshot(networks, globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule))
+        return .snapshot(
+            networks,
+            globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule),
+            maxUploadBytes: advertisedUploadCap(obj)
+        )
+    }
+
+    /// The advertised upload cap off a frame that may carry one, or nil for "didn't say".
+    ///
+    /// ⚠ A non-positive number is read as "didn't say" too. The server never sends one, and a
+    /// cap no file can satisfy is not a statement about anything — taken at face value it
+    /// would send every video down the preset ladder to `.cannotCompressEnough`, which reads
+    /// to the user as the app refusing to upload rather than as a server that answered
+    /// nonsense. Same discipline as an absent field: only a real answer is an answer.
+    private static func advertisedUploadCap(_ obj: [String: Any]) -> Int? {
+        guard let bytes = obj.intOrNull("maxUploadBytes"), bytes > 0 else { return nil }
+        return bytes
     }
 
     /// One stored ignore rule. Shared by the snapshot's two seeds (per-network `ignoredMasks`

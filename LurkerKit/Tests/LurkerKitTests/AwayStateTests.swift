@@ -18,7 +18,7 @@ final class AwayStateTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"away":{"active":false,"since":"2026-07-20T12:00:00Z","message":"lunch","autoSet":true,"backAt":"2026-07-20T13:00:00Z"}}]}"##
         )
-        guard case let .snapshot(networks, _) = frame else { return XCTFail("expected snapshot, got \(frame)") }
+        guard case let .snapshot(networks, _, _) = frame else { return XCTFail("expected snapshot, got \(frame)") }
         let away = networks.first?.away
         XCTAssertEqual(away?.active, false)
         XCTAssertEqual(away?.message, "lunch")
@@ -34,7 +34,7 @@ final class AwayStateTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"away":null}]}"##
         )
-        guard case let .snapshot(networks, _) = frame else { return XCTFail("expected snapshot, got \(frame)") }
+        guard case let .snapshot(networks, _, _) = frame else { return XCTFail("expected snapshot, got \(frame)") }
         XCTAssertNil(networks.first?.away)
     }
 
@@ -101,7 +101,7 @@ final class AwayStateTests: XCTestCase {
     private func snapshot(_ away: AwayState?) -> ServerFrame {
         .snapshot(
             [NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], away: away)],
-            globalIgnores: []
+            globalIgnores: [], maxUploadBytes: nil
         )
     }
 

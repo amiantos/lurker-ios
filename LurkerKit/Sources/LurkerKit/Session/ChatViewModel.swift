@@ -69,7 +69,11 @@ public final class ChatViewModel {
         // so `settings.loaded` stays honestly false until a real bootstrap arrives, while every
         // behavior gate already reads the user's actual choice.
         let cached = settingsCache.load()
-        if !cached.isEmpty { store.apply(.settingsChanged(cached)) }
+        // No cap: the cache holds setting VALUES, and the advertised cap is not one of them —
+        // it is the server's resolution of three ceilings, only one of which the user owns.
+        // nil here is the honest "nobody has said yet", and the snapshot lands on connect,
+        // well before there is a video to compress.
+        if !cached.isEmpty { store.apply(.settingsChanged(cached, maxUploadBytes: nil)) }
         restoreSession()
     }
 
@@ -271,6 +275,14 @@ public final class ChatViewModel {
     /// it's off the server doesn't even mount the routes, so the settings rows are HIDDEN rather
     /// than offered inert, and nothing is primed.
     public private(set) var features = InstanceFeatures()
+
+    /// The size to compress media to before uploading — the server's advertised cap when it
+    /// has given one, else `Uploads.fallbackMaxBytes` (#149).
+    ///
+    /// Read at the moment of the upload rather than captured: the cap is refreshed on every
+    /// reconnect and re-sent when the user changes their own limit, so a copy taken when a
+    /// screen was built is a number that may since have moved.
+    public var uploadCapBytes: Int { Uploads.compressionTarget(advertised: state.maxUploadBytes) }
 
     /// Whether `features` is an ANSWER or still the off-by-default guess.
     ///

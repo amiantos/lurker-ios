@@ -87,7 +87,7 @@ final class SettingsTests: XCTestCase {
 
     func testSettingsChangeFrameParses() {
         let frame = FrameParser.parseWs(##"{"kind":"settings","changes":{"chat.smart_filter":true}}"##)
-        XCTAssertEqual(frame, .settingsChanged(["chat.smart_filter": .bool(true)]))
+        XCTAssertEqual(frame, .settingsChanged(["chat.smart_filter": .bool(true)], maxUploadBytes: nil))
     }
 
     /// The server sends `changes || {}`, so an empty patch is legal and must be a no-op rather
@@ -145,7 +145,7 @@ final class SettingsTests: XCTestCase {
 
     func testChangeFramePatchesOneKeyAndLeavesTheRest() {
         var state = bootstrapped()
-        state = LurkerStore.reduce(state, .settingsChanged(["chat.consolidate_joins": .bool(true)]))
+        state = LurkerStore.reduce(state, .settingsChanged(["chat.consolidate_joins": .bool(true)], maxUploadBytes: nil))
         XCTAssertTrue(state.settings.bool("chat.consolidate_joins", default: false))
         // The other stored value survives — a patch, not a replace.
         XCTAssertEqual(state.settings.int("chat.consolidate_max_names", default: 5), 9)
@@ -153,13 +153,13 @@ final class SettingsTests: XCTestCase {
 
     func testChangeFrameCanSetAPreviouslyUnsetKey() {
         var state = bootstrapped()
-        state = LurkerStore.reduce(state, .settingsChanged(["look.message.layout": .string("compact")]))
+        state = LurkerStore.reduce(state, .settingsChanged(["look.message.layout": .string("compact")], maxUploadBytes: nil))
         XCTAssertEqual(state.settings.string("look.message.layout", default: "auto"), "compact")
     }
 
     func testBootstrapReplacesRatherThanMerges() {
         var state = bootstrapped()
-        state = LurkerStore.reduce(state, .settingsChanged(["look.message.layout": .string("compact")]))
+        state = LurkerStore.reduce(state, .settingsChanged(["look.message.layout": .string("compact")], maxUploadBytes: nil))
         // A reconnect re-bootstraps: the server's stored set is authoritative, so a value that
         // is no longer stored must revert to its default rather than linger from the old map.
         state = LurkerStore.reduce(state, FrameParser.parseSettingsBootstrap(bootstrapJSON))
@@ -192,7 +192,7 @@ final class SettingsTests: XCTestCase {
     func testEchoAfterReplaceIsIdempotent() {
         var state = bootstrapped()
         state = LurkerStore.reduce(state, .settingsValues(["chat.consolidate_max_names": .int(9)]))
-        state = LurkerStore.reduce(state, .settingsChanged(["chat.consolidate_joins": .bool(true)]))
+        state = LurkerStore.reduce(state, .settingsChanged(["chat.consolidate_joins": .bool(true)], maxUploadBytes: nil))
         XCTAssertTrue(state.settings.bool("chat.consolidate_joins", default: false))
     }
 
@@ -262,7 +262,7 @@ final class SettingsTests: XCTestCase {
     /// on `chat.send_typing_notifications` is `true` and the user turned it off.
     func testCachedValueOverridesTheFallbackWithNoRegistry() {
         var state = ChatState()
-        state = LurkerStore.reduce(state, .settingsChanged(["chat.send_typing_notifications": .bool(false)]))
+        state = LurkerStore.reduce(state, .settingsChanged(["chat.send_typing_notifications": .bool(false)], maxUploadBytes: nil))
         XCTAssertFalse(state.settings.loaded, "values alone must not claim a real bootstrap")
         XCTAssertFalse(
             state.settings.bool("chat.send_typing_notifications", default: true),
@@ -273,7 +273,7 @@ final class SettingsTests: XCTestCase {
     /// Seeding from cache supplies values but no registry, so the settings *screen* can still
     /// tell "we have nothing to render controls from" apart from "this server has no settings".
     func testSeedingFromCacheLeavesLoadedFalse() {
-        let state = LurkerStore.reduce(ChatState(), .settingsChanged(["a": .bool(true)]))
+        let state = LurkerStore.reduce(ChatState(), .settingsChanged(["a": .bool(true)], maxUploadBytes: nil))
         XCTAssertFalse(state.settings.loaded)
         XCTAssertTrue(state.settings.registry.isEmpty)
     }
@@ -321,7 +321,7 @@ final class SettingsTests: XCTestCase {
         var state = LurkerStore.reduce(
             ChatState(), FrameParser.parseSettingsBootstrap(dependencyJSON)
         )
-        state = LurkerStore.reduce(state, .settingsChanged(values))
+        state = LurkerStore.reduce(state, .settingsChanged(values, maxUploadBytes: nil))
         return state.settings
     }
 
@@ -350,7 +350,7 @@ final class SettingsTests: XCTestCase {
         // Unlabelled — including everything an older server sends, which has no
         // `choiceLabels` at all — shows the raw value rather than nothing.
         XCTAssertEqual(option?.label(forChoice: "none"), "none")
-        state = LurkerStore.reduce(state, .settingsChanged([:]))
+        state = LurkerStore.reduce(state, .settingsChanged([:], maxUploadBytes: nil))
     }
 
     func testParsesDependsOnFromTheRegistry() {

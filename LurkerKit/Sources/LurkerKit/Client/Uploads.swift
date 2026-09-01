@@ -8,23 +8,38 @@ import Foundation
 /// covers every content class — image, video, text — not just images). The server re-encodes
 /// images, scrubs video metadata, and answers with the public URL of the stored object.
 public enum Uploads {
-    /// The largest request body we'll put on the wire, and the size the app's
-    /// `VideoCompressor` shrinks video to fit under.
+    /// What to compress a file to when the server hasn't told us its cap yet.
     ///
-    /// This is NOT the uploader's own cap — the server enforces that, up to `MAX_CAP_MB`
-    /// (200 MB) — it's the ceiling imposed by the CDN *in front of* the instance.
-    /// app.lurker.chat is fronted by Cloudflare, whose request-body limit is 100 MB on every
-    /// non-Enterprise plan; a larger body is rejected at the edge with a connection reset the
-    /// client sees as `cannotParseResponse`, long before the server's own limit is consulted
-    /// (confirmed: a 139 MB screen recording died exactly this way). We target comfortably
-    /// under 100 MB to leave room for the multipart envelope and any edge accounting.
+    /// A guess about *our* deployment, and nothing more. app.lurker.chat is fronted by
+    /// Cloudflare, whose request-body limit is 100 MB on every non-Enterprise plan; a larger
+    /// body is rejected at the edge with a connection reset the client sees as
+    /// `cannotParseResponse`, long before the server's own limit is consulted (confirmed: a
+    /// 139 MB screen recording died exactly this way). 90 MiB sits comfortably under it.
     ///
-    /// ⚠ Hardcoded deliberately, for now. The correct fix is the server advertising its
-    /// effective cap, so a self-hosted instance with no 100 MB CDN limit isn't compressed
-    /// down to this number needlessly — tracked as a follow-up. Until then a Cloudflare-safe
-    /// default is the right call: most instances (hosted, and self-hosts behind Cloudflare/a
-    /// tunnel) share this exact ceiling.
-    public static let maxBytes = 90 * 1024 * 1024
+    /// ⚠⚠ Not a cap, and never a substitute for one. It used to be the only number this
+    /// client had, which cost accuracy in both directions (#149): a self-hosted instance with
+    /// no CDN in front of it has a 200 MB ceiling and had 150 MB clips transcoded down to 90
+    /// for nothing, while an instance behind a tighter proxy got a video compressed to 90 and
+    /// then a 413 — the whole transcode spent to fail. The server has advertised the real
+    /// number since lurker#627; this is only what stands in for the window before the
+    /// snapshot lands, and for a server too old to send one.
+    public static let fallbackMaxBytes = 90 * 1024 * 1024
+
+    /// The size to compress a file to: what the server advertised, or the fallback until it
+    /// has said.
+    ///
+    /// ⚠⚠ `advertised` is a **file** cap, not a request-body limit. The multipart envelope is
+    /// already subtracted server-side (`ENVELOPE_HEADROOM_BYTES`, 64 KiB), so a file at
+    /// exactly this size still fits once the boundaries and fields are added. Budgeting for
+    /// the envelope again here would be the same over-compression this replaced, just smaller.
+    ///
+    /// ⚠ Advisory, not a contract. It is resolved for the account's *default* uploader, so a
+    /// per-upload override or an operator change mid-session is still settled by the 413 —
+    /// which is why `.tooLarge` handling stays exactly as it was. This only stops us guessing
+    /// wrong before we start.
+    public static func compressionTarget(advertised: Int?) -> Int {
+        advertised ?? fallbackMaxBytes
+    }
 }
 
 /// What the server returns on a successful upload. Mirrors the JSON the web client reads:
