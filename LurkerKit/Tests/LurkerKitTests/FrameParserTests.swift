@@ -449,6 +449,16 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(networks.map(\.name), ["Libera", "OFTC"])
     }
 
+    func testRestNetworksReadBlockedAndTreatAbsentAsAllowed() {
+        // `blocked` rides the roster in beside the name (#152). Absent is "not blocked": an
+        // older server has no allowlist to be excluded from.
+        let frame = FrameParser.parseNetworks(##"{"networks":[{"id":1,"name":"Libera","blocked":true},{"id":2,"name":"OFTC"}]}"##)
+        guard case let .networks(networks) = frame else {
+            return XCTFail("expected networks, got \(frame)")
+        }
+        XCTAssertEqual(networks.map(\.blocked), [true, false])
+    }
+
     func testHighlightsPageParsesItemsWithBufferAddressAndCursor() {
         let page = FrameParser.parseHighlights(##"""
         {"items":[

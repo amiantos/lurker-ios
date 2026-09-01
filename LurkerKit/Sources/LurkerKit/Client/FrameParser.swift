@@ -182,8 +182,13 @@ enum FrameParser {
         // response, and the store holds networks in a dictionary that has no order at all.
         // Absent (an older server) reads as `Int.max`, so those networks sort last instead of
         // all colliding at 0 and re-sorting by id.
+        // `blocked` is the third REST-only field, read as `parseNetworkConfigs` reads it: absent
+        // means "not blocked", the honest answer on a server with no allowlist.
         let networks = obj.objects("networks").map {
-            Network(id: $0.int("id"), name: $0.stringOrNull("name"), position: $0.int("position", .max))
+            Network(
+                id: $0.int("id"), name: $0.stringOrNull("name"), position: $0.int("position", .max),
+                blocked: $0.bool("blocked")
+            )
         }
         return .networks(networks)
     }

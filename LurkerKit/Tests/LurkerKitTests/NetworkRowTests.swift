@@ -58,6 +58,25 @@ final class NetworkRowTests: XCTestCase {
         XCTAssertEqual(row(.connecting, blocked: true).light, .warn)
     }
 
+    // MARK: - Connection-only surfaces (#152)
+
+    func testConnectionActionsOfferTheSameVerbsWithoutDelete() {
+        // The server buffer's info sheet manages the connection, not the row: the same offers
+        // as the menu, minus the one that destroys the network and its history.
+        XCTAssertEqual(row(.disconnected).connectionActions, [.connect])
+        XCTAssertEqual(row(.connected).connectionActions, [.disconnect, .reconnect])
+        XCTAssertEqual(row(.reconnecting).connectionActions, [.disconnect])
+        for connection in [ConnectionState.connected, .connecting, .reconnecting, .disconnected] {
+            XCTAssertFalse(row(connection, blocked: true).connectionActions.contains(.delete))
+        }
+    }
+
+    func testABlockedOfflineNetworkHasNoConnectionActionsAtAll() {
+        // Nothing to offer and no Delete to fill the gap — the sheet explains in its footer
+        // rather than showing an action whose only outcome is a 403.
+        XCTAssertEqual(row(.disconnected, blocked: true).connectionActions, [])
+    }
+
     // MARK: - Shape
 
     func testDeleteIsAlwaysAvailableAndAlwaysLast() {

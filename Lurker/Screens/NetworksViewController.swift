@@ -237,9 +237,7 @@ final class NetworksViewController: UITableViewController {
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         // Said once, under the list, rather than in every blocked row's subtitle: it explains
         // a policy, and a policy repeated per row reads as a per-row problem.
-        configs.contains(where: \.blocked)
-            ? "This server's administrator limits which networks can be connected to."
-            : nil
+        configs.contains(where: \.blocked) ? NetworkRow.blockedExplanation : nil
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -260,10 +258,7 @@ final class NetworksViewController: UITableViewController {
             content.secondaryTextProperties.color = .secondaryLabel
         }
         content.secondaryTextProperties.numberOfLines = 0
-        // The dot carries the state; the words repeat it for anyone who can't use colour.
-        content.image = UIImage(systemName: "circle.fill")
-        content.imageProperties.tintColor = Palette.color(for: row.light)
-        content.imageProperties.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 10)
+        content.setStatusDot(row.light)
         cell.contentConfiguration = content
 
         // The tap edits; the button is for everything that changes the connection rather than
@@ -368,8 +363,8 @@ final class NetworksViewController: UITableViewController {
                 else { return completion([]) }
                 completion(row(for: config).actions.map { action in
                     UIAction(
-                        title: Self.label(for: action),
-                        image: UIImage(systemName: Self.symbol(for: action)),
+                        title: action.title,
+                        image: UIImage(systemName: action.symbolName),
                         attributes: action.isDestructive ? .destructive : []
                     ) { [weak self] _ in self?.perform(action, on: config) }
                 })
@@ -384,12 +379,8 @@ final class NetworksViewController: UITableViewController {
         switch action {
         case .delete:
             confirmDelete(config)
-        case .connect:
-            run(on: config.id) { [viewModel] in await viewModel.connectNetwork(id: config.id) }
-        case .disconnect:
-            run(on: config.id) { [viewModel] in await viewModel.disconnectNetwork(id: config.id) }
-        case .reconnect:
-            run(on: config.id) { [viewModel] in await viewModel.reconnectNetwork(id: config.id) }
+        case .connect, .disconnect, .reconnect:
+            run(on: config.id) { [viewModel] in await viewModel.perform(action, on: config.id) }
         }
     }
 
@@ -445,7 +436,7 @@ final class NetworksViewController: UITableViewController {
             guard let self else { return }
             Task { [weak self] in
                 guard let self else { return }
-                if let message = await viewModel.deleteNetwork(id: config.id) {
+                if let message = await viewModel.perform(.delete, on: config.id) {
                     setActionError((id: config.id, message: message))
                     return
                 }
@@ -475,35 +466,8 @@ final class NetworksViewController: UITableViewController {
     /// substituted, since a blocked network can be connected and the connection is the more
     /// urgent of the two facts.
     private static func subtitle(for config: NetworkConfig, row: NetworkRow) -> String {
-        var parts = ["\(config.host):\(config.port)", label(for: row.connection)]
+        var parts = ["\(config.host):\(config.port)", row.connection.label]
         if row.isBlocked { parts.append("not allowed here") }
         return parts.joined(separator: " · ")
-    }
-
-    private static func label(for connection: ConnectionState) -> String {
-        switch connection {
-        case .connected: "Connected"
-        case .connecting: "Connecting…"
-        case .reconnecting: "Reconnecting…"
-        case .disconnected: "Offline"
-        }
-    }
-
-    private static func label(for action: NetworkAction) -> String {
-        switch action {
-        case .connect: "Connect"
-        case .disconnect: "Disconnect"
-        case .reconnect: "Reconnect"
-        case .delete: "Delete"
-        }
-    }
-
-    private static func symbol(for action: NetworkAction) -> String {
-        switch action {
-        case .connect: "bolt"
-        case .disconnect: "bolt.slash"
-        case .reconnect: "arrow.clockwise"
-        case .delete: "trash"
-        }
     }
 }

@@ -9,8 +9,8 @@
 /// connection state, not about table cells, and it's the part with cases a person can get
 /// wrong. It's also the part you can't see in a screenshot — an action that shouldn't be
 /// there is only found by tapping it and reading the server's refusal, and one that should be
-/// there and isn't is found by needing it. The strings stay in the view controller; copy is
-/// the screen's business.
+/// there and isn't is found by needing it. The strings stay in the app target
+/// (`NetworkCopy.swift`); copy is the screens' business.
 public struct NetworkRow: Equatable, Sendable {
     public let connection: ConnectionState
     /// True when the instance admin's allowlist excludes this network's host (#298).
@@ -49,7 +49,14 @@ public struct NetworkRow: Equatable, Sendable {
     /// the user could fix by tapping harder; the row's own subtitle is where that story
     /// belongs. Delete is always available — a network you can't connect to is exactly one
     /// you might want gone — and always last, away from the action someone came to tap.
-    public var actions: [NetworkAction] {
+    public var actions: [NetworkAction] { connectionActions + [.delete] }
+
+    /// The verbs that change the connection — `actions` before Delete is added. What a surface
+    /// that manages the *connection* but not the row offers: the server buffer's info sheet
+    /// (#152). Deleting a network is the networks screen's business, where the confirmation
+    /// and the roster re-read live. Can be empty (blocked and offline), and the surface says
+    /// why rather than padding it.
+    public var connectionActions: [NetworkAction] {
         var actions: [NetworkAction]
         switch connection {
         // Reconnect as well as disconnect: the connection is up, but a config change (or a
@@ -64,14 +71,16 @@ public struct NetworkRow: Equatable, Sendable {
         // either would be offering an action whose only outcome is an error message. It does
         // NOT gate disconnect, so that one survives — see `isBlocked`.
         if isBlocked { actions.removeAll { $0 == .connect || $0 == .reconnect } }
-        actions.append(.delete)
         return actions
     }
 }
 
 /// One thing a networks-screen row can do. Editing isn't here: it's the row's own tap, not an
 /// item in a menu of state changes.
-public enum NetworkAction: Equatable, Sendable, CaseIterable {
+///
+/// The raw value is the verb as a command spells it (`/connect`, `/disconnect`,
+/// `/reconnect`) and what a failure line names — the action, not whichever alias was typed.
+public enum NetworkAction: String, Equatable, Sendable, CaseIterable {
     case connect
     case disconnect
     case reconnect
