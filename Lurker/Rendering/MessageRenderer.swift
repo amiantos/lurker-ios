@@ -824,16 +824,18 @@ enum MessageRenderer {
         return "You're back — away \(gone)"
     }
 
-    /// The label on the `/clear` marker (#121), carrying its own undo affordance.
+    /// The label on the `/clear` marker (#121), naming the way back.
     ///
-    /// The two halves are one string because the whole row is the tap target: a label that
-    /// only said "cleared 3:42 PM" would be a row the reader has no reason to touch, and the
-    /// hidden conversation would stay hidden behind a `/clear off` nobody knew to type.
+    /// The row is not a control — the web's "Show earlier messages" is a button, and this is a
+    /// marker like the date and presence ones — so the label carries the command instead. A
+    /// divider that only said "cleared 3:42 PM" would leave the hidden conversation behind a
+    /// `/clear off` nobody knew to type, which for a buffer cleared in full is a screen with
+    /// no visible way out at all.
     ///
     /// Date *and* time, not just time: a clear is undone days later as often as minutes later,
     /// and "cleared 3:42 PM" on a marker from last Tuesday reads as today.
     static func clearedLabel(at date: Date) -> String {
-        "cleared \(clearedFormatter.string(from: date)) · Show earlier messages"
+        "cleared \(clearedFormatter.string(from: date)) · /clear off to undo"
     }
 
     /// Short date + short time, in the reader's locale and calendar. Built once — `DateFormatter`

@@ -403,16 +403,6 @@ public final class ChatViewModel {
         client.setBookmark(messageId: messageId, saved: saved)
     }
 
-    /// Move or drop a buffer's `/clear` marker (#121) — what the divider's "Show earlier
-    /// messages" row taps, and the same wire verb `/clear` sends through `run`.
-    ///
-    /// Public because the affordance is a ROW, not a command: the composer's path runs through
-    /// `send`, which parses a line and records input history, and neither of those should
-    /// happen because someone tapped a divider. Both ends reach the same `client` call, so the
-    /// two can't drift.
-    public func clearBuffer(_ key: BufferKey, undo: Bool) {
-        client.clearBuffer(networkId: key.networkId, target: key.target, undo: undo)
-    }
 
     /// Upload a prepared file and return the stored object's URL for the composer to paste
     /// (#14). The caller has already picked the file and — for video — compressed it to fit

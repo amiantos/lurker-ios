@@ -379,14 +379,13 @@ enum MessageListMarker {
         case .startOfHistory:
             cell("— start of history —", color: Palette.fgFaint, bold: false, in: tableView)
         case .clearedDivider(let at):
-            // `.tintColor`, not a `Palette` grey: this is the one marker here that is also a
-            // CONTROL, and a row the reader is meant to tap has to look unlike the rows they
-            // read past. The tint is what this app already uses for a tappable label
-            // (`UserProfileViewController`), so it reads as an action without inventing a
-            // token. Still not `Palette.bad` — the unread divider keeps that, and a second
-            // loud row would cost the first its meaning (see this method's note).
+            // The same muted grey as the date and presence markers, which is also what the web
+            // draws (`.cleared-divider` is `--fg-muted`, and so is its undo button — the accent
+            // is a HOVER state, which a touch screen has no equivalent of). It is a marker
+            // among markers here, not a control: the way back is `/clear off`, which the label
+            // names.
             cell(
-                MessageRenderer.clearedLabel(at: at), color: .tintColor, bold: false,
+                MessageRenderer.clearedLabel(at: at), color: Palette.fgMuted, bold: false,
                 in: tableView)
         case .awayDivider(_, let message):
             cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)

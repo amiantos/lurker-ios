@@ -2877,32 +2877,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         listRenderer.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
     }
 
-    /// The cleared divider is the only row in this list you can tap (#121).
-    ///
-    /// A message row is acted on by LONG press — the actions sheet (#60) — and left plain on
-    /// tap deliberately, so that reading a buffer never selects anything and a stray touch
-    /// while scrolling does nothing. This one row is a control rather than a line of
-    /// conversation, so it takes a tap; everything else refuses selection below, which is what
-    /// keeps that promise rather than relying on this method to be the only handler.
-    func tableView(_ tableView: UITableView, willSelectRowAt indexPath: IndexPath) -> IndexPath? {
-        guard rows.indices.contains(indexPath.row),
-              case .clearedDivider = rows[indexPath.row]
-        else { return nil }
-        return indexPath
-    }
-
-    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        // Nothing stays selected: the row is a button, and a highlighted marker left behind
-        // would read as state.
-        tableView.deselectRow(at: indexPath, animated: false)
-        guard rows.indices.contains(indexPath.row),
-              case .clearedDivider = rows[indexPath.row]
-        else { return }
-        // The same wire verb `/clear off` sends — but not through the composer's path, which
-        // parses a line and records input history. Neither should happen because someone
-        // tapped a divider.
-        viewModel.clearBuffer(buffer.key, undo: true)
-    }
 
     /// What the renderer needs from this screen to draw a row.
     private var listContext: MessageListContext {
