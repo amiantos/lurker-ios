@@ -844,6 +844,11 @@ enum MessageRenderer {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
+        // `.autoupdatingCurrent`, like `dayFormatter` and for the same reason: a static
+        // formatter otherwise snapshots the region at first use and keeps formatting in it for
+        // the life of the process, so changing region US → GB would flip the day divider to
+        // D/M and leave this marker on M/D.
+        formatter.locale = .autoupdatingCurrent
         return formatter
     }()
 

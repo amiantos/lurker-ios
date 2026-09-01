@@ -212,8 +212,16 @@ public enum MessageRows {
         // user when bootstrap lands a moment after launch.
         // The `/clear` marker, unless the buffer is detached — see the parameter's note. Both
         // halves are read through these, so a detached view can't half-apply the marker.
-        let clearBoundary = hasMoreNewer ? 0 : clearedBeforeId
+        //
+        // ⚠⚠ And neither can a half-stated one. A boundary with no instant would hide the rows
+        // and draw no divider, which is the single outcome this feature must not have: a blank
+        // buffer whose only way back is a `/clear off` the reader was never told about. The
+        // server's `cleared_at` is nullable and its rename/case-fold merges COALESCE the two
+        // columns independently, so this is reachable from the wire, not just from a bug here.
+        // Showing messages the user cleared is the safe direction to fail in; stranding them
+        // behind an invisible filter is not.
         let clearInstant = hasMoreNewer ? nil : clearedAt
+        let clearBoundary = clearInstant == nil ? 0 : clearedBeforeId
 
         let eventMode = EventFilter.mode(settings)
         // At `.none` there are no event rows left to fold, so the consolidation pass is

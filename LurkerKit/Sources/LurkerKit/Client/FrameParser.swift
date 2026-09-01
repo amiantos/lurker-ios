@@ -51,8 +51,8 @@ enum FrameParser {
             return target.isEmpty ? .ignored : .bufferCleared(
                 networkId: obj.intOrNull("networkId"),
                 target: target,
-                clearedBeforeId: clearedBoundary(obj),
-                clearedAt: ISOTime.parse(obj.stringOrNull("clearedAt"))
+                clearedBeforeId: clearedMarker(obj).beforeId,
+                clearedAt: clearedMarker(obj).at
             )
         case "error":
             return .serverError(obj.string("text"))
@@ -656,8 +656,8 @@ enum FrameParser {
             // `Buffer.readStateKnown`.
             readStateKnown: obj.has("lastReadId"),
             hasMoreOlder: hasMoreOlder,
-            clearedBeforeId: clearedBoundary(obj),
-            clearedAt: ISOTime.parse(obj.stringOrNull("clearedAt")),
+            clearedBeforeId: clearedMarker(obj).beforeId,
+            clearedAt: clearedMarker(obj).at,
             // The connect burst doubles as the id directory (§5.2): every
             // backlog frame carries the buffer's stable id.
             bufferId: obj.intOrNull("bufferId")
@@ -668,14 +668,22 @@ enum FrameParser {
         )
     }
 
-    /// The `/clear` boundary off a frame that carries one (#121).
+    /// The `/clear` marker off a frame that carries one (#121) — both halves, or neither.
     ///
-    /// ⚠ Negatives are floored to 0 — "never cleared" — rather than passed through. The server
-    /// treats `<= 0` as no marker (`bufferReads.ts`: "boundary id <= 0 clears the marker"), and
-    /// a negative reaching the row filter as-is would compare against every id and hide
-    /// nothing anyway; making it 0 means the divider and the filter agree about that.
-    private static func clearedBoundary(_ obj: [String: Any]) -> Int {
-        max(0, obj.int("clearedBeforeId"))
+    /// ⚠ Negatives and zero are "never cleared". The server treats `<= 0` as no marker
+    /// (`bufferReads.ts`: "boundary id <= 0 clears the marker"), and a negative reaching the
+    /// row filter would compare against every id and hide nothing anyway.
+    ///
+    /// ⚠⚠ A boundary with no readable instant is discarded WHOLE. Those two states are one
+    /// fact, and half of it hides every row while drawing no divider to undo with — the server
+    /// allows a null `cleared_at` and its rename/case-fold merges carry the columns
+    /// independently, so this is reachable from the wire rather than only from a bug here.
+    private static func clearedMarker(_ obj: [String: Any]) -> (beforeId: Int, at: Date?) {
+        let beforeId = obj.int("clearedBeforeId")
+        guard beforeId > 0, let at = ISOTime.parse(obj.stringOrNull("clearedAt")) else {
+            return (0, nil)
+        }
+        return (beforeId, at)
     }
 
     private static func parseLive(_ obj: [String: Any]) -> ServerFrame {

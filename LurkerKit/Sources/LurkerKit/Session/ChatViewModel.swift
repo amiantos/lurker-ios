@@ -700,13 +700,20 @@ public final class ChatViewModel {
     /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an
     /// exclusive cursor; no-ops if nothing older exists, nothing is held yet, or a page is
     /// already in flight.
-    public func loadOlder(_ key: BufferKey) {
+    /// Returns whether a page was actually requested, so a caller that shows a spinner while
+    /// one lands doesn't show one for a request that was refused.
+    @discardableResult
+    public func loadOlder(_ key: BufferKey) -> Bool {
         guard !loadingOlder.contains(key.id),
               let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
               let oldest = store.state.messages[key.id]?.first(where: { $0.id != 0 })?.id
-        else { return }
+        else { return false }
+        // ⚠⚠ Never page past a `/clear` boundary (#121) — see `olderPageCouldBeVisible`, which
+        // holds the rule (and the reason) where it can be tested.
+        guard buffer.olderPageCouldBeVisible(oldestHeldId: oldest) else { return false }
         loadingOlder.insert(key.id)
         client.loadOlder(networkId: key.networkId, target: key.target, before: oldest, countBy: historyCountBy)
+        return true
     }
 
     /// Page newer history for a detached buffer (scroll-down, #45). Uses the newest held

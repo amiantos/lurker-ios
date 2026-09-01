@@ -115,14 +115,35 @@ public struct Buffer: Equatable, Sendable {
 
     public var key: BufferKey { BufferKey(networkId: networkId, target: target) }
 
+    /// Whether a page of older history could contain a row this buffer would actually draw.
+    ///
+    /// False when a `/clear` is in force and `oldestHeldId` is already at or below the
+    /// boundary: everything older than the oldest held message is older still, so every row a
+    /// page could bring is hidden by definition and the fetch cannot add a visible line.
+    ///
+    /// ⚠⚠ Without this the screen becomes a history vacuum rather than merely over-fetching. A
+    /// cleared buffer builds to a single divider, which is unscrollable, which asks for another
+    /// page, which is also entirely hidden, which is still unscrollable — walking the whole
+    /// buffer into memory an invisible page at a time behind a stuck spinner. The web guards
+    /// the same thing at the same point (`MessageList.vue:1564`).
+    ///
+    /// Detached is exempt because the FILTER is exempt: a jump slice shows its context
+    /// regardless of the marker, so those pages are visible and worth fetching.
+    func olderPageCouldBeVisible(oldestHeldId: Int) -> Bool {
+        guard !hasMoreNewer, clearedBeforeId > 0 else { return true }
+        return oldestHeldId > clearedBeforeId
+    }
+
     /// Move the `/clear` marker (#121) — a `buffer-cleared` frame, from this device or another.
     ///
-    /// The two fields move together or not at all: a boundary with no instant would draw a
-    /// divider with no date, and an instant with no boundary would hide nothing while claiming
-    /// to. `beforeId <= 0` is the UNDO and clears both, which is exactly what the server sends
-    /// for `/clear off`.
+    /// The two fields move together or not at all. `beforeId <= 0` is the UNDO and clears
+    /// both, which is exactly what the server sends for `/clear off`.
+    ///
+    /// ⚠⚠ So is a boundary with no instant — the state that would hide every row and draw no
+    /// divider, leaving the reader a blank buffer whose only way out is a `/clear off` nobody
+    /// told them about. Showing messages the user cleared is the safe direction to fail in.
     mutating func applyCleared(beforeId: Int, at: Date?) {
-        guard beforeId > 0 else {
+        guard beforeId > 0, let at else {
             clearedBeforeId = 0
             clearedAt = nil
             return

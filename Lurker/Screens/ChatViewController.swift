@@ -1326,8 +1326,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             aroundRequestedAtGeneration = nil
         }
         guard aroundRequestedAtGeneration == nil else { return }
-        // Already held? No fetch — land against what's loaded.
-        if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
+        // Already held AND renderable? No fetch — land against what's loaded.
+        //
+        // ⚠⚠ "Held" is not enough once a `/clear` is in force (#121). A message below the
+        // boundary is in `messages` and filtered out of `rows`, so landing against what's
+        // loaded would look for a row that will never exist: `beginJumpLanding` finds nothing,
+        // no request is in flight to explain it, and `pendingJumpId` is never cleared — which
+        // also disables hydrate, the initial landing, and the top-up, for the life of the
+        // screen. Tapping a bookmark or a search hit from before a clear wedged the buffer.
+        //
+        // Fetching instead of exempting the row is deliberate, and is what the web does
+        // (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`): the slice DETACHES the
+        // buffer, and a detached buffer ignores the marker entirely, so the reader gets the
+        // anchor with its context around it rather than one lone line among hidden neighbours.
+        let held = (state.messages[buffer.key.id] ?? []).contains { $0.id == anchor }
+        let hiddenByClear = (state.buffers[buffer.key.id]?.clearedBeforeId ?? 0) >= anchor
+            && (state.buffers[buffer.key.id]?.clearedBeforeId ?? 0) > 0
+        if held && !hiddenByClear { return }
         aroundRequestedAtGeneration = state.burstGeneration
         aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
         aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
@@ -1378,8 +1393,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return false
         }
         guard !(state.messages[buffer.key.id] ?? []).isEmpty else { return false }
-        viewModel.loadOlder(buffer.key)
-        return true
+        // Report what `loadOlder` actually did, not what we asked it to. It refuses to page
+        // past a `/clear` boundary (#121), and claiming a page was on its way would pin
+        // "Loading messages…" over a buffer where nothing is coming.
+        return viewModel.loadOlder(buffer.key)
     }
 
     /// Whether the table has more content than viewport to show it in — i.e. whether a scroll,

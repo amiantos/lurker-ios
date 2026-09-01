@@ -202,6 +202,65 @@ struct ClearMarkerTests {
         #expect(built.compactMap(\.message?.text) == ["unknown command"])
     }
 
+    @Test("⚠⚠ a boundary with no instant is discarded whole, at the parser")
+    func aHalfStatedMarkerIsDiscarded() {
+        // `cleared_at` is nullable server-side and the rename / case-fold merges carry the two
+        // columns independently, so this reaches us from the wire rather than only from a bug
+        // here. Taken at face value it hides every row and draws no divider — a blank buffer
+        // whose only way out is a `/clear off` the reader was never told about.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","events":[],"hasMoreOlder":false,"clearedBeforeId":42,"clearedAt":null}"##
+        )
+        guard case let .backlog(buffer, _, _, _, _) = frame else {
+            Issue.record("expected a backlog, got \(frame)")
+            return
+        }
+        #expect(buffer.clearedBeforeId == 0, "showing cleared messages is the safe failure")
+        #expect(buffer.clearedAt == nil)
+    }
+
+    @Test("⚠⚠ and the row builder refuses to half-apply one either")
+    func theRowBuilderRefusesAHalfMarker() {
+        let built = rows([msg(1), msg(2)], clearedBeforeId: 2, clearedAt: nil)
+        #expect(built.compactMap(\.message?.id) == [1, 2], "no instant, no filtering")
+    }
+
+    // MARK: - Paging past the boundary
+
+    private func cleared(_ beforeId: Int, detached: Bool = false) -> Buffer {
+        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
+        buffer.hasMoreNewer = detached
+        buffer.applyCleared(beforeId: beforeId, at: clearedAt)
+        return buffer
+    }
+
+    @Test("⚠⚠ paging older stops once the cursor reaches the clear boundary")
+    func pagingStopsAtTheBoundary() {
+        // The ~5s "Loading messages…" QA saw after /clear. A cleared buffer builds to one
+        // divider, which is unscrollable, which asks for another page, which is also entirely
+        // hidden, which is still unscrollable — walking the whole buffer into memory behind a
+        // stuck spinner.
+        #expect(!cleared(50).olderPageCouldBeVisible(oldestHeldId: 10))
+        #expect(!cleared(50).olderPageCouldBeVisible(oldestHeldId: 50), "the boundary is hidden too")
+    }
+
+    @Test("but it still pages while there is visible history between the two")
+    func pagingContinuesAboveTheBoundary() {
+        // A clear anchors at the tail, so new messages accumulate above it; once the held slice
+        // starts above the boundary there is a visible gap worth fetching.
+        #expect(cleared(50).olderPageCouldBeVisible(oldestHeldId: 51))
+    }
+
+    @Test("an uncleared buffer pages normally")
+    func anUnclearedBufferPages() {
+        #expect(cleared(0).olderPageCouldBeVisible(oldestHeldId: 1))
+    }
+
+    @Test("and a detached buffer pages, because it ignores the marker")
+    func aDetachedBufferPages() {
+        #expect(cleared(50, detached: true).olderPageCouldBeVisible(oldestHeldId: 10))
+    }
+
     // MARK: - The command
 
     private func parse(_ line: String) -> [CommandEffect] {
