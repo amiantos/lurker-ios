@@ -217,6 +217,19 @@ public struct ChatState: Sendable {
     /// by live `settings` frames, so a change made on the web takes effect here without a
     /// relaunch. Read through `settings.effective(_:)` / its typed helpers — never `values`.
     public var settings = Settings()
+    /// The largest **file** this account may send, as the server last advertised it
+    /// (lurker#627, iOS #149). Seeded by the `snapshot` frame and refreshed on every
+    /// reconnect; re-sent on a `settings` frame when the user changes their own cap.
+    ///
+    /// ⚠⚠ nil is **"the server hasn't said"**, never "no cap" and never zero. A self-hosted
+    /// instance can legitimately be older than the app, and reading its silence as a number
+    /// would be exactly the hardcoded guess this replaced. Resolve it through
+    /// `Uploads.compressionTarget(advertised:)`, which is where the pre-snapshot fallback
+    /// lives, rather than unwrapping it at a call site.
+    ///
+    /// ⚠ It is a FILE cap: the multipart envelope is already subtracted server-side, so size
+    /// the file to exactly this and don't budget for the boundaries again.
+    public var maxUploadBytes: Int?
     public var error: String?
     /// Text the server refused to send, waiting for the buffer it was TYPED IN. Keyed by
     /// `BufferKey.id`.
@@ -685,7 +698,7 @@ final class LurkerStore {
         switch frame {
         case .networks(let networks):
             return applyNetworks(state, networks)
-        case .snapshot(let networks, let globalIgnores):
+        case .snapshot(let networks, let globalIgnores, let maxUploadBytes):
             // Frame 1 of every burst (CLIENT_PROTOCOL.md §4.3), so this is where the
             // roster reconciliation window opens. Start collecting the keys the server
             // names; `backlog-complete` closes the window and prunes the rest.
@@ -697,6 +710,10 @@ final class LurkerStore {
             next.burstSeen = []
             next.burstActive = true
             next.burstGeneration &+= 1
+            // Assigned outright, nil included: the snapshot is the cap's refresh point, so a
+            // reconnect to an instance that no longer advertises one has to put us back on
+            // the fallback rather than leave a number from the last server in force.
+            next.maxUploadBytes = maxUploadBytes
             return applySnapshot(next, networks, globalIgnores: globalIgnores)
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
@@ -927,11 +944,16 @@ final class LurkerStore {
             var next = state
             next.settings.load(registry: registry, values: values)
             return next
-        case .settingsChanged(let changes):
+        case .settingsChanged(let changes, let maxUploadBytes):
             var next = state
             // Patch, never replace — the frame carries only what moved, so assigning it
             // wholesale would drop every other stored setting until the next bootstrap.
             next.settings.apply(changes: changes)
+            // ⚠⚠ Conditional, for the same reason: the cap rides this frame ONLY when it was
+            // the thing that changed. Assigning it unconditionally would clear the advertised
+            // number every time the user toggled anything else, quietly putting the compressor
+            // back on the fallback until the next reconnect.
+            if let maxUploadBytes { next.maxUploadBytes = maxUploadBytes }
             return next
         case .settingsValues(let values):
             var next = state

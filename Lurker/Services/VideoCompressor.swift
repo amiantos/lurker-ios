@@ -27,12 +27,17 @@ enum VideoCompressor {
         let isTemporary: Bool
     }
 
-    /// The preset ladder, gentlest shrink first. HEVC 1080p is ~50–60 MB/min and clears the
-    /// cap for all but the longest clips; below it we drop to H.264 at ever-lower resolutions
-    /// (there's no HEVC preset under 1080p) for long 4K. `LowQuality` is the floor — a very
-    /// aggressive, device-chosen small size — so even a long clip has a fighting chance of
-    /// fitting a 90 MB body. Every rung emits MP4 (`video/mp4`), which every uploader accepts
-    /// and the server scrubs.
+    /// The preset ladder, gentlest shrink first. HEVC 1080p is ~50–60 MB/min and clears a
+    /// typical cap for all but the longest clips; below it we drop to H.264 at ever-lower
+    /// resolutions (there's no HEVC preset under 1080p) for long 4K. `LowQuality` is the floor
+    /// — a very aggressive, device-chosen small size. Every rung emits MP4 (`video/mp4`),
+    /// which every uploader accepts and the server scrubs.
+    ///
+    /// ⚠ The floor is a floor, not a guarantee. The target is whatever the instance advertises
+    /// (#149) and can be far below the 90 MiB this ladder was tuned against — an instance may
+    /// declare 25 MB, or a user may cap themselves lower still — so a clip that no rung gets
+    /// under is a normal outcome, not a broken ladder. That is what `.impossible` and
+    /// `UploadError.cannotCompressEnough` are for.
     private static let presetLadder = [
         AVAssetExportPresetHEVC1920x1080,
         AVAssetExportPreset1280x720,
@@ -47,9 +52,14 @@ enum VideoCompressor {
     ///
     /// Throws `UploadError.cannotCompressEnough` when even the smallest preset stays over the
     /// cap, or `.compressionFailed` when the export itself errors.
+    ///
+    /// ⚠⚠ `maxBytes` is required, and is the server's advertised cap — pass
+    /// `ChatViewModel.uploadCapBytes`. It used to default to a hardcoded 90 MiB, which meant
+    /// every instance that isn't ours got the wrong answer in one direction or the other
+    /// (#149); a default would let a call site silently go back to that.
     static func prepare(
         source: URL,
-        maxBytes: Int = Uploads.maxBytes,
+        maxBytes: Int,
         onProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> Prepared {
         if fileSize(source) <= maxBytes {
