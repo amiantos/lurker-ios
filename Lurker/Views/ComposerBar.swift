@@ -291,12 +291,16 @@ final class ComposerBar: UIView {
     /// Replace the active @token with the picked nick plus its addressing suffix — the
     /// web picker's exact insertion, so both clients send the same line. The `@` itself
     /// goes: IRC addresses by bare nick, and the sent line highlights by containing it.
-    func completeMention(with nick: String) {
+    ///
+    /// `punctuation` is the resolved `input.completion.nick_suffix`; the owner reads it,
+    /// because the setting lives on the store and this view has no window onto it.
+    func completeMention(with nick: String, punctuation: String) {
         let selection = textView.selectedRange
         guard selection.length == 0,
               let token = NickCompletion.activeMention(in: textView.text, caret: selection.location)
         else { return }
-        let replacement = nick + NickCompletion.addressingSuffix(beforeTokenAt: token.start, in: textView.text)
+        let replacement = nick + NickCompletion.addressingSuffix(
+            beforeTokenAt: token.start, in: textView.text, punctuation: punctuation)
         // The whole word, not just up to the caret — completing `@al|ice` must swallow
         // the tail, not weld the pick onto it.
         replaceToken(NSRange(location: token.start, length: token.end - token.start), with: replacement)
@@ -357,16 +361,22 @@ final class ComposerBar: UIView {
 
     /// Address `nick` at the head of the draft — what Reply does (#60).
     ///
-    /// Prepends `nick: ` unless the draft already opens that way, keeps whatever was being typed,
-    /// and leaves the caret at the end so you carry on writing rather than in front of your own
-    /// words. Same insertion as the web's `addressInComposer`, so a reply reads identically
-    /// whichever client sent it. Raises the keyboard, because the tap that got here was a request
-    /// to write something.
-    func address(_ nick: String) {
+    /// Prepends the addressing form unless the draft already opens that way, keeps whatever was
+    /// being typed, and leaves the caret at the end so you carry on writing rather than in front
+    /// of your own words. Same insertion as the web's `addressInComposer`, so a reply reads
+    /// identically whichever client sent it. Raises the keyboard, because the tap that got here
+    /// was a request to write something.
+    ///
+    /// `punctuation` is the resolved `input.completion.nick_suffix` (#133). The
+    /// already-addressed test is `NickCompletion.isAddressed`, not a `hasPrefix` on the form we
+    /// are about to write: a draft can carry an older setting's mark, or the web's, and drafts
+    /// sync — `hasPrefix` would stack a second address onto `bob: sure`.
+    func address(_ nick: String, punctuation: String) {
         guard !nick.isEmpty else { return }
-        let prefix = "\(nick): "
         let current = textView.text ?? ""
-        let next = current.hasPrefix(prefix) ? current : prefix + current
+        let next = NickCompletion.isAddressed(current, to: nick, punctuation: punctuation)
+            ? current
+            : "\(nick)\(punctuation) " + current
         // Caret at the end, not after the prefix: `replaceToken` puts it where it spliced, which
         // for a prepend is in front of the existing draft.
         textView.text = next

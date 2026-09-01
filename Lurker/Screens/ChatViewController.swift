@@ -387,7 +387,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             switch activeCompletion {
             case .command: composer.completeCommand(name: suggestion.value)
             case .channelArg, .nickArg: composer.completeArgument(value: suggestion.value)
-            case .mention: composer.completeMention(with: suggestion.value)
+            case .mention:
+                composer.completeMention(with: suggestion.value, punctuation: addressPunctuation)
             case nil: break
             }
         }
@@ -2694,6 +2695,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         settings.bool("chat.keep_position_on_send", default: false) && !isNearBottom
     }
 
+    /// The punctuation a nick picks up when it is completed — or Replied to — at the head of a
+    /// line, per `input.completion.nick_suffix` (#133). Read at the moment of the insertion
+    /// rather than cached: this screen outlives the Settings sheet presented over it, so a
+    /// cached copy would be the value the buffer was opened with.
+    private var addressPunctuation: String {
+        NickCompletion.addressPunctuation(settings)
+    }
+
     @objc private func keyboardWillHide() {
         keyboardOverlap = 0
         composerBottom.constant = 0
@@ -2819,7 +2828,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         MessageActions.run(
             key, on: message, scope: scope,
             context: MessageActionContext(
-                reply: { [weak self] nick in self?.composer.address(nick) },
+                reply: { [weak self] nick in
+                    guard let self else { return }
+                    composer.address(nick, punctuation: addressPunctuation)
+                },
                 copy: { UIPasteboard.general.string = $0 },
                 setBookmark: { [weak self] id, saved in
                     self?.viewModel.setBookmark(messageId: id, saved: saved)
