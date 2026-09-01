@@ -133,11 +133,12 @@ struct ClearMarkerTests {
 
     private func rows(
         _ messages: [Message], clearedBeforeId: Int, clearedAt: Date?, hasMoreOlder: Bool = true,
-        hasMoreNewer: Bool = false
+        hasMoreNewer: Bool = false, showsClearedHistory: Bool = false
     ) -> [MessageRow] {
         MessageRows.build(
             messages: messages, dividerAfterId: nil, hasMoreOlder: hasMoreOlder,
-            hasMoreNewer: hasMoreNewer, clearedBeforeId: clearedBeforeId, clearedAt: clearedAt)
+            hasMoreNewer: hasMoreNewer, clearedBeforeId: clearedBeforeId, clearedAt: clearedAt,
+            showsClearedHistory: showsClearedHistory)
     }
 
     @Test("everything at or below the boundary is hidden, and the rest stays")
@@ -261,25 +262,38 @@ struct ClearMarkerTests {
         #expect(cleared(50, detached: true).olderPageCouldBeVisible(oldestHeldId: 10))
     }
 
+    @Test("so does a revealed one — the reader can scroll up through what was hidden")
+    func aRevealedBufferPages() {
+        var buffer = cleared(50)
+        buffer.showsClearedHistory = true
+        #expect(buffer.olderPageCouldBeVisible(oldestHeldId: 10))
+    }
+
     // MARK: - Jumping to a hidden message
 
-    @Test("⚠⚠ detaching is what makes a hidden anchor renderable — a fetch is not")
-    func detachingRevealsAHiddenAnchor() {
+    @Test("revealing is what makes a hidden anchor renderable")
+    func revealingShowsAHiddenAnchor() {
         // A bookmark or search hit from before a clear. The row is loaded and filtered out, so
         // there is nothing to fetch — only the filter to suppress.
         let hidden = rows([msg(10), msg(20)], clearedBeforeId: 50, clearedAt: clearedAt)
-        #expect(hidden.compactMap(\.message?.id) == [], "hidden while attached")
+        #expect(hidden.compactMap(\.message?.id) == [], "hidden while the filter is in force")
 
-        let detached = rows(
-            [msg(10), msg(20)], clearedBeforeId: 50, clearedAt: clearedAt, hasMoreNewer: true)
-        #expect(detached.compactMap(\.message?.id) == [10, 20], "and visible once detached")
+        let revealed = rows(
+            [msg(10), msg(20)], clearedBeforeId: 50, clearedAt: clearedAt,
+            showsClearedHistory: true)
+        #expect(revealed.compactMap(\.message?.id) == [10, 20], "and visible once revealed")
+        #expect(
+            !revealed.contains { if case .clearedDivider = $0 { true } else { false } },
+            "no marker either — a revealed buffer is not a half-cleared one")
     }
 
-    @Test("the local detach flips the flag without touching the slice")
-    func theLocalDetachOnlyFlipsTheFlag() {
-        // ⚠ Deliberately NOT an `around` fetch: `hasMoreNewer` would come from the server, and
-        // a slice reaching the live tail — a small buffer, or one cleared moments ago — comes
-        // back `hasMoreNewer: false`, leaving the buffer attached and the anchor hidden.
+    @Test("⚠⚠ revealing does NOT claim there is newer history")
+    func revealingDoesNotTouchPagingState() {
+        // The whole reason this is its own flag. `hasMoreNewer` drives paging: on a buffer that
+        // already holds the tail — which is every buffer you have just cleared — claiming it
+        // makes the near-bottom `loadNewer` fire immediately, and the empty reply carries
+        // `hasMoreNewer: false`, which re-hides everything a frame later. That was the
+        // "messages flash and then disappear" bug.
         let store = LurkerStore()
         let key = BufferKey(networkId: 1, target: "#lurker")
         var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
@@ -288,26 +302,46 @@ struct ClearMarkerTests {
             .backlog(
                 buffer: buffer, messages: [msg(10), msg(20)], hydrated: true, append: false,
                 speakers: nil))
-        #expect(store.state.buffers[key.id]?.hasMoreNewer == false)
 
-        store.detachForJump(key)
-        #expect(store.state.buffers[key.id]?.hasMoreNewer == true)
+        store.revealClearedHistory(key)
+        #expect(store.state.buffers[key.id]?.showsClearedHistory == true)
+        #expect(
+            store.state.buffers[key.id]?.hasMoreNewer == false,
+            "paging state is untouched, so nothing fetches and nothing re-hides")
         #expect(
             store.state.messages[key.id]?.map(\.id) == [10, 20],
-            "the slice is untouched — nothing was fetched or dropped")
+            "and the slice is untouched — nothing was fetched or dropped")
     }
 
-    @Test("an already-detached buffer is left alone")
-    func detachingIsIdempotent() {
+    @Test("a return-to-live slice ends the reveal, so a reopen is cleared again")
+    func returningToLiveEndsTheReveal() {
         let store = LurkerStore()
         let key = BufferKey(networkId: 1, target: "#lurker")
         var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
-        buffer.hasMoreNewer = true
+        buffer.applyCleared(beforeId: 50, at: clearedAt)
         store.apply(
             .backlog(
                 buffer: buffer, messages: [msg(10)], hydrated: true, append: false, speakers: nil))
-        store.detachForJump(key)
-        #expect(store.state.buffers[key.id]?.hasMoreNewer == true)
+        store.revealClearedHistory(key)
+
+        store.apply(
+            .history(
+                networkId: 1, target: "#lurker", events: [msg(10)], mode: .latest,
+                hasMoreOlder: false, hasMoreNewer: false, speakers: nil))
+        #expect(store.state.buffers[key.id]?.showsClearedHistory == false)
+    }
+
+    @Test("revealing twice is a no-op")
+    func revealingIsIdempotent() {
+        let store = LurkerStore()
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        var buffer = Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true)
+        buffer.showsClearedHistory = true
+        store.apply(
+            .backlog(
+                buffer: buffer, messages: [msg(10)], hydrated: true, append: false, speakers: nil))
+        store.revealClearedHistory(key)
+        #expect(store.state.buffers[key.id]?.showsClearedHistory == true)
     }
 
     // MARK: - The command

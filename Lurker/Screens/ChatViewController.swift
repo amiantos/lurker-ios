@@ -89,6 +89,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// beside `hasMoreOlder` because they are read together by `rebuildRows`.
     private var clearedBeforeId = 0
     private var clearedAt: Date?
+    /// Whether this screen is deliberately showing what the marker hides — a jump landed on a
+    /// row below the boundary. See `Buffer.showsClearedHistory` for why it is not `hasMoreNewer`.
+    private var showsClearedHistory = false
     /// Whether this buffer is detached — showing an `around` slice below the live tail (#42) —
     /// as of the last apply. Snapshotted rather than read live for the same reason as
     /// `settings` below: the typing ticker rebuilds rows with no `state` in hand.
@@ -907,6 +910,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the WEB redraw this screen, rather than waiting for the next unrelated frame.
         clearedBeforeId = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
         clearedAt = state.buffers[buffer.key.id]?.clearedAt
+        showsClearedHistory = state.buffers[buffer.key.id]?.showsClearedHistory ?? false
         rosterSettled = state.rosterSettled
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
@@ -1343,7 +1347,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// a jump to one lands on a row that will never exist — `beginJumpLanding` finds nothing,
     /// and with no request in flight to explain it `pendingJumpId` is never cleared, which also
     /// disables hydrate, the initial landing and the top-up for the life of the screen.
-    /// Detaching suppresses the filter, which is the whole of what the row needs. Same
+    /// Showing it suppresses the filter, which is the whole of what the row needs. Same
     /// resolution as the web (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`).
     ///
     /// ⚠⚠ Its own step, run on EVERY apply while a jump is pending, because the anchor becomes
@@ -1354,19 +1358,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// ⚠⚠ And fetching is not itself a fix: `hasMoreNewer` comes from the SERVER's answer, so a
     /// slice that reaches the live tail — a small buffer, or one cleared moments ago — comes
-    /// back `hasMoreNewer: false` and leaves the buffer attached with the anchor still hidden.
+    /// back `hasMoreNewer: false` and leaves the anchor hidden. Nor is setting `hasMoreNewer`
+    /// here: on a buffer holding the tail that makes the near-bottom `loadNewer` fire at once,
+    /// and its empty reply re-hides everything a frame later.
     ///
-    /// ⚠ Gated on the anchor being HELD. Detaching before the slice lands would suppress the
-    /// filter over rows that still aren't there, and detachment is what keeps backlog frames
-    /// off a buffer's slice — so it is something to do once the thing to show has arrived.
+    /// ⚠ Gated on the anchor being HELD, so the reveal waits for the thing it is revealing.
     private func detachIfJumpTargetHidden(_ state: ChatState) {
         guard let anchor = pendingJumpId,
               let known = state.buffers[buffer.key.id],
-              !known.hasMoreNewer,
+              known.hidesClearedHistory,
               known.clearedBeforeId > 0, anchor <= known.clearedBeforeId,
               (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor })
         else { return }
-        viewModel.detachForJump(buffer.key)
+        viewModel.revealClearedHistory(buffer.key)
     }
 
     /// The placeholder currently installed, so a fresh `apply` on every live message
@@ -1549,6 +1553,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             hasMoreNewer: hasMoreNewer,
             clearedBeforeId: clearedBeforeId,
             clearedAt: clearedAt,
+            showsClearedHistory: showsClearedHistory,
             typists: typists,
             settings: settings,
             speakers: speakers,

@@ -663,29 +663,26 @@ final class LurkerStore {
         subject.value = next
     }
 
-    /// Detach a buffer without fetching anything — the client's own decision, so like
-    /// `appendLocal` it sits here rather than pretending to be a frame.
+    /// Show what a buffer's `/clear` marker hides, without fetching anything — the client's own
+    /// decision, so like `appendLocal` it sits here rather than pretending to be a frame.
     ///
     /// One caller: a jump to a message that is already loaded but hidden behind a `/clear`
-    /// marker (#121). Detaching suppresses the clear filter, which is all that row needs to
-    /// render — the web does exactly this (`useJumpToMessage.ts`, `hiddenByClear` →
-    /// `detachForJump`) and for the same reason: there is nothing to fetch.
+    /// marker (#121). Suppressing the filter is all that row needs to render — the web does the
+    /// same thing (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`) and for the same
+    /// reason: there is nothing to fetch.
     ///
-    /// ⚠⚠ Fetching an `around` slice instead does NOT reliably detach. `hasMoreNewer` comes
-    /// from the server's answer, so a slice that reaches the live tail — a small buffer, or one
-    /// cleared moments ago — comes back `hasMoreNewer: false`, the buffer stays attached, the
-    /// filter still hides the anchor, and the jump lands nowhere. That was the bug this
-    /// replaced.
+    /// ⚠⚠ Fetching an `around` slice is not a substitute: `hasMoreNewer` comes from the
+    /// server's answer, so a slice that reaches the live tail — a small buffer, or one cleared
+    /// moments ago — comes back `hasMoreNewer: false` and the anchor stays hidden.
     ///
-    /// ⚠ `hasMoreNewer` is iOS's detached flag as well as its "more below" flag, and here the
-    /// slice may well already hold the tail. That conflation is benign and self-correcting: the
-    /// live log is held out (right — the reader is in history), the re-attach pill appears
-    /// (right), and a scroll-down pages `after` the newest id, whose reply carries
-    /// `hasMoreNewer: false` and re-attaches.
-    func detachForJump(_ key: BufferKey) {
-        guard subject.value.buffers[key.id]?.hasMoreNewer == false else { return }
+    /// ⚠⚠ Nor is setting `hasMoreNewer` here, which was the attempt after that. It drives
+    /// paging: on a buffer that already holds the tail it makes the near-bottom `loadNewer`
+    /// fire immediately, and the empty reply's `hasMoreNewer: false` re-hides everything a
+    /// frame later. See `Buffer.showsClearedHistory`.
+    func revealClearedHistory(_ key: BufferKey) {
+        guard subject.value.buffers[key.id]?.showsClearedHistory == false else { return }
         var next = subject.value
-        next.buffers[key.id]?.hasMoreNewer = true
+        next.buffers[key.id]?.showsClearedHistory = true
         subject.value = next
     }
 
@@ -1594,7 +1591,12 @@ final class LurkerStore {
             // older within whatever attachment we already have, so it's left untouched.
             switch mode {
             case .around, .after: buffer.hasMoreNewer = hasMoreNewer
-            case .latest: buffer.hasMoreNewer = false
+            case .latest:
+                buffer.hasMoreNewer = false
+                // Return-to-live also ends a `/clear` reveal (#121): this is the fetch a reopen
+                // makes, so the marker takes hold again next time the buffer is opened rather
+                // than staying peeled back forever because of one jump.
+                buffer.showsClearedHistory = false
             case .before: break
             }
             next.buffers[key] = buffer

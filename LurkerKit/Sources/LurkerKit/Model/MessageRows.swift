@@ -154,6 +154,12 @@ public enum MessageRows {
     ///   - clearedBeforeId: the `/clear` boundary (#121); every message at or below it is
     ///     hidden. 0 for a buffer that has never been cleared.
     ///
+    ///   - showsClearedHistory: the reader is deliberately looking at what the marker hides —
+    ///     a jump landed on a row below the boundary (#121). Suppresses the filter exactly like
+    ///     detachment does, and is a SEPARATE flag for a reason: `hasMoreNewer` drives paging,
+    ///     and claiming it on a buffer holding the tail makes the near-bottom `loadNewer` fire
+    ///     and re-hide everything a frame later. See `Buffer.showsClearedHistory`.
+    ///
     ///     ⚠⚠ Suppressed entirely while DETACHED. A jump to a search hit or a highlight shows
     ///     context around its anchor regardless of the marker — the user asked to see that
     ///     message, and answering the tap with an empty screen because it predates a clear
@@ -183,6 +189,7 @@ public enum MessageRows {
         hasMoreNewer: Bool = false,
         clearedBeforeId: Int = 0,
         clearedAt: Date? = nil,
+        showsClearedHistory: Bool = false,
         typists: [String] = [],
         settings: Settings = Settings(),
         speakers: SpeakerMap = SpeakerMap(),
@@ -220,7 +227,8 @@ public enum MessageRows {
         // columns independently, so this is reachable from the wire, not just from a bug here.
         // Showing messages the user cleared is the safe direction to fail in; stranding them
         // behind an invisible filter is not.
-        let clearInstant = hasMoreNewer ? nil : clearedAt
+        let suppressed = hasMoreNewer || showsClearedHistory
+        let clearInstant = suppressed ? nil : clearedAt
         let clearBoundary = clearInstant == nil ? 0 : clearedBeforeId
 
         let eventMode = EventFilter.mode(settings)

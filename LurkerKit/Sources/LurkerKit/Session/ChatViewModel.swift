@@ -732,10 +732,11 @@ public final class ChatViewModel {
 
     /// Suppress a buffer's `/clear` filter so a jump can land on a row it is hiding (#121).
     ///
-    /// No fetch: the anchor is already loaded, and detaching is the whole of what it needs to
-    /// render. See `LurkerStore.detachForJump` for why an `around` fetch is not a substitute.
-    public func detachForJump(_ key: BufferKey) {
-        store.detachForJump(key)
+    /// No fetch: the anchor is already loaded, and showing it is the whole of what it needs.
+    /// See `LurkerStore.revealClearedHistory` for why neither an `around` fetch nor a detach
+    /// is a substitute.
+    public func revealClearedHistory(_ key: BufferKey) {
+        store.revealClearedHistory(key)
     }
 
     /// Fetch a history slice centered on `anchorId` — the message a jump lands on (#42). The
