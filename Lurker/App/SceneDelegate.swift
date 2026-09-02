@@ -24,7 +24,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private let push = PushRegistrar()
     /// Same shape once more: LurkerKit decides the number, the app makes the
     /// `UserNotifications` call.
-    private lazy var badge = AppBadge { count in
+    private let badge = AppBadge { count in
         // setBadgeCount(0) is how you clear it; there's no separate call.
         UNUserNotificationCenter.current().setBadgeCount(count) { error in
             guard let error else { return }
@@ -184,12 +184,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // also reports presence, which is what stops the server pushing to a phone whose
     // owner is looking at it.
     func sceneDidBecomeActive(_ scene: UIScene) {
-        viewModel.enterForeground()
-        // The user has just been looking at the icon, and a push may have painted a
-        // number over it while we were away that our count never moved off of (#134).
-        // Write what we know now; if the socket comes back stale, the reconnect's burst
-        // re-asserts again once the count is fresh.
-        badge.reassert(viewModel.state)
+        let keptSocket = viewModel.enterForeground()
+        // The user has just been looking at the icon, and a push may have painted a number
+        // over it while we were away that our count never moved off of (#134). Re-assert
+        // ours — but only when it's current: the view model kept a live socket, so nothing
+        // a reconnect's burst is about to deliver is missing from it. When it kicked a
+        // reconnect instead, the count is a pre-background leftover; writing it would
+        // paint a stale LOW number over a push's true one, and the burst's own write takes
+        // over once the count is fresh. (A socket that died unnoticed during a short
+        // background slips through here — the same blind spot the rest of the app has
+        // until the read fails — and the reconnect that follows repairs it too.)
+        if keptSocket { badge.reassert(viewModel.state) }
         // Re-run on every activation, not just the first: iOS can rotate a device token,
         // and the user may have granted (or revoked) notifications in Settings while we
         // were away. Cheap — the token is re-issued identically and the server upserts.

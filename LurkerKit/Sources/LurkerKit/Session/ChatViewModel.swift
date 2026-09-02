@@ -964,20 +964,27 @@ public final class ChatViewModel {
     /// Connected over a dead socket. Reconnect if we're disconnected OR were backgrounded
     /// long enough that the socket may be stale; a brief app-switch leaves a healthy
     /// socket alone.
-    public func enterForeground() {
+    ///
+    /// Returns whether the socket was kept: `true` means nothing in `state` is about to be
+    /// replaced by a reconnect's burst, so a caller may treat the counts as current (the
+    /// app-badge re-assert does, #134). `false` when a reconnect was kicked — the state is
+    /// a pre-background leftover until the burst lands — or there is no session.
+    @discardableResult
+    public func enterForeground() -> Bool {
         isForeground = true
-        guard session == .loggedIn else { return }
+        guard session == .loggedIn else { return false }
         // Tell the server we're looking, so it stops pushing (#490). Sent before the
         // reconnect check below because the common case is a LIVE socket — we're back and
         // nothing needs reopening — and that path returns early. A new socket re-asserts
         // presence itself, so sending here too is at worst a duplicate the server folds.
         client.setPresence(true)
         let stale = backgroundedAt.map { Date().timeIntervalSince($0) > Self.staleAfter } ?? false
-        if store.state.connection == .connected, !stale { return }
+        if store.state.connection == .connected, !stale { return true }
         reconnectAttempt = 0
         reconnectTask?.cancel()
         reconnectTask = nil
         doReconnect(force: true)
+        return false
     }
 
     /// `onFlush` fires once the presence frame is on the wire — the app holds a
