@@ -741,8 +741,17 @@ final class LurkerStore {
             // property OF a buffer, and a clear for a row this client has never seen has
             // nothing to hide. The backlog that brings the row carries the marker itself.
             var next = state
-            next.buffers[BufferKey(networkId: networkId, target: target).id]?
-                .applyCleared(beforeId: clearedBeforeId, at: clearedAt)
+            let key = BufferKey(networkId: networkId, target: target).id
+            next.buffers[key]?.applyCleared(beforeId: clearedBeforeId, at: clearedAt)
+            // ⚠ Local lines go with them. `appendLocal` synthesizes dateless `.system` rows
+            // with id 0 — an unrecognized command, a refusal — and the row filter cannot judge
+            // those against a boundary, having neither an id nor a date to compare. Left alone
+            // they outlive a clear they predate and render UNDER the divider, as though they
+            // had arrived after it. They are ephemeral by construction (id 0 never persists,
+            // and a resync drops them anyway), so a clear is exactly the moment to let them go.
+            if clearedBeforeId > 0 {
+                next.messages[key] = next.messages[key]?.filter { $0.id != 0 }
+            }
             return next
         case .channelMembers(let networkId, let target, let members):
             return applyChannelMembers(state, networkId: networkId, target: target, members: members)

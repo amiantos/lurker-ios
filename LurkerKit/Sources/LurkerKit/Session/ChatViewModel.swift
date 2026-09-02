@@ -403,7 +403,6 @@ public final class ChatViewModel {
         client.setBookmark(messageId: messageId, saved: saved)
     }
 
-
     /// Upload a prepared file and return the stored object's URL for the composer to paste
     /// (#14). The caller has already picked the file and — for video — compressed it to fit
     /// the instance cap; this layer only speaks to the server. `onProgress` reports the
@@ -700,12 +699,17 @@ public final class ChatViewModel {
     /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an
     /// exclusive cursor; no-ops if nothing older exists, nothing is held yet, or a page is
     /// already in flight.
-    /// Returns whether a page was actually requested, so a caller that shows a spinner while
-    /// one lands doesn't show one for a request that was refused.
+    /// Returns whether a page is ON ITS WAY — not whether this particular call sent one.
+    ///
+    /// ⚠⚠ A page already in flight counts. The caller asks so it can show a spinner instead of
+    /// an empty state, and "someone already asked" is a yes to that question. Reading it as
+    /// "did I just send one" flashed "No messages yet" over a buffer whose page was in the air:
+    /// any second apply before the reply landed — a filtered live message, a read-state frame —
+    /// re-asked, got false, and resolved the placeholder to empty.
     @discardableResult
     public func loadOlder(_ key: BufferKey, showingClearedHistory: Bool = false) -> Bool {
-        guard !loadingOlder.contains(key.id),
-              let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
+        if loadingOlder.contains(key.id) { return true }
+        guard let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
               let oldest = store.state.messages[key.id]?.first(where: { $0.id != 0 })?.id
         else { return false }
         // ⚠⚠ Never page past a `/clear` boundary (#121) — see `olderPageCouldBeVisible`, which

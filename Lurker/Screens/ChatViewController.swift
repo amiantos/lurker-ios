@@ -790,7 +790,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         refreshHighlighter(state)
         hydrateIfNeeded(state)
         requestAroundIfNeeded(state)
-        detachIfJumpTargetHidden(state)
         // Latch the read boundary the first time the server tells us where it is, and
         // never again — marking messages read live must not move the divider under us.
         //
@@ -920,8 +919,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         hasMoreNewer = nowDetached
         // Same arm covers the `/clear` marker (#121) — which is what makes a clear issued on
         // the WEB redraw this screen, rather than waiting for the next unrelated frame.
+        let previousCleared = clearedBeforeId
         clearedBeforeId = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
         clearedAt = state.buffers[buffer.key.id]?.clearedAt
+        // ⚠⚠ A NEW clear retires the reveal. Without this, clearing a buffer you had peeled
+        // back to land a jump does nothing you can see — the marker moves and the filter stays
+        // suppressed — so `/clear` looks broken until the buffer is closed and reopened. True
+        // of a clear issued here and of one issued on another device.
+        if clearedBeforeId > 0, clearedBeforeId != previousCleared { showsClearedHistory = false }
+        // Below the mirrors, and with no rebuild of its own: `rebuildRows()` is a few lines
+        // down and reads what this may have just changed. Run at the top of `apply` it built
+        // rows from the PREVIOUS pass's messages — on a freshly opened jump screen, from none.
+        revealIfJumpTargetHidden(state)
         rosterSettled = state.rosterSettled
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
@@ -1374,18 +1383,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// and its empty reply re-hides everything a frame later.
     ///
     /// ⚠ Gated on the anchor being HELD, so the reveal waits for the thing it is revealing.
-    private func detachIfJumpTargetHidden(_ state: ChatState) {
+    ///
+    /// ⚠⚠ NOT gated on the buffer being attached, though only a detached buffer's filter is
+    /// already suppressed. The common jump path fetches an `around` slice and detaches, so the
+    /// rows render on `hasMoreNewer` alone — and then reading forward pages to the tail, the
+    /// re-attach clears that flag, and every row at or below the boundary vanishes at once
+    /// underneath the reader, with the scroll anchors it would have restored among them.
+    /// Arming here as well means the reveal survives the re-attach, and `jumpToLatest` stays
+    /// the one thing that puts the marker back.
+    private func revealIfJumpTargetHidden(_ state: ChatState) {
         guard let anchor = pendingJumpId,
               let known = state.buffers[buffer.key.id],
-              !known.hasMoreNewer, !showsClearedHistory,
+              !showsClearedHistory,
               known.clearedBeforeId > 0, anchor <= known.clearedBeforeId,
               (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor })
         else { return }
         showsClearedHistory = true
-        // Nothing published this, so nothing will redraw on its own — and the rows currently on
-        // screen are the filtered ones the jump can't land in.
-        rebuildRows()
-        tableView.reloadData()
     }
 
     /// The placeholder currently installed, so a fresh `apply` on every live message
@@ -2946,7 +2959,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         listRenderer.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
     }
-
 
     /// What the renderer needs from this screen to draw a row.
     private var listContext: MessageListContext {

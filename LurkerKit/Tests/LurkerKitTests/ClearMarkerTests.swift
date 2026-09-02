@@ -220,10 +220,52 @@ struct ClearMarkerTests {
         #expect(buffer.clearedAt == nil)
     }
 
-    @Test("⚠⚠ and the row builder refuses to half-apply one either")
+    @Test("⚠⚠ and the row builder refuses to half-apply one either, in both directions")
     func theRowBuilderRefusesAHalfMarker() {
-        let built = rows([msg(1), msg(2)], clearedBeforeId: 2, clearedAt: nil)
-        #expect(built.compactMap(\.message?.id) == [1, 2], "no instant, no filtering")
+        // Boundary with no instant: would hide every row and draw nothing to undo with.
+        let noInstant = rows([msg(1), msg(2)], clearedBeforeId: 2, clearedAt: nil)
+        #expect(noInstant.compactMap(\.message?.id) == [1, 2], "no instant, no filtering")
+        #expect(!noInstant.contains { if case .clearedDivider = $0 { true } else { false } })
+
+        // Instant with no boundary: hides nothing, but would tell the reader their buffer is
+        // cleared and offer a `/clear off` that does nothing at all.
+        let noBoundary = rows([msg(1), msg(2)], clearedBeforeId: 0, clearedAt: clearedAt)
+        #expect(noBoundary.compactMap(\.message?.id) == [1, 2])
+        #expect(!noBoundary.contains { if case .clearedDivider = $0 { true } else { false } })
+    }
+
+    @Test("⚠ a clear drops the local lines it predates")
+    func aClearDropsLocalLines() {
+        // `appendLocal` rows carry neither an id nor a date, so the row filter has nothing to
+        // judge them by; left alone they outlive a clear and render UNDER the divider as though
+        // they had arrived after it. They are ephemeral anyway, so the marker takes them.
+        let store = LurkerStore()
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        store.apply(
+            .backlog(
+                buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
+                messages: [msg(10)], hydrated: true, append: false, speakers: nil))
+        store.appendLocal(key, text: "unknown command")
+        #expect(store.state.messages[key.id]?.count == 2)
+
+        store.apply(
+            .bufferCleared(
+                networkId: 1, target: "#lurker", clearedBeforeId: 10, clearedAt: clearedAt))
+        #expect(store.state.messages[key.id]?.map(\.id) == [10], "the local line went with it")
+    }
+
+    @Test("an undo leaves local lines alone")
+    func anUndoKeepsLocalLines() {
+        let store = LurkerStore()
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        store.apply(
+            .backlog(
+                buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, hydrated: true),
+                messages: [msg(10)], hydrated: true, append: false, speakers: nil))
+        store.appendLocal(key, text: "unknown command")
+        store.apply(
+            .bufferCleared(networkId: 1, target: "#lurker", clearedBeforeId: 0, clearedAt: nil))
+        #expect(store.state.messages[key.id]?.count == 2, "nothing was hidden, so nothing goes")
     }
 
     // MARK: - Paging past the boundary

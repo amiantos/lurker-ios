@@ -232,8 +232,14 @@ public enum MessageRows {
         // Showing messages the user cleared is the safe direction to fail in; stranding them
         // behind an invisible filter is not.
         let suppressed = hasMoreNewer || showsClearedHistory
-        let clearInstant = suppressed ? nil : clearedAt
-        let clearBoundary = clearInstant == nil ? 0 : clearedBeforeId
+        // Both halves or neither, in BOTH directions. A boundary with no instant hides every
+        // row and draws nothing to undo with; an instant with no boundary hides nothing and
+        // tells the reader their buffer is cleared, offering a `/clear off` that does nothing.
+        // `Buffer`'s two fields are public vars, so the pairing is an invariant of the writers
+        // (`applyCleared`, `clearedMarker`) rather than of the type — this is the reader's own
+        // check, and it is one line.
+        let clearBoundary = suppressed || clearedAt == nil ? 0 : max(0, clearedBeforeId)
+        let clearInstant = clearBoundary > 0 ? clearedAt : nil
 
         let eventMode = EventFilter.mode(settings)
         // At `.none` there are no event rows left to fold, so the consolidation pass is
@@ -255,7 +261,9 @@ public enum MessageRows {
             //
             // A message with no persisted id (a locally synthesized system line) has id 0 and
             // is never hidden — it has no place in the server's ordering to be above or below
-            // the boundary, and it postdates the clear by construction.
+            // the boundary, so there is nothing here to judge it by. That is why the STORE
+            // drops the ones a clear predates when the marker moves (`applyCleared`'s call
+            // site); what survives to here genuinely did arrive after it.
             clearBoundary > 0 ? messages.filter { $0.id == 0 || $0.id > clearBoundary } : messages,
             settings: settings, speakers: speakers, ownNick: ownNick
         )

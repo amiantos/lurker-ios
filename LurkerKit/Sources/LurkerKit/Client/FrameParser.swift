@@ -48,11 +48,12 @@ enum FrameParser {
             // The `/clear` marker's fan-out — this device's own ack AND every other device's
             // notice, which is the whole reason the marker is server-side (#121).
             let target = obj.string("target")
+            let marker = clearedMarker(obj)
             return target.isEmpty ? .ignored : .bufferCleared(
                 networkId: obj.intOrNull("networkId"),
                 target: target,
-                clearedBeforeId: clearedMarker(obj).beforeId,
-                clearedAt: clearedMarker(obj).at
+                clearedBeforeId: marker.beforeId,
+                clearedAt: marker.at
             )
         case "error":
             return .serverError(obj.string("text"))
@@ -618,6 +619,7 @@ enum FrameParser {
 
     private static func parseBacklog(_ obj: [String: Any]) -> ServerFrame {
         let target = obj.string("target")
+        let marker = clearedMarker(obj)
         if target.isEmpty { return .ignored }
         let networkId = obj.intOrNull("networkId")
         let events = obj.objects("events")
@@ -656,8 +658,8 @@ enum FrameParser {
             // `Buffer.readStateKnown`.
             readStateKnown: obj.has("lastReadId"),
             hasMoreOlder: hasMoreOlder,
-            clearedBeforeId: clearedMarker(obj).beforeId,
-            clearedAt: clearedMarker(obj).at,
+            clearedBeforeId: marker.beforeId,
+            clearedAt: marker.at,
             // The connect burst doubles as the id directory (§5.2): every
             // backlog frame carries the buffer's stable id.
             bufferId: obj.intOrNull("bufferId")
