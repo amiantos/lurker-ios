@@ -72,7 +72,14 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     /// and shouldn't be sending one — but "shouldn't" isn't "can't": there's a real gap
     /// between backgrounding and the server hearing about it, so a stale push can land
     /// just as the user comes back. Suppressing the banner is the belt to the server's
-    /// braces. The badge still updates, since that number is still true.
+    /// braces.
+    ///
+    /// The badge is let through, deliberately (#134). A push reaching a foreground app is
+    /// itself evidence the socket isn't delivering: the server only pushes when it sees no
+    /// present client, so ours is dead and not yet noticed, or between reconnect attempts
+    /// — exactly the state in which the derived count can't move. The push's number is the
+    /// freshest thing available until the reconnect's burst, and `AppBadge` re-asserts the
+    /// derived count afterwards at the moments it can vouch for it.
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
