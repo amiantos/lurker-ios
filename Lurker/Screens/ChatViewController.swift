@@ -85,6 +85,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// told us, not the absence of an answer. Same default the parser applies for the same
     /// reason (`FrameParser.swift:220`).
     private var hasMoreOlder = true
+    /// The `/clear` marker's mirror of the store (#121) — the boundary and its instant, kept
+    /// beside `hasMoreOlder` because they are read together by `rebuildRows`.
+    private var clearedBeforeId = 0
+    private var clearedAt: Date?
+    /// Whether this screen is deliberately showing what the `/clear` marker hides — a jump
+    /// landed on a row below the boundary (#121).
+    ///
+    /// ⚠⚠ Screen state, not store state, and not `hasMoreNewer`. Both of those were tried:
+    ///
+    ///  - `hasMoreNewer` drives paging, so claiming it on a buffer that holds the tail fires
+    ///    the near-bottom `loadNewer`, whose empty reply re-hides everything a frame later;
+    ///  - a flag on `Buffer` outlives the reading of it — nothing in the store is a natural
+    ///    place to retire it, so one jump peeled the buffer open for good and reopening it
+    ///    never restored the clear.
+    ///
+    /// Here it has exactly the right lifetime for free: `BufferNavigation` builds a fresh
+    /// screen per open (and rebuilds on a jump), so leaving and coming back is cleared again —
+    /// which is what the web does, and what the marker being SERVER state means.
+    private var showsClearedHistory = false
     /// Whether this buffer is detached — showing an `around` slice below the live tail (#42) —
     /// as of the last apply. Snapshotted rather than read live for the same reason as
     /// `settings` below: the typing ticker rebuilds rows with no `state` in hand.
@@ -898,6 +917,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // so a buffer whose only change is exhausting its history still reaches us.
         hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
         hasMoreNewer = nowDetached
+        // Same arm covers the `/clear` marker (#121) — which is what makes a clear issued on
+        // the WEB redraw this screen, rather than waiting for the next unrelated frame.
+        let previousCleared = clearedBeforeId
+        clearedBeforeId = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
+        clearedAt = state.buffers[buffer.key.id]?.clearedAt
+        // ⚠⚠ A NEW clear retires the reveal. Without this, clearing a buffer you had peeled
+        // back to land a jump does nothing you can see — the marker moves and the filter stays
+        // suppressed — so `/clear` looks broken until the buffer is closed and reopened. True
+        // of a clear issued here and of one issued on another device.
+        if clearedBeforeId > 0, clearedBeforeId != previousCleared { showsClearedHistory = false }
+        // Below the mirrors, and with no rebuild of its own: `rebuildRows()` is a few lines
+        // down and reads what this may have just changed. Run at the top of `apply` it built
+        // rows from the PREVIOUS pass's messages — on a freshly opened jump screen, from none.
+        revealIfJumpTargetHidden(state)
         rosterSettled = state.rosterSettled
         historyLanded = BufferPlaceholder.historyLanded(
             hydrated: state.buffers[buffer.key.id]?.hydrated == true,
@@ -1318,12 +1351,54 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             aroundRequestedAtGeneration = nil
         }
         guard aroundRequestedAtGeneration == nil else { return }
-        // Already held? No fetch — land against what's loaded.
+        // Already held? No fetch — land against what's loaded. A row the `/clear` marker is
+        // hiding is held but unrenderable; `revealIfJumpTargetHidden` is what resolves that,
+        // for this case and for the fetched one alike.
         if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
         aroundRequestedAtGeneration = state.burstGeneration
         aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
         aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
         viewModel.loadAround(buffer.key, anchorId: anchor)
+    }
+
+    /// A pending jump onto a row the `/clear` marker is hiding: detach, so it can render (#121).
+    ///
+    /// A message at or below the boundary sits in `messages` and is filtered out of `rows`, so
+    /// a jump to one lands on a row that will never exist — `beginJumpLanding` finds nothing,
+    /// and with no request in flight to explain it `pendingJumpId` is never cleared, which also
+    /// disables hydrate, the initial landing and the top-up for the life of the screen.
+    /// Showing it suppresses the filter, which is the whole of what the row needs. Same
+    /// resolution as the web (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`).
+    ///
+    /// ⚠⚠ Its own step, run on EVERY apply while a jump is pending, because the anchor becomes
+    /// held-and-hidden at two different moments: it was already loaded when the jump was asked
+    /// for, or it arrived in the `around` slice we fetched for it. Handling only the first is
+    /// what left a tapped bookmark landing on a blank screen — the common path is the fetched
+    /// one, since a jump from elsewhere in the app usually opens an unhydrated buffer.
+    ///
+    /// ⚠⚠ And fetching is not itself a fix: `hasMoreNewer` comes from the SERVER's answer, so a
+    /// slice that reaches the live tail — a small buffer, or one cleared moments ago — comes
+    /// back `hasMoreNewer: false` and leaves the anchor hidden. Nor is setting `hasMoreNewer`
+    /// here: on a buffer holding the tail that makes the near-bottom `loadNewer` fire at once,
+    /// and its empty reply re-hides everything a frame later.
+    ///
+    /// ⚠ Gated on the anchor being HELD, so the reveal waits for the thing it is revealing.
+    ///
+    /// ⚠⚠ NOT gated on the buffer being attached, though only a detached buffer's filter is
+    /// already suppressed. The common jump path fetches an `around` slice and detaches, so the
+    /// rows render on `hasMoreNewer` alone — and then reading forward pages to the tail, the
+    /// re-attach clears that flag, and every row at or below the boundary vanishes at once
+    /// underneath the reader, with the scroll anchors it would have restored among them.
+    /// Arming here as well means the reveal survives the re-attach, and `jumpToLatest` stays
+    /// the one thing that puts the marker back.
+    private func revealIfJumpTargetHidden(_ state: ChatState) {
+        guard let anchor = pendingJumpId,
+              let known = state.buffers[buffer.key.id],
+              !showsClearedHistory,
+              known.clearedBeforeId > 0, anchor <= known.clearedBeforeId,
+              (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor })
+        else { return }
+        showsClearedHistory = true
     }
 
     /// The placeholder currently installed, so a fresh `apply` on every live message
@@ -1370,8 +1445,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return false
         }
         guard !(state.messages[buffer.key.id] ?? []).isEmpty else { return false }
-        viewModel.loadOlder(buffer.key)
-        return true
+        // Report what `loadOlder` actually did, not what we asked it to. It refuses to page
+        // past a `/clear` boundary (#121), and claiming a page was on its way would pin
+        // "Loading messages…" over a buffer where nothing is coming.
+        return viewModel.loadOlder(buffer.key, showingClearedHistory: showsClearedHistory)
     }
 
     /// Whether the table has more content than viewport to show it in — i.e. whether a scroll,
@@ -1502,6 +1579,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             dividerAfterId: dividerAfterId,
             hasMoreOlder: hasMoreOlder,
             hasMoreNewer: hasMoreNewer,
+            clearedBeforeId: clearedBeforeId,
+            clearedAt: clearedAt,
+            showsClearedHistory: showsClearedHistory,
             typists: typists,
             settings: settings,
             speakers: speakers,
@@ -1628,7 +1708,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard !messages.isEmpty else { return }
         // Near the top → pull older history. The view model guards `hasMoreOlder` and an
         // in-flight page, so firing this on every scroll tick is safe.
-        if scrollView.contentOffset.y < 300 { viewModel.loadOlder(buffer.key) }
+        if scrollView.contentOffset.y < 300 {
+            viewModel.loadOlder(buffer.key, showingClearedHistory: showsClearedHistory)
+        }
         // Near the bottom of a detached slice → pull NEWER history, walking the reader forward
         // toward live (#45). The mirror of the loadOlder prefetch; the view model guards
         // `hasMoreNewer` and an in-flight page. Reaching the tail re-attaches and resumes live.
@@ -1783,6 +1865,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             needsInitialScroll = true
             viewModel.loadLatest(buffer.key)
         } else {
+            // Returning to the tail also puts a `/clear` back (#121) — the web re-applies it on
+            // this same affordance. The reveal was on loan to land one jump; the marker is the
+            // state the reader actually chose, and this is them saying they're done looking
+            // past it. Rebuild before reading `rows` below: re-applying the filter is exactly
+            // what changes how many there are.
+            if showsClearedHistory {
+                showsClearedHistory = false
+                rebuildRows()
+                tableView.reloadData()
+            }
+            guard !rows.isEmpty else { return }
             tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
         }
     }

@@ -163,7 +163,8 @@ struct MessageListRenderer {
                 endsBlock: endsBlock(at: index, context: context),
                 traits: context.traits
             )
-        case .unreadDivider, .dateDivider, .startOfHistory, .awayDivider, .backDivider:
+        case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider,
+             .backDivider:
             preconditionFailure("markers are handled above")
         }
         return cell
@@ -377,6 +378,15 @@ enum MessageListMarker {
             cell(MessageRenderer.dayLabel(day), color: Palette.fgMuted, bold: false, in: tableView)
         case .startOfHistory:
             cell("— start of history —", color: Palette.fgFaint, bold: false, in: tableView)
+        case .clearedDivider(let at):
+            // The same muted grey as the date and presence markers, which is also what the web
+            // draws (`.cleared-divider` is `--fg-muted`, and so is its undo button — the accent
+            // is a HOVER state, which a touch screen has no equivalent of). It is a marker
+            // among markers here, not a control: the way back is `/clear off`, which the label
+            // names.
+            cell(
+                MessageRenderer.clearedLabel(at: at), color: Palette.fgMuted, bold: false,
+                in: tableView)
         case .awayDivider(_, let message):
             cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)
         case .backDivider(let awayAt, let backAt):

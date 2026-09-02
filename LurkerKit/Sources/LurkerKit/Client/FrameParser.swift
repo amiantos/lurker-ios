@@ -44,6 +44,17 @@ enum FrameParser {
                 parseSettingValues(obj["changes"]),
                 maxUploadBytes: advertisedUploadCap(obj)
             )
+        case "buffer-cleared":
+            // The `/clear` marker's fan-out — this device's own ack AND every other device's
+            // notice, which is the whole reason the marker is server-side (#121).
+            let target = obj.string("target")
+            let marker = clearedMarker(obj)
+            return target.isEmpty ? .ignored : .bufferCleared(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                clearedBeforeId: marker.beforeId,
+                clearedAt: marker.at
+            )
         case "error":
             return .serverError(obj.string("text"))
         case "favorites-changed":
@@ -608,6 +619,7 @@ enum FrameParser {
 
     private static func parseBacklog(_ obj: [String: Any]) -> ServerFrame {
         let target = obj.string("target")
+        let marker = clearedMarker(obj)
         if target.isEmpty { return .ignored }
         let networkId = obj.intOrNull("networkId")
         let events = obj.objects("events")
@@ -646,6 +658,8 @@ enum FrameParser {
             // `Buffer.readStateKnown`.
             readStateKnown: obj.has("lastReadId"),
             hasMoreOlder: hasMoreOlder,
+            clearedBeforeId: marker.beforeId,
+            clearedAt: marker.at,
             // The connect burst doubles as the id directory (§5.2): every
             // backlog frame carries the buffer's stable id.
             bufferId: obj.intOrNull("bufferId")
@@ -654,6 +668,24 @@ enum FrameParser {
             buffer: buffer, messages: events.map(parseEvent), hydrated: hydrated, append: append,
             speakers: parseSpeakers(obj)
         )
+    }
+
+    /// The `/clear` marker off a frame that carries one (#121) — both halves, or neither.
+    ///
+    /// ⚠ Negatives and zero are "never cleared". The server treats `<= 0` as no marker
+    /// (`bufferReads.ts`: "boundary id <= 0 clears the marker"), and a negative reaching the
+    /// row filter would compare against every id and hide nothing anyway.
+    ///
+    /// ⚠⚠ A boundary with no readable instant is discarded WHOLE. Those two states are one
+    /// fact, and half of it hides every row while drawing no divider to undo with — the server
+    /// allows a null `cleared_at` and its rename/case-fold merges carry the columns
+    /// independently, so this is reachable from the wire rather than only from a bug here.
+    private static func clearedMarker(_ obj: [String: Any]) -> (beforeId: Int, at: Date?) {
+        let beforeId = obj.int("clearedBeforeId")
+        guard beforeId > 0, let at = ISOTime.parse(obj.stringOrNull("clearedAt")) else {
+            return (0, nil)
+        }
+        return (beforeId, at)
     }
 
     private static func parseLive(_ obj: [String: Any]) -> ServerFrame {

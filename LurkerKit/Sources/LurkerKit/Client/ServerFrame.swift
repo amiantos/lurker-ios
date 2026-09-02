@@ -81,6 +81,14 @@ enum ServerFrame: Equatable, Sendable {
         speakers: [Speaker]?
     )
 
+    /// WS `buffer-cleared`: the `/clear` marker moved (#121). Sent to the device that asked
+    /// **and** fanned out to the account's others — the marker is server-side per-user state,
+    /// so a clear on the desktop has to take effect on the phone.
+    ///
+    /// `clearedBeforeId == 0` with a nil `clearedAt` is the UNDO ("Show earlier messages" /
+    /// `/clear off`), not a malformed frame: it is how the server says the marker is gone.
+    case bufferCleared(networkId: Int?, target: String, clearedBeforeId: Int, clearedAt: Date?)
+
     /// A `channel-topic` event: RPL_TOPIC on join, i.e. "here's the topic" rather than
     /// "someone changed it". Ephemeral and silent — it carries no id and prints no line,
     /// which is why it's lifted out of `irc` into its own frame instead of arriving as a

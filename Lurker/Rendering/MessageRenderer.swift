@@ -824,6 +824,34 @@ enum MessageRenderer {
         return "You're back — away \(gone)"
     }
 
+    /// The label on the `/clear` marker (#121), naming the way back.
+    ///
+    /// The row is not a control — the web's "Show earlier messages" is a button, and this is a
+    /// marker like the date and presence ones — so the label carries the command instead. A
+    /// divider that only said "cleared 3:42 PM" would leave the hidden conversation behind a
+    /// `/clear off` nobody knew to type, which for a buffer cleared in full is a screen with
+    /// no visible way out at all.
+    ///
+    /// Date *and* time, not just time: a clear is undone days later as often as minutes later,
+    /// and "cleared 3:42 PM" on a marker from last Tuesday reads as today.
+    static func clearedLabel(at date: Date) -> String {
+        "cleared \(clearedFormatter.string(from: date)) · /clear off to undo"
+    }
+
+    /// Short date + short time, in the reader's locale and calendar. Built once — `DateFormatter`
+    /// is expensive to construct and this one is read on every rebuild of a cleared buffer.
+    private static let clearedFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        // `.autoupdatingCurrent`, like `dayFormatter` and for the same reason: a static
+        // formatter otherwise snapshots the region at first use and keeps formatting in it for
+        // the life of the process, so changing region US → GB would flip the day divider to
+        // D/M and leave this marker on M/D.
+        formatter.locale = .autoupdatingCurrent
+        return formatter
+    }()
+
     /// How long an away lasted, abbreviated and localized ("45m", "1h 5m", "2d 3h").
     ///
     /// Clamped up to a minute rather than shown as "0s": the marker is about a span the reader

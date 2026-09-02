@@ -597,6 +597,13 @@ public final class ChatViewModel {
                 client.part(networkId: networkId, channel: channel, reason: reason)
             case .close(let target):
                 client.closeBuffer(networkId: networkId, target: target)
+            case .clear(let target, let undo):
+                // Nothing is written locally, deliberately. The server picks the exact boundary
+                // id (the current tail) and fans a `buffer-cleared` back to every device
+                // including this one, so the marker this screen draws is always the
+                // authoritative one — an optimistic local clear would have to guess the id and
+                // would be wrong for anything that landed in between.
+                client.clearBuffer(networkId: networkId, target: target, undo: undo)
             case .away(let message):
                 client.setAway(message)
             case .back:
@@ -692,13 +699,27 @@ public final class ChatViewModel {
     /// Page older history for a buffer (scroll-up). Uses the oldest held message id as an
     /// exclusive cursor; no-ops if nothing older exists, nothing is held yet, or a page is
     /// already in flight.
-    public func loadOlder(_ key: BufferKey) {
-        guard !loadingOlder.contains(key.id),
-              let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
+    /// Returns whether a page is ON ITS WAY — not whether this particular call sent one.
+    ///
+    /// ⚠⚠ A page already in flight counts. The caller asks so it can show a spinner instead of
+    /// an empty state, and "someone already asked" is a yes to that question. Reading it as
+    /// "did I just send one" flashed "No messages yet" over a buffer whose page was in the air:
+    /// any second apply before the reply landed — a filtered live message, a read-state frame —
+    /// re-asked, got false, and resolved the placeholder to empty.
+    @discardableResult
+    public func loadOlder(_ key: BufferKey, showingClearedHistory: Bool = false) -> Bool {
+        if loadingOlder.contains(key.id) { return true }
+        guard let buffer = store.state.buffers[key.id], buffer.hasMoreOlder,
               let oldest = store.state.messages[key.id]?.first(where: { $0.id != 0 })?.id
-        else { return }
+        else { return false }
+        // ⚠⚠ Never page past a `/clear` boundary (#121) — see `olderPageCouldBeVisible`, which
+        // holds the rule (and the reason) where it can be tested.
+        guard buffer.olderPageCouldBeVisible(
+            oldestHeldId: oldest, showingClearedHistory: showingClearedHistory)
+        else { return false }
         loadingOlder.insert(key.id)
         client.loadOlder(networkId: key.networkId, target: key.target, before: oldest, countBy: historyCountBy)
+        return true
     }
 
     /// Page newer history for a detached buffer (scroll-down, #45). Uses the newest held
