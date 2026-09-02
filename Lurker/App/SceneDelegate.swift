@@ -31,6 +31,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // Best-effort: a wrong badge is not worth failing anything over, but a silent
             // failure here is exactly why a stale badge is hard to diagnose.
             NSLog("[badge] could not set app badge: %@", error.localizedDescription)
+        }
     }
 
     func scene(
