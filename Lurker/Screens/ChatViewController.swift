@@ -1852,6 +1852,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             needsInitialScroll = true
             viewModel.loadLatest(buffer.key)
         } else {
+            // Returning to the tail also puts a `/clear` back (#121) — the web re-applies it on
+            // this same affordance. The reveal was on loan to land one jump; the marker is the
+            // state the reader actually chose, and this is them saying they're done looking
+            // past it. Rebuild before reading `rows` below: re-applying the filter is exactly
+            // what changes how many there are.
+            if showsClearedHistory {
+                showsClearedHistory = false
+                rebuildRows()
+                tableView.reloadData()
+            }
+            guard !rows.isEmpty else { return }
             tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
         }
     }
