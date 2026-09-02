@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Combine
 import XCTest
 @testable import LurkerKit
 
@@ -76,5 +77,83 @@ final class AppBadgeTests: XCTestCase {
             networkId: nil, target: Buffer.systemTarget, kind: .system, unread: 2, highlights: 2
         )
         XCTAssertEqual(s.totalHighlights, 2)
+    }
+}
+
+/// When the badge is WRITTEN (#134), as distinct from what the number is.
+///
+/// A push paints the icon behind the app's back, and publishing only the count's
+/// transitions can't repair a paint the count disagrees with: the count didn't move.
+@MainActor
+final class AppBadgeWriteTests: XCTestCase {
+
+    private var writes: [Int] = []
+    private var badge: AppBadge!
+    private let states = CurrentValueSubject<ChatState, Never>(ChatState())
+
+    override func setUp() {
+        super.setUp()
+        writes = []
+        badge = AppBadge { [unowned self] in writes.append($0) }
+        badge.follow(states.eraseToAnyPublisher())
+    }
+
+    private func state(highlights: Int, settled: Bool = false) -> ChatState {
+        var s = ChatState()
+        s.buffers["1::bob"] = Buffer(networkId: 1, target: "bob", kind: .dm, highlights: highlights)
+        s.backlogComplete = settled
+        return s
+    }
+
+    func testWritesTheCurrentCountOnSubscribeThenOnlyTransitions() {
+        // The replayed initial state is a write: a cold launch has to put SOMETHING on
+        // the icon before the snapshot lands. After that, a fold that leaves the count
+        // where it was (a message in a channel you're not named in, a typing frame) is
+        // not a write — the steady-state path is deduped so a busy network doesn't turn
+        // into an OS call per line.
+        XCTAssertEqual(writes, [0])
+        states.send(state(highlights: 3))
+        states.send(state(highlights: 3))
+        states.send(state(highlights: 0))
+        XCTAssertEqual(writes, [0, 3, 0])
+    }
+
+    func testReassertWritesAnUnchangedCount() {
+        // The #134 shape: everything read, count 0 already written, then a stale push
+        // paints 3 on the icon. Nothing in state moves, so the dedupe would swallow every
+        // write forever; a re-assert is the one that gets 0 back onto the icon.
+        states.send(state(highlights: 0))
+        XCTAssertEqual(writes, [0])
+        badge.reassert(states.value)
+        XCTAssertEqual(writes, [0, 0])
+    }
+
+    func testBurstCompletionWritesAnUnchangedCount() {
+        // A reconnect's snapshot burst is the moment the count is known fresh, and every
+        // reconnect produces one. Its terminal frame must write even when the count it
+        // confirms is the one already on the icon — that's the whole point.
+        states.send(state(highlights: 2))
+        XCTAssertEqual(writes, [0, 2])
+        states.send(state(highlights: 2, settled: true))
+        XCTAssertEqual(writes.last, 2)
+        XCTAssertEqual(writes.count, 3, "burst completion must write despite an unchanged count")
+
+        // Second burst (a reconnect): the roster unsettles at the snapshot frame and
+        // settles again at backlog-complete. Completion writes again.
+        var reconnecting = state(highlights: 2, settled: true)
+        reconnecting.burstActive = true
+        states.send(reconnecting)
+        let beforeCompletion = writes.count
+        states.send(state(highlights: 2, settled: true))
+        XCTAssertEqual(writes.last, 2)
+        XCTAssertGreaterThan(writes.count, beforeCompletion)
+    }
+
+    func testSettledStateWithNoChangeIsNotAWrite() {
+        // Steady state after a burst: folds that don't move the count still don't write.
+        states.send(state(highlights: 1, settled: true))
+        let n = writes.count
+        states.send(state(highlights: 1, settled: true))
+        XCTAssertEqual(writes.count, n)
     }
 }

@@ -22,6 +22,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Same shape again: the app owns the OS-facing bit (permission, APNs) and feeds the
     /// resulting token into the view model.
     private let push = PushRegistrar()
+    /// Same shape once more: LurkerKit decides the number, the app makes the
+    /// `UserNotifications` call.
+    private lazy var badge = AppBadge { count in
+        // setBadgeCount(0) is how you clear it; there's no separate call.
+        UNUserNotificationCenter.current().setBadgeCount(count) { error in
+            guard let error else { return }
+            // Best-effort: a wrong badge is not worth failing anything over, but a silent
+            // failure here is exactly why a stale badge is hard to diagnose.
+            NSLog("[push] could not set app badge: %@", error.localizedDescription)
+        }
+    }
 
     func scene(
         _ scene: UIScene,
@@ -118,26 +129,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             viewModel.setReachable(reachable)
         }
 
-        // Keep the app-icon badge honest (#490). A push sets it via `aps.badge` and then
-        // nothing ever revises it, so without this the icon keeps claiming three unread
-        // highlights after you've read all three — until the next push happens to carry a
-        // smaller number. Driven off state so it follows read-state broadcasts (including
-        // ones caused by another device), which is the same thing the web client's
-        // useAppBadge does.
-        viewModel.statePublisher
-            .map(\.totalHighlights)
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { count in
-                // setBadgeCount(0) is how you clear it; there's no separate call.
-                UNUserNotificationCenter.current().setBadgeCount(count) { error in
-                    guard let error else { return }
-                    // Best-effort: a wrong badge is not worth failing anything over, but a
-                    // silent failure here is exactly why a stale badge is hard to diagnose.
-                    NSLog("[push] could not set app badge: %@", error.localizedDescription)
-                }
-            }
-            .store(in: &cancellables)
+        // Keep the app-icon badge honest (#490, #134). Driven off state so it follows
+        // read-state broadcasts (including ones caused by another device), which is the
+        // same thing the web client's useAppBadge does; AppBadge documents when it writes.
+        badge.follow(viewModel.statePublisher)
 
         AppDelegate.tapHandler = self
         // A tap that cold-launched the app arrived before this scene existed, so the
@@ -190,6 +185,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // owner is looking at it.
     func sceneDidBecomeActive(_ scene: UIScene) {
         viewModel.enterForeground()
+        // The user has just been looking at the icon, and a push may have painted a
+        // number over it while we were away that our count never moved off of (#134).
+        // Write what we know now; if the socket comes back stale, the reconnect's burst
+        // re-asserts again once the count is fresh.
+        badge.reassert(viewModel.state)
         // Re-run on every activation, not just the first: iOS can rotate a device token,
         // and the user may have granted (or revoked) notifications in Settings while we
         // were away. Cheap — the token is re-issued identically and the server upserts.
