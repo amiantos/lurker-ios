@@ -1352,7 +1352,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         guard aroundRequestedAtGeneration == nil else { return }
         // Already held? No fetch — land against what's loaded. A row the `/clear` marker is
-        // hiding is held but unrenderable; `detachIfJumpTargetHidden` is what resolves that,
+        // hiding is held but unrenderable; `revealIfJumpTargetHidden` is what resolves that,
         // for this case and for the fetched one alike.
         if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
         aroundRequestedAtGeneration = state.burstGeneration

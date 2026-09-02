@@ -256,11 +256,11 @@ public enum CommandRegistry {
         CommandSpec(["cycle", "hop"], .channels, "Part and rejoin this channel",
                     args: [ArgSpec("reason", .text, optional: true, rest: true)]),
         CommandSpec(["close"], .channels, "Close this buffer"),
-        // The argument is spelled as a literal rather than left free text: `off` and `undo`
-        // are the whole vocabulary, and anything else means "clear" — so offering it as
-        // free text would suggest arguments that silently do the opposite of what they read.
+        // Both literals, and `.word` rather than `.text`: `off` and `undo` are the whole
+        // vocabulary and each is a single token, so a free-text slot running to the end of the
+        // line would invite arguments that silently do the opposite of what they read.
         CommandSpec(["clear"], .channels, "Hide this buffer's history (undo with /clear off)",
-                    args: [ArgSpec("off", .text, optional: true)]),
+                    args: [ArgSpec("off|undo", .word, optional: true)]),
         CommandSpec(["topic"], .channels, "View or set the channel topic",
                     args: [ArgSpec("new topic", .text, optional: true, rest: true)]),
         CommandSpec(["nick"], .channels, "Change your nick",
