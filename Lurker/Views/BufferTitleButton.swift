@@ -97,16 +97,13 @@ final class BufferTitleButton: UIButton {
     /// The bar width the cap was last measured against, so a change can be noticed.
     private var cappedAgainst: CGFloat?
 
-    /// What the cap is a fraction *of*: the visible width of the navigation bar this pill is
-    /// a subview of.
+    /// What the cap is a fraction *of*: the visible width of the bar this pill is a subview of.
     ///
-    /// ⚠ Not the window, and not the bar's raw bounds either — the bar's SAFE AREA. Both of
-    /// the other two are wrong in a split view, in opposite directions. The window overstates
-    /// the buffer list's bar, which is a ~320pt column of a 1180pt iPad, so half a window is
-    /// 590pt and the pill would run clean out of its own column. The bar's bounds overstate
-    /// the *conversation's*, whose view is the full width of the window with the sidebar
-    /// tiled over its leading 330pt — measured, not assumed. The safe area is the part of the
-    /// bar you can see in both cases, and on the phone it is simply the bar.
+    /// ⚠ Neither the window nor the bar's raw bounds — both are wrong in a split view, in
+    /// opposite directions. The window overstates the buffer list's bar, a ~320pt column of a
+    /// 1180pt iPad. The bar's bounds overstate the conversation's, whose view is the full
+    /// window width with the sidebar tiled over its leading 330pt. The safe area is what you
+    /// can see in both cases, and on the phone it is simply the bar.
     private var available: CGFloat? {
         // Falling back to the window keeps the pre-window case behaving as it did: the bar
         // has no width worth measuring before layout, and a zero cap would truncate the title

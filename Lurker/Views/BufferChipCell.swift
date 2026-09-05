@@ -96,12 +96,8 @@ final class BufferBadgeLabel: UILabel {
 /// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
-/// The card a buffer chip or roster row sits on.
-///
-/// Normally `secondarySystemGroupedBackground`, exactly as before. The exception is a split
-/// view's sidebar, which is an ELEVATED interface level — and elevation shifts the whole
-/// grouped palette up a step, so the ground stops being the colour the card was picked to
-/// contrast with. Measured:
+/// The card a buffer chip or roster row sits on: `secondarySystemGroupedBackground`, except
+/// where elevation has moved the ground out from under it.
 ///
 ///     style  level     ground   secondary  tertiary
 ///     light  base      #F2F2F7  #FFFFFF    #F2F2F7
@@ -109,19 +105,14 @@ final class BufferBadgeLabel: UILabel {
 ///     dark   base      #000000  #1C1C1E    #2C2C2E
 ///     dark   elevated  #1C1C1E  #2C2C2E    #3A3A3C
 ///
-/// ⚠⚠ Which is why this asks whether elevation MOVED the ground rather than testing for a
-/// sidebar, an idiom, or a level. Only the last row is lifted: light mode resolves identically
-/// at both levels, and its tertiary IS the ground — so a rule that stepped up whenever it
-/// found itself elevated would paint every chip on a light iPad the exact colour of the panel
-/// under it and erase them completely. That is not hypothetical; it shipped, and it is what
-/// this replaces.
+/// A split view's sidebar is an elevated level, so on iPad the dark ground rises onto the
+/// colour the card was picked to contrast with and the cards stop reading as cards.
 ///
-/// Asking the question also means no idiom check: a collapsed iPad, a phone, and any future
-/// surface that elevates all get the right answer without being enumerated here.
-///
-/// Fixed at the colour rather than by forcing the sidebar back to `.base` with
-/// `overrideUserInterfaceLevel`, because the lifted ground is what makes the sidebar read as a
-/// panel floating over the conversation, and that is worth keeping.
+/// ⚠⚠ But only in dark. Light resolves identically at both levels and its tertiary IS the
+/// ground, so a rule that stepped up whenever it found itself elevated erased every chip on a
+/// light-mode iPad. Hence the test is whether elevation moved the ground, not whether we are
+/// elevated — which also means no idiom check, and a right answer for the collapsed iPad and
+/// the phone without enumerating them.
 extension UIColor {
     static var bufferCard: UIColor {
         UIColor { traits in
@@ -315,10 +306,8 @@ final class BufferChipCell: UICollectionViewCell {
         presence: FriendPresence? = nil,
         isOpen: Bool = false
     ) {
-        // Side by side, the card says which conversation you are reading. A tinted fill
-        // rather than a border: the chips already sit on cards, and a ring around one card in
-        // a grid of cards reads as a focus ring — something keyboard navigation put there —
-        // rather than as state.
+        // Side by side, the card says which conversation you're reading. A fill rather than a
+        // ring: a ring around one card in a grid of cards reads as keyboard focus, not state.
         card.backgroundColor = isOpen ? Self.openTint : .bufferCard
 
         nameLabel.text = name

@@ -15,8 +15,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private let viewModel = ChatViewModel()
     private var cancellables = Set<AnyCancellable>()
     /// The navigation controller the buffer list lives in: the whole stack on the phone, the
-    /// split's primary column on iPad. `showBuffer` forwards to the split from either, so a
-    /// caller that just wants to open a buffer needn't know which it is holding.
+    /// split's primary column on iPad. `showBuffer` forwards to the split from either.
     private weak var navigation: UINavigationController?
     /// The iPad root. Nil on the phone, and while signed out.
     private weak var split: BufferSplitViewController?
@@ -249,10 +248,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func render(_ session: ChatViewModel.SessionState, animated: Bool) {
         switch session {
         case .loggedIn:
-            // Already up. Re-rendering on a session republish must not throw away the
-            // conversation being read — which is what `shownRoot` is for, replacing the old
-            // "is the list still the root of the stack" test that could only ask the question
-            // of a stack.
+            // Already up — a re-render on a session republish must not throw away the
+            // conversation being read. `shownRoot` replaces the old "is the list still the
+            // root of the stack" test, which could only ask that of a stack.
             guard shownRoot != .main else { return }
             showMain(animated: animated)
         case .loggedOut:
@@ -263,29 +261,26 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Sign-in and the sign-out screen swap the window's ROOT rather than a stack's contents.
+    /// Sign-in and sign-out swap the window's ROOT, not a stack's contents.
     ///
-    /// They used to be two states of one navigation stack, which worked while every layout was
-    /// a stack. It isn't on iPad: signing out of a split view would have to leave the sign-in
-    /// screen in a column with the previous account's buffer list beside it. A root is the
-    /// honest unit — signing out replaces the whole app, which is what it does.
+    /// They were two states of one stack, which worked while every layout was a stack. On iPad
+    /// it would leave the sign-in screen in a column with the previous account's buffer list
+    /// beside it.
     private enum Root { case none, main, login }
     private var shownRoot: Root = .none
 
     /// The app proper: side-by-side columns on iPad, a stack on the phone.
     ///
-    /// iPad only, deliberately, rather than a split view everywhere that collapses at compact
-    /// width: a split expands at *any* regular width, which on a Pro Max in landscape would
-    /// rearrange the app for people who never asked for it.
+    /// iPad only rather than a split view everywhere that collapses at compact width, because
+    /// a split expands at *any* regular width — including a Pro Max in landscape.
     private func showMain(animated: Bool) {
         let restored = launchBuffer()
         if UIDevice.current.userInterfaceIdiom == .pad {
-            // ⚠ Not the system buffer, on iPad only. The conversation column *rests* on the
-            // server log whenever nothing is picked, and that resting screen records itself as
-            // the last buffer on appear exactly like a screen you chose — so restoring it would
-            // turn "nothing selected" into "the server log is selected" on every second launch.
-            // Side by side the two look identical; they stop being identical the moment the
-            // window narrows to one column and something has to decide which one you get.
+            // ⚠ Not the system buffer. The conversation column *rests* on the server log
+            // whenever nothing is picked, and that resting screen records itself as the last
+            // buffer exactly like a screen you chose — so restoring it turns "nothing selected"
+            // into "the server log is selected". Identical side by side; not identical once the
+            // window narrows and one column has to win.
             let restored = restored.flatMap { $0.kind == .system ? nil : $0 }
             let split = BufferSplitViewController(viewModel: viewModel)
             self.split = split
@@ -324,11 +319,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         setRoot(nav, as: .login, animated: animated)
     }
 
-    /// Swap the window's root, cross-fading when there was something there to fade from.
-    ///
-    /// Animations are suppressed *inside* the transition block: the incoming controller's own
-    /// layout would otherwise animate along with the dissolve, which on the buffer list reads
-    /// as the rows flying in from wherever they were last measured.
+    /// Swap the window's root, cross-fading when there was something to fade from. Animations
+    /// are suppressed *inside* the block, or the incoming controller's own layout animates
+    /// along with the dissolve and the buffer list's rows fly in from wherever they last were.
     private func setRoot(_ root: UIViewController, as kind: Root, animated: Bool) {
         guard let window else { return }
         shownRoot = kind
@@ -344,11 +337,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Drop every sheet, wherever it was presented from.
-    ///
-    /// One call was enough while there was one stack. A split has two, and a sheet put up from
-    /// the conversation column (the nick list, buffer info) is attached to *that* column — the
-    /// primary's `dismiss` walks up to the split and never sees it.
+    /// Drop every sheet, wherever it was presented from. A sheet put up from the conversation
+    /// column is attached to *that* column, and the primary's `dismiss` walks up to the split
+    /// and never sees it.
     private func dismissPresented() {
         if let split {
             split.dismissPresented()

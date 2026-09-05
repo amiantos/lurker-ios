@@ -6,34 +6,28 @@ import UIKit
 
 /// The iPad root: the buffer list and the conversation, side by side.
 ///
-/// Only iPad builds this — the phone keeps a plain `PilledNavigationController` root, so its
-/// navigation is untouched by anything here. That is a deliberate scoping choice rather than a
-/// limitation: a split view expands at *any* regular width, which on a Pro Max in landscape
-/// would silently rearrange the app for people who never asked for it.
+/// iPad only — the phone keeps a plain `PilledNavigationController` root, untouched by any of
+/// this — because a split view expands at *any* regular width, including a Pro Max in
+/// landscape.
 ///
-/// Both columns are `PilledNavigationController`s, which is what makes the status pill come
-/// along for free. `UIViewController.navigationPill` resolves through `navigationController`,
-/// so each column's screens find their *own* column's pill, and the two pills turn out to
-/// already be doing exactly the two jobs a split needs: the list's reads "Lurker" and follows
-/// the socket, the chat's reads the buffer name and follows that buffer's network. On the
-/// phone the first of those disappears the moment you open a buffer; here the primary column
-/// is always on screen, so it becomes a permanent connection indicator.
+/// Both columns are `PilledNavigationController`s, which is what brings the status pill along
+/// for free: `navigationPill` resolves through `navigationController`, so each column's screens
+/// find their own column's pill, and the two already do the two jobs a split needs. The list's
+/// reads "Lurker" and follows the socket — on the phone that vanishes the moment you open a
+/// buffer, here the column is always up, so it becomes a permanent connection indicator.
 ///
-/// The secondary column is never empty. Nothing selected means the system buffer — the server
-/// log is real content, it is always present, and it is what this app landed on before the
-/// buffer-first redesign gave it a list to land on instead. A "No Conversation Selected"
-/// placeholder would be a new screen whose whole job is to be dead space.
+/// The secondary column is never empty: nothing selected means the system buffer. The server
+/// log is real content and always present, where a "No Conversation Selected" placeholder
+/// would be a new screen whose whole job is to be dead space.
 final class BufferSplitViewController: UISplitViewController {
 
     private let viewModel: ChatViewModel
 
-    /// The buffer showing in the secondary column, so the list can mark its row and a
-    /// collapse can decide which column it is collapsing *to*.
+    /// The buffer showing in the secondary column, so the list can mark its row and a collapse
+    /// can decide which column it collapses *to*.
     ///
-    /// Nil until something is picked. Distinct from "the secondary column is showing the
-    /// system buffer", because the system buffer is also a thing you can deliberately open —
-    /// and if you did, collapsing should leave you reading it rather than throwing you back
-    /// to the list.
+    /// Nil until something is picked — distinct from "the column is showing the system buffer",
+    /// since you can also open that deliberately, and then collapsing should leave you in it.
     private(set) var selection: BufferKey?
 
     private let listNav = PilledNavigationController()
@@ -69,24 +63,19 @@ final class BufferSplitViewController: UISplitViewController {
         // dims the conversation to show the list would make switching buffers modal.
         preferredDisplayMode = .oneBesideSecondary
         preferredSplitBehavior = .tile
-        // No hide-the-sidebar button, and no swipe to hide it either: the list stays up.
-        //
-        // Partly because that is what a two-pane messaging app does — Messages on iPad has no
-        // such control — and partly because the sidebar's bar cannot afford one. It is a
-        // ~320pt column already carrying the status pill, and UIKit answers an overfull bar by
-        // dropping trailing items rather than overflowing them: with UIKit's own display-mode
-        // button present, the join "+" was measured going missing. Settings, status, join and
-        // the views menu are all worth more than a button for a thing you can do by rotating.
+        // No hide-the-sidebar button and no swipe: the list stays up, as it does in Messages.
+        // The bar also can't afford one — a ~320pt column already carrying the status pill, and
+        // UIKit answers an overfull bar by dropping trailing items rather than overflowing
+        // them. With the display-mode button present, the join "+" was measured going missing.
         presentsWithGesture = false
         displayModeButtonVisibility = .never
 
         for nav in [listNav, chatNav] {
             nav.navigationBar.prefersLargeTitles = true
         }
-        // Built through the stack's own factory, which wires the list's `onSelect` and its
-        // search results' jump to `UINavigationController.showBuffer` — the funnel that
-        // forwards back here once these navs are columns. So the list needs to know nothing
-        // about splits, and there is still exactly one place that opens a buffer.
+        // The stack's own factory, which wires the list's `onSelect` and its search results'
+        // jump to `showBuffer` — the funnel that forwards back here once these navs are
+        // columns. So the list knows nothing about splits.
         listNav.showBufferList(viewModel: viewModel, animated: false)
         chatNav.setViewControllers(
             [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
@@ -100,12 +89,9 @@ final class BufferSplitViewController: UISplitViewController {
         fatalError("init(coder:) has not been implemented")
     }
 
-    /// Keep the list's marking in step with the layout.
-    ///
-    /// Here rather than in the collapse/expand delegate callbacks because those run *during*
-    /// the transition, where `isCollapsed` still describes the arrangement being left. By
-    /// layout it has settled. The setter no-ops on an unchanged value, so running this every
-    /// pass costs nothing.
+    /// Keep the list's marking in step with the layout. Here rather than in the collapse or
+    /// expand callbacks, which run *during* the transition where `isCollapsed` still describes
+    /// the arrangement being left. The setter no-ops on an unchanged value.
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         list?.marksOpenBuffer = !isCollapsed
@@ -116,17 +102,16 @@ final class BufferSplitViewController: UISplitViewController {
     /// Open a buffer in the conversation column.
     ///
     /// The same five things reach this that reach `UINavigationController.showBuffer` — a list
-    /// tap, `/msg`, a highlight, a notification, a join — because they all still go through
-    /// that one funnel, which forwards here when there is a split. Collapsed (an iPad in Slide
-    /// Over, or a narrow Stage Manager window) the columns are one merged stack, so the phone's
-    /// list-then-chat arrangement is the right one and `show(.secondary)` puts it there.
+    /// tap, `/msg`, a highlight, a notification, a join — since they all go through that funnel
+    /// and it forwards here. Collapsed, the columns are one merged stack and `show(.secondary)`
+    /// pushes onto it, which is the phone's list-then-chat arrangement.
     func showBuffer(_ buffer: Buffer, jumpTo messageId: Int? = nil, animated: Bool) {
         // Already reading it, with nothing to jump to — same early-out the stack version makes,
         // and for the same reason: rebuilding re-latches the unread divider, re-requests
         // history, and throws away the scroll position to arrive where we already are.
-        // Compared by `id`, which lower-cases the target: IRC servers are inconsistent about
-        // case, so the same conversation reaches this as `#Lurker` from one route and
-        // `#lurker` from another. An exact key match would miss that and rebuild the screen.
+        // By `id`, which lower-cases the target: the same conversation reaches this as
+        // `#Lurker` from one route and `#lurker` from another, and an exact key match would
+        // miss that and rebuild the screen.
         if messageId == nil, selection?.id == buffer.key.id,
            chatNav.viewControllers.last is ChatViewController {
             show(.secondary)
@@ -142,22 +127,18 @@ final class BufferSplitViewController: UISplitViewController {
         list?.markSelection(buffer.key)
     }
 
-    /// The conversation on screen, whichever column is holding it.
-    ///
-    /// Collapsed the columns are one stack and the conversation sits on top of the list;
-    /// expanded it is the secondary column's own root. Never nil once signed in on iPad — the
-    /// column rests on the system buffer — which is the honest answer: that screen has a
-    /// composer and is what an upload finishing would insert into.
+    /// The conversation on screen, whichever column holds it. Never nil once signed in, since
+    /// the column rests on the system buffer — which is the right answer: that screen has a
+    /// composer, and is what a finished upload should insert into.
     var currentChat: ChatViewController? {
         let nav = isCollapsed ? listNav : chatNav
         return nav.topViewController as? ChatViewController
     }
 
-    /// Forget which conversation is open, and drop the column back to the server log.
-    ///
-    /// For the exit this class doesn't own: a Back tap in a collapsed split. `showBufferList`
-    /// is the expanded equivalent and does the same thing plus showing the primary column,
-    /// which collapsed has already happened by the time anyone can call this.
+    /// Forget which conversation is open, and drop the column back to the server log. For the
+    /// exit this class doesn't own: a Back tap in a collapsed split. `showBufferList` is the
+    /// expanded equivalent, plus showing the primary column — already done by the time a
+    /// collapsed pop reaches here.
     func clearSelection() {
         guard selection != nil else { return }
         selection = nil
@@ -167,11 +148,9 @@ final class BufferSplitViewController: UISplitViewController {
         list?.markSelection(nil)
     }
 
-    /// Nothing selected: the list, with the server log beside it.
-    ///
-    /// What sign-in lands on when there is no remembered buffer, and where a buffer that
-    /// disappears underneath its reader goes — the split's answer to the stack's
-    /// `popToRootViewController`, which has nothing to pop to here.
+    /// Nothing selected: the list, with the server log beside it. Where sign-in lands with no
+    /// remembered buffer, and where a buffer that disappears under its reader goes — the
+    /// split's answer to `popToRootViewController`, which has nothing to pop to here.
     func showBufferList(animated: Bool) {
         selection = nil
         chatNav.setViewControllers(
@@ -186,12 +165,9 @@ final class BufferSplitViewController: UISplitViewController {
 
 extension BufferSplitViewController: UISplitViewControllerDelegate {
 
-    /// Which column survives being squeezed into one.
-    ///
-    /// Reading a conversation and it stays on screen; nothing picked and you get the list,
-    /// rather than a server log nobody asked for. `selection` is the right question and not
-    /// "is the secondary column showing something", because the secondary column is never
-    /// empty — it holds the system buffer as its resting state.
+    /// Which column survives being squeezed into one: the conversation you were reading, or
+    /// the list rather than a server log nobody asked for. `selection` is the question and not
+    /// "is the secondary column showing something", which is always true.
     func splitViewController(
         _ svc: UISplitViewController,
         topColumnForCollapsingToProposedTopColumn proposed: UISplitViewController.Column
