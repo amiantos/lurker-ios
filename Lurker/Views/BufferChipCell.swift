@@ -129,20 +129,22 @@ final class BufferChipCell: UICollectionViewCell {
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)
 
-        // Let UIKit fill the chip, using the factory meant for a sidebar rather than a colour
-        // named here. `cornerRadius` because the configuration paints the cell's whole square
-        // otherwise, behind a card whose corners are round.
+        // Let UIKit fill the chip rather than naming a colour here. `cornerRadius` because the
+        // configuration paints the cell's whole square otherwise, behind a card whose corners
+        // are round.
         //
         // `automaticallyUpdatesBackgroundConfiguration = false` because it defaults to true, and
         // a plain cell's `defaultBackgroundConfiguration()` is `.clear()` — left on, UIKit
         // replaces this on the next state update and the chip goes blank again.
         //
-        // ⚠ `listSidebarCell()` is transparent AT REST by design: a sidebar row shows a fill
-        // only when selected. If the chips come out with no card at all, that is this working as
-        // specified, not failing — and it is the answer to whether the system has a "sidebar
-        // chip" appearance to borrow. It applies on iPhone too; nothing here detects the idiom.
+        // `listGroupedCell()`, not `listSidebarCell()`: the sidebar factory draws nothing at
+        // rest (a sidebar row fills only when selected), which is its spec and was confirmed
+        // on device — chips came out blank. That result is what makes THIS a real test: it
+        // proved the configuration is applied and drawn, so an earlier `listGroupedCell()`
+        // attempt that looked invisible was being occluded by an opaque card, not resolving to
+        // the wrong colour. Same call, first honest look at it.
         automaticallyUpdatesBackgroundConfiguration = false
-        var background = UIBackgroundConfiguration.listSidebarCell()
+        var background = UIBackgroundConfiguration.listGroupedCell()
         background.cornerRadius = Self.corner
         backgroundConfiguration = background
 
