@@ -276,11 +276,12 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func showMain(animated: Bool) {
         let restored = launchBuffer()
         if UIDevice.current.userInterfaceIdiom == .pad {
-            // ⚠ Not the system buffer. The conversation column *rests* on the server log
-            // whenever nothing is picked, and that resting screen records itself as the last
-            // buffer exactly like a screen you chose — so restoring it turns "nothing selected"
-            // into "the server log is selected". Identical side by side; not identical once the
-            // window narrows and one column has to win.
+            // ⚠ Not `Buffer.system` — the app-wide Lurker log, not a network's `.server`
+            // buffer, which this codebase keeps sharply distinct. The conversation column
+            // *rests* on it whenever nothing is picked, and that resting screen records itself
+            // as the last buffer exactly like a screen you chose, so restoring it turns
+            // "nothing selected" into "the system buffer is selected". Identical side by side;
+            // not identical once the window narrows and one column has to win.
             let restored = restored.flatMap { $0.kind == .system ? nil : $0 }
             let split = BufferSplitViewController(viewModel: viewModel)
             self.split = split

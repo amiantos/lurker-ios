@@ -71,31 +71,6 @@ final class BufferBadgeLabel: UILabel {
     }
 }
 
-/// A buffer as a compact card, for the Friends, Favorites and Recent grids.
-///
-/// The grids are shortcuts, not the roster — a place to fit twice as many of the handful you
-/// keep coming back to into the same vertical space, two across. So this is denser than a list
-/// row and it looks like a card rather than a row: a filled, rounded tile that reads as "tap
-/// target" at a glance, distinct from the grouped rows below it that carry swipe actions.
-///
-/// Density is layout, not type size — one font size app-wide, and one WEIGHT within a chip: the
-/// card is the emphasis, so the name doesn't also need to be bold. The network hint is colour,
-/// and the pill is the same one the rows use.
-///
-/// **One line, not two.** The card used to print the network name under every name, which
-/// spent the taller half of a chip restating something that is the same for every chip on a
-/// single-network instance and, on a multi-network one, is only ever *load-bearing* when two
-/// chips collide. So the network appears as a short `li` hint after the name, on the rows
-/// that actually need it (`NetworkAbbreviation`), and the chip is a name and a badge
-/// otherwise. The accessibility label still names the network in full for every chip — the
-/// hint is a visual shorthand, and losing the network entirely to a screen reader would be a
-/// regression rather than a simplification.
-///
-/// The card lost a third of its height with the second line: it was 64 to fit two lines of
-/// body text, and a one-line card that kept that height is a card mostly made of padding.
-/// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
-/// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
-/// shave a touch target. It still grows past 44 at accessibility text sizes.
 /// The card a buffer chip or roster row sits on: `secondarySystemGroupedBackground`, except
 /// where elevation has moved the ground out from under it.
 ///
@@ -127,6 +102,31 @@ extension UIColor {
     }
 }
 
+/// A buffer as a compact card, for the Friends, Favorites and Recent grids.
+///
+/// The grids are shortcuts, not the roster — a place to fit twice as many of the handful you
+/// keep coming back to into the same vertical space, two across. So this is denser than a list
+/// row and it looks like a card rather than a row: a filled, rounded tile that reads as "tap
+/// target" at a glance, distinct from the grouped rows below it that carry swipe actions.
+///
+/// Density is layout, not type size — one font size app-wide, and one WEIGHT within a chip: the
+/// card is the emphasis, so the name doesn't also need to be bold. The network hint is colour,
+/// and the pill is the same one the rows use.
+///
+/// **One line, not two.** The card used to print the network name under every name, which
+/// spent the taller half of a chip restating something that is the same for every chip on a
+/// single-network instance and, on a multi-network one, is only ever *load-bearing* when two
+/// chips collide. So the network appears as a short `li` hint after the name, on the rows
+/// that actually need it (`NetworkAbbreviation`), and the chip is a name and a badge
+/// otherwise. The accessibility label still names the network in full for every chip — the
+/// hint is a visual shorthand, and losing the network entirely to a screen reader would be a
+/// regression rather than a simplification.
+///
+/// The card lost a third of its height with the second line: it was 64 to fit two lines of
+/// body text, and a one-line card that kept that height is a card mostly made of padding.
+/// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
+/// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
+/// shave a touch target. It still grows past 44 at accessibility text sizes.
 final class BufferChipCell: UICollectionViewCell {
     /// Matches `BufferListViewController.openRowTint` — the roster row and the chip for the
     /// same buffer are marked at once, and two different washes would read as two states.

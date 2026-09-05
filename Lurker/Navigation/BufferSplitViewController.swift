@@ -16,9 +16,10 @@ import UIKit
 /// reads "Lurker" and follows the socket — on the phone that vanishes the moment you open a
 /// buffer, here the column is always up, so it becomes a permanent connection indicator.
 ///
-/// The secondary column is never empty: nothing selected means the system buffer. The server
-/// log is real content and always present, where a "No Conversation Selected" placeholder
-/// would be a new screen whose whole job is to be dead space.
+/// The secondary column is never empty: nothing selected means `Buffer.system` — the app-wide
+/// Lurker log, and NOT a network's `.server` buffer, which this codebase keeps sharply
+/// distinct. It is real content and always present, where a "No Conversation Selected"
+/// placeholder would be a new screen whose whole job is to be dead space.
 final class BufferSplitViewController: UISplitViewController {
 
     private let viewModel: ChatViewModel
@@ -106,14 +107,27 @@ final class BufferSplitViewController: UISplitViewController {
     /// and it forwards here. Collapsed, the columns are one merged stack and `show(.secondary)`
     /// pushes onto it, which is the phone's list-then-chat arrangement.
     func showBuffer(_ buffer: Buffer, jumpTo messageId: Int? = nil, animated: Bool) {
+        // ⚠ Collapsed, `chatNav` is EMPTY — UIKit merged its contents into the primary's
+        // stack, which is what `currentChat` relies on too. So none of the code below applies:
+        // the early-out could never fire (nothing in `chatNav` left to match), and setting a
+        // nav that isn't in the hierarchy would leave `show(.secondary)` doing the real
+        // navigation on semantics we'd be guessing at. Collapsed simply IS the stack
+        // arrangement, so hand it to the one place that builds it.
+        if isCollapsed {
+            selection = buffer.key
+            list?.markSelection(buffer.key)
+            listNav.setBufferStack(buffer, viewModel: viewModel, jumpTo: messageId, animated: animated)
+            return
+        }
         // Already reading it, with nothing to jump to — same early-out the stack version makes,
         // and for the same reason: rebuilding re-latches the unread divider, re-requests
         // history, and throws away the scroll position to arrive where we already are.
         // By `id`, which lower-cases the target: the same conversation reaches this as
         // `#Lurker` from one route and `#lurker` from another, and an exact key match would
         // miss that and rebuild the screen.
-        if messageId == nil, selection?.id == buffer.key.id,
-           chatNav.viewControllers.last is ChatViewController {
+        if messageId == nil,
+           let open = chatNav.viewControllers.last as? ChatViewController,
+           open.buffer.key.id == buffer.key.id {
             show(.secondary)
             return
         }
@@ -135,7 +149,7 @@ final class BufferSplitViewController: UISplitViewController {
         return nav.topViewController as? ChatViewController
     }
 
-    /// Forget which conversation is open, and drop the column back to the server log. For the
+    /// Forget which conversation is open, and drop the column back to the system buffer. For
     /// exit this class doesn't own: a Back tap in a collapsed split. `showBufferList` is the
     /// expanded equivalent, plus showing the primary column — already done by the time a
     /// collapsed pop reaches here.
@@ -148,10 +162,14 @@ final class BufferSplitViewController: UISplitViewController {
         list?.markSelection(nil)
     }
 
-    /// Nothing selected: the list, with the server log beside it. Where sign-in lands with no
-    /// remembered buffer, and where a buffer that disappears under its reader goes — the
+    /// Nothing selected: the list, with the system buffer beside it. Where sign-in lands with
+    /// no remembered buffer, and where a buffer that disappears under its reader goes — the
     /// split's answer to `popToRootViewController`, which has nothing to pop to here.
-    func showBufferList(animated: Bool) {
+    ///
+    /// Takes no `animated`: there is no transition to animate. The column is swapped outright
+    /// and `show(.primary)` offers no say in it, so the parameter only misled its one caller
+    /// into thinking it had asked for something.
+    func showBufferList() {
         selection = nil
         chatNav.setViewControllers(
             [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
@@ -166,7 +184,7 @@ final class BufferSplitViewController: UISplitViewController {
 extension BufferSplitViewController: UISplitViewControllerDelegate {
 
     /// Which column survives being squeezed into one: the conversation you were reading, or
-    /// the list rather than a server log nobody asked for. `selection` is the question and not
+    /// the list rather than a system buffer nobody asked for. `selection` is the question and not
     /// "is the secondary column showing something", which is always true.
     func splitViewController(
         _ svc: UISplitViewController,

@@ -431,10 +431,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
             // Centered just below the nav bar — the safe-area top sits right under it, so
             // the capsule drops into the gap between the title pill and the conversation.
-            connectionBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            //
+            // ⚠ The safe area horizontally too, matching the title pill and the buffer list's
+            // own banner. In a split view this view is the full width of the window with the
+            // sidebar tiled over its leading edge, so centring on `view` would put the capsule
+            // ~165pt left of the column, half under the list. Same guide, same reason.
+            connectionBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            connectionBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            connectionBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            connectionBanner.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            connectionBanner.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
 
             composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -646,12 +655,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard isMovingFromParent, navigationController?.topViewController is BufferListViewController else {
             return
         }
+        // ⚠ iPad backs out through `viewDidDisappear` instead — see below.
+        guard !(splitViewController is BufferSplitViewController) else { return }
         UserPreferences.standard.forgetLastBuffer()
-        // The one way out of a conversation the split doesn't drive itself: collapsed, the
-        // columns are a single stack and Back pops this screen off it, which no
-        // `showBufferList` hears about. Left unsaid, the split still believes this buffer is
-        // open and would collapse straight back into it.
-        (splitViewController as? BufferSplitViewController)?.clearSelection()
+    }
+
+    /// The split's back-out bookkeeping, which cannot be done on the way out.
+    ///
+    /// Collapsed — Slide Over, or a narrow Stage Manager window — the columns are a single
+    /// stack and Back pops this screen off it, which no `showBufferList` hears about. Left
+    /// unsaid, the split goes on believing this buffer is open: it would collapse straight
+    /// back into the conversation you just left, and mark its row on expanding.
+    ///
+    /// ⚠ Not `viewWillDisappear`, where the phone does this, because from inside that method a
+    /// COLLAPSE is indistinguishable from a back-out: UIKit moves this screen out of the
+    /// conversation column and into the primary's stack, and while it does, the list is on top
+    /// and this screen is moving from its parent — the phone's exact test, passed by a window
+    /// resize. By `viewDidDisappear` a migration has already handed this screen its new
+    /// navigation controller, so `navigationController == nil` means it really left. It also
+    /// never runs for a swipe-back released below threshold, which `viewWillDisappear` does.
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        guard let split = splitViewController as? BufferSplitViewController,
+              navigationController == nil
+        else { return }
+        UserPreferences.standard.forgetLastBuffer()
+        split.clearSelection()
     }
 
     deinit {
@@ -778,10 +807,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
             navigationController?.dismiss(animated: false)
             // iPad: nothing to pop *to* — the list is beside this column, not under it. Back
-            // to the list means clearing the selection, which drops the column to the server
-            // log and un-marks the row that just vanished.
+            // to the list means clearing the selection, which drops the column to the system
+            // buffer and un-marks the row that just vanished.
             if let split = splitViewController as? BufferSplitViewController {
-                split.showBufferList(animated: true)
+                split.showBufferList()
             } else {
                 navigationController?.popToRootViewController(animated: true)
             }

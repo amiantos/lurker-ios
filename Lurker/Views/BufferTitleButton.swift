@@ -103,7 +103,12 @@ final class BufferTitleButton: UIButton {
     /// opposite directions. The window overstates the buffer list's bar, a ~320pt column of a
     /// 1180pt iPad. The bar's bounds overstate the conversation's, whose view is the full
     /// window width with the sidebar tiled over its leading 330pt. The safe area is what you
-    /// can see in both cases, and on the phone it is simply the bar.
+    /// can actually see in both cases.
+    ///
+    /// It is not a no-op on the phone either, though it is close: landscape on a notched
+    /// device insets the bar ~44pt a side, so the cap tightens by about that much (874 → ~786,
+    /// capping at ~393 rather than 437). Symmetric, so centring is unchanged, and still well
+    /// clear of the 338.7pt a long channel name was measured wanting.
     private var available: CGFloat? {
         // Falling back to the window keeps the pre-window case behaving as it did: the bar
         // has no width worth measuring before layout, and a zero cap would truncate the title

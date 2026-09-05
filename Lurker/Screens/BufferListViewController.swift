@@ -825,8 +825,6 @@ final class BufferListViewController: UICollectionViewController {
     /// accent bar would outrank the one signal that actually needs to be seen.
     private static let openRowTint = BufferChipCell.openTint
 
-    /// The card a row sits on — see `UIColor.bufferCard` for why iPad needs a different one.
-
     /// Whether this list is beside a conversation rather than under one.
     ///
     /// Pushed in by `BufferSplitViewController` rather than read from `isCollapsed`: the moment
