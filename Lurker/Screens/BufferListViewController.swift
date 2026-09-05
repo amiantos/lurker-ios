@@ -361,13 +361,13 @@ final class BufferListViewController: UICollectionViewController {
         // screen pushed over this one ends in a composer — so it can't simply stay up. Asked
         // for on the way in and given back on the way out, which also means it animates with
         // the transition rather than appearing after it.
-        navigationController?.setToolbarHidden(false, animated: animated)
+        if usesBottomSearchBar { navigationController?.setToolbarHidden(false, animated: animated) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         refreshBanner()
-        navigationController?.setToolbarHidden(true, animated: animated)
+        if usesBottomSearchBar { navigationController?.setToolbarHidden(true, animated: animated) }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -660,7 +660,11 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Cell & header registrations
 
     private lazy var listRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Row> {
-        cell, _, row in
+        [weak self] cell, _, row in
+        var background = UIBackgroundConfiguration.listCell()
+        background.backgroundColor = self?.isOpen(row.buffer) == true ? Self.openRowTint : .clear
+        cell.backgroundConfiguration = background
+
         var content = UIListContentConfiguration.cell()
         // No `networkName` here, unlike the pill: every roster row already states its network
         // as its section header, so resolving a server log to its network's name would just
@@ -678,7 +682,7 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        cell, _, row in
+        [weak self] cell, _, row in
         cell.configure(
             // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
             // print, so `displayName` falls back to the literal "Server" without one. A roster
@@ -690,7 +694,8 @@ final class BufferListViewController: UICollectionViewController {
             networkHint: row.networkHint,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
-            presence: row.presence
+            presence: row.presence,
+            isOpen: self?.isOpen(row.buffer) == true
         )
     }
 
@@ -785,6 +790,76 @@ final class BufferListViewController: UICollectionViewController {
     /// snapshot carries identifiers and not content.
     private var rowsByID: [ItemID: Row] = [:]
 
+    // MARK: - Which conversation is open (iPad)
+
+    /// The buffer showing in the split's conversation column, or nil.
+    ///
+    /// Only meaningful side by side. On the phone — and on an iPad squeezed into Slide Over,
+    /// where the columns merge into one stack — the list is *underneath* the conversation
+    /// rather than beside it, and a row left highlighted after you navigate away is the sort
+    /// of stale emphasis that makes a list look broken. `isOpen` is what gates the drawing;
+    /// this stays set through a collapse so expanding again restores the mark rather than
+    /// forgetting which buffer you are reading.
+    private var openBufferKey: BufferKey?
+
+    /// The tint an open row wears — the chip's, so the two rows a favorited channel owns are
+    /// marked identically. Deliberately a wash rather than a filled `.tintColor` row: unread
+    /// badges and the highlight red already compete for attention in this list, and a solid
+    /// accent bar would outrank the one signal that actually needs to be seen.
+    private static let openRowTint = BufferChipCell.openTint
+
+    /// Whether this list is beside a conversation rather than under one.
+    ///
+    /// Pushed in by `BufferSplitViewController` rather than read from
+    /// `splitViewController.isCollapsed`, because the moment it matters — a window resized
+    /// into or out of Slide Over — is exactly the moment that property is mid-transition and
+    /// answers for the layout being left rather than the one being entered. The split knows
+    /// the answer at a point where it is settled; this just believes it. False on the phone,
+    /// which has no split at all.
+    var marksOpenBuffer = false {
+        didSet {
+            guard marksOpenBuffer != oldValue else { return }
+            markingChanged()
+        }
+    }
+
+    func isOpen(_ buffer: Buffer) -> Bool {
+        marksOpenBuffer && buffer.key.id == openBufferKey?.id
+    }
+
+    /// Point the mark at a buffer, or clear it.
+    ///
+    /// Reconfigures only the rows whose answer moved — the one losing the mark and the one
+    /// gaining it — rather than rebuilding, because a rebuild re-derives every section and
+    /// this changes nothing about what the list *contains*.
+    ///
+    /// ⚠ A buffer can hold more than one row: `ItemID` is section-qualified, so a favorited
+    /// channel appears as a chip **and** as a roster row under its network. Both have to
+    /// move, or the two halves of the list disagree about what you're reading. Hence a
+    /// filter over every item identifier with a matching key, not `indexPath(for:)`.
+    func markSelection(_ key: BufferKey?) {
+        guard key?.id != openBufferKey?.id else { return }
+        let moved = Set([openBufferKey?.id, key?.id].compactMap { $0 })
+        openBufferKey = key
+        guard isViewLoaded else { return }
+        var snapshot = dataSource.snapshot()
+        let affected = snapshot.itemIdentifiers.filter { moved.contains($0.key) }
+        guard !affected.isEmpty else { return }
+        snapshot.reconfigureItems(affected)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// Redraw the mark when the split collapses or expands under us — the rows are unchanged,
+    /// but whether they should show a mark at all just flipped.
+    private func markingChanged() {
+        guard isViewLoaded, let key = openBufferKey else { return }
+        var snapshot = dataSource.snapshot()
+        let affected = snapshot.itemIdentifiers.filter { $0.key == key.id }
+        guard !affected.isEmpty else { return }
+        snapshot.reconfigureItems(affected)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
     // MARK: - Bar items
 
     /// Account and settings: the things that outlast whichever conversation you're reading.
@@ -869,11 +944,27 @@ final class BufferListViewController: UICollectionViewController {
     /// the system puts it here. What the rule was really protecting (the toolbar can't survive
     /// the push into a chat screen, whose bottom is a composer) still holds and is still
     /// handled — see `viewWillAppear`.
+    ///
+    /// ⚠ iPad is the exception, and it is not a style choice — an integrated field does not
+    /// fit. There the list is a ~320pt sidebar whose bar already carries the status pill, and
+    /// UIKit resolves the overflow by silently DROPPING trailing items: measured on an iPad in
+    /// landscape, `.integrated` cost the join "+" outright, and freeing one more slot cost the
+    /// views "…" as well. `.stacked` puts the field under the large title, which is where iPad
+    /// search goes anyway, and all four controls fit.
     private func installSearch() {
         navigationItem.searchController = searchController
+        guard usesBottomSearchBar else {
+            navigationItem.preferredSearchBarPlacement = .stacked
+            return
+        }
         navigationItem.preferredSearchBarPlacement = .integrated
         toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
     }
+
+    /// Whether the search field is riding a bottom toolbar this screen has to raise and lower.
+    /// False on iPad, where it is stacked under the title and there is no toolbar at all —
+    /// asking for one would raise an empty bar across the foot of the sidebar.
+    private var usesBottomSearchBar: Bool { UIDevice.current.userInterfaceIdiom != .pad }
 
     /// Take the search UI down — what a result tap calls once it's decided where to go. Not a
     /// dismiss: the results are presented *by* the search controller, so the thing to undo is

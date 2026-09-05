@@ -772,7 +772,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // (This is what `showMemberList`'s "nothing replaces this screen" reasoning
             // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
             navigationController?.dismiss(animated: false)
-            navigationController?.popToRootViewController(animated: true)
+            // iPad: there is nothing to pop *to* — the list is beside this column, not under
+            // it. "Back to the list" means clearing the selection, which drops the column
+            // back to the server log and un-marks the row that just vanished.
+            if let split = splitViewController as? BufferSplitViewController {
+                split.showBufferList(animated: true)
+            } else {
+                navigationController?.popToRootViewController(animated: true)
+            }
             return true
         }
         sawBufferRow = true

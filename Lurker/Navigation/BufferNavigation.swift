@@ -157,6 +157,15 @@ extension UINavigationController {
         jumpTo messageId: Int? = nil,
         animated: Bool
     ) {
+        // iPad: the columns are the arrangement, so hand over rather than building a stack.
+        // Branching *here*, inside the funnel, rather than at the five call sites is the whole
+        // reason the funnel exists — `/msg`, a highlight, a notification tap and the rest go on
+        // saying "show me this buffer" and stay ignorant of how the app is laid out. Collapsed
+        // splits come through here too; the split knows what to do with them.
+        if let split = splitViewController as? BufferSplitViewController {
+            split.showBuffer(buffer, jumpTo: messageId, animated: animated)
+            return
+        }
         // Already reading this one, and nothing to jump to? Leave it alone. Rebuilding the
         // screen re-latches the unread divider, re-requests history, and throws away the
         // scroll position to arrive exactly where we already are — which is what tapping a

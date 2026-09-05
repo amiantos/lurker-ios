@@ -97,6 +97,10 @@ final class BufferBadgeLabel: UILabel {
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
 final class BufferChipCell: UICollectionViewCell {
+    /// Matches `BufferListViewController.openRowTint` — the roster row and the chip for the
+    /// same buffer are marked at once, and two different washes would read as two states.
+    static let openTint = UIColor.tintColor.withAlphaComponent(0.16)
+
     private let card = UIView()
     private let nameLabel = UILabel()
     private let networkHintLabel = UILabel()
@@ -268,8 +272,15 @@ final class BufferChipCell: UICollectionViewCell {
         networkHint: String? = nil,
         unread: Int,
         highlights: Int,
-        presence: FriendPresence? = nil
+        presence: FriendPresence? = nil,
+        isOpen: Bool = false
     ) {
+        // Side by side, the card says which conversation you are reading. A tinted fill
+        // rather than a border: the chips already sit on cards, and a ring around one card in
+        // a grid of cards reads as a focus ring — something keyboard navigation put there —
+        // rather than as state.
+        card.backgroundColor = isOpen ? Self.openTint : .secondarySystemGroupedBackground
+
         nameLabel.text = name
         networkHintLabel.text = networkHint
         networkHintLabel.isHidden = networkHint == nil

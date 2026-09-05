@@ -94,26 +94,46 @@ final class BufferTitleButton: UIButton {
     /// belongs to the buttons either side of it.
     private static let maxWidthFraction: CGFloat = 0.5
 
-    /// The window width the cap was last measured against, so a change can be noticed.
+    /// The bar width the cap was last measured against, so a change can be noticed.
     private var cappedAgainst: CGFloat?
+
+    /// What the cap is a fraction *of*: the visible width of the navigation bar this pill is
+    /// a subview of.
+    ///
+    /// ⚠ Not the window, and not the bar's raw bounds either — the bar's SAFE AREA. Both of
+    /// the other two are wrong in a split view, in opposite directions. The window overstates
+    /// the buffer list's bar, which is a ~320pt column of a 1180pt iPad, so half a window is
+    /// 590pt and the pill would run clean out of its own column. The bar's bounds overstate
+    /// the *conversation's*, whose view is the full width of the window with the sidebar
+    /// tiled over its leading 330pt — measured, not assumed. The safe area is the part of the
+    /// bar you can see in both cases, and on the phone it is simply the bar.
+    private var available: CGFloat? {
+        // Falling back to the window keeps the pre-window case behaving as it did: the bar
+        // has no width worth measuring before layout, and a zero cap would truncate the title
+        // to nothing.
+        guard let bar = superview else { return window?.bounds.width }
+        let visible = bar.safeAreaLayoutGuide.layoutFrame.width
+        guard visible > 0 else { return window?.bounds.width }
+        return visible
+    }
 
     /// The pill is laid out from its intrinsic size, so left alone a long channel name asks
     /// for more width than the bar has and crowds the buttons flanking it. Cap the ask;
     /// `titleLineBreakMode` truncates the name inside whatever's granted.
     ///
-    /// Half the window leaves room for the bar items either side: measured on iPhone 17 Pro,
+    /// Half the bar leaves room for the bar items either side: measured on iPhone 17 Pro,
     /// a fully-capped pill on the chat screen ends at x=301.7 with the trailing item starting
     /// at x=346. That margin only holds because the cap tracks the *current* width — hence
     /// `layoutSubviews` below.
     override var intrinsicContentSize: CGSize {
         var size = super.intrinsicContentSize
-        guard let available = window?.bounds.width else { return size }
+        guard let available else { return size }
         cappedAgainst = available
         size.width = min(size.width, available * Self.maxWidthFraction)
         return size
     }
 
-    /// Re-measure when the window's width changes under us.
+    /// Re-measure when the bar's width changes under us.
     ///
     /// This used to come for free: each screen built its own pill, so the cap was recomputed
     /// on the next navigation. One pill now lives for the whole stack's life and `update`
@@ -126,7 +146,7 @@ final class BufferTitleButton: UIButton {
         super.layoutSubviews()
         // Guarded by the comparison, which re-measuring immediately satisfies — one extra
         // layout pass, not a loop.
-        if let available = window?.bounds.width, available != cappedAgainst {
+        if let available, available != cappedAgainst {
             invalidateIntrinsicContentSize()
         }
     }

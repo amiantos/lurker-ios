@@ -87,7 +87,15 @@ final class NavigationPill: NSObject, UINavigationControllerDelegate {
         pill.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(pill)
         NSLayoutConstraint.activate([
-            pill.centerXAnchor.constraint(equalTo: bar.centerXAnchor),
+            // ⚠ The bar's SAFE AREA, not the bar. In a split view the conversation column's
+            // view is the full width of the window with the sidebar tiled on top of it —
+            // measured on an iPad in landscape: the bar is 1180pt wide starting at x=0, while
+            // the conversation you can actually see runs 330…1180. Centred on the bar the
+            // pill lands 160pt to the left of the column it names, floating over the buffer
+            // list's edge. The safe area is where the leading inset is recorded, so its
+            // centre is the visible centre — and on the phone, which has no such inset, it is
+            // the bar's centre and nothing changes.
+            pill.centerXAnchor.constraint(equalTo: bar.safeAreaLayoutGuide.centerXAnchor),
             pill.centerYAnchor.constraint(equalTo: bar.topAnchor, constant: Self.smallTitleRowCenter),
         ])
 
