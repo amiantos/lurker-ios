@@ -48,16 +48,17 @@ needs no project-file edit.
 
 ## iPhone and iPad
 
-One universal target, one navigation stack, both idioms — there is no iPad-specific screen and no
-size-class branch anywhere in the app. What changes with the window is only how wide the content is
-allowed to get:
+One universal target. The signed-in shell is a `UISplitViewController`: the buffer list in the
+sidebar with the conversation beside it where there's room, and — collapsed — the same two screens
+in the single navigation stack the app has always had, which is what a phone and a narrow iPad
+window get. UIKit owns that collapse, so no screen tests the idiom.
+
+Two smaller things follow the window rather than the device:
 
 - The conversation, its composer and its floating pills all pin to UIKit's `readableContentGuide`,
   so a channel is a column of text with one left edge and one right edge rather than a nick at one
   side of a 13" display and a word at the other. On a phone that guide *is* the view's 16pt layout
   margin, so nothing about the iPhone layout moved.
-- The buffer list centres its sections in a column of the same order (`ReadingColumn`) and lays its
-  chips out as many across as fit, which is two on every iPhone width and more on an iPad.
 - The composer sends on Return from a **hardware** keyboard (Shift-Return breaks the line). It's a
   `UIKeyCommand`, which only physical keys reach, so the on-screen keyboard's Return still inserts a
   newline on a phone.

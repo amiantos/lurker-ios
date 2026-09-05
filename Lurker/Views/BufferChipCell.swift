@@ -96,15 +96,7 @@ final class BufferBadgeLabel: UILabel {
 /// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
-///
-/// ⚠ **The card is currently unpainted** — see `init`. The description above is the design, not
-/// what this draws today; it is a bare layout container until a fill is chosen deliberately.
 final class BufferChipCell: UICollectionViewCell {
-
-    /// The card's corner radius, shared by its fill and by the silhouette a drag lifts, so the
-    /// two can't disagree about the shape.
-    private static let corner: CGFloat = 12
-
     private let card = UIView()
     private let nameLabel = UILabel()
     private let networkHintLabel = UILabel()
@@ -116,25 +108,8 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        // ⚠ NOTHING here paints. The chip currently has no fill at all, on any idiom — this is a
-        // deliberate floor to build up from, not an oversight, after several rounds of stacked
-        // mechanisms (a hand-picked palette, a background configuration, a border, an idiom
-        // flag) made the thing impossible to iterate on: each one could mask the next, so a
-        // change that did nothing and a change that was overdrawn looked identical.
-        //
-        // What was learned before it was taken out, so it need not be rediscovered:
-        //
-        //  - A cell's `backgroundConfiguration` draws BEHIND `contentView`, and `card` is pinned
-        //    to all four of its edges. An opaque card hides it completely.
-        //  - With the card clear so the configuration really is visible, BOTH
-        //    `UIBackgroundConfiguration.listGroupedCell()` and `.listSidebarCell()` draw a
-        //    correct card on iPhone and NOTHING in an iPad sidebar. That is UIKit's answer, not
-        //    a bug to find: it does not consider these cells to have a resting fill there.
-        //  - So a chip that wants to be a card in a sidebar has to name its own colour. The
-        //    system will not supply one.
-        //
-        // The radius stays because it is shape, not colour, and the drag preview reads it.
-        card.layer.cornerRadius = Self.corner
+        card.backgroundColor = .secondarySystemGroupedBackground
+        card.layer.cornerRadius = 12
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)

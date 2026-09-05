@@ -91,40 +91,6 @@ final class BufferListViewController: UICollectionViewController {
     /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
-    /// Whether this list is a **sidebar** standing beside a conversation, rather than a screen
-    /// you tap through and leave.
-    ///
-    /// A selection means something here — the conversation next to it is still on screen, so
-    /// the row that opened it should stay lit. On a phone the list is gone the moment you pick,
-    /// and a row left highlighted behind you is just litter.
-    ///
-    /// Selection is all it drives, and all it should ever drive. Colours are not conditioned on
-    /// it and must not be — the system colours resolve for their environment by themselves, and
-    /// every attempt to help them do that made a chip harder to see, not easier.
-    var isSidebar = false {
-        didSet {
-            // `isViewLoaded` as well as the equality check: `applySelection` touches the
-            // collection view, and forcing the view to load early would build `dataSource`
-            // ahead of `viewDidLoad`, which is ordered around that on purpose. Skipping is
-            // free — the first `rebuild` applies the selection from scratch.
-            guard isSidebar != oldValue, isViewLoaded else { return }
-            applySelection()
-        }
-    }
-
-    /// The buffer the conversation beside this list is showing, lit while `isSidebar`.
-    ///
-    /// A key rather than a `Buffer`, because that is what survives the row being rebuilt out
-    /// from under it — the roster is re-derived on every frame that moves an unread count.
-    var selectedBufferKey: String? {
-        didSet {
-            // `isViewLoaded` for the same reason as `isSidebar`, and with the same free skip:
-            // the first `rebuild` applies the selection from scratch.
-            guard selectedBufferKey != oldValue, isViewLoaded else { return }
-            applySelection()
-        }
-    }
-
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
     /// just the roster again — this is a display cap, not a limit on what's remembered. Four,
     /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
@@ -567,34 +533,6 @@ final class BufferListViewController: UICollectionViewController {
         // Never animated: this runs on every frame that changes the roster, and a list that
         // slides every time someone speaks is a list you can't read.
         dataSource.apply(snapshot, animatingDifferences: false)
-        // ⚠ After every apply, not only when the selection changes. UICollectionView tracks
-        // selection by INDEX PATH, and a snapshot that moves a buffer — which a message
-        // arriving anywhere can do, since Recent is MRU-ordered — leaves the highlight on
-        // whatever row inherited the old position. Re-deriving it from the key is what keeps
-        // the lit row and the open conversation the same buffer.
-        applySelection()
-    }
-
-    /// Light the row for `selectedBufferKey`, and put out whatever was lit before.
-    ///
-    /// Only the FIRST match, and `allowsMultipleSelection` stays off deliberately. A buffer can
-    /// appear in up to three sections at once (a favourited channel is a chip *and* a roster
-    /// row), so lighting all of them would want multiple selection — and multiple selection
-    /// turns a tap on an already-selected row into a DESELECT, which would break re-opening the
-    /// conversation you are already in. One lit row, the topmost, is the cheaper trade.
-    private func applySelection() {
-        let wanted: IndexPath? = isSidebar
-            ? selectedBufferKey.flatMap { key in
-                dataSource.snapshot().itemIdentifiers.first { $0.key == key }
-                    .flatMap { dataSource.indexPath(for: $0) }
-            }
-            : nil
-        for path in collectionView.indexPathsForSelectedItems ?? [] where path != wanted {
-            collectionView.deselectItem(at: path, animated: false)
-        }
-        if let wanted {
-            collectionView.selectItem(at: wanted, animated: false, scrollPosition: [])
-        }
     }
 
     /// Show a centered placeholder when the list has no rows, so a blank screen always says
@@ -646,37 +584,9 @@ final class BufferListViewController: UICollectionViewController {
 
     // MARK: - Layout
 
-    /// The gap between two chips in a grid section, applied as half of it on each side of an
-    /// item so it can't overflow the row.
-    private static let chipGutter: CGFloat = 10
-
-    /// The narrowest a chip is allowed to be DRAWN before a column is dropped. Wide enough for a
-    /// channel name over its network hint without either truncating on the first word.
-    private static let chipMinimumWidth: CGFloat = 220
-
-    /// A grid section's own inset. Plus the item's half-gutter it makes the 16 the insetGrouped
-    /// list draws its cards at, so a chip's outer edge lines up with a row's.
-    private static let chipSectionInset: CGFloat = 11
-
-    /// How many chips across a grid section gets, given the width available to the section
-    /// before its own insets come off. Never fewer than two: two is what every iPhone width
-    /// produces, and a one-column grid of cards is just a worse list.
-    ///
-    /// ⚠ Divided by the minimum PLUS the gutter, because the gutter is an item inset (see the
-    /// grid below) and so comes out of the item's own share: a slot of exactly
-    /// `chipMinimumWidth` draws a card a whole gutter narrower than that. Dividing by the
-    /// minimum alone sizes the SLOT and silently breaks the floor this constant states — 210pt
-    /// of card against a documented 220 anywhere in the 682-704pt band, which is not some
-    /// unreachable threshold but the width an iPad window lands on when it's dragged narrow.
-    private static func chipColumns(forWidth width: CGFloat) -> Int {
-        max(2, Int((width - 2 * chipSectionInset) / (chipMinimumWidth + chipGutter)))
-    }
-
     /// One scroll view, section by section: the per-network rosters lay out as grouped lists
     /// (with swipe-to-leave, under a native list header), and Friends/Favorites/Recent lay out
-    /// as a grid of cards — two across on a phone, more as the window allows (under a boundary
-    /// header). Every section carries a title, and every section is centred in the same column
-    /// once the window is wider than one (`ReadingColumn`).
+    /// as a two-column grid of cards (under a boundary header). Every section carries a title.
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] index, environment in
             // ⚠⚠ By IDENTITY, not by index. This closure is called lazily and its result is
@@ -686,12 +596,6 @@ final class BufferListViewController: UICollectionViewController {
                 return nil
             }
             let hasTitle = self.sections.first { $0.id == id }?.title != nil
-            // Sized from the CONTAINER, not the screen, so a Stage Manager window or a Split
-            // View slot gets the layout its own width deserves rather than the device's — the
-            // same rule `UploadsGrid` follows.
-            let width = environment.container.effectiveContentSize.width
-            // What centring the column costs each side. Zero on every iPhone.
-            let pad = ReadingColumn.sideInset(forWidth: width)
             let layoutSection: NSCollectionLayoutSection
 
             switch id.layout {
@@ -704,35 +608,18 @@ final class BufferListViewController: UICollectionViewController {
                 config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
                     self?.trailingSwipe(at: indexPath)
                 }
-                let list = NSCollectionLayoutSection.list(using: config, layoutEnvironment: environment)
-                // Added to whatever the list configuration set rather than assigned over it —
-                // insetGrouped's own card inset is in there and has to survive.
-                list.contentInsets.leading += pad
-                list.contentInsets.trailing += pad
-                layoutSection = list
+                layoutSection = .list(using: config, layoutEnvironment: environment)
 
             case .grid:
-                // As many chips across as fit at a legible width, never fewer than two — two
-                // being what every iPhone gets, and what this grid was before it had to answer
-                // for a 13" display where two chips would be 340pt of name apiece.
-                let columns = Self.chipColumns(forWidth: width - 2 * pad)
-                // Unlike the deprecated `subitem:count:` (which forced equal-sized items),
-                // `repeatingSubitem:count:` makes it *your* job to size the item to fit `count`
-                // repetitions — so the item is a `1/count` fraction of the group. Left at
-                // `.fractionalWidth(1)` each item takes the full row and the rest are pushed
-                // off, collapsing the grid to one column. (See SO 77092978.)
+                // Two-up grid. Unlike the deprecated `subitem:count:` (which forced equal-sized
+                // items), `repeatingSubitem:count:` makes it *your* job to size the item to fit
+                // `count` repetitions — so the item is `.fractionalWidth(0.5)`, half the group.
+                // Left at `.fractionalWidth(1)` each item takes the full row and the second chip
+                // is pushed off, collapsing the grid to one column. (See SO 77092978.)
                 let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(
-                    widthDimension: .fractionalWidth(1 / CGFloat(columns)),
+                    widthDimension: .fractionalWidth(0.5),
                     heightDimension: .fractionalHeight(1)
                 ))
-                // ⚠⚠ The gutter is an item INSET, not `interItemSpacing`. A repeating group
-                // divides its width among `count` items and then adds the spacing on top, so
-                // fractional items plus fixed spacing overflow the row — invisibly at two
-                // columns, and worse with every column added. An inset comes out of the item's
-                // own share and cannot overflow. (`UploadsGrid` documents the same trap; this
-                // grid is the one its comment is about.)
-                item.contentInsets = NSDirectionalEdgeInsets(
-                    top: 0, leading: Self.chipGutter / 2, bottom: 0, trailing: Self.chipGutter / 2)
                 let group = NSCollectionLayoutGroup.horizontal(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
@@ -742,17 +629,15 @@ final class BufferListViewController: UICollectionViewController {
                         heightDimension: .estimated(44)
                     ),
                     repeatingSubitem: item,
-                    count: columns
+                    count: 2
                 )
+                group.interItemSpacing = .fixed(10)
                 let grid = NSCollectionLayoutSection(group: group)
                 grid.interGroupSpacing = 10
-                // The section inset plus the item's own half-gutter is the 16 the insetGrouped
-                // list draws its cards at (and the nav-bar buttons), so a chip's outer edge
-                // lines up with a row's edge while the gap between two chips is one whole
-                // gutter; the extra bottom inset spaces the grid off the section under it.
-                grid.contentInsets = NSDirectionalEdgeInsets(
-                    top: 2, leading: Self.chipSectionInset + pad,
-                    bottom: 18, trailing: Self.chipSectionInset + pad)
+                // 16 matches the horizontal inset the insetGrouped list draws its cards at (and
+                // the nav-bar buttons), so a chip's edge lines up with a row's edge; the extra
+                // bottom inset spaces the grid off the section under it.
+                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 16, bottom: 18, trailing: 16)
                 // A grid has no list header of its own, so it carries a boundary one — the
                 // small gap this leaves reads fine above cards.
                 if hasTitle {
@@ -1479,11 +1364,7 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Collection view data source
 
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        // A tap on the phone is a departure, so the flash fades and the row is left as it was.
-        // In a sidebar it's a CHOICE, and the row stays lit to say which conversation the
-        // column beside it is showing — `applySelection` owns that, driven by the key rather
-        // than by this tap, so a buffer opened from anywhere else lights up the same way.
-        if !isSidebar { collectionView.deselectItem(at: indexPath, animated: true) }
+        collectionView.deselectItem(at: indexPath, animated: true)
         guard let row = row(at: indexPath) else { return }
         // A friend's primary DM often isn't a materialized buffer — a DM that's closed
         // server-side has no row in `state.buffers`, and the chat screen's hydrate only fires
