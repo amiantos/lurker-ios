@@ -588,7 +588,7 @@ final class BufferListViewController: UICollectionViewController {
     /// item so it can't overflow the row.
     private static let chipGutter: CGFloat = 10
 
-    /// The narrowest a chip is allowed to get before a column is dropped. Wide enough for a
+    /// The narrowest a chip is allowed to be DRAWN before a column is dropped. Wide enough for a
     /// channel name over its network hint without either truncating on the first word.
     private static let chipMinimumWidth: CGFloat = 220
 
@@ -599,8 +599,15 @@ final class BufferListViewController: UICollectionViewController {
     /// How many chips across a grid section gets, given the width available to the section
     /// before its own insets come off. Never fewer than two: two is what every iPhone width
     /// produces, and a one-column grid of cards is just a worse list.
+    ///
+    /// ⚠ Divided by the minimum PLUS the gutter, because the gutter is an item inset (see the
+    /// grid below) and so comes out of the item's own share: a slot of exactly
+    /// `chipMinimumWidth` draws a card a whole gutter narrower than that. Dividing by the
+    /// minimum alone sizes the SLOT and silently breaks the floor this constant states — 210pt
+    /// of card against a documented 220 anywhere in the 682-704pt band, which is not some
+    /// unreachable threshold but the width an iPad window lands on when it's dragged narrow.
     private static func chipColumns(forWidth width: CGFloat) -> Int {
-        max(2, Int((width - 2 * chipSectionInset) / chipMinimumWidth))
+        max(2, Int((width - 2 * chipSectionInset) / (chipMinimumWidth + chipGutter)))
     }
 
     /// One scroll view, section by section: the per-network rosters lay out as grouped lists
