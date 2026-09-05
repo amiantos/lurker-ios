@@ -647,6 +647,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         }
         UserPreferences.standard.forgetLastBuffer()
+        // The one way out of a conversation that the split doesn't drive itself. Collapsed —
+        // Slide Over, or a narrow Stage Manager window — the columns are a single stack and
+        // Back pops this screen off it, which no `showBufferList` ever hears about. Left
+        // unsaid, the split still believes this buffer is open: it would collapse straight
+        // back into the conversation you just left, and on expanding mark its row in the list
+        // beside a column that no longer holds it.
+        (splitViewController as? BufferSplitViewController)?.clearSelection()
     }
 
     deinit {
@@ -2392,8 +2399,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// and it's on top of the buffer list, so it's the nav's top VC — resolved from the active
     /// window rather than `self`, so it finds the CURRENT buffer even when the originating VC
     /// is offscreen. Nil when the user has backed out to the list and no buffer is open.
+    ///
+    /// ⚠ The window's root is a split view on iPad, so the navigation-controller cast fails
+    /// there for every window — and this returning nil is silent: an upload's link stops
+    /// reaching the composer that asked for it and lands on the clipboard behind an alert,
+    /// every single time. Ask the split which column is showing the conversation.
     private static func activeChat() -> ChatViewController? {
-        (keyWindow()?.rootViewController as? UINavigationController)?.topViewController as? ChatViewController
+        let root = keyWindow()?.rootViewController
+        if let split = root as? BufferSplitViewController { return split.currentChat }
+        return (root as? UINavigationController)?.topViewController as? ChatViewController
     }
 
     /// The frontmost presented VC, for presenting over whatever is currently up (a sheet, the

@@ -391,7 +391,15 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private func refreshBanner() {
-        let isFrontmost = view.window != nil && navigationController?.topViewController === self
+        // `marksOpenBuffer` is the third condition and it means "there is a conversation beside
+        // me". Side by side, both screens are in the window and each is the top of its own
+        // column's stack, so the test above passes on both and the banner the comment says must
+        // never be drawn twice is drawn twice — over each other's position, and read out twice
+        // by VoiceOver from two `.updatesFrequently` elements. The conversation column keeps
+        // its banner; this one yields, exactly as it does when pushed over on the phone.
+        let isFrontmost = view.window != nil
+            && navigationController?.topViewController === self
+            && !marksOpenBuffer
         connectionBanner.update(isFrontmost ? bannerState : .hidden)
     }
 
@@ -661,9 +669,21 @@ final class BufferListViewController: UICollectionViewController {
 
     private lazy var listRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Row> {
         [weak self] cell, _, row in
-        var background = UIBackgroundConfiguration.listCell()
-        background.backgroundColor = self?.isOpen(row.buffer) == true ? Self.openRowTint : .clear
-        cell.backgroundConfiguration = background
+        // ⚠ Only the open row gets a configuration at all; everything else is set back to
+        // `nil`, which is not the same as clear. These sections are `.insetGrouped` over a
+        // grouped-grey collection view, so a row's card IS its default background — an
+        // explicit `.clear` erases the card on every ordinary row, on the phone too, where
+        // no row is ever open. Nil restores the default *and* UIKit's own state updates.
+        // Built from `defaultBackgroundConfiguration()` rather than `listCell()` so the tint
+        // follows the card's corner radius instead of painting a square over it. Set on both
+        // branches, never just the open one: these cells are reused.
+        if self?.isOpen(row.buffer) == true {
+            var background = cell.defaultBackgroundConfiguration()
+            background.backgroundColor = Self.openRowTint
+            cell.backgroundConfiguration = background
+        } else {
+            cell.backgroundConfiguration = nil
+        }
 
         var content = UIListContentConfiguration.cell()
         // No `networkName` here, unlike the pill: every roster row already states its network
@@ -820,6 +840,9 @@ final class BufferListViewController: UICollectionViewController {
         didSet {
             guard marksOpenBuffer != oldValue else { return }
             markingChanged()
+            // The banner yields to the conversation column's whenever there is one, so this
+            // flag flipping is exactly when that answer changes.
+            refreshBanner()
         }
     }
 

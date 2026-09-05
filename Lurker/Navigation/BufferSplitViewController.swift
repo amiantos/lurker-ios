@@ -124,7 +124,10 @@ final class BufferSplitViewController: UISplitViewController {
         // Already reading it, with nothing to jump to — same early-out the stack version makes,
         // and for the same reason: rebuilding re-latches the unread divider, re-requests
         // history, and throws away the scroll position to arrive where we already are.
-        if messageId == nil, selection == buffer.key,
+        // Compared by `id`, which lower-cases the target: IRC servers are inconsistent about
+        // case, so the same conversation reaches this as `#Lurker` from one route and
+        // `#lurker` from another. An exact key match would miss that and rebuild the screen.
+        if messageId == nil, selection?.id == buffer.key.id,
            chatNav.viewControllers.last is ChatViewController {
             show(.secondary)
             return
@@ -137,6 +140,31 @@ final class BufferSplitViewController: UISplitViewController {
         chatNav.setViewControllers([chat], animated: false)
         show(.secondary)
         list?.markSelection(buffer.key)
+    }
+
+    /// The conversation on screen, whichever column is holding it.
+    ///
+    /// Collapsed the columns are one stack and the conversation sits on top of the list;
+    /// expanded it is the secondary column's own root. Never nil once signed in on iPad — the
+    /// column rests on the system buffer — which is the honest answer: that screen has a
+    /// composer and is what an upload finishing would insert into.
+    var currentChat: ChatViewController? {
+        let nav = isCollapsed ? listNav : chatNav
+        return nav.topViewController as? ChatViewController
+    }
+
+    /// Forget which conversation is open, and drop the column back to the server log.
+    ///
+    /// For the exit this class doesn't own: a Back tap in a collapsed split. `showBufferList`
+    /// is the expanded equivalent and does the same thing plus showing the primary column,
+    /// which collapsed has already happened by the time anyone can call this.
+    func clearSelection() {
+        guard selection != nil else { return }
+        selection = nil
+        chatNav.setViewControllers(
+            [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
+        )
+        list?.markSelection(nil)
     }
 
     /// Nothing selected: the list, with the server log beside it.
