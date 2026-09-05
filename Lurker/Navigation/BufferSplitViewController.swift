@@ -71,6 +71,22 @@ final class BufferSplitViewController: UISplitViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// ⚠ From `viewDidLayoutSubviews`, not only from the places that change the selection.
+    /// `isCollapsed` is a fact about the CURRENT layout and is not settled until one has
+    /// happened, so there is no single earlier moment that is reliably right — and a Stage
+    /// Manager drag changes it without any navigation to hang a callback on. Both properties
+    /// guard on equality, so the steady state is two comparisons per pass.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        syncSidebar()
+    }
+
+    /// Tell the list what it currently is, and which conversation is beside it.
+    private func syncSidebar() {
+        list.isSidebar = !isCollapsed
+        list.selectedBufferKey = chat?.buffer.key.id
+    }
+
     // MARK: - Navigation
 
     /// Open a buffer, with the list beside it (or under it, collapsed).
@@ -103,6 +119,7 @@ final class BufferSplitViewController: UISplitViewController {
         let screen = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
         chat = screen
         detail.setViewControllers([screen], animated: false)
+        syncSidebar()
         show(.secondary)
     }
 
@@ -118,6 +135,7 @@ final class BufferSplitViewController: UISplitViewController {
         // inherit it (see `splitViewControllerDidCollapse`).
         let empty: [UIViewController] = isCollapsed ? [] : [NoBufferViewController()]
         detail.setViewControllers(empty, animated: false)
+        syncSidebar()
         show(.primary)
     }
 
@@ -174,6 +192,7 @@ extension BufferSplitViewController: UISplitViewControllerDelegate {
             sidebar.setViewControllers(merged, animated: false)
         }
         detail.setViewControllers([], animated: false)
+        syncSidebar()
         resyncPills()
     }
 
@@ -183,6 +202,7 @@ extension BufferSplitViewController: UISplitViewControllerDelegate {
         if detail.viewControllers.isEmpty {
             detail.setViewControllers([NoBufferViewController()], animated: false)
         }
+        syncSidebar()
         resyncPills()
     }
 

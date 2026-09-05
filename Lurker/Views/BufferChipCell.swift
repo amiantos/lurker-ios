@@ -97,6 +97,23 @@ final class BufferBadgeLabel: UILabel {
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
 final class BufferChipCell: UICollectionViewCell {
+
+    /// Whether this chip is drawn on a **sidebar's** material rather than on the grouped
+    /// background the phone gives it.
+    ///
+    /// It has to be told, because there is no trait for "am I in a sidebar" and the colours
+    /// genuinely differ: `.secondarySystemGroupedBackground` is white, which reads as a card
+    /// against the phone's grey canvas and vanishes against the near-white material iPadOS
+    /// puts behind a sidebar column. The roster rows survive that on their own — a list cell
+    /// has separators and a section shape to give it edges — but a chip is nothing *but* its
+    /// fill, so when the fill matches the backdrop the chip stops existing.
+    var onSidebarMaterial = false {
+        didSet {
+            guard onSidebarMaterial != oldValue else { return }
+            setNeedsUpdateConfiguration()
+        }
+    }
+
     private let card = UIView()
     private let nameLabel = UILabel()
     private let networkHintLabel = UILabel()
@@ -108,7 +125,6 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        card.backgroundColor = .secondarySystemGroupedBackground
         card.layer.cornerRadius = 12
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -223,6 +239,36 @@ final class BufferChipCell: UICollectionViewCell {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    /// The card's fill, for the backdrop it's on and the state it's in.
+    ///
+    /// Driven from the configuration state rather than set once at init, which is what makes a
+    /// *selected* chip possible at all: the sidebar keeps its selection while you read the
+    /// buffer it points at (see `BufferListViewController.selectedBufferKey`), and this is
+    /// where that shows.
+    override func updateConfiguration(using state: UICellConfigurationState) {
+        super.updateConfiguration(using: state)
+        card.backgroundColor = Self.fill(for: state, onSidebarMaterial: onSidebarMaterial)
+    }
+
+    /// Selected beats everything: a tint at low alpha, so the name on top keeps its contrast
+    /// rather than being reversed out the way a fully-tinted row would need.
+    ///
+    /// Unselected splits by backdrop. On the phone's grouped canvas it stays the white card it
+    /// has always been — nothing about that layout moved. On a sidebar it becomes a *fill*,
+    /// which is the whole point of the fill palette: a translucent grey reads against whatever
+    /// is behind it, where an opaque white only reads against something darker than white.
+    private static func fill(
+        for state: UICellConfigurationState, onSidebarMaterial: Bool
+    ) -> UIColor {
+        if state.isSelected {
+            return .tintColor.withAlphaComponent(0.20)
+        }
+        if state.isHighlighted {
+            return onSidebarMaterial ? .secondarySystemFill : .systemFill
+        }
+        return onSidebarMaterial ? .tertiarySystemFill : .secondarySystemGroupedBackground
+    }
 
     /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's
     /// square bounding box.

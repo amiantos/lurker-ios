@@ -91,6 +91,45 @@ final class BufferListViewController: UICollectionViewController {
     /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
+    /// Whether this list is a **sidebar** standing beside a conversation, rather than a screen
+    /// you tap through and leave.
+    ///
+    /// It changes two things, and both follow from that one difference. A selection means
+    /// something here — the conversation next to it is still on screen, so the row that opened
+    /// it should stay lit — where on a phone the list is gone the moment you pick, and a row
+    /// left highlighted behind you is just litter. And the chips have to be drawn for a
+    /// sidebar's material rather than the grouped canvas (see `BufferChipCell`).
+    var isSidebar = false {
+        didSet {
+            // ⚠ `isViewLoaded` as well as the equality check. Touching `dataSource` before
+            // `viewDidLoad` would construct it early, and `UICollectionViewController` installs
+            // ITSELF as the collection view's data source in `loadView` — so an early build
+            // would then be clobbered by the very thing `viewDidLoad` is careful to order
+            // around. Skipping is free: the first dequeue reads this value anyway.
+            guard isSidebar != oldValue, isViewLoaded else { return }
+            // The chips read this at dequeue, so the ones already on screen have to be asked
+            // again. Reconfigure, not reload: it keeps the cells and their positions and only
+            // re-runs the registration.
+            var snapshot = dataSource.snapshot()
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+            dataSource.apply(snapshot, animatingDifferences: false)
+            applySelection()
+        }
+    }
+
+    /// The buffer the conversation beside this list is showing, lit while `isSidebar`.
+    ///
+    /// A key rather than a `Buffer`, because that is what survives the row being rebuilt out
+    /// from under it — the roster is re-derived on every frame that moves an unread count.
+    var selectedBufferKey: String? {
+        didSet {
+            // `isViewLoaded` for the same reason as `isSidebar`, and with the same free skip:
+            // the first `rebuild` applies the selection from scratch.
+            guard selectedBufferKey != oldValue, isViewLoaded else { return }
+            applySelection()
+        }
+    }
+
     /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
     /// just the roster again — this is a display cap, not a limit on what's remembered. Four,
     /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
@@ -533,6 +572,34 @@ final class BufferListViewController: UICollectionViewController {
         // Never animated: this runs on every frame that changes the roster, and a list that
         // slides every time someone speaks is a list you can't read.
         dataSource.apply(snapshot, animatingDifferences: false)
+        // ⚠ After every apply, not only when the selection changes. UICollectionView tracks
+        // selection by INDEX PATH, and a snapshot that moves a buffer — which a message
+        // arriving anywhere can do, since Recent is MRU-ordered — leaves the highlight on
+        // whatever row inherited the old position. Re-deriving it from the key is what keeps
+        // the lit row and the open conversation the same buffer.
+        applySelection()
+    }
+
+    /// Light the row for `selectedBufferKey`, and put out whatever was lit before.
+    ///
+    /// Only the FIRST match, and `allowsMultipleSelection` stays off deliberately. A buffer can
+    /// appear in up to three sections at once (a favourited channel is a chip *and* a roster
+    /// row), so lighting all of them would want multiple selection — and multiple selection
+    /// turns a tap on an already-selected row into a DESELECT, which would break re-opening the
+    /// conversation you are already in. One lit row, the topmost, is the cheaper trade.
+    private func applySelection() {
+        let wanted: IndexPath? = isSidebar
+            ? selectedBufferKey.flatMap { key in
+                dataSource.snapshot().itemIdentifiers.first { $0.key == key }
+                    .flatMap { dataSource.indexPath(for: $0) }
+            }
+            : nil
+        for path in collectionView.indexPathsForSelectedItems ?? [] where path != wanted {
+            collectionView.deselectItem(at: path, animated: false)
+        }
+        if let wanted {
+            collectionView.selectItem(at: wanted, animated: false, scrollPosition: [])
+        }
     }
 
     /// Show a centered placeholder when the list has no rows, so a blank screen always says
@@ -731,7 +798,8 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        cell, _, row in
+        [weak self] cell, _, row in
+        cell.onSidebarMaterial = self?.isSidebar ?? false
         cell.configure(
             // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
             // print, so `displayName` falls back to the literal "Server" without one. A roster
@@ -1417,7 +1485,11 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Collection view data source
 
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        collectionView.deselectItem(at: indexPath, animated: true)
+        // A tap on the phone is a departure, so the flash fades and the row is left as it was.
+        // In a sidebar it's a CHOICE, and the row stays lit to say which conversation the
+        // column beside it is showing — `applySelection` owns that, driven by the key rather
+        // than by this tap, so a buffer opened from anywhere else lights up the same way.
+        if !isSidebar { collectionView.deselectItem(at: indexPath, animated: true) }
         guard let row = row(at: indexPath) else { return }
         // A friend's primary DM often isn't a materialized buffer — a DM that's closed
         // server-side has no row in `state.buffers`, and the chat screen's hydrate only fires
