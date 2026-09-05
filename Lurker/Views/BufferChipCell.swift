@@ -102,11 +102,8 @@ final class BufferChipCell: UICollectionViewCell {
     /// two can't disagree about the shape.
     private static let corner: CGFloat = 12
 
-    /// The card, at rest and selected. Dynamic colours, assigned once — UIKit re-resolves them
-    /// for light/dark and for whatever environment the cell lands in, which is the whole reason
-    /// there is no `updateConfiguration` here and nothing anywhere asks whether this is a
-    /// sidebar. If a chip looks wrong, these two lines are the only place to look.
-    private static let restingFill = UIColor.secondarySystemGroupedBackground
+    /// The lit state. The RESTING fill is not here any more — UIKit draws it, from the
+    /// background configuration set up in `init`.
     private static let selectedFill = UIColor.tintColor.withAlphaComponent(0.20)
 
     private let card = UIView()
@@ -120,11 +117,34 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        card.backgroundColor = Self.restingFill
+        // ⚠ CLEAR, and that is the point of this arrangement rather than an oversight. A cell's
+        // `backgroundConfiguration` draws BEHIND `contentView`, and `card` is pinned to all four
+        // of its edges — so an opaque card hides the configuration completely. Any experiment
+        // that sets a background configuration while the card still has a fill reads as "nothing
+        // changed", which is a thing to remember before concluding a configuration resolved to
+        // the wrong colour.
+        card.backgroundColor = .clear
         card.layer.cornerRadius = Self.corner
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)
+
+        // Let UIKit fill the chip, using the factory meant for a sidebar rather than a colour
+        // named here. `cornerRadius` because the configuration paints the cell's whole square
+        // otherwise, behind a card whose corners are round.
+        //
+        // `automaticallyUpdatesBackgroundConfiguration = false` because it defaults to true, and
+        // a plain cell's `defaultBackgroundConfiguration()` is `.clear()` — left on, UIKit
+        // replaces this on the next state update and the chip goes blank again.
+        //
+        // ⚠ `listSidebarCell()` is transparent AT REST by design: a sidebar row shows a fill
+        // only when selected. If the chips come out with no card at all, that is this working as
+        // specified, not failing — and it is the answer to whether the system has a "sidebar
+        // chip" appearance to borrow. It applies on iPhone too; nothing here detects the idiom.
+        automaticallyUpdatesBackgroundConfiguration = false
+        var background = UIBackgroundConfiguration.listSidebarCell()
+        background.cornerRadius = Self.corner
+        backgroundConfiguration = background
 
         presenceDot.translatesAutoresizingMaskIntoConstraints = false
         presenceDot.layer.cornerRadius = 5
@@ -237,11 +257,11 @@ final class BufferChipCell: UICollectionViewCell {
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
     /// The sidebar keeps its selection while you read the buffer it points at, so a chip has a
-    /// lit state (see `BufferListViewController.selectedBufferKey`). `isSelected` is the whole
-    /// mechanism — UIKit sets it, this repaints, and nothing has to be told what kind of layout
-    /// it is in.
+    /// lit state (see `BufferListViewController.selectedBufferKey`). Painted on the card, which
+    /// sits ON TOP of the background configuration — so it tints whatever UIKit drew underneath
+    /// rather than replacing it, and clears back to nothing when deselected.
     override var isSelected: Bool {
-        didSet { card.backgroundColor = isSelected ? Self.selectedFill : Self.restingFill }
+        didSet { card.backgroundColor = isSelected ? Self.selectedFill : .clear }
     }
 
     /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's
