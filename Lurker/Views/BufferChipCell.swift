@@ -96,15 +96,14 @@ final class BufferBadgeLabel: UILabel {
 /// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
+///
+/// ⚠ **The card is currently unpainted** — see `init`. The description above is the design, not
+/// what this draws today; it is a bare layout container until a fill is chosen deliberately.
 final class BufferChipCell: UICollectionViewCell {
 
     /// The card's corner radius, shared by its fill and by the silhouette a drag lifts, so the
     /// two can't disagree about the shape.
     private static let corner: CGFloat = 12
-
-    /// The lit state. The RESTING fill is not here any more — UIKit draws it, from the
-    /// background configuration set up in `init`.
-    private static let selectedFill = UIColor.tintColor.withAlphaComponent(0.20)
 
     private let card = UIView()
     private let nameLabel = UILabel()
@@ -117,36 +116,28 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        // ⚠ CLEAR, and that is the point of this arrangement rather than an oversight. A cell's
-        // `backgroundConfiguration` draws BEHIND `contentView`, and `card` is pinned to all four
-        // of its edges — so an opaque card hides the configuration completely. Any experiment
-        // that sets a background configuration while the card still has a fill reads as "nothing
-        // changed", which is a thing to remember before concluding a configuration resolved to
-        // the wrong colour.
-        card.backgroundColor = .clear
+        // ⚠ NOTHING here paints. The chip currently has no fill at all, on any idiom — this is a
+        // deliberate floor to build up from, not an oversight, after several rounds of stacked
+        // mechanisms (a hand-picked palette, a background configuration, a border, an idiom
+        // flag) made the thing impossible to iterate on: each one could mask the next, so a
+        // change that did nothing and a change that was overdrawn looked identical.
+        //
+        // What was learned before it was taken out, so it need not be rediscovered:
+        //
+        //  - A cell's `backgroundConfiguration` draws BEHIND `contentView`, and `card` is pinned
+        //    to all four of its edges. An opaque card hides it completely.
+        //  - With the card clear so the configuration really is visible, BOTH
+        //    `UIBackgroundConfiguration.listGroupedCell()` and `.listSidebarCell()` draw a
+        //    correct card on iPhone and NOTHING in an iPad sidebar. That is UIKit's answer, not
+        //    a bug to find: it does not consider these cells to have a resting fill there.
+        //  - So a chip that wants to be a card in a sidebar has to name its own colour. The
+        //    system will not supply one.
+        //
+        // The radius stays because it is shape, not colour, and the drag preview reads it.
         card.layer.cornerRadius = Self.corner
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)
-
-        // Let UIKit fill the chip rather than naming a colour here. `cornerRadius` because the
-        // configuration paints the cell's whole square otherwise, behind a card whose corners
-        // are round.
-        //
-        // `automaticallyUpdatesBackgroundConfiguration = false` because it defaults to true, and
-        // a plain cell's `defaultBackgroundConfiguration()` is `.clear()` — left on, UIKit
-        // replaces this on the next state update and the chip goes blank again.
-        //
-        // `listGroupedCell()`, not `listSidebarCell()`: the sidebar factory draws nothing at
-        // rest (a sidebar row fills only when selected), which is its spec and was confirmed
-        // on device — chips came out blank. That result is what makes THIS a real test: it
-        // proved the configuration is applied and drawn, so an earlier `listGroupedCell()`
-        // attempt that looked invisible was being occluded by an opaque card, not resolving to
-        // the wrong colour. Same call, first honest look at it.
-        automaticallyUpdatesBackgroundConfiguration = false
-        var background = UIBackgroundConfiguration.listGroupedCell()
-        background.cornerRadius = Self.corner
-        backgroundConfiguration = background
 
         presenceDot.translatesAutoresizingMaskIntoConstraints = false
         presenceDot.layer.cornerRadius = 5
@@ -257,14 +248,6 @@ final class BufferChipCell: UICollectionViewCell {
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
-
-    /// The sidebar keeps its selection while you read the buffer it points at, so a chip has a
-    /// lit state (see `BufferListViewController.selectedBufferKey`). Painted on the card, which
-    /// sits ON TOP of the background configuration — so it tints whatever UIKit drew underneath
-    /// rather than replacing it, and clears back to nothing when deselected.
-    override var isSelected: Bool {
-        didSet { card.backgroundColor = isSelected ? Self.selectedFill : .clear }
-    }
 
     /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's
     /// square bounding box.
