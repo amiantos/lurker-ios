@@ -584,9 +584,30 @@ final class BufferListViewController: UICollectionViewController {
 
     // MARK: - Layout
 
+    /// The gap between two chips in a grid section, applied as half of it on each side of an
+    /// item so it can't overflow the row.
+    private static let chipGutter: CGFloat = 10
+
+    /// The narrowest a chip is allowed to get before a column is dropped. Wide enough for a
+    /// channel name over its network hint without either truncating on the first word.
+    private static let chipMinimumWidth: CGFloat = 220
+
+    /// A grid section's own inset. Plus the item's half-gutter it makes the 16 the insetGrouped
+    /// list draws its cards at, so a chip's outer edge lines up with a row's.
+    private static let chipSectionInset: CGFloat = 11
+
+    /// How many chips across a grid section gets, given the width available to the section
+    /// before its own insets come off. Never fewer than two: two is what every iPhone width
+    /// produces, and a one-column grid of cards is just a worse list.
+    private static func chipColumns(forWidth width: CGFloat) -> Int {
+        max(2, Int((width - 2 * chipSectionInset) / chipMinimumWidth))
+    }
+
     /// One scroll view, section by section: the per-network rosters lay out as grouped lists
     /// (with swipe-to-leave, under a native list header), and Friends/Favorites/Recent lay out
-    /// as a two-column grid of cards (under a boundary header). Every section carries a title.
+    /// as a grid of cards — two across on a phone, more as the window allows (under a boundary
+    /// header). Every section carries a title, and every section is centred in the same column
+    /// once the window is wider than one (`ReadingColumn`).
     private func makeLayout() -> UICollectionViewLayout {
         UICollectionViewCompositionalLayout { [weak self] index, environment in
             // ⚠⚠ By IDENTITY, not by index. This closure is called lazily and its result is
@@ -596,6 +617,12 @@ final class BufferListViewController: UICollectionViewController {
                 return nil
             }
             let hasTitle = self.sections.first { $0.id == id }?.title != nil
+            // Sized from the CONTAINER, not the screen, so a Stage Manager window or a Split
+            // View slot gets the layout its own width deserves rather than the device's — the
+            // same rule `UploadsGrid` follows.
+            let width = environment.container.effectiveContentSize.width
+            // What centring the column costs each side. Zero on every iPhone.
+            let pad = ReadingColumn.sideInset(forWidth: width)
             let layoutSection: NSCollectionLayoutSection
 
             switch id.layout {
@@ -608,18 +635,35 @@ final class BufferListViewController: UICollectionViewController {
                 config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
                     self?.trailingSwipe(at: indexPath)
                 }
-                layoutSection = .list(using: config, layoutEnvironment: environment)
+                let list = NSCollectionLayoutSection.list(using: config, layoutEnvironment: environment)
+                // Added to whatever the list configuration set rather than assigned over it —
+                // insetGrouped's own card inset is in there and has to survive.
+                list.contentInsets.leading += pad
+                list.contentInsets.trailing += pad
+                layoutSection = list
 
             case .grid:
-                // Two-up grid. Unlike the deprecated `subitem:count:` (which forced equal-sized
-                // items), `repeatingSubitem:count:` makes it *your* job to size the item to fit
-                // `count` repetitions — so the item is `.fractionalWidth(0.5)`, half the group.
-                // Left at `.fractionalWidth(1)` each item takes the full row and the second chip
-                // is pushed off, collapsing the grid to one column. (See SO 77092978.)
+                // As many chips across as fit at a legible width, never fewer than two — two
+                // being what every iPhone gets, and what this grid was before it had to answer
+                // for a 13" display where two chips would be 340pt of name apiece.
+                let columns = Self.chipColumns(forWidth: width - 2 * pad)
+                // Unlike the deprecated `subitem:count:` (which forced equal-sized items),
+                // `repeatingSubitem:count:` makes it *your* job to size the item to fit `count`
+                // repetitions — so the item is a `1/count` fraction of the group. Left at
+                // `.fractionalWidth(1)` each item takes the full row and the rest are pushed
+                // off, collapsing the grid to one column. (See SO 77092978.)
                 let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(
-                    widthDimension: .fractionalWidth(0.5),
+                    widthDimension: .fractionalWidth(1 / CGFloat(columns)),
                     heightDimension: .fractionalHeight(1)
                 ))
+                // ⚠⚠ The gutter is an item INSET, not `interItemSpacing`. A repeating group
+                // divides its width among `count` items and then adds the spacing on top, so
+                // fractional items plus fixed spacing overflow the row — invisibly at two
+                // columns, and worse with every column added. An inset comes out of the item's
+                // own share and cannot overflow. (`UploadsGrid` documents the same trap; this
+                // grid is the one its comment is about.)
+                item.contentInsets = NSDirectionalEdgeInsets(
+                    top: 0, leading: Self.chipGutter / 2, bottom: 0, trailing: Self.chipGutter / 2)
                 let group = NSCollectionLayoutGroup.horizontal(
                     layoutSize: NSCollectionLayoutSize(
                         widthDimension: .fractionalWidth(1),
@@ -629,15 +673,17 @@ final class BufferListViewController: UICollectionViewController {
                         heightDimension: .estimated(44)
                     ),
                     repeatingSubitem: item,
-                    count: 2
+                    count: columns
                 )
-                group.interItemSpacing = .fixed(10)
                 let grid = NSCollectionLayoutSection(group: group)
                 grid.interGroupSpacing = 10
-                // 16 matches the horizontal inset the insetGrouped list draws its cards at (and
-                // the nav-bar buttons), so a chip's edge lines up with a row's edge; the extra
-                // bottom inset spaces the grid off the section under it.
-                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 16, bottom: 18, trailing: 16)
+                // The section inset plus the item's own half-gutter is the 16 the insetGrouped
+                // list draws its cards at (and the nav-bar buttons), so a chip's outer edge
+                // lines up with a row's edge while the gap between two chips is one whole
+                // gutter; the extra bottom inset spaces the grid off the section under it.
+                grid.contentInsets = NSDirectionalEdgeInsets(
+                    top: 2, leading: Self.chipSectionInset + pad,
+                    bottom: 18, trailing: Self.chipSectionInset + pad)
                 // A grid has no list header of its own, so it carries a boundary one — the
                 // small gap this leaves reads fine above cards.
                 if hasTitle {

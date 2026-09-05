@@ -44,7 +44,14 @@ final class NavigationPill: NSObject, UINavigationControllerDelegate {
     /// Deliberately not `centerYAnchor`: a bar showing a large title is ~96pt tall and its
     /// centre lands in the middle of that large title, which would drag the pill down the
     /// moment the buffer list appeared and float it back up on every push.
-    private static let smallTitleRowCenter: CGFloat = 22
+    ///
+    /// Half the standard bar height, which UIKit picks by IDIOM rather than by width: 44pt on
+    /// iPhone, 50pt on iPad. Read once, at `attach`, because that is exactly as often as it can
+    /// change — an iPad window dragged narrow goes compact in its size classes but stays `.pad`,
+    /// and its bar stays 50.
+    private static func smallTitleRowCenter(for bar: UINavigationBar) -> CGFloat {
+        bar.traitCollection.userInterfaceIdiom == .pad ? 25 : 22
+    }
 
     private weak var navigationController: UINavigationController?
 
@@ -88,7 +95,8 @@ final class NavigationPill: NSObject, UINavigationControllerDelegate {
         bar.addSubview(pill)
         NSLayoutConstraint.activate([
             pill.centerXAnchor.constraint(equalTo: bar.centerXAnchor),
-            pill.centerYAnchor.constraint(equalTo: bar.topAnchor, constant: Self.smallTitleRowCenter),
+            pill.centerYAnchor.constraint(
+                equalTo: bar.topAnchor, constant: Self.smallTitleRowCenter(for: bar)),
         ])
 
         // Sync to whatever is already on the stack. The launch path builds its screens before

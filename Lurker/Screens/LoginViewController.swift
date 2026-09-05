@@ -26,6 +26,11 @@ final class LoginViewController: UIViewController {
 
     private var backend: Backend { backendControl.selectedSegmentIndex == 1 ? .hosted : .selfHosted }
 
+    /// How wide the form gets on a screen with room to spare. A sign-in form is four controls
+    /// and a sentence — past this it stops looking like a form and starts looking like a
+    /// mistake.
+    private static let formWidth: CGFloat = 420
+
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
         super.init(nibName: nil, bundle: nil)
@@ -98,6 +103,12 @@ final class LoginViewController: UIViewController {
         view.addSubview(scrollView)
         scrollView.addSubview(stack)
 
+        // What the form takes when there's room. High, not required: on a screen narrower than
+        // the ceiling it's impossible alongside the required insets below, so Auto Layout drops
+        // it — which is the mechanism, not a fallback — and the insets decide instead.
+        let formWidth = stack.widthAnchor.constraint(equalToConstant: Self.formWidth)
+        formWidth.priority = .defaultHigh
+
         NSLayoutConstraint.activate([
             scrollView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -108,8 +119,15 @@ final class LoginViewController: UIViewController {
             // frame guide (fixed to the viewport, so there's no sideways scroll or offset).
             stack.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor, constant: 32),
             stack.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor, constant: -32),
-            stack.leadingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: scrollView.frameLayoutGuide.trailingAnchor, constant: -24),
+            // Centred with a ceiling rather than pinned to both edges: 24pt from each side is
+            // right on a phone and absurd on an iPad, where it would stretch three text fields
+            // and a segmented control across a foot of glass.
+            stack.centerXAnchor.constraint(equalTo: scrollView.frameLayoutGuide.centerXAnchor),
+            stack.leadingAnchor.constraint(
+                greaterThanOrEqualTo: scrollView.frameLayoutGuide.leadingAnchor, constant: 24),
+            stack.trailingAnchor.constraint(
+                lessThanOrEqualTo: scrollView.frameLayoutGuide.trailingAnchor, constant: -24),
+            formWidth,
         ])
 
         let center = NotificationCenter.default

@@ -98,6 +98,10 @@ final class ComposerBar: UIView {
     private static let maxLines = 5
     /// The gap between the three glass pills.
     private static let gap: CGFloat = 8
+    /// How far the glass sits in from the bar's own edges. Internal because the chat screen
+    /// subtracts it when pinning this bar to the conversation's readable column: the *glass*
+    /// is what has to line up with the message text, not the transparent bar around it.
+    static let horizontalMargin: CGFloat = 16
     /// The text view's own inset. The placeholder is pinned to *these* exact values so it
     /// sits where the first typed character will, not merely somewhere near it.
     private static let textInset = UIEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
@@ -139,7 +143,8 @@ final class ComposerBar: UIView {
         // the column of bubbles above it rather than sitting a few points proud of them. A
         // bare view defaults to an 8pt margin; a table cell's content uses the system 16,
         // which is what the bubbles get.
-        directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16)
+        directionalLayoutMargins = NSDirectionalEdgeInsets(
+            top: 0, leading: Self.horizontalMargin, bottom: 0, trailing: Self.horizontalMargin)
         container.translatesAutoresizingMaskIntoConstraints = false
 
         // The field: a fixed radius, not `.capsule()`. A capsule's radius is half its
@@ -163,6 +168,9 @@ final class ComposerBar: UIView {
         textView.isScrollEnabled = false // until it hits the cap; see textViewDidChange
         textView.delegate = self
         textView.onPasteImage = { [weak self] data, mime, name in self?.onPasteImage?(data, mime, name) }
+        // Same path the send button takes, empty-field guard included — so Return on a blank
+        // composer does nothing at all rather than sending or breaking a line nobody typed.
+        textView.onHardwareReturn = { [weak self] in self?.fire() }
         textView.translatesAutoresizingMaskIntoConstraints = false
         applyKeyboardPreferences()
         NotificationCenter.default.addObserver(

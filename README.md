@@ -46,6 +46,25 @@ package:
 The folders are plain directories: the target is a synchronized group, so adding or moving a file
 needs no project-file edit.
 
+## iPhone and iPad
+
+One universal target, one navigation stack, both idioms — there is no iPad-specific screen and no
+size-class branch anywhere in the app. What changes with the window is only how wide the content is
+allowed to get:
+
+- The conversation, its composer and its floating pills all pin to UIKit's `readableContentGuide`,
+  so a channel is a column of text with one left edge and one right edge rather than a nick at one
+  side of a 13" display and a word at the other. On a phone that guide *is* the view's 16pt layout
+  margin, so nothing about the iPhone layout moved.
+- The buffer list centres its sections in a column of the same order (`ReadingColumn`) and lays its
+  chips out as many across as fit, which is two on every iPhone width and more on an iPad.
+- The composer sends on Return from a **hardware** keyboard (Shift-Return breaks the line). It's a
+  `UIKeyCommand`, which only physical keys reach, so the on-screen keyboard's Return still inserts a
+  newline on a phone.
+
+Because nothing is conditioned on the idiom, an iPad window dragged down to a phone's width is just
+a narrow window: the same code path, sized differently.
+
 ## Building
 
 Requires a Lurker server you can reach, with a **password** on your account (the native token
@@ -55,6 +74,10 @@ run, or from the command line:
 ```sh
 xcodebuild -project Lurker.xcodeproj -scheme Lurker -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,name=iPhone 17' build
+
+# Same target, the other idiom:
+xcodebuild -project Lurker.xcodeproj -scheme Lurker -sdk iphonesimulator \
+  -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M4)' build
 
 # The LurkerKit tests (store, parser, rendering) run on the host — no simulator:
 swift test --package-path LurkerKit

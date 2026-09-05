@@ -4,16 +4,43 @@
 import UIKit
 import UniformTypeIdentifiers
 
-/// The composer's text view, subclassed for one reason: intercept an **image paste** (#14).
-/// Copy a screenshot and paste it here and it should upload, not drop a text attachment into
-/// the field. Everything else — a text paste included — falls straight through to
-/// `UITextView`.
+/// The composer's text view, subclassed for two reasons: intercept an **image paste** (#14) —
+/// copy a screenshot and paste it here and it should upload, not drop a text attachment into
+/// the field — and send on Return from a **hardware keyboard**. Everything else, a text paste
+/// included, falls straight through to `UITextView`.
 final class ComposerTextView: UITextView {
 
     /// A pasted image: original bytes, the sniffed mime, and a filename. Bytes rather than a
     /// re-encoded `UIImage`, so a PNG screenshot stays a lossless PNG and the server sees
     /// exactly what was copied. Empty tuple positions are (data, mime, filename).
     var onPasteImage: ((Data, String, String) -> Void)?
+
+    /// Return, pressed on a keyboard that has one. Shift-Return is deliberately not routed
+    /// here — it falls through to the text view and breaks the line, which is the pairing every
+    /// chat client with a text field this shape uses.
+    var onHardwareReturn: (() -> Void)?
+
+    /// A **key command**, not anything in `UITextViewDelegate`, and that is the whole design:
+    /// key commands fire for physical key presses only. So an iPad with a Magic Keyboard sends
+    /// on Return, while the on-screen keyboard's Return key is untouched and still inserts a
+    /// newline on a phone held in one hand — one composer, the right behaviour for whichever
+    /// keyboard is actually being typed on, with nothing to configure and no idiom to test.
+    ///
+    /// Reachable only while this view is the first responder, since that is where the responder
+    /// chain a key command walks begins — so Return elsewhere in the app is unaffected.
+    override var keyCommands: [UIKeyCommand]? {
+        let send = UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(sendFromKeyboard))
+        // Without this UIKit hands the press to the text view's own newline insertion first and
+        // the command never runs.
+        send.wantsPriorityOverSystemBehavior = true
+        // Appended to whatever `UITextView` publishes rather than replacing it, so nothing the
+        // superclass offers a hardware keyboard is dropped on the way past.
+        return (super.keyCommands ?? []) + [send]
+    }
+
+    @objc private func sendFromKeyboard() {
+        onHardwareReturn?()
+    }
 
     /// Offer "Paste" whenever the pasteboard holds an image, even with no text on it — so a
     /// copied screenshot is pasteable into an empty field. `hasImages` is a detection

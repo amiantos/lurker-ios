@@ -327,6 +327,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.backgroundColor = listRenderer.listBackground
         tableView.allowsSelection = false
         tableView.separatorStyle = .none
+        // iPad (and any window wider than a phone). The conversation keeps a readable measure
+        // rather than running the full width of a 13" display, where a one-word reply would
+        // otherwise be a nick at the far left and a word 1300pt away. Cell content lands on the
+        // table's readable guide, which is the same guide the composer and every floating pill
+        // below are pinned to — one left edge and one right edge for the whole screen.
+        //
+        // Nothing moves on iPhone: the readable width is wider than the screen at every text
+        // size, so the guide collapses onto the root view's 16pt layout margins, which is where
+        // the cells already sat.
+        tableView.cellLayoutMarginsFollowReadableWidth = true
         // The iMessage dismissal: drag down through the conversation and the keyboard
         // tracks the finger once it reaches it, rather than snapping away. The composer
         // rides along because it's constrained to `keyboardLayoutGuide` (below), which
@@ -433,17 +443,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // the capsule drops into the gap between the title pill and the conversation.
             connectionBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            connectionBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            connectionBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            connectionBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.readableContentGuide.leadingAnchor),
+            connectionBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.readableContentGuide.trailingAnchor),
 
-            composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            // The readable guide, widened by the bar's own margin so its *glass* lines up with
+            // the message text rather than the transparent bar around it. On iPhone that
+            // arithmetic cancels — the readable inset is the root view's 16pt margin — and the
+            // bar spans the view exactly as it did.
+            composer.leadingAnchor.constraint(
+                equalTo: view.readableContentGuide.leadingAnchor,
+                constant: -ComposerBar.horizontalMargin
+            ),
+            composer.trailingAnchor.constraint(
+                equalTo: view.readableContentGuide.trailingAnchor,
+                constant: ComposerBar.horizontalMargin
+            ),
             composerBottom,
 
             // Above the composer so it clears the newest message's landing zone, on the
             // trailing edge where Messages and Slack put theirs. Anchored to the composer,
             // so the keyboard carries both up together.
-            jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            jumpButton.trailingAnchor.constraint(equalTo: view.readableContentGuide.trailingAnchor),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
             // Up at the top, where it's pointing — the connection banner's slot, which the two
@@ -451,24 +471,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // control sits on the edge it takes you to, and neither covers the newest message.
             unreadBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             unreadBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            unreadBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            unreadBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            unreadBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.readableContentGuide.leadingAnchor),
+            unreadBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.readableContentGuide.trailingAnchor),
 
             // The suggestion pills: centered over the field for tap reach (the jump pill
             // owns the trailing edge), riding the composer for the same
             // keyboard-carries-both reason. The edge insets only bite on a title long
             // enough to need truncating.
             suggestions.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            suggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            suggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            suggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.readableContentGuide.leadingAnchor),
+            suggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.readableContentGuide.trailingAnchor),
             suggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
 
             // Centered just above the composer, riding it up with the keyboard — the same
             // slot the suggestion pills use, which is fine because an upload and mid-token
             // completion never run at once.
             uploadStatus.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            uploadStatus.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            uploadStatus.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            uploadStatus.leadingAnchor.constraint(greaterThanOrEqualTo: view.readableContentGuide.leadingAnchor),
+            uploadStatus.trailingAnchor.constraint(lessThanOrEqualTo: view.readableContentGuide.trailingAnchor),
             uploadStatus.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
