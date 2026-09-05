@@ -98,23 +98,41 @@ final class BufferBadgeLabel: UILabel {
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
 /// The card a buffer chip or roster row sits on.
 ///
-/// ⚠ One step further up on iPad, and that is not a taste adjustment. A split view's sidebar
-/// is an ELEVATED interface level — measured, `traitCollection.userInterfaceLevel == 1` — and
-/// elevation shifts every grouped colour up a step: the ground goes #000000 → #1C1C1E and the
-/// card #1C1C1E → #2C2C2E. The ORDER survives, so the card is still technically lighter than
-/// what it sits on; the CONTRAST does not, because the same one-step move is 28 values off
-/// pure black and only 16 off a grey that has already been lifted. On the sidebar the cards
-/// read as no cards at all. Tertiary puts the step back: #1C1C1E → #3A3A3C is 30, which is
-/// what the phone has always looked like.
+/// Normally `secondarySystemGroupedBackground`, exactly as before. The exception is a split
+/// view's sidebar, which is an ELEVATED interface level — and elevation shifts the whole
+/// grouped palette up a step, so the ground stops being the colour the card was picked to
+/// contrast with. Measured:
 ///
-/// Fixing it here rather than by forcing the sidebar back to `.base` with
-/// `overrideUserInterfaceLevel`: the lifted ground is what makes the sidebar read as a panel
-/// floating over the conversation, which is the iOS 26 look and worth keeping.
+///     style  level     ground   secondary  tertiary
+///     light  base      #F2F2F7  #FFFFFF    #F2F2F7
+///     light  elevated  #F2F2F7  #FFFFFF    #F2F2F7
+///     dark   base      #000000  #1C1C1E    #2C2C2E
+///     dark   elevated  #1C1C1E  #2C2C2E    #3A3A3C
+///
+/// ⚠⚠ Which is why this asks whether elevation MOVED the ground rather than testing for a
+/// sidebar, an idiom, or a level. Only the last row is lifted: light mode resolves identically
+/// at both levels, and its tertiary IS the ground — so a rule that stepped up whenever it
+/// found itself elevated would paint every chip on a light iPad the exact colour of the panel
+/// under it and erase them completely. That is not hypothetical; it shipped, and it is what
+/// this replaces.
+///
+/// Asking the question also means no idiom check: a collapsed iPad, a phone, and any future
+/// surface that elevates all get the right answer without being enumerated here.
+///
+/// Fixed at the colour rather than by forcing the sidebar back to `.base` with
+/// `overrideUserInterfaceLevel`, because the lifted ground is what makes the sidebar read as a
+/// panel floating over the conversation, and that is worth keeping.
 extension UIColor {
     static var bufferCard: UIColor {
-        UIDevice.current.userInterfaceIdiom == .pad
-            ? .tertiarySystemGroupedBackground
-            : .secondarySystemGroupedBackground
+        UIColor { traits in
+            let atBase = traits.modifyingTraits { $0.userInterfaceLevel = .base }
+            let groundWasLifted = UIColor.systemGroupedBackground.resolvedColor(with: traits)
+                != UIColor.systemGroupedBackground.resolvedColor(with: atBase)
+            let card: UIColor = groundWasLifted
+                ? .tertiarySystemGroupedBackground
+                : .secondarySystemGroupedBackground
+            return card.resolvedColor(with: traits)
+        }
     }
 }
 
