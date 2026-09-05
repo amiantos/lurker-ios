@@ -106,6 +106,15 @@ final class NavigationPill: NSObject, UINavigationControllerDelegate {
         syncToTop(animated: false)
     }
 
+    /// Re-read the stack from outside a push or a pop.
+    ///
+    /// Exists for the split view's collapse and expand, which move screens BETWEEN stacks: no
+    /// navigation happens, so neither `willShow` nor `didShow` fires, and a pill left to its
+    /// own devices keeps the name of a conversation that is now in the column beside it.
+    func resync() {
+        syncToTop(animated: false)
+    }
+
     /// Match the pill to the screen currently on top: its content, and whether it appears at
     /// all. The sign-in screen doesn't wear one.
     private func syncToTop(animated: Bool) {

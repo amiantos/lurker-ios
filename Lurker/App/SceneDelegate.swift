@@ -14,7 +14,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // user lands straight on their buffers.
     private let viewModel = ChatViewModel()
     private var cancellables = Set<AnyCancellable>()
-    private weak var navigation: UINavigationController?
+    /// The signed-in shell, while there is one. Weak: the window roots it.
+    private weak var shell: BufferSplitViewController?
     /// Owned here, not by the view model, so LurkerKit stays off the `Network` framework.
     /// This is the same shape as `enterForeground`/`enterBackground`: the app observes the
     /// device and feeds facts in.
@@ -44,22 +45,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // must: they're the previous account's reading history, and against a different instance
         // the signed proxy tokens wouldn't verify anyway.
         viewModel.onPreviewCachesCleared = { PreviewImageLoader.shared.reset() }
-        // Pilled, so the status pill belongs to the stack rather than to either screen — see
-        // NavigationPill. Its `viewDidLoad` installs the pill, which the `showBufferList`
-        // below triggers.
-        let nav = PilledNavigationController()
-        // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
-        nav.navigationBar.prefersLargeTitles = true
-        navigation = nav
-
-        // Restore already ran in the view model's init, so the current session state is
-        // known — build the right screen up front, no login flash on a restored session.
-        render(viewModel.session, animated: false)
-
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = nav
-        window.makeKeyAndVisible()
         self.window = window
+        // Restore already ran in the view model's init, so the current session state is
+        // known — build the right shell up front, no login flash on a restored session.
+        // The window has to exist first now: the root IS the shell, rather than a navigation
+        // controller whose stack gets swapped underneath it.
+        render(viewModel.session, animated: false)
+        window.makeKeyAndVisible()
 
         // A rename has to chase the buffer's key through the preferences that store it —
         // recents and last-buffer (favorites are server-side now, keyed by buffer id, so
@@ -244,36 +237,65 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ///
     /// (See the `NotificationTapHandling` conformance below for the notification path.)
     ///
-    /// Signing in lands on the buffer list, with the buffer you were last reading pushed on
-    /// top of it when there is one (#49). So a returning user is back in their conversation
-    /// immediately, and back is right there when they aren't where they wanted to be — which
-    /// is what makes going straight in safe (see `launchBuffer`).
+    /// Signing in lands on the buffer list, with the buffer you were last reading opened
+    /// beside it — or on top of it, collapsed — when there is one (#49). So a returning user is
+    /// back in their conversation immediately, and the way out is right there when they aren't
+    /// where they wanted to be, which is what makes going straight in safe (see
+    /// `launchBuffer`).
     private func render(_ session: ChatViewModel.SessionState, animated: Bool) {
-        guard let navigation else { return }
+        guard let window else { return }
         switch session {
         case .loggedIn:
-            // Checked against `first`, not `last`: opening a buffer pushes onto this list,
-            // and re-rendering must not throw that away.
-            if !(navigation.viewControllers.first is BufferListViewController) {
-                if let restored = launchBuffer() {
-                    navigation.showBuffer(restored, viewModel: viewModel, animated: animated)
-                } else {
-                    navigation.showBufferList(viewModel: viewModel, animated: animated)
-                }
+            // Idempotent on whether a shell EXISTS, not on what's inside it: opening a buffer
+            // changes the shell's contents, and a replayed `.loggedIn` must not throw that
+            // away. (The old test — is the list at the bottom of the stack — meant the same
+            // thing when there was only one stack to look at.)
+            guard shell == nil else { return }
+            let signedIn = BufferSplitViewController(viewModel: viewModel)
+            shell = signedIn
+            if let restored = launchBuffer() {
+                signedIn.showBuffer(restored, animated: false)
+            } else {
+                signedIn.showBufferList(animated: false)
             }
+            setRoot(signedIn, in: window, animated: animated)
         case .loggedOut:
-            if !(navigation.viewControllers.last is LoginViewController) {
+            let onLogin = (window.rootViewController as? UINavigationController)?
+                .viewControllers.last is LoginViewController
+            if !onLogin {
                 // The next sign-in may be somebody else; see `forgetLastBuffer`.
                 UserPreferences.standard.forgetLastBuffer()
-                // Drop anything presented first. Sheets are presented by the navigation
-                // controller, so swapping its stack doesn't take them with it — a mid-session
-                // 401 with the highlights list open would leave it sitting over the sign-in
+                // Drop anything presented first. Sheets are presented by a screen inside the
+                // shell, so replacing the root doesn't take them with it — a mid-session 401
+                // with the highlights list open would leave it sitting over the sign-in
                 // screen, still subscribed.
-                navigation.dismiss(animated: false)
-                navigation.setViewControllers([LoginViewController(viewModel: viewModel)], animated: animated)
+                window.rootViewController?.dismiss(animated: false)
+                shell = nil
+                setRoot(
+                    UINavigationController(
+                        rootViewController: LoginViewController(viewModel: viewModel)),
+                    in: window, animated: animated
+                )
             }
         case .loggingIn:
             break // stay on the login screen; it shows its own spinner
+        }
+    }
+
+    /// Swap the window's root screen.
+    ///
+    /// Signing in and out used to be a stack swap inside one navigation controller, which
+    /// could animate as a push. It can't be any more — signed in is a split view and signed
+    /// out is a navigation controller, and the two aren't the same kind of thing — so the
+    /// transition is a cross-dissolve on the window instead. Which is arguably what it always
+    /// was: the whole app is being replaced, not navigated.
+    private func setRoot(_ controller: UIViewController, in window: UIWindow, animated: Bool) {
+        guard animated, window.rootViewController != nil else {
+            window.rootViewController = controller
+            return
+        }
+        UIView.transition(with: window, duration: 0.3, options: .transitionCrossDissolve) {
+            window.rootViewController = controller
         }
     }
 
@@ -323,7 +345,7 @@ extension SceneDelegate: NotificationTapHandling {
     /// `showBuffer` — so a tap lands in exactly the state a manual switch would, unread
     /// divider, history request, and a back button to the list included.
     func open(_ tap: NotificationTap) {
-        guard let navigation, viewModel.session == .loggedIn else {
+        guard let shell, viewModel.session == .loggedIn else {
             // Tapped while signed out — a push that outlived its session. Dropped, not
             // parked: signing back in has to go through `render`, which rebuilds the
             // stack from scratch, and by then this tap is stale. Better to land on the
@@ -343,10 +365,10 @@ extension SceneDelegate: NotificationTapHandling {
 
         // Anything presented (the highlights list, the nick list) would otherwise sit over
         // the buffer we just navigated to.
-        navigation.dismiss(animated: false)
+        shell.dismiss(animated: false)
         // Jump to the message that triggered the push, when it named one (#42) — a message/
         // highlight/DM does; a friend-online push lands at the buffer bottom (nil jump).
-        navigation.showBuffer(buffer, viewModel: viewModel, jumpTo: tap.messageId, animated: false)
+        shell.showBuffer(buffer, jumpTo: tap.messageId, animated: false)
     }
 
     func registerPushToken(_ token: String) async {

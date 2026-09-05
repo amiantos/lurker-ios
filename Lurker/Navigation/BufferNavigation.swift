@@ -82,7 +82,9 @@ extension UIViewController {
     private func showHistoryFeed(_ feed: HistoryFeedViewController, viewModel: ChatViewModel) {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let nav = navigationController
-        wireJump(feed, viewModel: viewModel, nav: nav) { [weak nav] in nav?.dismiss(animated: true) }
+        wireJump(feed, viewModel: viewModel, split: bufferSplit) { [weak nav] in
+            nav?.dismiss(animated: true)
+        }
         let sheet = UINavigationController(rootViewController: feed)
         sheet.navigationBar.prefersLargeTitles = true
         sheet.sheetPresentationController?.prefersGrabberVisible = true
@@ -96,13 +98,13 @@ extension UIViewController {
 /// because "go to this message" has to mean exactly one thing however you got to the row.
 /// `close` is what differs and all that differs: a presented sheet dismisses, while the buffer
 /// list's search results are dismissed by deactivating the search field that put them there.
-private func wireJump(
+func wireJump(
     _ feed: HistoryFeedViewController,
     viewModel: ChatViewModel,
-    nav: UINavigationController?,
+    split: BufferSplitViewController?,
     close: @escaping () -> Void
 ) {
-    feed.onSelect = { [weak nav, weak feed] item in
+    feed.onSelect = { [weak split, weak feed] item in
         let state = viewModel.state
         // A row can outlive the buffer it points into: bookmarks and highlights are kept
         // by message id, and closing a buffer doesn't touch them. Jumping anyway is a dead
@@ -126,74 +128,9 @@ private func wireJump(
         // Jump to the line (#42) — even when it's the buffer already on screen, since the
         // point is to move to that message. The new screen fetches an `around` slice
         // centered on it.
-        nav?.showBuffer(
-            state.buffer(for: item.bufferKey), viewModel: viewModel,
-            jumpTo: item.message.id, animated: false
+        split?.showBuffer(
+            state.buffer(for: item.bufferKey), jumpTo: item.message.id, animated: false
         )
         close()
-    }
-}
-
-extension UINavigationController {
-
-    /// Open a buffer, with the buffer list behind it.
-    ///
-    /// Five things navigate to a buffer — picking one from the list, `/msg`, a highlight tap,
-    /// a notification tap, and joining a channel — and every one of them means the same
-    /// thing: *this* conversation, on top of the list. So they all come through here, and
-    /// back always goes to the same place no matter how you arrived.
-    ///
-    /// The stack is **set**, not pushed. Pushing would stack chat screens on chat screens
-    /// (`/msg` from a channel, a notification tapped while reading something else), each
-    /// holding a buffer's worth of messages and a live subscription, and back would walk you
-    /// through your own history one conversation at a time. Exactly one chat screen exists,
-    /// and the list is under it.
-    ///
-    /// The existing list is reused when there is one, so its scroll position and Recent
-    /// ordering survive being navigated over.
-    func showBuffer(
-        _ buffer: Buffer,
-        viewModel: ChatViewModel,
-        jumpTo messageId: Int? = nil,
-        animated: Bool
-    ) {
-        // Already reading this one, and nothing to jump to? Leave it alone. Rebuilding the
-        // screen re-latches the unread divider, re-requests history, and throws away the
-        // scroll position to arrive exactly where we already are — which is what tapping a
-        // notification for the conversation you're looking at (a friend-online push carries
-        // no messageId) would otherwise cost. A jump is a real move and still rebuilds.
-        if messageId == nil,
-           viewControllers.first is BufferListViewController,
-           let top = viewControllers.last as? ChatViewController,
-           top.buffer.key.id == buffer.key.id {
-            return
-        }
-        let list = (viewControllers.first as? BufferListViewController) ?? makeBufferList(viewModel: viewModel)
-        let chat = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
-        setViewControllers([list, chat], animated: animated)
-    }
-
-    /// The list on its own — where the app lands when there's nothing to restore into.
-    func showBufferList(viewModel: ChatViewModel, animated: Bool) {
-        let list = (viewControllers.first as? BufferListViewController) ?? makeBufferList(viewModel: viewModel)
-        setViewControllers([list], animated: animated)
-    }
-
-    private func makeBufferList(viewModel: ChatViewModel) -> BufferListViewController {
-        let list = BufferListViewController(viewModel: viewModel)
-        // Wired once, here, rather than at each construction site — the list reports a pick
-        // and knows nothing about navigation, and this is the only thing that ever answers.
-        list.onSelect = { [weak self] buffer in
-            self?.showBuffer(buffer, viewModel: viewModel, animated: true)
-        }
-        // The list's search results are a cross-buffer feed like any other, so their row taps
-        // mean what Highlights' and Bookmarks' do. Wired here, alongside `onSelect`, because
-        // this is the one place that knows both the feed and the navigation stack — and
-        // because a search result and a buffer row are the same gesture arriving at the same
-        // conversation by different routes.
-        wireJump(list.searchResults, viewModel: viewModel, nav: self) { [weak list] in
-            list?.dismissSearch()
-        }
-        return list
     }
 }

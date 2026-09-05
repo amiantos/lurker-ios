@@ -10,10 +10,15 @@ import UIKit
 /// and live `irc` frames after that — including the echo of our own sends
 /// (`self: true`), which is why there's no optimistic-bubble bookkeeping here.
 ///
-/// This is a *detail* pushed onto the buffer list, which is the navigation stack's root — so
-/// it gets the back button and the interactive pop for free (#49). Switching buffers replaces
-/// this screen rather than stacking another on top of it (see `UINavigationController
-/// .showBuffer`), so the stack is exactly two deep whenever a buffer is open, never more.
+/// This is the *detail* half of `BufferSplitViewController`: the buffer list beside it where
+/// there's room, and pushed on top of the list where there isn't — which is where the back
+/// button and the interactive pop come from, for free (#49). Switching buffers replaces this
+/// screen rather than stacking another on top of it (see `BufferSplitViewController
+/// .showBuffer`), so exactly one of these exists whenever a buffer is open, never more.
+///
+/// It does not know which of those two layouts it's in, and must not start caring: the shell
+/// owns that question, and the two places this screen has to ask it — opening another buffer,
+/// and being told its own has gone away — both hand it back rather than touch a stack.
 final class ChatViewController: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private let viewModel: ChatViewModel
     /// Readable from outside so navigation can tell "open this buffer" from "you're already
@@ -783,16 +788,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // `sessionSubject.value` synchronously *before* the state sink is delivered on
             // main, so this reads the new session, not the stale one.
             guard viewModel.session == .loggedIn else { return true }
-            // Already on the way out (a pop in flight, or the list is showing) — don't
-            // stack a second one.
+            // Already on the way out (a transition in flight, or the list is showing) —
+            // don't stack a second one. Whichever column holds this screen, it is only the
+            // one being read if it is that stack's top.
             guard navigationController?.topViewController === self else { return true }
-            // Sheets are presented by the navigation controller, so popping this screen
+            // Sheets are presented by the navigation controller, so dropping this screen
             // doesn't take them with it — a nick list or buffer-info sheet would be left
             // stranded over the buffer list, still bound to a buffer that no longer exists.
             // (This is what `showMemberList`'s "nothing replaces this screen" reasoning
             // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
             navigationController?.dismiss(animated: false)
-            navigationController?.popToRootViewController(animated: true)
+            // `showBufferList`, not `popToRootViewController`: popping assumes the list is
+            // under this screen, which is only true collapsed. Beside it, there is nothing to
+            // pop — the conversation has to be cleared out of its own column instead, and the
+            // shell is the only thing that knows which of those it is.
+            bufferSplit?.showBufferList(animated: true)
             return true
         }
         sawBufferRow = true
@@ -2156,9 +2166,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func navigate(to key: BufferKey) {
         guard key != buffer.key else { return }
-        navigationController?.showBuffer(
-            viewModel.state.buffer(for: key), viewModel: viewModel, animated: true
-        )
+        bufferSplit?.showBuffer(viewModel.state.buffer(for: key), animated: true)
     }
 
     // MARK: - Attachments (#14)
