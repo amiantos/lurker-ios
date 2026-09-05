@@ -98,9 +98,16 @@ final class BufferBadgeLabel: UILabel {
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
 final class BufferChipCell: UICollectionViewCell {
 
-    /// The card's corner radius, shared by the background UIKit draws and the silhouette a
-    /// drag lifts, so the two can't disagree about the shape.
+    /// The card's corner radius, shared by its fill and by the silhouette a drag lifts, so the
+    /// two can't disagree about the shape.
     private static let corner: CGFloat = 12
+
+    /// The card, at rest and selected. Dynamic colours, assigned once — UIKit re-resolves them
+    /// for light/dark and for whatever environment the cell lands in, which is the whole reason
+    /// there is no `updateConfiguration` here and nothing anywhere asks whether this is a
+    /// sidebar. If a chip looks wrong, these two lines are the only place to look.
+    private static let restingFill = UIColor.secondarySystemGroupedBackground
+    private static let selectedFill = UIColor.tintColor.withAlphaComponent(0.20)
 
     private let card = UIView()
     private let nameLabel = UILabel()
@@ -113,8 +120,7 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        // Painted by `backgroundConfiguration` (see `updateConfiguration`), not here — but the
-        // radius still lives on the layer, because the drag preview reads its silhouette from it.
+        card.backgroundColor = Self.restingFill
         card.layer.cornerRadius = Self.corner
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -230,56 +236,12 @@ final class BufferChipCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Whether this chip is in a sidebar. Drives the hairline edge and NOTHING else — the fill
-    /// is the same in both layouts, and every attempt to make it differ was a bug (see `fill`).
-    var onSidebarMaterial = false {
-        didSet {
-            guard onSidebarMaterial != oldValue else { return }
-            setNeedsUpdateConfiguration()
-        }
-    }
-
-    /// The card's fill and edge.
-    ///
-    /// Painted straight onto `card`. The configuration system was the right instinct and did not
-    /// work here: `UIBackgroundConfiguration.listGroupedCell()` resolves against a *list*
-    /// environment, a custom grid section is not one, and in a sidebar it comes back as the same
-    /// colour as the backdrop — non-nil, so a "did UIKit decline?" test never fires, and the chip
-    /// is invisible with no border to save it. Two attempts died there.
-    override func updateConfiguration(using state: UICellConfigurationState) {
-        super.updateConfiguration(using: state)
-        card.backgroundColor = Self.fill(for: state)
-        // ⚠ The edge is the part that is not a guess, and it is why this is the last attempt: a
-        // shape with a border reads whether what is behind it is lighter or darker, so it does
-        // not depend on my having finally got the fill right. Sidebar only — the phone's cards
-        // have never needed one and shouldn't grow one.
-        //
-        // `resolvedColor` because a CGColor is a dead value: unlike `backgroundColor` it will not
-        // follow a light/dark switch on its own. Safe here because UIKit re-runs this method on
-        // the trait change that would invalidate it.
-        card.layer.borderWidth = onSidebarMaterial ? 1 / max(traitCollection.displayScale, 1) : 0
-        card.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
-    }
-
-    /// ⚠⚠ **Do not branch this on the idiom.** The chip sits on `collectionView.backgroundColor`,
-    /// which is `.systemGroupedBackground` in both layouts — so the card is
-    /// `.secondarySystemGroupedBackground` in both, exactly as the roster rows are, and the two
-    /// differ by construction in light (#FFF on #F2F2F7) and dark (#1C1C1E on #000) alike.
-    ///
-    /// Every failed attempt here moved this value *away* from that pairing, and the last one
-    /// showed why that can never work: `.tertiarySystemGroupedBackground` IS `#F2F2F7` in light —
-    /// the backdrop's own colour — so "one rung up the ladder" landed the card exactly on it. The
-    /// ladder is not a contrast scale you can climb for safety. `systemGrouped` and
-    /// `secondarySystemGrouped` are the pair that is *defined* to sit on each other; anything
-    /// else is a coincidence that holds in one appearance and collides in the other.
-    private static func fill(for state: UICellConfigurationState) -> UIColor {
-        if state.isSelected {
-            return .tintColor.withAlphaComponent(0.20)
-        }
-        if state.isHighlighted {
-            return .systemFill
-        }
-        return .secondarySystemGroupedBackground
+    /// The sidebar keeps its selection while you read the buffer it points at, so a chip has a
+    /// lit state (see `BufferListViewController.selectedBufferKey`). `isSelected` is the whole
+    /// mechanism — UIKit sets it, this repaints, and nothing has to be told what kind of layout
+    /// it is in.
+    override var isSelected: Bool {
+        didSet { card.backgroundColor = isSelected ? Self.selectedFill : Self.restingFill }
     }
 
     /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's

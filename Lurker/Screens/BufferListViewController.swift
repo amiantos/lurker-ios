@@ -98,9 +98,9 @@ final class BufferListViewController: UICollectionViewController {
     /// the row that opened it should stay lit. On a phone the list is gone the moment you pick,
     /// and a row left highlighted behind you is just litter.
     ///
-    /// Selection is all it drives. The cells' *colours* are not conditioned on it and must not
-    /// be: they come from `UIBackgroundConfiguration`, which resolves against the sidebar on
-    /// its own (see `BufferChipCell.updateConfiguration`).
+    /// Selection is all it drives, and all it should ever drive. Colours are not conditioned on
+    /// it and must not be — the system colours resolve for their environment by themselves, and
+    /// every attempt to help them do that made a chip harder to see, not easier.
     var isSidebar = false {
         didSet {
             // `isViewLoaded` as well as the equality check: `applySelection` touches the
@@ -108,13 +108,6 @@ final class BufferListViewController: UICollectionViewController {
             // ahead of `viewDidLoad`, which is ordered around that on purpose. Skipping is
             // free — the first `rebuild` applies the selection from scratch.
             guard isSidebar != oldValue, isViewLoaded else { return }
-            // The chips read this at dequeue, so the ones already on screen have to be asked
-            // again — a collapse or expand changes it with no reload of its own. Reconfigure,
-            // not reload: it keeps the cells and their positions and only re-runs the
-            // registration.
-            var snapshot = dataSource.snapshot()
-            snapshot.reconfigureItems(snapshot.itemIdentifiers)
-            dataSource.apply(snapshot, animatingDifferences: false)
             applySelection()
         }
     }
@@ -800,8 +793,7 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        [weak self] cell, _, row in
-        cell.onSidebarMaterial = self?.isSidebar ?? false
+        cell, _, row in
         cell.configure(
             // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
             // print, so `displayName` falls back to the literal "Server" without one. A roster
