@@ -96,6 +96,28 @@ final class BufferBadgeLabel: UILabel {
 /// 44 is the floor rather than 42-and-change, because the whole card is the tap target and
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
+/// The card a buffer chip or roster row sits on.
+///
+/// ⚠ One step further up on iPad, and that is not a taste adjustment. A split view's sidebar
+/// is an ELEVATED interface level — measured, `traitCollection.userInterfaceLevel == 1` — and
+/// elevation shifts every grouped colour up a step: the ground goes #000000 → #1C1C1E and the
+/// card #1C1C1E → #2C2C2E. The ORDER survives, so the card is still technically lighter than
+/// what it sits on; the CONTRAST does not, because the same one-step move is 28 values off
+/// pure black and only 16 off a grey that has already been lifted. On the sidebar the cards
+/// read as no cards at all. Tertiary puts the step back: #1C1C1E → #3A3A3C is 30, which is
+/// what the phone has always looked like.
+///
+/// Fixing it here rather than by forcing the sidebar back to `.base` with
+/// `overrideUserInterfaceLevel`: the lifted ground is what makes the sidebar read as a panel
+/// floating over the conversation, which is the iOS 26 look and worth keeping.
+extension UIColor {
+    static var bufferCard: UIColor {
+        UIDevice.current.userInterfaceIdiom == .pad
+            ? .tertiarySystemGroupedBackground
+            : .secondarySystemGroupedBackground
+    }
+}
+
 final class BufferChipCell: UICollectionViewCell {
     /// Matches `BufferListViewController.openRowTint` — the roster row and the chip for the
     /// same buffer are marked at once, and two different washes would read as two states.
@@ -112,7 +134,7 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        card.backgroundColor = .secondarySystemGroupedBackground
+        card.backgroundColor = .bufferCard
         card.layer.cornerRadius = 12
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -279,7 +301,7 @@ final class BufferChipCell: UICollectionViewCell {
         // rather than a border: the chips already sit on cards, and a ring around one card in
         // a grid of cards reads as a focus ring — something keyboard navigation put there —
         // rather than as state.
-        card.backgroundColor = isOpen ? Self.openTint : .secondarySystemGroupedBackground
+        card.backgroundColor = isOpen ? Self.openTint : .bufferCard
 
         nameLabel.text = name
         networkHintLabel.text = networkHint

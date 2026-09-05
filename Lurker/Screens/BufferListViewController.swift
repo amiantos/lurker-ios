@@ -225,7 +225,11 @@ final class BufferListViewController: UICollectionViewController {
         // pill used to be this screen's `titleView`, and a `titleView` suppresses the inline
         // title; now that it belongs to the bar instead, nothing does, and "Buffers" draws
         // underneath it as soon as the large title collapses on scroll.
-        navigationItem.largeTitle = "Buffers"
+        // No title on iPad. The sidebar is permanent there, so a heading naming what the
+        // column obviously is costs a whole large-title row of a 320pt panel to say nothing —
+        // Messages doesn't carry one either. On the phone the list is a screen you navigate
+        // to and back out of, and a screen needs a name.
+        if !isSidebar { navigationItem.largeTitle = "Buffers" }
         // The empty state's only button, and it has only one meaning here: this screen's
         // placeholder never asks anything else of the user.
         placeholderView.onAction = { [weak self] in self?.showAddNetwork() }
@@ -238,7 +242,7 @@ final class BufferListViewController: UICollectionViewController {
         // long-press menu while drawing the indicator alone — measured identical to the
         // original: a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
-        navigationItem.largeTitleDisplayMode = .always
+        navigationItem.largeTitleDisplayMode = isSidebar ? .never : .always
         collectionView.backgroundColor = .systemGroupedBackground
         // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
         // first thing that happens to touch it. `UICollectionViewController` installs itself
@@ -669,21 +673,24 @@ final class BufferListViewController: UICollectionViewController {
 
     private lazy var listRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Row> {
         [weak self] cell, _, row in
-        // ⚠ Only the open row gets a configuration at all; everything else is set back to
-        // `nil`, which is not the same as clear. These sections are `.insetGrouped` over a
-        // grouped-grey collection view, so a row's card IS its default background — an
-        // explicit `.clear` erases the card on every ordinary row, on the phone too, where
-        // no row is ever open. Nil restores the default *and* UIKit's own state updates.
-        // Built from `defaultBackgroundConfiguration()` rather than `listCell()` so the tint
-        // follows the card's corner radius instead of painting a square over it. Set on both
-        // branches, never just the open one: these cells are reused.
-        if self?.isOpen(row.buffer) == true {
-            var background = cell.defaultBackgroundConfiguration()
-            background.backgroundColor = Self.openRowTint
-            cell.backgroundConfiguration = background
-        } else {
-            cell.backgroundConfiguration = nil
-        }
+        // ⚠ The colour is set on EVERY row, never left to the default. Measured on both
+        // idioms, `defaultBackgroundConfiguration()` hands back a colour identical to the
+        // ground the list is drawn on — #1C1C1E on an iPad sidebar over a #1C1C1E collection
+        // view, #000000 over #000000 on the phone — while what UIKit ends up applying to these
+        // `.insetGrouped` rows is a step lighter. Between the dequeue and UIKit getting round
+        // to that, a row wears a card the exact colour of its own background, which is what
+        // made cards blink in and out while scrolling an iPad sidebar, and why leaving the
+        // configuration nil didn't help. Naming the colour outright leaves no such window.
+        //
+        // Everything else about the default is kept, and the TRANSFORMER is the reason: UIKit
+        // runs `updated(for:)` over this configuration on every state change and the
+        // transformer derives the pressed highlight from whatever colour it finds, so the row
+        // still responds to a touch. (`cornerRadius` is 0 on all of these — the inset-grouped
+        // shape is drawn by the list layout, not carried in the configuration — so there is no
+        // geometry to preserve either way.)
+        var background = cell.defaultBackgroundConfiguration()
+        background.backgroundColor = self?.isOpen(row.buffer) == true ? Self.openRowTint : .bufferCard
+        cell.backgroundConfiguration = background
 
         var content = UIListContentConfiguration.cell()
         // No `networkName` here, unlike the pill: every roster row already states its network
@@ -827,6 +834,8 @@ final class BufferListViewController: UICollectionViewController {
     /// badges and the highlight red already compete for attention in this list, and a solid
     /// accent bar would outrank the one signal that actually needs to be seen.
     private static let openRowTint = BufferChipCell.openTint
+
+    /// The card a row sits on — see `UIColor.bufferCard` for why iPad needs a different one.
 
     /// Whether this list is beside a conversation rather than under one.
     ///
@@ -984,10 +993,17 @@ final class BufferListViewController: UICollectionViewController {
         toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
     }
 
+    /// Whether this list is the iPad's permanent sidebar rather than a screen you navigate to.
+    ///
+    /// Idiom, not `marksOpenBuffer`: this decides what the list is *built* from — sections and
+    /// a title — which has to be settled in `viewDidLoad`, long before there is a window to
+    /// ask whether the split is collapsed. It doesn't change for the app's lifetime.
+    private var isSidebar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
     /// Whether the search field is riding a bottom toolbar this screen has to raise and lower.
     /// False on iPad, where it is stacked under the title and there is no toolbar at all —
     /// asking for one would raise an empty bar across the foot of the sidebar.
-    private var usesBottomSearchBar: Bool { UIDevice.current.userInterfaceIdiom != .pad }
+    private var usesBottomSearchBar: Bool { !isSidebar }
 
     /// Take the search UI down — what a result tap calls once it's decided where to go. Not a
     /// dismiss: the results are presented *by* the search controller, so the thing to undo is
@@ -1220,7 +1236,13 @@ final class BufferListViewController: UICollectionViewController {
         // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
         // having no sidebar, so it sits below the two curated sections rather than pushing
         // them down with buffers you merely passed through.
-        if !recents.isEmpty { sections.append(Section(id: .recent, title: "Recent", rows: recents)) }
+        // ⚠ Phone only, and the reason is in the comment above: Recent is "the iOS answer to
+        // having no sidebar". iPad HAS the sidebar — every one of these buffers is already a
+        // row a little further down the same permanently-visible column, so the grid is a
+        // second copy of the list you are looking at, pushing the real one down.
+        if !recents.isEmpty, !isSidebar {
+            sections.append(Section(id: .recent, title: "Recent", rows: recents))
+        }
 
         // The user's own order, not ours: they arranged their networks on the web, and a
         // phone that re-alphabetises them is a phone you have to re-read every time you pick
