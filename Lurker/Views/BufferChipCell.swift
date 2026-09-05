@@ -233,26 +233,37 @@ final class BufferChipCell: UICollectionViewCell {
     /// The card's background — **asked for, never named**.
     ///
     /// A chip is a card in a grouped list, so what it wants is exactly the fill a
-    /// `UICollectionViewListCell` sitting beside it would draw. That is not a colour you can
-    /// hardcode. `UIBackgroundConfiguration` RESOLVES against the environment it is applied in,
-    /// and a sidebar is a different environment: it moves what a grouped cell should be, in
-    /// light and in dark both. A literal `.secondarySystemGroupedBackground` is right on a
-    /// phone and wrong in a sidebar, and so is every other constant — two hand-picked palettes
-    /// got this wrong before this line existed. The roster rows were never wrong, because they
-    /// never named a colour; this is the chips doing what they already do.
+    /// `UICollectionViewListCell` sitting beside it would draw — so it ASKS for one rather than
+    /// naming a colour, and `updated(for:)` brings the selected and highlighted fills with it,
+    /// making a lit chip and a lit roster row the same thing by construction.
     ///
-    /// Handing UIKit the whole configuration rather than pulling a `UIColor` out of it keeps
-    /// whatever else the environment asks for — vibrancy, materials — instead of flattening it
-    /// to one opaque fill. `card` still owns the layout and the drag silhouette; it just stops
-    /// painting.
+    /// ⚠⚠ **The system does not always answer.** `listGroupedCell()` resolves against a *list*
+    /// environment, and these chips are plain cells in a custom grid section — there isn't one.
+    /// On a phone that resolves anyway; in a sidebar it comes back with **no fill at all**, and
+    /// an unfilled chip is an invisible chip. The roster rows never hit this because they really
+    /// are list cells in a list section, which is also why they have been right throughout and
+    /// the chips have not.
     ///
-    /// `updated(for:)` brings the selected and highlighted fills with it, so the sidebar's lit
-    /// row is the system's own selection colour rather than a tint someone chose — and the
-    /// chip's selected state and a roster row's are then the same thing by construction.
+    /// So: take the system's answer when there is one, and when there isn't, fall back — a
+    /// grouped card's fill, plus a hairline edge. The edge is the part that matters. Three
+    /// attempts at this bug were three guesses at what the sidebar's backdrop is; a shape with
+    /// both a fill and a border does not need that answer, because it reads whether what's
+    /// behind it is lighter or darker. Scoped to the case where UIKit declined, so the phone —
+    /// which never declines — keeps exactly the flat cards it has always drawn.
     override func updateConfiguration(using state: UICellConfigurationState) {
         super.updateConfiguration(using: state)
         var background = UIBackgroundConfiguration.listGroupedCell().updated(for: state)
         background.cornerRadius = Self.corner
+        // Only the RESTING state falls back: a selected or highlighted chip has been given a
+        // real fill by `updated(for:)` above, and painting a card colour over it would undo the
+        // one bit of feedback the sidebar's selection has.
+        if background.backgroundColor == nil, !state.isSelected, !state.isHighlighted {
+            background.backgroundColor = .secondarySystemGroupedBackground
+            background.strokeColor = .separator
+            // A true hairline, not a point: `displayScale` is what makes it one physical pixel
+            // on whatever this is running on.
+            background.strokeWidth = 1 / max(traitCollection.displayScale, 1)
+        }
         backgroundConfiguration = background
     }
 
