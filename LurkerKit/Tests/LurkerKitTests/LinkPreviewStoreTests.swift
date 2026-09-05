@@ -635,9 +635,18 @@ struct LinkPreviewStoreTests {
 
         clock.date.addTimeInterval(60)
         #expect(store.runDueReasks())
-        await settle()
-
-        #expect(store.retry["https://e.test/flaky"]?.tries == 2, "the count carried across")
+        // ⚠⚠ `eventually`, not `settle()`, for exactly the reason that helper documents — and
+        // this test is a worse place for the stopwatch than the one that prompted it. The entry
+        // is PARKED at `.distantFuture` while the second ask is in flight (which is the very
+        // mechanism this test is about), so a 120ms bet that runs out early doesn't read a
+        // half-finished state — it reads the parked one, `tries` still 1 and `at` still
+        // distantFuture, which is indistinguishable from the ladder having failed to double.
+        // The assertion is about a rule; it must not be measuring a stopwatch.
+        #expect(
+            await eventually { store.retry["https://e.test/flaky"]?.tries == 2 },
+            "the count carried across")
+        // Read only once the re-arm above has landed: `tries` and `at` are written together, so
+        // waiting on the count is waiting on both.
         #expect(
             store.retry["https://e.test/flaky"]?.at.timeIntervalSince(clock.date)
                 == PreviewReask.floor * 2,
