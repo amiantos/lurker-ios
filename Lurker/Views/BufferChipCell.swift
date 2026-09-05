@@ -230,10 +230,8 @@ final class BufferChipCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Whether this chip sits on a **sidebar's** backdrop rather than the phone's grouped canvas.
-    ///
-    /// It has to be told. There is no trait for "am I in a sidebar", and asking UIKit turned out
-    /// not to work either — see `fill(for:onSidebarMaterial:)`.
+    /// Whether this chip is in a sidebar. Drives the hairline edge and NOTHING else — the fill
+    /// is the same in both layouts, and every attempt to make it differ was a bug (see `fill`).
     var onSidebarMaterial = false {
         didSet {
             guard onSidebarMaterial != oldValue else { return }
@@ -250,7 +248,7 @@ final class BufferChipCell: UICollectionViewCell {
     /// is invisible with no border to save it. Two attempts died there.
     override func updateConfiguration(using state: UICellConfigurationState) {
         super.updateConfiguration(using: state)
-        card.backgroundColor = Self.fill(for: state, onSidebarMaterial: onSidebarMaterial)
+        card.backgroundColor = Self.fill(for: state)
         // ⚠ The edge is the part that is not a guess, and it is why this is the last attempt: a
         // shape with a border reads whether what is behind it is lighter or darker, so it does
         // not depend on my having finally got the fill right. Sidebar only — the phone's cards
@@ -263,28 +261,25 @@ final class BufferChipCell: UICollectionViewCell {
         card.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
     }
 
-    /// ⚠⚠ The sidebar's backdrop is the phone's card colour — that is the whole bug, and it took
-    /// four goes to state it. `.secondarySystemGroupedBackground` is what a card is on a phone
-    /// and what the *backdrop* is in a sidebar, so drawing a card in it there paints white on
-    /// white. Every attempt that reasoned about the colour in isolation missed this; what pins it
-    /// down is that all three earlier answers agree with it — the phone's card colour vanished,
-    /// the system's own resolved answer vanished (it resolves to that same colour), and only a
-    /// `fill` from an unrelated palette showed up at all, which is why it showed up *wrong*.
+    /// ⚠⚠ **Do not branch this on the idiom.** The chip sits on `collectionView.backgroundColor`,
+    /// which is `.systemGroupedBackground` in both layouts — so the card is
+    /// `.secondarySystemGroupedBackground` in both, exactly as the roster rows are, and the two
+    /// differ by construction in light (#FFF on #F2F2F7) and dark (#1C1C1E on #000) alike.
     ///
-    /// So the card goes one rung UP the grouped ladder, exactly as the backdrop did. In light
-    /// that is #F2F2F7 on white; in dark, #2C2C2E on #1C1C1E. It stays in the grouped family, so
-    /// it still reads as the same kind of surface as the roster rows below it — which a
-    /// translucent control fill never did.
-    private static func fill(
-        for state: UICellConfigurationState, onSidebarMaterial: Bool
-    ) -> UIColor {
+    /// Every failed attempt here moved this value *away* from that pairing, and the last one
+    /// showed why that can never work: `.tertiarySystemGroupedBackground` IS `#F2F2F7` in light —
+    /// the backdrop's own colour — so "one rung up the ladder" landed the card exactly on it. The
+    /// ladder is not a contrast scale you can climb for safety. `systemGrouped` and
+    /// `secondarySystemGrouped` are the pair that is *defined* to sit on each other; anything
+    /// else is a coincidence that holds in one appearance and collides in the other.
+    private static func fill(for state: UICellConfigurationState) -> UIColor {
         if state.isSelected {
             return .tintColor.withAlphaComponent(0.20)
         }
         if state.isHighlighted {
-            return onSidebarMaterial ? .quaternarySystemFill : .systemFill
+            return .systemFill
         }
-        return onSidebarMaterial ? .tertiarySystemGroupedBackground : .secondarySystemGroupedBackground
+        return .secondarySystemGroupedBackground
     }
 
     /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's
