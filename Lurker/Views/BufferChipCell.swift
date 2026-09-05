@@ -230,41 +230,61 @@ final class BufferChipCell: UICollectionViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// The card's background — **asked for, never named**.
+    /// Whether this chip sits on a **sidebar's** backdrop rather than the phone's grouped canvas.
     ///
-    /// A chip is a card in a grouped list, so what it wants is exactly the fill a
-    /// `UICollectionViewListCell` sitting beside it would draw — so it ASKS for one rather than
-    /// naming a colour, and `updated(for:)` brings the selected and highlighted fills with it,
-    /// making a lit chip and a lit roster row the same thing by construction.
+    /// It has to be told. There is no trait for "am I in a sidebar", and asking UIKit turned out
+    /// not to work either — see `fill(for:onSidebarMaterial:)`.
+    var onSidebarMaterial = false {
+        didSet {
+            guard onSidebarMaterial != oldValue else { return }
+            setNeedsUpdateConfiguration()
+        }
+    }
+
+    /// The card's fill and edge.
     ///
-    /// ⚠⚠ **The system does not always answer.** `listGroupedCell()` resolves against a *list*
-    /// environment, and these chips are plain cells in a custom grid section — there isn't one.
-    /// On a phone that resolves anyway; in a sidebar it comes back with **no fill at all**, and
-    /// an unfilled chip is an invisible chip. The roster rows never hit this because they really
-    /// are list cells in a list section, which is also why they have been right throughout and
-    /// the chips have not.
-    ///
-    /// So: take the system's answer when there is one, and when there isn't, fall back — a
-    /// grouped card's fill, plus a hairline edge. The edge is the part that matters. Three
-    /// attempts at this bug were three guesses at what the sidebar's backdrop is; a shape with
-    /// both a fill and a border does not need that answer, because it reads whether what's
-    /// behind it is lighter or darker. Scoped to the case where UIKit declined, so the phone —
-    /// which never declines — keeps exactly the flat cards it has always drawn.
+    /// Painted straight onto `card`. The configuration system was the right instinct and did not
+    /// work here: `UIBackgroundConfiguration.listGroupedCell()` resolves against a *list*
+    /// environment, a custom grid section is not one, and in a sidebar it comes back as the same
+    /// colour as the backdrop — non-nil, so a "did UIKit decline?" test never fires, and the chip
+    /// is invisible with no border to save it. Two attempts died there.
     override func updateConfiguration(using state: UICellConfigurationState) {
         super.updateConfiguration(using: state)
-        var background = UIBackgroundConfiguration.listGroupedCell().updated(for: state)
-        background.cornerRadius = Self.corner
-        // Only the RESTING state falls back: a selected or highlighted chip has been given a
-        // real fill by `updated(for:)` above, and painting a card colour over it would undo the
-        // one bit of feedback the sidebar's selection has.
-        if background.backgroundColor == nil, !state.isSelected, !state.isHighlighted {
-            background.backgroundColor = .secondarySystemGroupedBackground
-            background.strokeColor = .separator
-            // A true hairline, not a point: `displayScale` is what makes it one physical pixel
-            // on whatever this is running on.
-            background.strokeWidth = 1 / max(traitCollection.displayScale, 1)
+        card.backgroundColor = Self.fill(for: state, onSidebarMaterial: onSidebarMaterial)
+        // ⚠ The edge is the part that is not a guess, and it is why this is the last attempt: a
+        // shape with a border reads whether what is behind it is lighter or darker, so it does
+        // not depend on my having finally got the fill right. Sidebar only — the phone's cards
+        // have never needed one and shouldn't grow one.
+        //
+        // `resolvedColor` because a CGColor is a dead value: unlike `backgroundColor` it will not
+        // follow a light/dark switch on its own. Safe here because UIKit re-runs this method on
+        // the trait change that would invalidate it.
+        card.layer.borderWidth = onSidebarMaterial ? 1 / max(traitCollection.displayScale, 1) : 0
+        card.layer.borderColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
+    }
+
+    /// ⚠⚠ The sidebar's backdrop is the phone's card colour — that is the whole bug, and it took
+    /// four goes to state it. `.secondarySystemGroupedBackground` is what a card is on a phone
+    /// and what the *backdrop* is in a sidebar, so drawing a card in it there paints white on
+    /// white. Every attempt that reasoned about the colour in isolation missed this; what pins it
+    /// down is that all three earlier answers agree with it — the phone's card colour vanished,
+    /// the system's own resolved answer vanished (it resolves to that same colour), and only a
+    /// `fill` from an unrelated palette showed up at all, which is why it showed up *wrong*.
+    ///
+    /// So the card goes one rung UP the grouped ladder, exactly as the backdrop did. In light
+    /// that is #F2F2F7 on white; in dark, #2C2C2E on #1C1C1E. It stays in the grouped family, so
+    /// it still reads as the same kind of surface as the roster rows below it — which a
+    /// translucent control fill never did.
+    private static func fill(
+        for state: UICellConfigurationState, onSidebarMaterial: Bool
+    ) -> UIColor {
+        if state.isSelected {
+            return .tintColor.withAlphaComponent(0.20)
         }
-        backgroundConfiguration = background
+        if state.isHighlighted {
+            return onSidebarMaterial ? .quaternarySystemFill : .systemFill
+        }
+        return onSidebarMaterial ? .tertiarySystemGroupedBackground : .secondarySystemGroupedBackground
     }
 
     /// The shape a drag lifts and lands (#53) — the card's rounded silhouette, not the cell's

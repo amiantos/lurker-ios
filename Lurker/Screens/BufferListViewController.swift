@@ -108,6 +108,13 @@ final class BufferListViewController: UICollectionViewController {
             // ahead of `viewDidLoad`, which is ordered around that on purpose. Skipping is
             // free — the first `rebuild` applies the selection from scratch.
             guard isSidebar != oldValue, isViewLoaded else { return }
+            // The chips read this at dequeue, so the ones already on screen have to be asked
+            // again — a collapse or expand changes it with no reload of its own. Reconfigure,
+            // not reload: it keeps the cells and their positions and only re-runs the
+            // registration.
+            var snapshot = dataSource.snapshot()
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+            dataSource.apply(snapshot, animatingDifferences: false)
             applySelection()
         }
     }
@@ -793,7 +800,8 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        cell, _, row in
+        [weak self] cell, _, row in
+        cell.onSidebarMaterial = self?.isSidebar ?? false
         cell.configure(
             // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
             // print, so `displayName` falls back to the literal "Server" without one. A roster
