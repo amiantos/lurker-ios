@@ -94,25 +94,20 @@ final class BufferListViewController: UICollectionViewController {
     /// Whether this list is a **sidebar** standing beside a conversation, rather than a screen
     /// you tap through and leave.
     ///
-    /// It changes two things, and both follow from that one difference. A selection means
-    /// something here — the conversation next to it is still on screen, so the row that opened
-    /// it should stay lit — where on a phone the list is gone the moment you pick, and a row
-    /// left highlighted behind you is just litter. And the chips have to be drawn for a
-    /// sidebar's material rather than the grouped canvas (see `BufferChipCell`).
+    /// A selection means something here — the conversation next to it is still on screen, so
+    /// the row that opened it should stay lit. On a phone the list is gone the moment you pick,
+    /// and a row left highlighted behind you is just litter.
+    ///
+    /// Selection is all it drives. The cells' *colours* are not conditioned on it and must not
+    /// be: they come from `UIBackgroundConfiguration`, which resolves against the sidebar on
+    /// its own (see `BufferChipCell.updateConfiguration`).
     var isSidebar = false {
         didSet {
-            // ⚠ `isViewLoaded` as well as the equality check. Touching `dataSource` before
-            // `viewDidLoad` would construct it early, and `UICollectionViewController` installs
-            // ITSELF as the collection view's data source in `loadView` — so an early build
-            // would then be clobbered by the very thing `viewDidLoad` is careful to order
-            // around. Skipping is free: the first dequeue reads this value anyway.
+            // `isViewLoaded` as well as the equality check: `applySelection` touches the
+            // collection view, and forcing the view to load early would build `dataSource`
+            // ahead of `viewDidLoad`, which is ordered around that on purpose. Skipping is
+            // free — the first `rebuild` applies the selection from scratch.
             guard isSidebar != oldValue, isViewLoaded else { return }
-            // The chips read this at dequeue, so the ones already on screen have to be asked
-            // again. Reconfigure, not reload: it keeps the cells and their positions and only
-            // re-runs the registration.
-            var snapshot = dataSource.snapshot()
-            snapshot.reconfigureItems(snapshot.itemIdentifiers)
-            dataSource.apply(snapshot, animatingDifferences: false)
             applySelection()
         }
     }
@@ -798,8 +793,7 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        [weak self] cell, _, row in
-        cell.onSidebarMaterial = self?.isSidebar ?? false
+        cell, _, row in
         cell.configure(
             // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
             // print, so `displayName` falls back to the literal "Server" without one. A roster
