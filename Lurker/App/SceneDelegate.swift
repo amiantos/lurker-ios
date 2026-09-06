@@ -14,7 +14,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // user lands straight on their buffers.
     private let viewModel = ChatViewModel()
     private var cancellables = Set<AnyCancellable>()
+    /// The navigation controller the buffer list lives in: the whole stack on the phone, the
+    /// split's primary column on iPad. `showBuffer` forwards to the split from either.
     private weak var navigation: UINavigationController?
+    /// The iPad root. Nil on the phone, and while signed out.
+    private weak var split: BufferSplitViewController?
     /// Owned here, not by the view model, so LurkerKit stays off the `Network` framework.
     /// This is the same shape as `enterForeground`/`enterBackground`: the app observes the
     /// device and feeds facts in.
@@ -44,22 +48,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // must: they're the previous account's reading history, and against a different instance
         // the signed proxy tokens wouldn't verify anyway.
         viewModel.onPreviewCachesCleared = { PreviewImageLoader.shared.reset() }
-        // Pilled, so the status pill belongs to the stack rather than to either screen — see
-        // NavigationPill. Its `viewDidLoad` installs the pill, which the `showBufferList`
-        // below triggers.
-        let nav = PilledNavigationController()
-        // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
-        nav.navigationBar.prefersLargeTitles = true
-        navigation = nav
+        // The window comes first now: `render` installs the ROOT rather than filling a stack
+        // that already exists, so it needs somewhere to install it.
+        let window = UIWindow(windowScene: windowScene)
+        self.window = window
 
         // Restore already ran in the view model's init, so the current session state is
         // known — build the right screen up front, no login flash on a restored session.
         render(viewModel.session, animated: false)
-
-        let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = nav
         window.makeKeyAndVisible()
-        self.window = window
 
         // A rename has to chase the buffer's key through the preferences that store it —
         // recents and last-buffer (favorites are server-side now, keyed by buffer id, so
@@ -249,31 +246,106 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// immediately, and back is right there when they aren't where they wanted to be — which
     /// is what makes going straight in safe (see `launchBuffer`).
     private func render(_ session: ChatViewModel.SessionState, animated: Bool) {
-        guard let navigation else { return }
         switch session {
         case .loggedIn:
-            // Checked against `first`, not `last`: opening a buffer pushes onto this list,
-            // and re-rendering must not throw that away.
-            if !(navigation.viewControllers.first is BufferListViewController) {
-                if let restored = launchBuffer() {
-                    navigation.showBuffer(restored, viewModel: viewModel, animated: animated)
-                } else {
-                    navigation.showBufferList(viewModel: viewModel, animated: animated)
-                }
-            }
+            // Already up — a re-render on a session republish must not throw away the
+            // conversation being read. `shownRoot` replaces the old "is the list still the
+            // root of the stack" test, which could only ask that of a stack.
+            guard shownRoot != .main else { return }
+            showMain(animated: animated)
         case .loggedOut:
-            if !(navigation.viewControllers.last is LoginViewController) {
-                // The next sign-in may be somebody else; see `forgetLastBuffer`.
-                UserPreferences.standard.forgetLastBuffer()
-                // Drop anything presented first. Sheets are presented by the navigation
-                // controller, so swapping its stack doesn't take them with it — a mid-session
-                // 401 with the highlights list open would leave it sitting over the sign-in
-                // screen, still subscribed.
-                navigation.dismiss(animated: false)
-                navigation.setViewControllers([LoginViewController(viewModel: viewModel)], animated: animated)
-            }
+            guard shownRoot != .login else { return }
+            showLogin(animated: animated)
         case .loggingIn:
             break // stay on the login screen; it shows its own spinner
+        }
+    }
+
+    /// Sign-in and sign-out swap the window's ROOT, not a stack's contents.
+    ///
+    /// They were two states of one stack, which worked while every layout was a stack. On iPad
+    /// it would leave the sign-in screen in a column with the previous account's buffer list
+    /// beside it.
+    private enum Root { case none, main, login }
+    private var shownRoot: Root = .none
+
+    /// The app proper: side-by-side columns on iPad, a stack on the phone.
+    ///
+    /// iPad only rather than a split view everywhere that collapses at compact width, because
+    /// a split expands at *any* regular width — including a Pro Max in landscape.
+    private func showMain(animated: Bool) {
+        let restored = launchBuffer()
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            // ⚠ Not `Buffer.system` — the app-wide Lurker log, not a network's `.server`
+            // buffer, which this codebase keeps sharply distinct. The conversation column
+            // *rests* on it whenever nothing is picked, and that resting screen records itself
+            // as the last buffer exactly like a screen you chose, so restoring it turns
+            // "nothing selected" into "the system buffer is selected". Identical side by side;
+            // not identical once the window narrows and one column has to win.
+            let restored = restored.flatMap { $0.kind == .system ? nil : $0 }
+            let split = BufferSplitViewController(viewModel: viewModel)
+            self.split = split
+            navigation = split.primaryNavigation
+            if let restored { split.showBuffer(restored, animated: false) }
+            setRoot(split, as: .main, animated: animated)
+        } else {
+            // Pilled, so the status pill belongs to the stack rather than to either screen —
+            // see NavigationPill. Its `viewDidLoad` installs the pill, which the calls below
+            // trigger.
+            let nav = PilledNavigationController()
+            // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
+            nav.navigationBar.prefersLargeTitles = true
+            navigation = nav
+            if let restored {
+                nav.showBuffer(restored, viewModel: viewModel, animated: false)
+            } else {
+                nav.showBufferList(viewModel: viewModel, animated: false)
+            }
+            setRoot(nav, as: .main, animated: animated)
+        }
+    }
+
+    private func showLogin(animated: Bool) {
+        // The next sign-in may be somebody else; see `forgetLastBuffer`.
+        UserPreferences.standard.forgetLastBuffer()
+        // Drop anything presented first. Sheets are presented by the navigation controllers,
+        // so replacing the root doesn't take them with it — a mid-session 401 with the
+        // highlights list open would leave it sitting over the sign-in screen, still
+        // subscribed.
+        dismissPresented()
+        navigation = nil
+        split = nil
+        let nav = PilledNavigationController()
+        nav.setViewControllers([LoginViewController(viewModel: viewModel)], animated: false)
+        setRoot(nav, as: .login, animated: animated)
+    }
+
+    /// Swap the window's root, cross-fading when there was something to fade from. Animations
+    /// are suppressed *inside* the block, or the incoming controller's own layout animates
+    /// along with the dissolve and the buffer list's rows fly in from wherever they last were.
+    private func setRoot(_ root: UIViewController, as kind: Root, animated: Bool) {
+        guard let window else { return }
+        shownRoot = kind
+        guard animated, window.rootViewController != nil else {
+            window.rootViewController = root
+            return
+        }
+        UIView.transition(with: window, duration: 0.3, options: .transitionCrossDissolve) {
+            let wereEnabled = UIView.areAnimationsEnabled
+            UIView.setAnimationsEnabled(false)
+            window.rootViewController = root
+            UIView.setAnimationsEnabled(wereEnabled)
+        }
+    }
+
+    /// Drop every sheet, wherever it was presented from. A sheet put up from the conversation
+    /// column is attached to *that* column, and the primary's `dismiss` walks up to the split
+    /// and never sees it.
+    private func dismissPresented() {
+        if let split {
+            split.dismissPresented()
+        } else {
+            navigation?.dismiss(animated: false)
         }
     }
 
@@ -343,7 +415,7 @@ extension SceneDelegate: NotificationTapHandling {
 
         // Anything presented (the highlights list, the nick list) would otherwise sit over
         // the buffer we just navigated to.
-        navigation.dismiss(animated: false)
+        dismissPresented()
         // Jump to the message that triggered the push, when it named one (#42) — a message/
         // highlight/DM does; a friend-online push lands at the buffer bottom (nil jump).
         navigation.showBuffer(buffer, viewModel: viewModel, jumpTo: tap.messageId, animated: false)

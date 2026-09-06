@@ -71,6 +71,37 @@ final class BufferBadgeLabel: UILabel {
     }
 }
 
+/// The card a buffer chip or roster row sits on: `secondarySystemGroupedBackground`, except
+/// where elevation has moved the ground out from under it.
+///
+///     style  level     ground   secondary  tertiary
+///     light  base      #F2F2F7  #FFFFFF    #F2F2F7
+///     light  elevated  #F2F2F7  #FFFFFF    #F2F2F7
+///     dark   base      #000000  #1C1C1E    #2C2C2E
+///     dark   elevated  #1C1C1E  #2C2C2E    #3A3A3C
+///
+/// A split view's sidebar is an elevated level, so on iPad the dark ground rises onto the
+/// colour the card was picked to contrast with and the cards stop reading as cards.
+///
+/// ⚠⚠ But only in dark. Light resolves identically at both levels and its tertiary IS the
+/// ground, so a rule that stepped up whenever it found itself elevated erased every chip on a
+/// light-mode iPad. Hence the test is whether elevation moved the ground, not whether we are
+/// elevated — which also means no idiom check, and a right answer for the collapsed iPad and
+/// the phone without enumerating them.
+extension UIColor {
+    static var bufferCard: UIColor {
+        UIColor { traits in
+            let atBase = traits.modifyingTraits { $0.userInterfaceLevel = .base }
+            let groundWasLifted = UIColor.systemGroupedBackground.resolvedColor(with: traits)
+                != UIColor.systemGroupedBackground.resolvedColor(with: atBase)
+            let card: UIColor = groundWasLifted
+                ? .tertiarySystemGroupedBackground
+                : .secondarySystemGroupedBackground
+            return card.resolvedColor(with: traits)
+        }
+    }
+}
+
 /// A buffer as a compact card, for the Friends, Favorites and Recent grids.
 ///
 /// The grids are shortcuts, not the roster — a place to fit twice as many of the handful you
@@ -97,6 +128,10 @@ final class BufferBadgeLabel: UILabel {
 /// 44×44 is the HIG minimum — a shortcut grid you hit without looking is the last place to
 /// shave a touch target. It still grows past 44 at accessibility text sizes.
 final class BufferChipCell: UICollectionViewCell {
+    /// Matches `BufferListViewController.openRowTint` — the roster row and the chip for the
+    /// same buffer are marked at once, and two different washes would read as two states.
+    static let openTint = UIColor.tintColor.withAlphaComponent(0.16)
+
     private let card = UIView()
     private let nameLabel = UILabel()
     private let networkHintLabel = UILabel()
@@ -108,7 +143,7 @@ final class BufferChipCell: UICollectionViewCell {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        card.backgroundColor = .secondarySystemGroupedBackground
+        card.backgroundColor = .bufferCard
         card.layer.cornerRadius = 12
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
@@ -268,8 +303,13 @@ final class BufferChipCell: UICollectionViewCell {
         networkHint: String? = nil,
         unread: Int,
         highlights: Int,
-        presence: FriendPresence? = nil
+        presence: FriendPresence? = nil,
+        isOpen: Bool = false
     ) {
+        // Side by side, the card says which conversation you're reading. A fill rather than a
+        // ring: a ring around one card in a grid of cards reads as keyboard focus, not state.
+        card.backgroundColor = isOpen ? Self.openTint : .bufferCard
+
         nameLabel.text = name
         networkHintLabel.text = networkHint
         networkHintLabel.isHidden = networkHint == nil

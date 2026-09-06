@@ -225,7 +225,10 @@ final class BufferListViewController: UICollectionViewController {
         // pill used to be this screen's `titleView`, and a `titleView` suppresses the inline
         // title; now that it belongs to the bar instead, nothing does, and "Buffers" draws
         // underneath it as soon as the large title collapses on scroll.
-        navigationItem.largeTitle = "Buffers"
+        // No title on iPad: the sidebar is permanent, so a heading naming what the column
+        // obviously is spends a large-title row of a 320pt panel to say nothing. On the phone
+        // the list is a screen you navigate to and back out of, and a screen needs a name.
+        if !isSidebar { navigationItem.largeTitle = "Buffers" }
         // The empty state's only button, and it has only one meaning here: this screen's
         // placeholder never asks anything else of the user.
         placeholderView.onAction = { [weak self] in self?.showAddNetwork() }
@@ -238,7 +241,7 @@ final class BufferListViewController: UICollectionViewController {
         // long-press menu while drawing the indicator alone — measured identical to the
         // original: a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
-        navigationItem.largeTitleDisplayMode = .always
+        navigationItem.largeTitleDisplayMode = isSidebar ? .never : .always
         collectionView.backgroundColor = .systemGroupedBackground
         // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
         // first thing that happens to touch it. `UICollectionViewController` installs itself
@@ -361,13 +364,13 @@ final class BufferListViewController: UICollectionViewController {
         // screen pushed over this one ends in a composer — so it can't simply stay up. Asked
         // for on the way in and given back on the way out, which also means it animates with
         // the transition rather than appearing after it.
-        navigationController?.setToolbarHidden(false, animated: animated)
+        if usesBottomSearchBar { navigationController?.setToolbarHidden(false, animated: animated) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         refreshBanner()
-        navigationController?.setToolbarHidden(true, animated: animated)
+        if usesBottomSearchBar { navigationController?.setToolbarHidden(true, animated: animated) }
     }
 
     override func viewDidDisappear(_ animated: Bool) {
@@ -391,7 +394,13 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private func refreshBanner() {
-        let isFrontmost = view.window != nil && navigationController?.topViewController === self
+        // Side by side, both screens are in the window and each is the top of its own column's
+        // stack — so without the third condition the banner the comment above says must never
+        // be drawn twice is drawn twice, and read out twice. This one yields, as it does when
+        // pushed over on the phone.
+        let isFrontmost = view.window != nil
+            && navigationController?.topViewController === self
+            && !marksOpenBuffer
         connectionBanner.update(isFrontmost ? bannerState : .hidden)
     }
 
@@ -660,7 +669,22 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Cell & header registrations
 
     private lazy var listRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Row> {
-        cell, _, row in
+        [weak self] cell, _, row in
+        // ⚠ The colour is named on EVERY row, never left to the default.
+        // `defaultBackgroundConfiguration()` returns the colour of the ground the list is drawn
+        // on — measured, #1C1C1E over #1C1C1E on an iPad sidebar — while UIKit ends up applying
+        // one step lighter. In the window between, a row wears a card the exact colour of its
+        // own background: the blink-in-and-out that leaving the configuration nil didn't fix.
+        //
+        // ⚠ The cost is that these rows no longer highlight while held: the default's
+        // `backgroundColorTransformer` is nil, so UIKit's `updated(for:)` over an explicit
+        // colour is a no-op. Accepted — the flicker showed on every scroll, the highlight
+        // shows for the instant before the buffer opens. Buying it back means deriving the
+        // pressed shade in a `configurationUpdateHandler`.
+        var background = cell.defaultBackgroundConfiguration()
+        background.backgroundColor = self?.isOpen(row.buffer) == true ? Self.openRowTint : .bufferCard
+        cell.backgroundConfiguration = background
+
         var content = UIListContentConfiguration.cell()
         // No `networkName` here, unlike the pill: every roster row already states its network
         // as its section header, so resolving a server log to its network's name would just
@@ -678,7 +702,7 @@ final class BufferListViewController: UICollectionViewController {
     }
 
     private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        cell, _, row in
+        [weak self] cell, _, row in
         cell.configure(
             // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
             // print, so `displayName` falls back to the literal "Server" without one. A roster
@@ -690,7 +714,8 @@ final class BufferListViewController: UICollectionViewController {
             networkHint: row.networkHint,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
-            presence: row.presence
+            presence: row.presence,
+            isOpen: self?.isOpen(row.buffer) == true
         )
     }
 
@@ -785,6 +810,69 @@ final class BufferListViewController: UICollectionViewController {
     /// snapshot carries identifiers and not content.
     private var rowsByID: [ItemID: Row] = [:]
 
+    // MARK: - Which conversation is open (iPad)
+
+    /// The buffer showing in the split's conversation column, or nil.
+    ///
+    /// Drawn only side by side — under a conversation rather than beside one, a row left
+    /// marked after you navigate away is stale emphasis. `marksOpenBuffer` gates the drawing,
+    /// so this stays set through a collapse and the mark comes back on expanding.
+    private var openBufferKey: BufferKey?
+
+    /// The tint an open row wears — the chip's, so the two rows a favorited channel owns are
+    /// marked identically. Deliberately a wash rather than a filled `.tintColor` row: unread
+    /// badges and the highlight red already compete for attention in this list, and a solid
+    /// accent bar would outrank the one signal that actually needs to be seen.
+    private static let openRowTint = BufferChipCell.openTint
+
+    /// Whether this list is beside a conversation rather than under one.
+    ///
+    /// Pushed in by `BufferSplitViewController` rather than read from `isCollapsed`: the moment
+    /// it matters is a resize into or out of Slide Over, which is exactly when that property
+    /// still answers for the layout being left. False on the phone, which has no split.
+    var marksOpenBuffer = false {
+        didSet {
+            guard marksOpenBuffer != oldValue else { return }
+            markingChanged()
+            // The banner yields to the conversation column's whenever there is one, so this
+            // flag flipping is exactly when that answer changes.
+            refreshBanner()
+        }
+    }
+
+    func isOpen(_ buffer: Buffer) -> Bool {
+        marksOpenBuffer && buffer.key.id == openBufferKey?.id
+    }
+
+    /// Point the mark at a buffer, or clear it. Reconfigures only the rows whose answer moved,
+    /// since nothing about what the list *contains* has changed.
+    ///
+    /// ⚠ A buffer can hold more than one row — `ItemID` is section-qualified, so a favorited
+    /// channel is a chip **and** a roster row under its network — so this filters every item
+    /// identifier with a matching key rather than asking for one `indexPath(for:)`.
+    func markSelection(_ key: BufferKey?) {
+        guard key?.id != openBufferKey?.id else { return }
+        let moved = Set([openBufferKey?.id, key?.id].compactMap { $0 })
+        openBufferKey = key
+        guard isViewLoaded else { return }
+        var snapshot = dataSource.snapshot()
+        let affected = snapshot.itemIdentifiers.filter { moved.contains($0.key) }
+        guard !affected.isEmpty else { return }
+        snapshot.reconfigureItems(affected)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
+    /// Redraw the mark when the split collapses or expands under us — the rows are unchanged,
+    /// but whether they should show a mark at all just flipped.
+    private func markingChanged() {
+        guard isViewLoaded, let key = openBufferKey else { return }
+        var snapshot = dataSource.snapshot()
+        let affected = snapshot.itemIdentifiers.filter { $0.key == key.id }
+        guard !affected.isEmpty else { return }
+        snapshot.reconfigureItems(affected)
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
     // MARK: - Bar items
 
     /// Account and settings: the things that outlast whichever conversation you're reading.
@@ -869,11 +957,31 @@ final class BufferListViewController: UICollectionViewController {
     /// the system puts it here. What the rule was really protecting (the toolbar can't survive
     /// the push into a chat screen, whose bottom is a composer) still holds and is still
     /// handled — see `viewWillAppear`.
+    ///
+    /// ⚠ Not a style choice on iPad — an integrated field does not fit. The list is a ~320pt
+    /// sidebar whose bar already carries the status pill, and UIKit resolves an overfull bar
+    /// by silently DROPPING trailing items: measured, `.integrated` cost the join "+" outright.
+    /// `.stacked` is where iPad search goes anyway, and all four controls fit.
     private func installSearch() {
         navigationItem.searchController = searchController
+        guard usesBottomSearchBar else {
+            navigationItem.preferredSearchBarPlacement = .stacked
+            return
+        }
         navigationItem.preferredSearchBarPlacement = .integrated
         toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
     }
+
+    /// Whether this list is the iPad's permanent sidebar rather than a screen you navigate to.
+    ///
+    /// Idiom, not `marksOpenBuffer`: this decides what the list is *built* from, in
+    /// `viewDidLoad`, long before there is a window to ask whether the split is collapsed.
+    private var isSidebar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+
+    /// Whether the search field is riding a bottom toolbar this screen has to raise and lower.
+    /// False on iPad, where it is stacked under the title and there is no toolbar at all —
+    /// asking for one would raise an empty bar across the foot of the sidebar.
+    private var usesBottomSearchBar: Bool { !isSidebar }
 
     /// Take the search UI down — what a result tap calls once it's decided where to go. Not a
     /// dismiss: the results are presented *by* the search controller, so the thing to undo is
@@ -1106,7 +1214,12 @@ final class BufferListViewController: UICollectionViewController {
         // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
         // having no sidebar, so it sits below the two curated sections rather than pushing
         // them down with buffers you merely passed through.
-        if !recents.isEmpty { sections.append(Section(id: .recent, title: "Recent", rows: recents)) }
+        // ⚠ Phone only, for the reason the comment above gives: Recent is "the iOS answer to
+        // having no sidebar", and iPad has the sidebar — every chip in it is already a row
+        // further down the same permanently-visible column.
+        if !recents.isEmpty, !isSidebar {
+            sections.append(Section(id: .recent, title: "Recent", rows: recents))
+        }
 
         // The user's own order, not ours: they arranged their networks on the web, and a
         // phone that re-alphabetises them is a phone you have to re-read every time you pick

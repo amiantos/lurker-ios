@@ -157,6 +157,31 @@ extension UINavigationController {
         jumpTo messageId: Int? = nil,
         animated: Bool
     ) {
+        // iPad: the columns are the arrangement, so hand over rather than build a stack.
+        // Branching here rather than at the five call sites is the point of the funnel —
+        // `/msg`, a highlight and the rest go on saying "show me this buffer" and stay
+        // ignorant of the layout. Collapsed splits come through here too; the split hands
+        // those straight back to `setBufferStack`, since collapsed IS this arrangement.
+        if let split = splitViewController as? BufferSplitViewController {
+            split.showBuffer(buffer, jumpTo: messageId, animated: animated)
+            return
+        }
+        setBufferStack(buffer, viewModel: viewModel, jumpTo: messageId, animated: animated)
+    }
+
+    /// The stack arrangement itself: this conversation, with the list under it.
+    ///
+    /// Split out from `showBuffer` so a COLLAPSED split can reuse it. Collapsed, UIKit merges
+    /// the secondary column's contents into the primary's stack, so "the columns" are just
+    /// this — and driving it here rather than through `show(.secondary)` keeps the one
+    /// invariant that matters in both layouts: exactly one chat screen exists, because the
+    /// stack is SET rather than pushed.
+    func setBufferStack(
+        _ buffer: Buffer,
+        viewModel: ChatViewModel,
+        jumpTo messageId: Int? = nil,
+        animated: Bool
+    ) {
         // Already reading this one, and nothing to jump to? Leave it alone. Rebuilding the
         // screen re-latches the unread divider, re-requests history, and throws away the
         // scroll position to arrive exactly where we already are — which is what tapping a
