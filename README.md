@@ -1,6 +1,6 @@
 # Lurker for iOS
 
-The native iOS client for [Lurker](https://github.com/amiantos/lurker) — a beautiful self-hosted iOS client.
+The native iOS and iPadOS client for [Lurker](https://github.com/amiantos/lurker) — a beautiful self-hosted IRC client for you and your friends.
 
 ## Beta Test
 
