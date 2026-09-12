@@ -1375,6 +1375,15 @@ final class LurkerStore {
         // De-dupe backlog/live overlap by persisted id; id 0 is ephemeral and always
         // appended.
         if message.id != 0, existing.contains(where: { $0.id == message.id }) { return next }
+        // ⚠⚠ A channel row comes from a persisted line or not at all (§9.1: `channel-joined` is
+        // the materialization signal, and our own join's line is the persisted one that beats
+        // it). An ephemeral event can name a channel we're NOT in — a refused join's `join-error`
+        // is aimed at the channel it refused — and a row minted for it read joined, so the list
+        // showed the refused channel and `/join`'s wait switched the user into it.
+        if next.buffers[key] == nil, message.id == 0,
+           BufferKind.of(networkId: networkId, target: target) == .channel {
+            return next
+        }
         if next.buffers[key] == nil {
             // A live event can be the first sign of a buffer (a new incoming DM), so
             // materialize a row for it. Unhydrated, so tapping it fetches history.
