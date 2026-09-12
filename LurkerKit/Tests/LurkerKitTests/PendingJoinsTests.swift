@@ -81,6 +81,12 @@ struct PendingJoinsTests {
             "the second request restarted the clock"
         )
         #expect(joins.joined(chan) == .joined(chan, opens: true))
+
+        // …and the other way round: a parted row's Join (which doesn't open) landing after a typed
+        // `/join` must not cancel the switch the `/join` asked for.
+        joins.request(chan, opens: true, now: t0)
+        joins.request(chan, opens: false, now: t0)
+        #expect(joins.joined(chan) == .joined(chan, opens: true))
     }
 
     @Test("a dropped socket forgets every join")
