@@ -255,6 +255,20 @@ final class FrameParserTests: XCTestCase {
         XCTAssertTrue(members[1].away)
     }
 
+    /// `channel-joined` and `channel-parted` are membership, not lines: no id, nothing to render.
+    /// Parsed as events they became `.other` Messages, and `applyLive` minted a row for each — a
+    /// forward's part for a channel we never had included.
+    func testChannelJoinedAndPartedAreLiftedOutOfIrcRatherThanParsedAsEvents() {
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"irc","networkId":1,"target":"#lurker","type":"channel-joined"}"##),
+            .channelJoined(networkId: 1, target: "#lurker")
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"irc","networkId":1,"target":"#lurker","type":"channel-parted"}"##),
+            .channelParted(networkId: 1, target: "#lurker")
+        )
+    }
+
     func testAMemberUpdateParsesItsMemberSnapshot() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"member-update","member":{"nick":"bob","modes":["v"],"away":true,"user":"rob","host":"new.example.org"}}"##

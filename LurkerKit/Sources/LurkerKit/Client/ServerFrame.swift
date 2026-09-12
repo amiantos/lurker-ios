@@ -107,6 +107,22 @@ enum ServerFrame: Equatable, Sendable {
     /// one-nick edit (a chghost, an account change). Also ephemeral and silent.
     case memberUpdate(networkId: Int?, target: String, member: Member)
 
+    /// A `channel-joined` event: **we** are in this channel (lurker `CLIENT_PROTOCOL.md` §9.1).
+    /// A join request is only intent, so this is the one thing that says a join landed — ours,
+    /// a reconnect's rejoin, or the channel a 470 forward actually put us in. It materializes
+    /// the buffer when we hold no row, and marks the row `joined` either way.
+    ///
+    /// Lifted out of `irc` like `channelTopic`: no id, nothing to render. As a live event it
+    /// minted a row with `joined` false and never set it on a row we already held — so once a
+    /// reconnect re-sent a network's buffers as parted, nothing marked them joined again.
+    case channelJoined(networkId: Int?, target: String)
+
+    /// A `channel-parted` event: we left, were kicked, were forwarded away (470), or lost the
+    /// IRC connection, which parts every joined channel at once (lurker#915). Resolve, never
+    /// materialize: mark the row parted, keep its history, drop its members — and with no row,
+    /// do nothing, which is what a forward's part for a name we never had needs.
+    case channelParted(networkId: Int?, target: String)
+
     /// An `own-nick` event: *our* nick on this network changed — by `/nick`, or because
     /// services renamed us. Network-scoped and target-less, like `peer-presence`.
     ///

@@ -802,6 +802,15 @@ enum FrameParser {
                 topic: obj.stringOrNull("topic")
             )
         }
+        // Membership, for the same reason: no id, nothing to render, a row to mark rather than a
+        // line to append. Falling through, each became an `.other` Message that `applyLive`
+        // minted a row for — so a forward's part for a channel we never had conjured one.
+        if obj.string("type") == "channel-joined" {
+            return .channelJoined(networkId: obj.intOrNull("networkId"), target: target)
+        }
+        if obj.string("type") == "channel-parted" {
+            return .channelParted(networkId: obj.intOrNull("networkId"), target: target)
+        }
         // `names` and `member-update` are state-only for the same reason as
         // `channel-topic`: no id, nothing to render, payload in fields `parseEvent`
         // doesn't read. Left to fall through they'd become `.other` Messages that

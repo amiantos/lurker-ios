@@ -119,6 +119,10 @@ final class BufferListViewController: UICollectionViewController {
         /// Carried on the row — and therefore compared by `Equatable` — so muting or unmuting
         /// from another device reconfigures the one cell it affects.
         var muted: Bool = false
+        /// A channel we hold a row for and aren't in (`ChatState.isParted`): drawn dimmed, and
+        /// offered Join on long-press. Read from the store, never from `buffer` — a favorite's
+        /// chip can carry a synthesized buffer whose `joined` is a default, not a statement.
+        var parted: Bool = false
 
         /// What the unread pill counts.
         ///
@@ -134,13 +138,15 @@ final class BufferListViewController: UICollectionViewController {
             networkName: String?,
             presence: FriendPresence? = nil,
             isFriendChip: Bool = false,
-            muted: Bool = false
+            muted: Bool = false,
+            parted: Bool = false
         ) {
             self.buffer = buffer
             self.networkName = networkName
             self.presence = presence
             self.isFriendChip = isFriendChip
             self.muted = muted
+            self.parted = parted
         }
     }
 
@@ -690,7 +696,13 @@ final class BufferListViewController: UICollectionViewController {
         // as its section header, so resolving a server log to its network's name would just
         // print "libera" above "libera".
         content.text = row.buffer.displayName()
+        // A channel we're not in reads as history, the way its chip does: the name steps down to
+        // secondary, and the badge below keeps its own colours.
+        if row.parted { content.textProperties.color = .secondaryLabel }
         cell.contentConfiguration = content
+        // Assigned both ways: cells are recycled, and a rejoined channel's row must not go on
+        // saying it isn't.
+        cell.accessibilityValue = row.parted ? "Not joined" : nil
 
         // The unread pill *replaces* the disclosure chevron, as the table did — a row either
         // says how much is waiting or it says "there's more inside", never both.
@@ -715,6 +727,7 @@ final class BufferListViewController: UICollectionViewController {
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence,
+            parted: row.parted,
             isOpen: self?.isOpen(row.buffer) == true
         )
     }
@@ -1345,12 +1358,16 @@ final class BufferListViewController: UICollectionViewController {
         Row(
             buffer: buffer,
             networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
-            muted: Self.isMuted(buffer, state)
+            muted: Self.isMuted(buffer, state),
+            parted: state.isParted(buffer.key)
         )
     }
 
     private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
-        Row(buffer: buffer, networkName: nil, muted: Self.isMuted(buffer, state))
+        Row(
+            buffer: buffer, networkName: nil,
+            muted: Self.isMuted(buffer, state), parted: state.isParted(buffer.key)
+        )
     }
 
     /// Tag chips with a short `li` network hint — the ones whose names collide **within this
@@ -1506,7 +1523,8 @@ final class BufferListViewController: UICollectionViewController {
         else { return nil }
         // The server log and the system buffer can't be closed.
         guard buffer.kind != .server, buffer.kind != .system else { return nil }
-        let title = buffer.kind == .channel ? "Leave" : "Close"
+        // A parted channel has nothing to leave, so it's Close — as on the long-press menu.
+        let title = buffer.kind == .channel && !state.isParted(buffer.key) ? "Leave" : "Close"
         let close = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, done in
             self?.close(buffer)
             done(true)
@@ -1560,9 +1578,30 @@ final class BufferListViewController: UICollectionViewController {
         //
         // Its own inline section, so the separator sets a destructive action apart from the
         // favorite toggle above rather than leaving them a thumb-slip apart.
-        let leaveTitle = isDm ? "Close" : "Leave"
+        //
+        // A parted channel has nothing to leave, so for one it's Close.
+        let parted = state.isParted(buffer.key)
+        let leaveTitle = isDm || parted ? "Close" : "Leave"
+        // Read as the menu opens, like the rest of it: a drop while the menu sits open leaves
+        // Join enabled, and that JOIN goes nowhere — as a typed `/join` would.
+        let canJoin = state.networks[networkId]?.state == .connected
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
-            UIMenu(children: [
+            var children: [UIMenuElement] = []
+            // A parted channel keeps its row and its history, and getting back in is the usual
+            // reason to long-press one, so Join leads. Disabled while the network is down: a
+            // JOIN needs a live connection, and the section header already says why. No
+            // navigation — the row lighting up is the answer, and a refusal prints where it
+            // always does.
+            if parted {
+                children.append(UIMenu(options: .displayInline, children: [
+                    UIAction(
+                        title: "Join Channel",
+                        image: UIImage(systemName: "number"),
+                        attributes: canJoin ? [] : .disabled
+                    ) { _ in self?.viewModel.joinChannel(networkId: networkId, channel: target) },
+                ]))
+            }
+            children.append(
                 UIAction(title: title, image: image, attributes: isFavorite && isDm ? .destructive : []) { _ in
                     guard let self else { return }
                     if isFavorite {
@@ -1570,15 +1609,16 @@ final class BufferListViewController: UICollectionViewController {
                     } else {
                         self.viewModel.favoriteBuffer(networkId: networkId, target: target)
                     }
-                },
-                UIMenu(options: .displayInline, children: [
-                    UIAction(
-                        title: leaveTitle,
-                        image: UIImage(systemName: "xmark"),
-                        attributes: .destructive
-                    ) { _ in self?.close(buffer) },
-                ]),
-            ])
+                }
+            )
+            children.append(UIMenu(options: .displayInline, children: [
+                UIAction(
+                    title: leaveTitle,
+                    image: UIImage(systemName: "xmark"),
+                    attributes: .destructive
+                ) { _ in self?.close(buffer) },
+            ]))
+            return UIMenu(children: children)
         }
     }
 }
