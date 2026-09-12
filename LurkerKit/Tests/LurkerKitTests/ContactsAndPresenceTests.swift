@@ -188,6 +188,25 @@ final class ContactsAndPresenceTests: XCTestCase {
         XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .offline)
     }
 
+    /// `socketOpen` reads `.connected` before the reconnect's snapshot replaces the cached rows, so
+    /// passing `presence` through in that window put last session's away or offline back on a row
+    /// for a moment — the flash `rowPresence` exists to prevent.
+    func testRowPresenceWaitsForTheReconnectSnapshot() {
+        let store = connectedStore()
+        store.apply(connectedNetwork(2, presence: ["darc": .offline]))
+        XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .offline)
+
+        store.apply(.socketClosed(reason: nil, code: nil))
+        store.apply(.socketOpen)
+        XCTAssertEqual(
+            store.state.rowPresence(networkId: 2, nick: "darc"), .unknown,
+            "reconnected, but the cache from before the drop hasn't been replaced yet"
+        )
+
+        store.apply(connectedNetwork(2, presence: ["darc": .online]))
+        XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .online)
+    }
+
     func testPresenceUnknownForNetworkWeDoNotHave() {
         let store = connectedStore()
         XCTAssertEqual(store.state.presence(networkId: 99, nick: "darc"), .unknown)

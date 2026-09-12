@@ -334,6 +334,10 @@ final class BufferListViewController: UICollectionViewController {
                     && $0.buffers == $1.buffers
                     && $0.connection == $1.connection
                     && $0.reachable == $1.reachable
+                    // A DM row's presence waits for the reconnect's snapshot (`rowPresence`), and
+                    // that snapshot can leave everything else here unchanged. Without this the rows
+                    // would sit on "unknown" until some unrelated frame let a rebuild through.
+                    && $0.snapshotSinceOpen == $1.snapshotSinceOpen
                     // `backlog-complete` carries no state but this flag. On an account with
                     // nothing to list it moves nothing else at all, so leaving it out would
                     // drop the frame as a duplicate and spin "Loading buffers…" forever on

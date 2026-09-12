@@ -23,6 +23,13 @@ public struct ChatState: Sendable {
     /// only ever reports connecting/connected/reconnecting — it has no way to say "there
     /// is no internet" — so without this the indicator could never legitimately show red.
     public var reachable: Bool = true
+    /// Whether this socket has delivered its `snapshot` yet.
+    ///
+    /// False from `socketOpen` until the burst's first frame lands. That's the window where
+    /// `connection` already reads `.connected` but `peerPresence` and every network's state are
+    /// still what they were before the drop, and `rowPresence` waits it out (#167). Not
+    /// `burstActive`: that only turns on when the snapshot itself arrives.
+    public var snapshotSinceOpen = false
     /// Highest persisted message id seen (excluding the system buffer, which has its own
     /// id space) — replayed as `?since=` on reconnect so the server ships only the gap.
     /// Populated now so #4 can resume without a store change.
@@ -460,14 +467,18 @@ public struct ChatState: Sendable {
     }
 
     /// `presence` as the buffer list shows it on a DM row or chip (#167): the same answer, except
-    /// `unknown` while this client can't see the server.
+    /// `unknown` until this client can see the server again and has heard from it.
     ///
     /// A row puts an offline peer's name in italics, and `offline` is a claim about the peer.
     /// While our own connection is down we know nothing about anyone, and `presence`'s `offline`
     /// would put every DM in italics under the "Connecting…" banner each time the app came back.
+    /// Nor right after the socket reopens: `connection` reads `.connected` before the reconnect's
+    /// snapshot replaces the cached rows, and passing those through put last session's away or
+    /// offline back on a row for a moment (`snapshotSinceOpen`).
+    ///
     /// The profile keeps `presence`'s answer — see the ⚠ there.
     public func rowPresence(networkId: Int, nick: String) -> FriendPresence {
-        guard reachable, connection == .connected else { return .unknown }
+        guard reachable, connection == .connected, snapshotSinceOpen else { return .unknown }
         return presence(networkId: networkId, nick: nick)
     }
 
@@ -737,6 +748,9 @@ final class LurkerStore {
             next.burstSeen = []
             next.burstActive = true
             next.burstGeneration &+= 1
+            // This socket has spoken: from here `peerPresence` and the networks' states are its
+            // own, not what was left over from before a drop (see `rowPresence`).
+            next.snapshotSinceOpen = true
             // Assigned outright, nil included: the snapshot is the cap's refresh point, so a
             // reconnect to an instance that no longer advertises one has to put us back on
             // the fallback rather than leave a number from the last server in force.
@@ -1057,6 +1071,9 @@ final class LurkerStore {
         case .socketOpen:
             var next = state
             next.connection = .connected
+            // Connected, but this socket hasn't said anything yet: until its snapshot lands, every
+            // presence row and network state is left over from before the drop.
+            next.snapshotSinceOpen = false
             next.error = nil
             return next
         case .socketClosed:
