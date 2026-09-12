@@ -22,7 +22,6 @@ extension Notification.Name {
 enum UserPreferences {
     fileprivate enum Key {
         static let lastServerURL = "lastServerURL"
-        static let lastBackend = "lastBackend"
         static let recentBufferKeys = "recentBufferKeys"
         static let favoriteBufferKeys = "favoriteBufferKeys"
         static let migratedFavoritesToServer = "migratedFavoritesToServer"
@@ -39,8 +38,7 @@ enum UserPreferences {
     static let standard: UserDefaults = {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [
-            Key.lastServerURL: Backend.selfHosted.defaultURL,
-            Key.lastBackend: Backend.selfHosted.rawValue,
+            Key.lastServerURL: ServerAddress.lurkerChat,
             // On by default — see `composerAutocapitalizes`. Registered rather than defaulted
             // at the call site because `bool(forKey:)` reads a missing key as false, which is
             // the opposite of what this one means when it hasn't been set.
@@ -53,20 +51,11 @@ enum UserPreferences {
 extension UserDefaults {
     /// The server URL to prefill on the sign-in screen (last one used).
     var lastServerURL: String {
-        string(forKey: UserPreferences.Key.lastServerURL) ?? Backend.selfHosted.defaultURL
+        string(forKey: UserPreferences.Key.lastServerURL) ?? ServerAddress.lurkerChat
     }
 
     func set(lastServerURL: String) {
         set(lastServerURL, forKey: UserPreferences.Key.lastServerURL)
-    }
-
-    /// The backend to preselect on the sign-in screen (last one used).
-    var lastBackend: Backend {
-        Backend(rawValue: string(forKey: UserPreferences.Key.lastBackend) ?? "") ?? .selfHosted
-    }
-
-    func set(lastBackend: Backend) {
-        set(lastBackend.rawValue, forKey: UserPreferences.Key.lastBackend)
     }
 
     // MARK: - Composer

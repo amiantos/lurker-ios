@@ -49,15 +49,10 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertNil(ServerAddress.rejection(of: "http://[fe80::1]:8010"))
     }
 
-    /// The defaults the sign-in screen prefills must both pass — a rejected default
-    /// would dead-end the first-run experience.
-    func testBothBackendDefaultURLsPassThePolicy() {
-        for backend in Backend.allCases {
-            XCTAssertNil(
-                ServerAddress.rejection(of: ServerAddress.normalize(backend.defaultURL)),
-                "\(backend) default must be signable"
-            )
-        }
+    /// The server the sign-in screen prefills must pass — a rejected default would
+    /// dead-end the first-run experience.
+    func testTheDefaultServerPassesThePolicy() {
+        XCTAssertNil(ServerAddress.rejection(of: ServerAddress.normalize(ServerAddress.lurkerChat)))
     }
 
     // MARK: - Policy: what's rejected, and with what copy

@@ -4,8 +4,7 @@
 import Foundation
 
 /// The one client that owns Lurker's REST + WebSocket contract. Self-hosted and hosted
-/// differ only by `Backend` (base URL + where the token is minted); there is deliberately
-/// no transport-adapter seam.
+/// differ only by base URL; there is deliberately no transport-adapter seam.
 ///
 /// `@MainActor`: reconnect (#4) means the socket is opened, replaced, and torn down from
 /// several places, so confining all of that state to the main actor makes it race-free
@@ -15,11 +14,6 @@ import Foundation
 /// no domain state (that lives in the store).
 @MainActor
 final class LurkerClient {
-
-    enum LoginResult: Sendable {
-        case success(token: String)
-        case failure(message: String)
-    }
 
     private let onFrame: (ServerFrame) -> Void
     private let session: URLSession
@@ -52,7 +46,7 @@ final class LurkerClient {
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
-        self.session = URLSession(configuration: .default)
+        self.session = URLSession(configuration: Self.bearerOnlyConfiguration())
 
         // ⚠⚠ Preview BYTES get their own session, and the separation is not tidiness.
         //
@@ -70,7 +64,7 @@ final class LurkerClient {
         // in Library/Caches for whoever signed in next. On its own session the purge is a
         // one-liner (`clearMediaCache`), and a 200 MB byte budget stops competing with API JSON
         // for the same eviction.
-        let mediaConfiguration = URLSessionConfiguration.default
+        let mediaConfiguration = Self.bearerOnlyConfiguration()
         mediaConfiguration.urlCache = URLCache(
             memoryCapacity: 16 * 1024 * 1024,
             diskCapacity: 200 * 1024 * 1024
@@ -83,63 +77,69 @@ final class LurkerClient {
         mediaSession.configuration.urlCache?.removeAllCachedResponses()
     }
 
-    // MARK: - Auth
+    /// Neither sends nor stores cookies, because this app authenticates with a Bearer token and
+    /// nothing else. A Lurker server takes a session cookie over a Bearer, and a socket opened
+    /// on a cookie isn't tied to the token, so revoking the app in Settings would leave it
+    /// connected.
+    nonisolated private static func bearerOnlyConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        return configuration
+    }
 
-    /// Exchange a password for a session token against `backend`.
-    func login(backend: Backend, server: String, identifier: String, password: String) async -> LoginResult {
-        baseURL = ServerAddress.normalize(server)
-        // The transport policy runs before any request so its verdict is sign-in copy,
-        // not a failed connect (#29). ATS would block a non-local http load anyway;
-        // this is the same rule stated legibly.
-        if let reason = ServerAddress.rejection(of: baseURL) {
-            return .failure(message: reason)
-        }
-        guard let url = URL(string: baseURL + backend.loginPath) else {
-            return .failure(message: "That server URL doesn't look right.")
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: [
-            backend.identifierField: identifier,
-            "password": password,
-        ])
+    // MARK: - Sign-in (OAuth)
 
+    /// Register this app with `server`. `OAuthClients` decides when that's needed.
+    func registerApp(server: String, name: String) async -> OAuth.Registration {
+        guard let request = OAuth.registrationRequest(server: server, clientName: name) else {
+            return .failure("That server URL doesn't look right.")
+        }
         do {
             let (data, response) = try await session.data(for: request)
-            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-            if code == 401 {
-                // Bad credentials — OR a passkey-only account, since the mint endpoint is
-                // password-only and can't tell the two apart. Name the caveat rather than
-                // flatly claiming "wrong password".
-                return .failure(message:
-                    "Sign-in failed — check your password. Passkey-only accounts can't "
-                        + "sign in from the app yet (login is password-only).")
-            }
-            guard code == 200,
-                  let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let minted = body["token"] as? String, !minted.isEmpty
-            else {
-                return .failure(message: "Sign-in failed (HTTP \(code))")
-            }
-            token = minted
-            return .success(token: minted)
+            return OAuth.registration(status: (response as? HTTPURLResponse)?.statusCode ?? 0, data: data)
         } catch {
-            // Backstop for the policy above: if ATS blocks a load our check let through
-            // (the two definitions of "local" should never drift, but Apple's can move),
-            // say what actually happened instead of surfacing NSURLError -1022's prose.
-            if (error as? URLError)?.code == .appTransportSecurityRequiresSecureConnection {
-                return .failure(message:
-                    "iOS blocked the connection because this server isn't using HTTPS.")
-            }
-            return .failure(message: "Sign-in failed: \(error.localizedDescription)")
+            return .failure(Self.signInFailure(error))
         }
+    }
+
+    /// Trade the approval page's code for a token.
+    func exchangeCode(server: String, clientId: String, code: String, verifier: String) async -> OAuth.TokenGrant {
+        guard let request = OAuth.tokenRequest(server: server, clientId: clientId, code: code, verifier: verifier)
+        else {
+            return .failure("That server URL doesn't look right.")
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            return OAuth.tokenGrant(status: (response as? HTTPURLResponse)?.statusCode ?? 0, data: data)
+        } catch {
+            return .failure(Self.signInFailure(error))
+        }
+    }
+
+    /// Whether `server` still knows a saved `client_id`, or nil when it couldn't say.
+    func isClientKnown(server: String, clientId: String) async -> Bool? {
+        guard let request = OAuth.clientCheckRequest(server: server, clientId: clientId),
+              let (data, response) = try? await session.data(for: request)
+        else { return nil }
+        return OAuth.clientKnown(status: (response as? HTTPURLResponse)?.statusCode ?? 0, data: data)
+    }
+
+    /// Backstop for the transport policy, which sign-in checks first: if ATS blocks a load the
+    /// check let through (the two definitions of "local" should never drift, but Apple's can
+    /// move), say what actually happened instead of surfacing NSURLError -1022's prose.
+    nonisolated private static func signInFailure(_ error: Error) -> String {
+        if (error as? URLError)?.code == .appTransportSecurityRequiresSecureConnection {
+            return "iOS blocked the connection because this server isn't using HTTPS."
+        }
+        return "Sign-in failed: \(error.localizedDescription)"
     }
 
     // MARK: - Lifecycle
 
-    /// Re-arm from a persisted session (no password round-trip); follow with `start()`.
-    /// If the token is stale, `start()`'s first authenticated call surfaces the 401 as
+    /// Arm with a token, from a sign-in or a persisted session; follow with `start()`.
+    /// If the token was revoked, `start()`'s first authenticated call surfaces the 401 as
     /// `.unauthorized`.
     func restore(server: String, token: String) {
         baseURL = ServerAddress.normalize(server)
@@ -180,9 +180,15 @@ final class LurkerClient {
     ///
     /// Not awaited: a slow or failing roster read must not hold the socket down. It lands as
     /// a `networks` frame whenever it arrives, and the list re-sorts then.
+    ///
+    /// ⚠⚠ It reports a 401, because the socket can't be counted on to. A refused upgrade only
+    /// reads as a 401 here if everything between the phone and the server passes the failed
+    /// upgrade's status through, while a REST 401 always arrives. A revoked app sat on
+    /// "Reconnecting…" for good before this, its every reconnect refused and none of the
+    /// refusals read as a 401. A phone suspended through the revoke never hears the 4001 close.
     func reconnect(since: Int) {
         Task { await fetchSettings() }
-        Task { await refreshNetworks() }
+        Task { _ = await fetchNetworks() }
         openSocket(since: since)
     }
 
@@ -201,8 +207,8 @@ final class LurkerClient {
     /// about it; true otherwise, including transient errors where the socket is still worth
     /// trying.
     ///
-    /// `reportingUnauthorized` is true only for the connect-time read, which is the token
-    /// check — see `refreshNetworks` for why every other caller wants it off.
+    /// `reportingUnauthorized` is true for the connect-time and reconnect reads, which are the
+    /// token checks — see `refreshNetworks` for why every other caller wants it off.
     private func fetchNetworks(reportingUnauthorized: Bool = true) async -> Bool {
         guard let token, let url = URL(string: baseURL + "/api/networks") else { return true }
         rosterGeneration += 1
@@ -305,15 +311,13 @@ final class LurkerClient {
 
     // MARK: - Networks (#11)
 
-    /// Re-read the network roster: after a network is created or deleted from this app, when
-    /// a `snapshot` names one we hold no name for (#136), and on every reconnect (see
-    /// `reconnect` for why that one is not the waste it looks like).
+    /// Re-read the network roster: after a network is created or deleted from this app, and
+    /// when a `snapshot` names one we hold no name for (#136). Reconnects read it as well, but
+    /// through `fetchNetworks` directly, because there a 401 has to end the session.
     ///
-    /// ⚠⚠ Does NOT report a 401, unlike the connect-time read. There it IS the token check
-    /// and a rejection has to end the session; here it is a background refresh that can run
-    /// during a flapping reconnect, and bouncing the user to sign-in over a roster GET is
-    /// exactly what `fetchSettings` refuses to do three functions down, for the same reason.
-    /// The socket is the thing that finds out whether the session is still good.
+    /// ⚠⚠ Does NOT report a 401, unlike the connect-time and reconnect reads, which are the
+    /// token checks. This one runs beside a live socket, and a live socket hears a revoke as
+    /// its 4001 close.
     func refreshNetworks() async {
         _ = await fetchNetworks(reportingUnauthorized: false)
     }
@@ -491,8 +495,11 @@ final class LurkerClient {
                 Task { @MainActor in self?.handleOpen(text: text, from: task) }
             case .failure(let error):
                 let code = (task.response as? HTTPURLResponse)?.statusCode
+                let closeCode = task.closeCode.rawValue
                 let reason = error.localizedDescription
-                Task { @MainActor in self?.handleClose(code: code, reason: reason, from: task) }
+                Task { @MainActor in
+                    self?.handleClose(code: code, closeCode: closeCode, reason: reason, from: task)
+                }
             }
         }
     }
@@ -530,11 +537,24 @@ final class LurkerClient {
         listen(on: task)
     }
 
-    private func handleClose(code: Int?, reason: String, from task: URLSessionWebSocketTask) {
+    private func handleClose(code: Int?, closeCode: Int, reason: String, from task: URLSessionWebSocketTask) {
         guard task === socket else { return }
-        // A refused upgrade with 401 means the bearer never resolved — the session is
-        // gone, not merely a dropped connection.
-        onFrame(code == 401 ? .unauthorized : .socketClosed(reason: reason, code: code))
+        onFrame(
+            Self.closeEndsSession(status: code, closeCode: closeCode)
+                ? .unauthorized : .socketClosed(reason: reason, code: code)
+        )
+    }
+
+    /// Whether a socket ended because the token is dead rather than because the connection
+    /// dropped. Reconnecting after either of these can only be refused:
+    ///  - the upgrade was refused with 401, so the Bearer never resolved;
+    ///  - an open socket was closed with 4001, lurker's `WS_CLOSE_SESSION_REVOKED`
+    ///    (`shared/wsCloseCodes.ts`): the app was revoked in Settings, or the account recovered.
+    ///
+    /// ⚠ `status` is the UPGRADE's response, so an open socket's close still reads 101. The
+    /// close code is the only thing that tells a revoke from a drop.
+    nonisolated static func closeEndsSession(status: Int?, closeCode: Int) -> Bool {
+        status == 401 || closeCode == 4001
     }
 
     // MARK: - Verbs
@@ -1279,6 +1299,21 @@ final class LurkerClient {
             request.httpMethod = "POST"
             request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
             _ = try? await session.data(for: request)
+        }
+    }
+
+    /// Ends a session from the password sign-in this app had before OAuth, then empties the
+    /// cookie jar. It goes through the shared jar, as that sign-out did: on lurker.chat the
+    /// jar holds the cell session the proxy minted for the old token, and that's the session
+    /// the cell has to delete. Best effort; the token is already off the device.
+    nonisolated static func endPasswordSession(server: String, token: String) {
+        guard let url = URL(string: ServerAddress.normalize(server) + "/api/auth/logout") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        Task.detached { [request] in
+            _ = try? await URLSession.shared.data(for: request)
+            HTTPCookieStorage.shared.removeCookies(since: .distantPast)
         }
     }
 
