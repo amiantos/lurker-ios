@@ -304,6 +304,7 @@ final class BufferChipCell: UICollectionViewCell {
         unread: Int,
         highlights: Int,
         presence: FriendPresence? = nil,
+        parted: Bool = false,
         isOpen: Bool = false
     ) {
         // Side by side, the card says which conversation you're reading. A fill rather than a
@@ -313,6 +314,11 @@ final class BufferChipCell: UICollectionViewCell {
         nameLabel.text = name
         networkHintLabel.text = networkHint
         networkHintLabel.isHidden = networkHint == nil
+        // A channel we're not in reads as history rather than a live room: the name steps down a
+        // level, and the hint with it so it stays the quieter of the two. Colour only — the pill
+        // keeps its own, because unread in a parted channel is still unread.
+        nameLabel.textColor = parted ? .secondaryLabel : .label
+        networkHintLabel.textColor = parted ? .tertiaryLabel : .secondaryLabel
 
         badgeContainer.subviews.forEach { $0.removeFromSuperview() }
         if let pill = makeUnreadBadge(unread: unread, highlights: highlights) {
@@ -337,6 +343,7 @@ final class BufferChipCell: UICollectionViewCell {
         // shorthand for a collision you can see, and "which network is this" is a question a
         // screen-reader user can't answer by glancing at the chip beside it.
         var summary = networkName.map { "\(name), \($0)" } ?? name
+        if parted { summary += ", not joined" }
         if let presence { summary += ", \(presence.accessibilityLabel)" }
         if unread > 0 {
             summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"

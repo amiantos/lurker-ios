@@ -2118,16 +2118,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Switch to a channel we just asked to join, the moment its buffer materializes.
+    /// Switch to a channel we just asked to join, the moment we're in it.
     ///
-    /// The row appears when `channel-joined` comes back and `applyLive` mints it — which is
-    /// the only thing that proves we're actually in the channel. Waiting for it rather than
-    /// navigating straight away is what keeps a refused join (no such channel, +i, banned,
-    /// a 470 forward to another name) from stranding the user on a screen that never fills:
-    /// nothing fires, they stay where they typed, and the error prints in front of them.
+    /// `joined` is set by `channel-joined` alone — the only thing that proves we're actually in
+    /// the channel. Waiting for it rather than navigating straight away is what keeps a refused
+    /// join (no such channel, +i, banned, a 470 forward to another name) from stranding the user
+    /// on a screen that never fills: nothing fires, they stay where they typed, and the error
+    /// prints in front of them.
     ///
-    /// `statePublisher` replays current state on subscribe, so joining a channel already
-    /// open switches to it immediately — which is what typing `/join` for it means.
+    /// ⚠ `joined`, not the row. A channel you parted keeps its row, so waiting for a row sent a
+    /// `/join` for it straight there before the server had answered — refused or not.
+    ///
+    /// `statePublisher` replays current state on subscribe, so joining a channel you're already
+    /// in switches to it immediately — which is what typing `/join` for it means.
     ///
     /// The timeout only tidies up. It exists so a join that never lands doesn't leave a
     /// subscription that could fire much later — switching the user somewhere unasked
@@ -2136,7 +2139,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         pendingJoinCancellable?.cancel()
         pendingJoinCancellable = viewModel.statePublisher
             .compactMap { $0.buffers[key.id] }
-            .first()
+            .first(where: \.joined)
             .timeout(.seconds(15), scheduler: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] _ in self?.pendingJoinCancellable = nil },

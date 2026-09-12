@@ -523,15 +523,15 @@ public final class ChatViewModel {
     public enum SendOutcome: Equatable, Sendable {
         case none
         case activate(BufferKey)
-        /// `/join` was sent. Switch to this buffer **when it materializes**, not now.
+        /// `/join` was sent. Switch to this buffer **once we're in it**, not now.
         ///
         /// Deliberately not `activate`: a join is a request the server can refuse (no such
-        /// channel, +i, banned, or a 470 forward to a different name), and the buffer only
-        /// exists once `channel-joined` comes back (§9.1). Switching immediately would put
-        /// the user on a screen for a channel they may never be in, and — because nothing
-        /// would ever arrive for it — one that sits on a loading spinner forever. So the
-        /// UI waits for the row and navigates then; a refused join simply never fires,
-        /// leaving the user where they typed with the error printed in front of them.
+        /// channel, +i, banned, or a 470 forward to a different name), and only
+        /// `channel-joined` says it landed (§9.1). Switching immediately would put the user on
+        /// a screen for a channel they may never be in — for a new one, a loading spinner that
+        /// never resolves. So the UI waits for `joined` and navigates then; a refused join
+        /// simply never fires, leaving the user where they typed with the error printed in
+        /// front of them.
         case awaitJoin(BufferKey)
         /// `/whois` — open this person's profile. Carries the network because a profile is
         /// about a person *on a connection*, and the buffer the command was typed in is the

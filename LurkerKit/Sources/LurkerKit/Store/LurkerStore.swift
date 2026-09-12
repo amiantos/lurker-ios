@@ -421,6 +421,18 @@ public struct ChatState: Sendable {
             )
     }
 
+    /// Whether `key` is a channel we hold a row for and aren't in: parted, kicked, refused on
+    /// rejoin, or on a network whose connection dropped (lurker#915 parts every channel then).
+    ///
+    /// ⚠ Asks the stored row, never `buffer(for:)`. That synthesizes a buffer whose `joined` is
+    /// the initializer's `false` for any key the store hasn't materialized — a default, not a
+    /// statement — and a favorite's chip reading it would dim a channel nobody said we'd left.
+    /// DMs have no membership to lose, whatever their flag says.
+    public func isParted(_ key: BufferKey) -> Bool {
+        guard let buffer = buffers[key.id] else { return false }
+        return buffer.kind == .channel && !buffer.joined
+    }
+
     /// The status of a watched (network, nick), disconnected-aware — the single source the
     /// friend rows read. Mirrors the web client's `peerFor` + `deriveState`, plus a check the
     /// web doesn't need (its socket state drives the same store):
@@ -757,6 +769,32 @@ final class LurkerStore {
             return applyChannelMembers(state, networkId: networkId, target: target, members: members)
         case .memberUpdate(let networkId, let target, let member):
             return applyMemberUpdate(state, networkId: networkId, target: target, member: member)
+        case .channelJoined(let networkId, let target):
+            // Marks the row we hold — after a reconnect the only thing that does, since the
+            // re-sent buffers carry `joined` read before the rejoins land — and materializes one
+            // when there's no row, which is how a first join's buffer appears (§9.1).
+            var next = state
+            let key = BufferKey(networkId: networkId, target: target).id
+            if next.buffers[key] == nil {
+                next.buffers[key] = Buffer(
+                    networkId: networkId, target: target,
+                    kind: BufferKind.of(networkId: networkId, target: target)
+                )
+            }
+            next.buffers[key]?.joined = true
+            // The server just named this buffer, as a backlog frame does, so it survives the
+            // burst's closing prune: a rejoin can land inside a burst built before it.
+            next.burstSeen.insert(key)
+            return next
+        case .channelParted(let networkId, let target):
+            // Resolve, never materialize (§9.1): a forward's part names a channel we never had.
+            // The members go even without a row — `members` is a side table, and anything it
+            // holds for a channel we're not in is stale.
+            var next = state
+            let key = BufferKey(networkId: networkId, target: target).id
+            next.buffers[key]?.joined = false
+            next.members[key] = nil
+            return next
         case .ownNick(let networkId, let nick):
             // Patched onto a network we already know, never conjuring one: a nick for a
             // network with no row is nothing to apply it to, and the snapshot that creates
@@ -1293,6 +1331,10 @@ final class LurkerStore {
         }
         next.buffers[key] = buffer
         next.indexBufferId(buffer, key: key)
+        // Not in the channel, so nobody's list. The live `channel-parted` drops it too, but a part
+        // this device never heard — the connection dropped while the app was away — reaches it
+        // only as this frame's `joined`, and the old nicklist would otherwise outlive the part.
+        if buffer.kind == .channel, !buffer.joined { next.members[key] = nil }
 
         if detached {
             // The slice stands. See above.

@@ -853,6 +853,119 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertNil(store.state.buffers[chanKey]!.topic)
     }
 
+    // MARK: - Channel membership (#163)
+    //
+    // `channel-joined` and `channel-parted` are the server's word on whether we're in a channel
+    // (§9.1). A part resolves and never creates; a join creates when it must and marks either way.
+    // A backlog's `joined` says the same thing about a part this device never heard.
+
+    private func shell(joined: Bool) -> ServerFrame {
+        .backlog(
+            buffer: Buffer(networkId: 1, target: "#lurker", kind: .channel, joined: joined),
+            messages: [], hydrated: false, append: false, speakers: nil
+        )
+    }
+
+    func testChannelPartedMarksTheRowPartedAndDropsItsMembersButKeepsItsHistory() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "me"), Member(nick: "alice")])
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(1, "hi")))
+
+        store.apply(.channelParted(networkId: 1, target: "#lurker"))
+
+        let state = store.state
+        XCTAssertFalse(state.buffers[chanKey]!.joined)
+        XCTAssertNil(state.members[chanKey], "not in the channel, so nobody's list")
+        XCTAssertEqual(state.messages[chanKey]?.map(\.text), ["hi"], "history stays, and no line is added")
+    }
+
+    func testChannelPartedForAChannelWeHoldNoRowForCreatesNothing() {
+        // A 470 forward parts the name we asked for, which never had a buffer.
+        let store = LurkerStore()
+        store.apply(.channelParted(networkId: 1, target: "#asked-for"))
+
+        XCTAssertNil(store.state.buffers["1::#asked-for"])
+        XCTAssertNil(store.state.messages["1::#asked-for"])
+    }
+
+    func testChannelJoinedMaterializesAJoinedRowWithoutALine() {
+        let store = LurkerStore()
+        store.apply(.channelJoined(networkId: 1, target: "#new"))
+
+        let buffer = store.state.buffers["1::#new"]
+        XCTAssertEqual(buffer?.kind, .channel)
+        XCTAssertEqual(buffer?.joined, true)
+        XCTAssertEqual(store.state.messages["1::#new"] ?? [], [], "membership is state, not a line")
+    }
+
+    /// The case that matters most. A reconnect re-sends the network's buffers with `joined` read
+    /// before its rejoins land, so every channel arrives parted, and the rejoin's
+    /// `channel-joined` is the only thing that marks it joined again.
+    func testChannelJoinedMarksARowAReconnectShippedAsParted() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "me"), Member(nick: "alice")])
+
+        store.apply(.snapshot([
+            NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: []),
+        ], globalIgnores: [], maxUploadBytes: nil))
+        store.apply(shell(joined: false))
+        XCTAssertFalse(store.state.buffers[chanKey]!.joined)
+        XCTAssertNil(store.state.members[chanKey], "a backlog saying we're not in it drops the old list")
+
+        store.apply(.channelJoined(networkId: 1, target: "#lurker"))
+        XCTAssertTrue(store.state.buffers[chanKey]!.joined)
+    }
+
+    func testABacklogSayingJoinedKeepsTheMemberList() {
+        // The other direction: only a frame saying we're NOT in the channel drops the list. The
+        // connect burst ships a live channel's backlog right after the snapshot that seeded it.
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "me"), Member(nick: "alice")])
+        store.apply(shell(joined: true))
+
+        XCTAssertEqual(store.state.members[chanKey]?.map(\.nick), ["me", "alice"])
+    }
+
+    func testAChannelJoinedMidBurstSurvivesTheClosingPrune() {
+        // A rejoin landing inside a burst the server built before it: the burst can't name the
+        // row, and the prune mustn't take it.
+        let store = LurkerStore()
+        store.apply(.snapshot([], globalIgnores: [], maxUploadBytes: nil))
+        store.apply(.channelJoined(networkId: 1, target: "#new"))
+        store.apply(.backlogComplete)
+
+        XCTAssertNotNil(store.state.buffers["1::#new"])
+    }
+
+    func testChannelMembershipFoldsTargetCaseAndKnowsEveryChannelSigil() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "me")])
+        store.apply(.channelParted(networkId: 1, target: "#LURKER"))
+        XCTAssertFalse(store.state.buffers[chanKey]!.joined, "a part resolves case-insensitively")
+
+        // `&local` is a channel too — never just `#`.
+        store.apply(.channelJoined(networkId: 1, target: "&local"))
+        XCTAssertEqual(store.state.buffers["1::&local"]?.kind, .channel)
+    }
+
+    func testIsPartedAsksTheStoredRowAndOnlyForChannels() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "me")])
+        store.apply(.live(networkId: 1, target: "bob", message: msg(3, "hey")))
+        let lurker = BufferKey(networkId: 1, target: "#lurker")
+        let bob = BufferKey(networkId: 1, target: "bob")
+        let unknown = BufferKey(networkId: 1, target: "#favorite-with-no-row")
+
+        XCTAssertFalse(store.state.isParted(lurker), "joined")
+        XCTAssertFalse(store.state.buffers[bob.id]!.joined, "precondition: a DM row keeps the default")
+        XCTAssertFalse(store.state.isParted(bob), "a DM has no membership to lose")
+        XCTAssertFalse(store.state.buffer(for: unknown).joined, "precondition: synthesized as false")
+        XCTAssertFalse(store.state.isParted(unknown), "a synthesized default says nothing")
+
+        store.apply(.channelParted(networkId: 1, target: "#lurker"))
+        XCTAssertTrue(store.state.isParted(lurker))
+    }
+
     func testRestNamesMergeOntoSnapshotCreatedNetworksWithoutDroppingLiveState() {
         let store = LurkerStore()
         // Snapshot arrives first (name unknown), then the REST roster supplies it.
