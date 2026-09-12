@@ -49,6 +49,11 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
     /// between a Connect button that fails with a reason and one that appears to do nothing.
     /// The server refuses the connect itself; this only lets the client say why first.
     public var blocked: Bool
+    /// The TLS client certificate this network presents (CertFP, #459), or nil when it has none.
+    public var clientCertificate: ClientCertificate?
+    /// The proxy details saved for this network (#303), or nil when none ever were. Not the same
+    /// as a proxy that's switched off, whose details stay saved while the network dials direct.
+    public var proxy: NetworkProxy?
 
     public init(
         id: Int,
@@ -66,7 +71,9 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
         connectCommands: String? = nil,
         hasPassword: Bool = false,
         hasSaslPassword: Bool = false,
-        blocked: Bool = false
+        blocked: Bool = false,
+        clientCertificate: ClientCertificate? = nil,
+        proxy: NetworkProxy? = nil
     ) {
         self.id = id
         self.name = name
@@ -83,6 +90,8 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
         self.hasPassword = hasPassword
         self.hasSaslPassword = hasSaslPassword
         self.blocked = blocked
+        self.clientCertificate = clientCertificate
+        self.proxy = proxy
     }
 }
 
@@ -108,8 +117,12 @@ public enum SecretEdit: Equatable, Sendable {
 /// of them, so "what's on screen" and "what's stored" are the same set, and a partial PATCH
 /// would only reintroduce the question of which fields the form is authoritative for.
 ///
+/// The proxy is the exception: it's sent only when the user changed something about it. See
+/// `applyProxy`.
+///
 /// `defaultChannel` is create-only, matching the server: it seeds autojoin rows rather than
-/// updating a column, and there is nothing for it to mean on an edit.
+/// updating a column, and there is nothing for it to mean on an edit. So is `certificate` —
+/// see its note.
 public struct NetworkDraft: Equatable, Sendable {
     public var name: String
     public var host: String
@@ -127,6 +140,19 @@ public struct NetworkDraft: Equatable, Sendable {
     /// Comma- or whitespace-separated channel list, create only. The server accepts both
     /// separators (`parseChannelList`), matching IRC's own `JOIN #a,#b` syntax.
     public var defaultChannel: String?
+    /// The proxy section (#303).
+    public var proxy: ProxyDraft
+    /// The proxy the network being edited has saved, as it was read. Set by `init(editing:)`.
+    ///
+    /// What `proxy` is measured against, so a proxy nobody touched isn't sent at all.
+    public var savedProxy: NetworkProxy?
+    /// A certificate to attach as the network is created (CertFP, #459). Create only.
+    ///
+    /// It rides the create request rather than following it because the server attaches it
+    /// BEFORE the first dial, and that first connection is the one the user registers the
+    /// certificate from. Attached afterwards, it would miss it. An edit uses the certificate
+    /// routes instead.
+    public var certificate: CertificateSource?
 
     public init(
         name: String = "",
@@ -145,7 +171,10 @@ public struct NetworkDraft: Equatable, Sendable {
         connectCommands: String? = nil,
         password: SecretEdit = .unchanged,
         saslPassword: SecretEdit = .unchanged,
-        defaultChannel: String? = nil
+        defaultChannel: String? = nil,
+        proxy: ProxyDraft = ProxyDraft(),
+        savedProxy: NetworkProxy? = nil,
+        certificate: CertificateSource? = nil
     ) {
         self.name = name
         self.host = host
@@ -161,9 +190,12 @@ public struct NetworkDraft: Equatable, Sendable {
         self.password = password
         self.saslPassword = saslPassword
         self.defaultChannel = defaultChannel
+        self.proxy = proxy
+        self.savedProxy = savedProxy
+        self.certificate = certificate
     }
 
-    /// A draft pre-filled from a stored row, for the edit form. Both secrets start
+    /// A draft pre-filled from a stored row, for the edit form. Every secret starts
     /// `unchanged` — the values were never sent to us, so anything else would be a guess.
     public init(editing config: NetworkConfig) {
         self.init(
@@ -177,8 +209,17 @@ public struct NetworkDraft: Equatable, Sendable {
             realname: config.realname,
             autoconnect: config.autoconnect,
             saslAccount: config.saslAccount,
-            connectCommands: config.connectCommands
+            connectCommands: config.connectCommands,
+            proxy: config.proxy.map(ProxyDraft.init(editing:)) ?? ProxyDraft(),
+            savedProxy: config.proxy
         )
+    }
+
+    /// Whether a save has anything to say about the proxy: a saved one changed, or a new one
+    /// switched on.
+    private var proxyIsEdited: Bool {
+        guard let savedProxy else { return proxy.enabled }
+        return proxy != ProxyDraft(editing: savedProxy)
     }
 
     /// Why this draft can't be sent, or nil when it can.
@@ -195,6 +236,14 @@ public struct NetworkDraft: Equatable, Sendable {
         if Self.trimmed(host).isEmpty { return "A server address is required." }
         if Self.trimmed(nick).isEmpty { return "A nickname is required." }
         if !(1...65535).contains(port) { return "Port must be between 1 and 65535." }
+        // Only a proxy that will be sent: edited and on. An untouched saved one goes nowhere,
+        // whatever its columns hold. The server checks the rest (credentials, a space in the
+        // address) against the row as it will be stored.
+        if proxyIsEdited && proxy.enabled {
+            if Self.trimmed(proxy.host).isEmpty { return "A proxy needs an address." }
+            if !(1...65535).contains(proxy.port) { return "Proxy port must be between 1 and 65535." }
+        }
+        if certificate != nil && !tls { return "A client certificate needs TLS." }
         return nil
     }
 
@@ -202,13 +251,13 @@ public struct NetworkDraft: Equatable, Sendable {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The JSON body for `POST /api/networks` or `PATCH /api/networks/:id`.
+    /// The JSON body for `POST /api/networks` (`creating`) or `PATCH /api/networks/:id`.
     ///
-    /// `includeDefaultChannel` is false on an edit, where the key has no meaning. Secrets
-    /// appear only when the user actually decided something about them: `unchanged` omits
-    /// the key, `cleared` sends an explicit null (which is what the column stores for "no
+    /// `creating` adds the create-only keys: the default channels and a staged certificate.
+    /// Secrets appear only when the user actually decided something about them: `unchanged`
+    /// omits the key, `cleared` sends an explicit null (which is what the column stores for "no
     /// password", so null is a value here and not an absence).
-    public func jsonBody(includeDefaultChannel: Bool) -> [String: Any] {
+    public func jsonBody(creating: Bool) -> [String: Any] {
         // Trimmed on the way out, so a name that is only spaces can't slip past a check that
         // read it untrimmed — and so a host with a stray trailing space isn't a host nothing
         // resolves.
@@ -230,10 +279,46 @@ public struct NetworkDraft: Equatable, Sendable {
         body["connect_commands"] = connectCommands?.isEmpty == false ? connectCommands! : NSNull()
         Self.apply(password, to: "server_password", in: &body)
         Self.apply(saslPassword, to: "sasl_password", in: &body)
-        if includeDefaultChannel, let defaultChannel, !defaultChannel.isEmpty {
-            body["default_channel"] = defaultChannel
+        if creating {
+            if let defaultChannel, !defaultChannel.isEmpty {
+                body["default_channel"] = defaultChannel
+            }
+            switch certificate {
+            case .generate?:
+                body["generate_client_cert"] = true
+            case .imported(let cert, let key)?:
+                body["client_cert"] = cert
+                body["client_key"] = key
+            case nil:
+                break
+            }
         }
+        applyProxy(to: &body)
         return body
+    }
+
+    /// The proxy columns, only when the proxy was edited (`proxyIsEdited`).
+    ///
+    /// ⚠⚠ Untouched, nothing is sent — not even what was read. The form shows the columns
+    /// normalized (trimmed, and an unknown type or impossible port read as a default, since
+    /// archive import writes them verbatim), so resending what's shown would rewrite them on a
+    /// rename, and a locked-down instance refuses a rename that changes a proxy.
+    ///
+    /// Edited and on, all of it goes, as shown. Edited and off, only the switch, since the
+    /// details aren't on screen — and off only counts as an edit for a saved proxy.
+    private func applyProxy(to body: inout [String: Any]) {
+        guard proxyIsEdited else { return }
+        guard proxy.enabled else {
+            body["proxy_enabled"] = false
+            return
+        }
+        body["proxy_enabled"] = true
+        body["proxy_type"] = proxy.type.rawValue
+        body["proxy_host"] = Self.trimmed(proxy.host)
+        body["proxy_port"] = proxy.port
+        let username = Self.trimmed(proxy.username ?? "")
+        body["proxy_username"] = username.isEmpty ? NSNull() : username
+        Self.apply(proxy.password, to: "proxy_password", in: &body)
     }
 
     private static func apply(_ edit: SecretEdit, to key: String, in body: inout [String: Any]) {

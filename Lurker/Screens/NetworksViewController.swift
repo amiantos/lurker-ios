@@ -313,9 +313,30 @@ final class NetworksViewController: UITableViewController {
     }
 
     private func edit(_ config: NetworkConfig) {
-        push(NetworkFormViewController(viewModel: viewModel, editing: config) { [weak self] in
+        push(NetworkFormViewController(
+            viewModel: viewModel,
+            editing: config,
+            onCertificateChanged: { [weak self] in self?.certificateChanged(to: $0, on: config.id) }
+        ) { [weak self] in
             self?.finished()
         })
+    }
+
+    /// Put a certificate the form just wrote onto this list's copy of the row.
+    ///
+    /// ⚠⚠ Not left to the re-read on the way back. The form writes certificates without a Save,
+    /// and a re-read that fails keeps what we had, while a tap can beat one that hasn't landed —
+    /// either way the form reopened from the old row, offering Generate over a certificate the
+    /// user had just registered.
+    private func certificateChanged(to certificate: ClientCertificate?, on id: Int) {
+        guard case .loaded(var configs) = load, let index = configs.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        configs[index].clientCertificate = certificate
+        // A fetch already out was asked before the change, and would put the old row back.
+        loadGeneration += 1
+        load = .loaded(configs)
+        render()
     }
 
     private func push(_ controller: UIViewController) {

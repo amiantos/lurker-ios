@@ -144,6 +144,69 @@ final class FormSwitchCell: UITableViewCell {
     }
 }
 
+/// A label and a pop-up button: one choice among a few fixed options.
+///
+/// A menu rather than a pushed list, because for two or three options a whole screen is a trip
+/// away from the form and back to learn nothing the menu couldn't show in place.
+final class FormMenuCell: UITableViewCell {
+    static let reuseID = "form.menu"
+
+    private let label = UILabel()
+    private let button = UIButton(type: .system)
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.setContentHuggingPriority(.required, for: .horizontal)
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(
+            systemName: "chevron.up.chevron.down",
+            withConfiguration: UIImage.SymbolConfiguration(textStyle: .footnote)
+        )
+        config.imagePlacement = .trailing
+        config.imagePadding = 4
+        config.contentInsets = .zero
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = UIFont.preferredFont(forTextStyle: .body)
+            return outgoing
+        }
+        button.configuration = config
+        button.showsMenuAsPrimaryAction = true
+        button.contentHorizontalAlignment = .trailing
+
+        let stack = UIStackView(arrangedSubviews: [label, button])
+        stack.axis = .horizontal
+        stack.spacing = 12
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+        ])
+        selectionStyle = .none
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    /// `value` is the current choice, shown on the button. The menu is replaced whole, so a cell
+    /// reused for another row can't keep this one's actions.
+    func configure(label text: String, value: String, menu: UIMenu) {
+        label.text = text
+        button.configuration?.title = value
+        button.menu = menu
+        button.accessibilityLabel = text
+        button.accessibilityValue = value
+    }
+}
+
 /// A multi-line box for a value that is genuinely several lines — connect commands, and
 /// nothing else so far. Grows with its content rather than scrolling inside a fixed height,
 /// so the whole script is visible while it's being written.

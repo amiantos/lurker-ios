@@ -864,6 +864,21 @@ public final class ChatViewModel {
         return result
     }
 
+    /// Attach a client certificate to a network (#459) — generate one, or import a pair —
+    /// replacing any it had. Written immediately; used from the network's next connection.
+    public func attachCertificate(networkId: Int, _ source: CertificateSource) async -> CertificateResult {
+        await client.attachCertificate(networkId: networkId, source)
+    }
+
+    public func removeCertificate(networkId: Int) async -> CertificateResult {
+        await client.removeCertificate(networkId: networkId)
+    }
+
+    /// The network's key and certificate as one PEM file, for keeping or for another client.
+    public func exportCertificate(networkId: Int) async -> CertificateExport {
+        await client.exportCertificate(networkId: networkId)
+    }
+
     /// Start, stop, restart or delete a network. Nil on success, a message otherwise.
     ///
     /// One entry for the four verbs whoever issues them — the networks screen's menu, the
