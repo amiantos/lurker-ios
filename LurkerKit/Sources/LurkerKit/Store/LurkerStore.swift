@@ -433,24 +433,23 @@ public struct ChatState: Sendable {
         return buffer.kind == .channel && !buffer.joined
     }
 
-    /// The status of a watched (network, nick), disconnected-aware — the single source the
-    /// buffer list's DM rows, the Friends dots and the profile read. Mirrors the web client's
-    /// `peerFor` + `deriveState`, plus a check the web doesn't need (its socket state drives the
-    /// same store):
+    /// The status of a watched (network, nick), disconnected-aware — what a profile reads, and
+    /// what `rowPresence` builds on. Mirrors the web client's `peerFor` + `deriveState`, plus a
+    /// check the web doesn't need (its socket state drives the same store):
     ///  - if THIS client can't reach the server — no device network path, or a socket that
     ///    isn't up (connecting/reconnecting) — every cached row is stale, because presence only
-    ///    ever arrives over a live socket. Report `unknown`: never a green dot over a dead link (a
-    ///    stale snapshot can otherwise leave `Network.state` reading `.connected`), and not
-    ///    `offline` either, which is a claim about the peer rather than about us. It was
-    ///    `offline` until DM rows started showing presence (#167), when that would have put
-    ///    every DM in italics under the "Connecting…" banner each time the app came back;
+    ///    ever arrives over a live socket. Report `offline` rather than a green dot over a dead
+    ///    link; a stale snapshot can otherwise leave `Network.state` reading `.connected`.
+    ///    ⚠ `ProfileStatus` depends on it being `offline`: it falls back to a cached WHOIS reply
+    ///    whenever this says `unknown`, and that reply outlives the socket, so `unknown` here
+    ///    would show a stale "Online" and offer Send DM while disconnected;
     ///  - a network we hold but that isn't connected reads `offline` (its cached presence
     ///    rows are stale, and a peer on a network we've dropped is unreachable from here);
     ///  - a connected network with no row for the nick reads `unknown` ("potentially online",
     ///    the no-MONITOR case), as does a network we've never heard of;
     ///  - otherwise the stored state maps through: `online`/`back` → online, `away`, `offline`.
     public func presence(networkId: Int, nick: String) -> FriendPresence {
-        guard reachable, connection == .connected else { return .unknown }
+        guard reachable, connection == .connected else { return .offline }
         if let network = networks[networkId], network.state != .connected { return .offline }
         switch peerPresence[networkId]?[nick.lowercased()] {
         case .online, .back: return .online
@@ -458,6 +457,18 @@ public struct ChatState: Sendable {
         case .offline: return .offline
         case nil: return .unknown
         }
+    }
+
+    /// `presence` as the buffer list shows it on a DM row or chip (#167): the same answer, except
+    /// `unknown` while this client can't see the server.
+    ///
+    /// A row puts an offline peer's name in italics, and `offline` is a claim about the peer.
+    /// While our own connection is down we know nothing about anyone, and `presence`'s `offline`
+    /// would put every DM in italics under the "Connecting…" banner each time the app came back.
+    /// The profile keeps `presence`'s answer — see the ⚠ there.
+    public func rowPresence(networkId: Int, nick: String) -> FriendPresence {
+        guard reachable, connection == .connected else { return .unknown }
+        return presence(networkId: networkId, nick: nick)
     }
 
     /// The one spelling of a `(network, nick)` cache key, so `whois` and `whoisPending` can't

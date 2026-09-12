@@ -1335,7 +1335,7 @@ final class BufferListViewController: UICollectionViewController {
             return Row(
                 buffer: buffer,
                 networkName: state.networks[entry.networkId]?.displayName,
-                presence: state.presence(networkId: entry.networkId, nick: entry.target),
+                presence: state.rowPresence(networkId: entry.networkId, nick: entry.target),
                 isFriendChip: true,
                 muted: Self.isMuted(buffer, state)
             )
@@ -1408,7 +1408,7 @@ final class BufferListViewController: UICollectionViewController {
     /// it, not just Friends: a person who's away or offline looks it wherever their DM sits.
     private static func peerPresence(_ buffer: Buffer, _ state: ChatState) -> FriendPresence? {
         guard buffer.kind == .dm, let networkId = buffer.networkId else { return nil }
-        return state.presence(networkId: networkId, nick: buffer.target)
+        return state.rowPresence(networkId: networkId, nick: buffer.target)
     }
 
     /// Tag chips with a short `li` network hint — the ones whose names collide **within this

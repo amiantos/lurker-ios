@@ -134,30 +134,58 @@ final class ContactsAndPresenceTests: XCTestCase {
         )
     }
 
-    /// A store with a live socket. presence() gates on the client's own link, so a test
-    /// asserting a specific peer status must first be "connected" or every peer reads unknown.
+    /// A store with a live socket. presence() now gates on the client's own link, so a test
+    /// asserting a specific peer status must first be "connected" or every dot reads offline.
     private func connectedStore() -> LurkerStore {
         let store = LurkerStore()
         store.apply(.socketOpen)
         return store
     }
 
-    func testPresenceUnknownWhileClientIsDisconnected() {
+    func testPresenceOfflineWhileClientIsDisconnected() {
         let store = connectedStore()
         store.apply(connectedNetwork(2, presence: ["darc": .online]))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .online)
         // Socket drops → reconnecting: the cached row is stale, so the dot must not claim online
-        // even though the network's own state is still .connected from the last snapshot. Nor
-        // offline, which is a claim about darc: every DM row would go italic while we reconnect.
+        // even though the network's own state is still .connected from the last snapshot.
         store.apply(.socketClosed(reason: nil, code: nil))
-        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .unknown)
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline)
     }
 
-    func testPresenceUnknownWhenDeviceUnreachable() {
+    func testPresenceOfflineWhenDeviceUnreachable() {
         let store = connectedStore()
         store.apply(connectedNetwork(2, presence: ["darc": .online]))
         store.setReachable(false)
-        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .unknown)
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline)
+    }
+
+    /// A DM row claims nothing while we can't see the server (#167): `offline` would put every DM
+    /// in italics under the "Connecting…" banner. The profile keeps `presence`'s `offline`, which
+    /// is what stops it falling back to a WHOIS reply cached before the drop.
+    func testRowPresenceIsUnknownWhileClientIsDisconnected() {
+        let store = connectedStore()
+        store.apply(connectedNetwork(2, presence: ["darc": .online]))
+        XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .online)
+
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .unknown)
+        XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline, "the profile's answer stands")
+    }
+
+    func testRowPresenceIsUnknownWhenDeviceUnreachable() {
+        let store = connectedStore()
+        store.apply(connectedNetwork(2, presence: ["darc": .online]))
+        store.setReachable(false)
+        XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .unknown)
+    }
+
+    func testRowPresenceStillReadsAPeerOnADisconnectedNetworkAsOffline() {
+        // The case #167 was filed for: our own connection is fine, the network's isn't.
+        let store = connectedStore()
+        store.apply(.snapshot([
+            NetworkSnapshot(id: 2, state: .disconnected, nick: "me", channels: [], peerPresence: ["darc": .online]),
+        ], globalIgnores: [], maxUploadBytes: nil))
+        XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .offline)
     }
 
     func testPresenceUnknownForNetworkWeDoNotHave() {
