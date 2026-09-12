@@ -797,6 +797,11 @@ final class LurkerStore {
             next.members[key] = nil
             next.typing[key] = nil
             return next
+        case .joinError:
+            // Nothing to record: the refused channel is one we're not in, and above all there is
+            // no row to make (#168). Telling the user is the view model's job, and only when this
+            // device asked (#57).
+            return state
         case .ownNick(let networkId, let nick):
             // Patched onto a network we already know, never conjuring one: a nick for a
             // network with no row is nothing to apply it to, and the snapshot that creates

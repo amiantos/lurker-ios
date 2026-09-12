@@ -15,19 +15,30 @@ import UIKit
 /// vocabulary rather than a bespoke overlay per screen.
 final class ToastView: FloatingGlassControl {
 
-    /// How long the message stays up once it has arrived. Long enough to read three words at a
+    /// How long a confirmation stays up once it has arrived. Long enough to read three words at a
     /// glance, short enough that it is gone before it becomes something to dismiss.
-    private static let holdSeconds: TimeInterval = 1.2
+    static let holdSeconds: TimeInterval = 1.2
+
+    /// How long a sentence stays up. A join the server refused says why, and that is something to
+    /// read rather than glance at (#57).
+    static let readingHoldSeconds: TimeInterval = 4
 
     /// The toast currently up, if any. One at a time: rapid taps REPLACE rather than stack, or a
     /// column of identical capsules climbs the screen for something that happened once per tap.
     private static weak var current: ToastView?
 
-    /// Put `message` up over `host`, just above whatever the bottom safe area is holding.
+    /// Put `message` up over `host`, just above `anchor`: the bottom safe area, unless the screen
+    /// names something higher, like a chat screen's composer, which the keyboard carries up.
     ///
     /// ⚠ Announced to VoiceOver as well as drawn. A purely visual confirmation is no confirmation
     /// at all for a reader who cannot see it, and this is the only feedback the action has.
-    static func show(_ message: String, symbol: String, over host: UIView) {
+    static func show(
+        _ message: String,
+        symbol: String,
+        over host: UIView,
+        above anchor: NSLayoutYAxisAnchor? = nil,
+        hold: TimeInterval = holdSeconds
+    ) {
         current?.dismissNow()
 
         let toast = ToastView(message: message, symbol: symbol)
@@ -38,7 +49,7 @@ final class ToastView: FloatingGlassControl {
             // Above the search field rather than over it — the bottom bar is part of the safe
             // area, so this clears whatever the screen happens to be carrying down there.
             toast.bottomAnchor.constraint(
-                equalTo: host.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+                equalTo: anchor ?? host.safeAreaLayoutGuide.bottomAnchor, constant: -16),
             toast.leadingAnchor.constraint(greaterThanOrEqualTo: host.leadingAnchor, constant: 24),
             toast.trailingAnchor.constraint(lessThanOrEqualTo: host.trailingAnchor, constant: -24),
         ])
@@ -55,7 +66,7 @@ final class ToastView: FloatingGlassControl {
         // it is main-actor by default here, and cancelling it is how a replacing toast stops this
         // one's fade landing on top of it.
         toast.life = Task { [weak toast] in
-            try? await Task.sleep(for: .seconds(holdSeconds))
+            try? await Task.sleep(for: .seconds(hold))
             guard !Task.isCancelled, let toast else { return }
             toast.setVisible(false, animated: true)
             // Removed AFTER the fade, not on the next show: a stranded transparent view over the
@@ -81,6 +92,9 @@ final class ToastView: FloatingGlassControl {
         label.font = UIFont.preferredFont(forTextStyle: .subheadline)
         label.adjustsFontForContentSizeCategory = true
         label.textColor = .label
+        // Wraps rather than truncates. "Link Copied" never needs a second line, but a join the
+        // server refused says why (#57), and a reason cut off at the edge says nothing.
+        label.numberOfLines = 0
 
         let row = UIStackView(arrangedSubviews: [glyph, label])
         row.axis = .horizontal

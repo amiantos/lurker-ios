@@ -400,11 +400,11 @@ final class UserProfileViewController: UITableViewController {
             UIPasteboard.general.string = value
 
         case .channel(let entry):
-            // Join rather than "switch to": the server answers a JOIN for a channel you are
-            // already in by confirming it, so one verb covers both and neither client has to
-            // guess which case this is.
-            viewModel.joinChannel(networkId: networkId, channel: entry.name)
-            onOpenBuffer?(BufferKey(networkId: networkId, target: entry.name))
+            // Through the one join path (#57): a channel you're already in opens at once, one you
+            // aren't opens when the server says you're in, and a refusal toasts over this sheet
+            // rather than leaving you on a screen for a channel you never got into. Opening takes
+            // the sheet down first, the way a notification tap does.
+            viewModel.requestJoin(networkId: networkId, channel: entry.name, opens: true)
 
         case .editNote:
             let editor = NickNoteViewController(

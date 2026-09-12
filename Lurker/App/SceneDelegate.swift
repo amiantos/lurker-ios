@@ -66,6 +66,38 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
         }
 
+        // A join this device asked for (#57). Landing is the same move as a notification tap:
+        // anything presented comes down, then the buffer opens.
+        viewModel.onJoinOpened = { [weak self] key in
+            guard let self, let navigation, viewModel.session == .loggedIn else { return }
+            // Animated only when nothing was up. Sliding a screen in while a sheet is still on its
+            // way down is the animation-fighting-itself the join sheet already avoids.
+            // `self.window`, spelled out: this closure sits inside `scene(_:willConnectTo:)`, whose
+            // local `window` a bare name would capture — strongly, from a closure the view model
+            // holds, while the window's screens hold the view model.
+            let animated = self.window?.rootViewController?.presentedViewController == nil
+            dismissPresented()
+            navigation.showBuffer(
+                viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: animated
+            )
+        }
+        // …and one that didn't happen says why, over whatever is on screen: above a chat screen's
+        // composer, which the keyboard carries, or above the bottom safe area of anything else — a
+        // profile sheet, the buffer list.
+        viewModel.onJoinNotice = { [weak self] notice in
+            guard let root = self?.window?.rootViewController else { return }
+            var top = root
+            while let presented = top.presentedViewController { top = presented }
+            let chat = top === root ? ChatViewController.activeChat() : nil
+            ToastView.show(
+                notice.message,
+                symbol: "exclamationmark.circle",
+                over: chat?.view ?? top.view,
+                above: chat?.noticeAnchor,
+                hold: ToastView.readingHoldSeconds
+            )
+        }
+
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
         // trusts a send — `send` returns true over a dead socket — so the legacy list
