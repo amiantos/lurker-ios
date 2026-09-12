@@ -74,6 +74,8 @@ final class NetworkFormViewController: UITableViewController {
     private let existing: NetworkConfig?
     private let viewModel: ChatViewModel
     private let onSaved: () -> Void
+    /// Told about every certificate the form writes. See `certificate`.
+    private let onCertificateChanged: (ClientCertificate?) -> Void
     private var draft: NetworkDraft
     private var sections: [Section] = []
     private var saving = false
@@ -84,7 +86,14 @@ final class NetworkFormViewController: UITableViewController {
     ///
     /// Not read from `existing`: the certificate rows write immediately and answer with the new
     /// description, and `existing` is the row as it was when the form opened.
-    private var certificate: ClientCertificate?
+    ///
+    /// ⚠⚠ Every change goes back to the list. It was written without a Save, so Back tells the
+    /// list nothing, and the list is where this form is reopened from: reopened from a stale
+    /// row, it offered Generate over a certificate the user had just registered — which the
+    /// server's attach replaces without asking.
+    private var certificate: ClientCertificate? {
+        didSet { onCertificateChanged(certificate) }
+    }
     /// A certificate request is out. Save waits for it, because the server checks TLS on each
     /// side separately: an attach landing alongside a save that turns TLS off would leave a
     /// certificate on a network with no handshake to present it in, which can never connect.
@@ -99,15 +108,24 @@ final class NetworkFormViewController: UITableViewController {
         self.existing = nil
         self.draft = draft
         self.onSaved = onSaved
+        // Adding writes no certificate before the create, and the list re-reads after that.
+        self.onCertificateChanged = { _ in }
         super.init(style: .insetGrouped)
     }
 
-    init(viewModel: ChatViewModel, editing config: NetworkConfig, onSaved: @escaping () -> Void) {
+    init(
+        viewModel: ChatViewModel,
+        editing config: NetworkConfig,
+        onCertificateChanged: @escaping (ClientCertificate?) -> Void,
+        onSaved: @escaping () -> Void
+    ) {
         self.viewModel = viewModel
         self.existing = config
         self.draft = NetworkDraft(editing: config)
+        // Set during init, so `didSet` doesn't report back the certificate the list already has.
         self.certificate = config.clientCertificate
         self.onSaved = onSaved
+        self.onCertificateChanged = onCertificateChanged
         super.init(style: .insetGrouped)
     }
 

@@ -420,12 +420,12 @@ final class LurkerClient {
         }
         switch await rest("POST", "/api/networks/\(networkId)/certificate", body: body) {
         case .ok(let text):
-            // ⚠ A 2xx we can't read still attached something, so it can't be reported as "no
-            // certificate". The list re-read when the form reopens describes it.
-            guard let config = FrameParser.parseNetworkReply(text) else {
-                return .failure(message: "The certificate was saved, but the server's reply couldn't be read.")
-            }
-            return .updated(config.clientCertificate)
+            // ⚠⚠ A 2xx attached something even when the reply doesn't say what. Reported as a
+            // failure, the form kept offering Generate over the certificate that did land, and
+            // the server's attach replaces without asking. So: attached, undescribed — no digests
+            // to copy until the next read of the list fills them in.
+            let described = FrameParser.parseNetworkReply(text)?.clientCertificate
+            return .updated(described ?? .usable(CertificateFingerprints(sha512: "", sha256: "", sha1: ""), expires: nil))
         case .failure(let message):
             return .failure(message: message)
         }
