@@ -89,6 +89,16 @@ struct PendingJoinsTests {
         #expect(joins.joined(chan) == .joined(chan, opens: true))
     }
 
+    @Test("a list of channels is tracked one channel at a time")
+    func aListSplitsIntoChannels() {
+        // `/join #a,#b` goes out as one JOIN, but the server answers `#a` and `#b` on their own.
+        // Waiting on "#a,#b" waited on a name nothing answers, and timed out into a false
+        // "No response" for two joins that worked.
+        #expect(PendingJoins.channels(in: "#a,#b") == ["#a", "#b"])
+        #expect(PendingJoins.channels(in: "#a, #b,") == ["#a", "#b"])
+        #expect(PendingJoins.channels(in: "#lurker") == ["#lurker"])
+    }
+
     @Test("a dropped socket forgets every join")
     func removeAllForgets() {
         var joins = PendingJoins()

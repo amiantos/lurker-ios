@@ -17,6 +17,16 @@ struct PendingJoins {
     /// How long a join may go unanswered before the user hears "No response". The web's figure.
     static let timeout: TimeInterval = 10
 
+    /// The channels a join names, one per entry. `/join #a,#b` is one JOIN on the wire, but the
+    /// server answers each channel on its own, so waiting on the list as typed waited on a name
+    /// nothing ever answers: a "No response" toast for two joins that both worked. (A channel name
+    /// can't contain a comma, so there's nothing to escape.)
+    static func channels(in list: String) -> [String] {
+        list.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
     /// What became of a join, for the view model to act on.
     enum Outcome: Equatable {
         /// We're in. `opens` is whether the asker wanted to be taken there.

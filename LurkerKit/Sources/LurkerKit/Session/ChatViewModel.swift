@@ -972,13 +972,22 @@ public final class ChatViewModel {
             onJoinNotice?(notConnected)
             return
         }
-        let key = BufferKey(networkId: networkId, target: name)
-        // Sent even so: `/cycle` joins right behind its own part, while the row still reads joined.
-        if let row = store.state.buffers[key.id], row.joined {
-            if opens { onJoinOpened?(row.key) }
-            return
+        // One JOIN as typed, but each channel in a list (`/join #a,#b`) is answered, and so tracked,
+        // on its own. Only the first opens: there's one screen to land on.
+        var waiting = false
+        for (index, target) in PendingJoins.channels(in: name).enumerated() {
+            let key = BufferKey(networkId: networkId, target: target)
+            let opensThis = opens && index == 0
+            // Sent even so: `/cycle` joins right behind its own part, while the row still reads
+            // joined.
+            if let row = store.state.buffers[key.id], row.joined {
+                if opensThis { onJoinOpened?(row.key) }
+                continue
+            }
+            pendingJoins.request(key, opens: opensThis, now: Date())
+            waiting = true
         }
-        pendingJoins.request(key, opens: opens, now: Date())
+        guard waiting else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(PendingJoins.timeout))
             guard let self else { return }
