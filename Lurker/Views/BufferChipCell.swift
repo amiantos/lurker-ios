@@ -284,10 +284,16 @@ final class BufferChipCell: UICollectionViewCell {
         return parameters
     }
 
-    /// `presence` is set only for friend chips; nil leaves the chip exactly as a
-    /// Favorites/Recent card (no dot). The dot color reads "is this friend reachable right
-    /// now": green online, orange away, muted grey offline/unknown — deliberately understated
-    /// for offline (the common case) rather than the web's red, which reads as an alert on iOS.
+    /// `presence` is the peer's status, set for every DM chip and nil for anything else. An away
+    /// or offline peer mutes the name and an offline one italicizes it (#167), the web's rule
+    /// for DM rows. `showsPresenceDot` is the Friends chip's: only there does the same status
+    /// also draw the dot. The dot color reads "is this friend reachable right now": green
+    /// online, orange away, muted grey offline/unknown — deliberately understated for offline
+    /// (the common case) rather than the web's red, which reads as an alert on iOS.
+    ///
+    /// `nameFont` comes from the list, built from its own traits: a cell's traits aren't settled
+    /// while it's being configured, and an offline peer's italic has to be a font rather than a
+    /// colour. The list reconfigures on a text-size change to rebuild it.
     ///
     /// `networkName` is the full name, and it's what the accessibility label reads. Optional
     /// because a chip can be built before its network resolves — a favorite can outrun
@@ -299,11 +305,13 @@ final class BufferChipCell: UICollectionViewCell {
     /// is every chip.
     func configure(
         name: String,
+        nameFont: UIFont,
         networkName: String?,
         networkHint: String? = nil,
         unread: Int,
         highlights: Int,
         presence: FriendPresence? = nil,
+        showsPresenceDot: Bool = false,
         parted: Bool = false,
         isOpen: Bool = false
     ) {
@@ -312,13 +320,15 @@ final class BufferChipCell: UICollectionViewCell {
         card.backgroundColor = isOpen ? Self.openTint : .bufferCard
 
         nameLabel.text = name
+        nameLabel.font = nameFont
         networkHintLabel.text = networkHint
         networkHintLabel.isHidden = networkHint == nil
-        // A channel we're not in reads as history rather than a live room: the name steps down a
-        // level, and the hint with it so it stays the quieter of the two. Colour only — the pill
-        // keeps its own, because unread in a parted channel is still unread.
-        nameLabel.textColor = parted ? .secondaryLabel : .label
-        networkHintLabel.textColor = parted ? .tertiaryLabel : .secondaryLabel
+        // Quieter than a live conversation — a channel we're not in, or a person who's away or
+        // offline: the name steps down a level, and the hint with it so it stays the quieter of
+        // the two. Colour only — the pill keeps its own, because unread there is still unread.
+        let quiet = parted || presence?.dimsName == true
+        nameLabel.textColor = quiet ? .secondaryLabel : .label
+        networkHintLabel.textColor = quiet ? .tertiaryLabel : .secondaryLabel
 
         badgeContainer.subviews.forEach { $0.removeFromSuperview() }
         if let pill = makeUnreadBadge(unread: unread, highlights: highlights) {
@@ -335,8 +345,8 @@ final class BufferChipCell: UICollectionViewCell {
             presenceDot.isHidden = true
         } else {
             badgeContainer.isHidden = true
-            presenceDot.isHidden = presence == nil
-            if let presence { presenceDot.backgroundColor = presence.dotColor }
+            presenceDot.isHidden = !showsPresenceDot || presence == nil
+            if showsPresenceDot, let presence { presenceDot.backgroundColor = presence.dotColor }
         }
 
         // The FULL network name, on every chip, hint or no hint: the hint is a visual
@@ -344,7 +354,11 @@ final class BufferChipCell: UICollectionViewCell {
         // screen-reader user can't answer by glancing at the chip beside it.
         var summary = networkName.map { "\(name), \($0)" } ?? name
         if parted { summary += ", not joined" }
-        if let presence { summary += ", \(presence.accessibilityLabel)" }
+        // Said aloud only where it's shown: every state on a Friends chip, which has the dot, and
+        // elsewhere just the away or offline that a muted name stands for.
+        if let presence, showsPresenceDot || presence.dimsName {
+            summary += ", \(presence.accessibilityLabel)"
+        }
         if unread > 0 {
             summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"
         }

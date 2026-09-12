@@ -27,6 +27,14 @@ extension FriendPresence {
         }
     }
 
+    /// Whether a DM's name steps down to the secondary colour: away or offline, the two the web
+    /// mutes (`BufferList.vue`'s `peer-away` and `peer-offline`). Online and unknown stay as they
+    /// are — unknown is the lack of a signal, not a signal.
+    var dimsName: Bool { self == .away || self == .offline }
+
+    /// Whether a DM's name is italic: offline only, the web's "offline tell".
+    var italicizesName: Bool { self == .offline }
+
     /// Lowercase, for appending to a longer accessibility summary ("alice, libera, online").
     var accessibilityLabel: String {
         switch self {
