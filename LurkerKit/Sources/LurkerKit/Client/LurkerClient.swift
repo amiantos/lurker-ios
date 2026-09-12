@@ -219,7 +219,7 @@ final class LurkerClient {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401, reportingUnauthorized {
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return false
             }
             // A read that a newer one has already superseded is dropped rather than applied:
@@ -278,7 +278,7 @@ final class LurkerClient {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return "Signed out."
             }
             if (200..<300).contains(code) {
@@ -450,7 +450,7 @@ final class LurkerClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             let text = String(data: data, encoding: .utf8) ?? ""
             if code == 401 {
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return .failure("Signed out.")
             }
             if (200..<300).contains(code) { return .ok(text) }
@@ -907,7 +907,7 @@ final class LurkerClient {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return nil
             }
             guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
@@ -959,7 +959,7 @@ final class LurkerClient {
             // the rule lives so it can be tested.
             switch SearchRequest.outcome(status: code, scoped: networkId != nil) {
             case .unauthorized:
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return nil
             case .emptyPage: return HighlightsPage(items: [], nextBefore: nil)
             case .failed: return nil
@@ -1002,7 +1002,7 @@ final class LurkerClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             switch UploadsRequest.outcome(status: code) {
             case .unauthorized:
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return nil
             case .failed: return nil
             case .page: break
@@ -1173,7 +1173,7 @@ final class LurkerClient {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return nil
             }
             guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
@@ -1260,6 +1260,14 @@ final class LurkerClient {
             Task { @MainActor in self?.onFrame(.serverError("Send failed: \(reason)")) }
         }
         return true
+    }
+
+    /// Report a 401 as the end of the session, but only if it answered the token in use now.
+    /// A request still out when the session ended (a sign-out, or a revoke another call already
+    /// reported) can answer after a new sign-in, and its 401 must not end that session.
+    func reportUnauthorized(sentWith requestToken: String) {
+        guard requestToken == token else { return }
+        onFrame(ServerFrame.unauthorized)
     }
 
     /// Drop the socket and forget the token without revoking server-side. For teardown
@@ -1533,7 +1541,7 @@ final class LurkerClient {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
-                onFrame(.unauthorized)
+                reportUnauthorized(sentWith: token)
                 return []
             }
             guard (200..<300).contains(code) else { return [] }
@@ -1713,7 +1721,7 @@ final class LurkerClient {
         if code == 401 {
             // A dead session on an upload is the same fact `fetchNetworks` reports — bounce
             // to sign-in — but also throw so the in-flight flow stops rather than "succeeding".
-            onFrame(.unauthorized)
+            reportUnauthorized(sentWith: token)
             throw UploadError.unauthorized
         }
         if code == 413 { throw UploadError.tooLarge }

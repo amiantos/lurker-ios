@@ -134,10 +134,13 @@ public enum OAuth {
         return jsonPost(url, ["client_id": clientId, "token": randomString()])
     }
 
-    /// Whether the server still knows the client. Nil when the answer says neither (a network
-    /// failure, a 429, a 5xx), which is no reason to throw a registration away.
+    /// Whether the server still knows the client. A 404 counts as no: the server has no OAuth
+    /// routes (older than 2.3.0, or downgraded), and registering again is what says so. Nil when
+    /// the answer says neither (a network failure, a 429, a 5xx), which is no reason to throw a
+    /// registration away.
     static func clientKnown(status: Int, data: Data) -> Bool? {
         if (200..<300).contains(status) { return true }
+        if status == 404 { return false }
         if status == 401, json(data)?["error"] as? String == "invalid_client" { return false }
         return nil
     }

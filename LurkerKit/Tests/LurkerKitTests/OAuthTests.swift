@@ -158,6 +158,8 @@ final class OAuthTests: XCTestCase {
         XCTAssertEqual(OAuth.clientKnown(status: 200, data: Data("{}".utf8)), true)
         let unknown = Data(#"{"error":"invalid_client","error_description":"unknown client_id"}"#.utf8)
         XCTAssertEqual(OAuth.clientKnown(status: 401, data: unknown), false)
+        // No OAuth routes at all, so registering again gets to say the server is too old.
+        XCTAssertEqual(OAuth.clientKnown(status: 404, data: Data()), false)
         // A throttled, failing or unreachable server says nothing about the registration.
         XCTAssertNil(OAuth.clientKnown(status: 429, data: Data()))
         XCTAssertNil(OAuth.clientKnown(status: 503, data: Data()))
