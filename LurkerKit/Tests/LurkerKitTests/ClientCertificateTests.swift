@@ -26,17 +26,14 @@ final class ClientCertificateTests: XCTestCase {
 
     // MARK: - Reading a row
 
-    func testACertificateReadsItsFingerprintsAndExpiry() {
+    func testACertificateReadsItsExpiry() {
         let config = Self.row(certificate: ##"""
             {"sha256":"b2","sha1":"a1","sha512":"c5","subject":"CN=me",
              "validFrom":"2026-09-11T00:00:00.000Z","validTo":"2027-09-11T00:00:00.000Z"}
             """##)
-        guard case let .usable(fingerprints, expires)? = config?.clientCertificate else {
-            return XCTFail("expected a usable certificate, got \(String(describing: config?.clientCertificate))")
-        }
-        XCTAssertEqual(fingerprints, CertificateFingerprints(sha512: "c5", sha256: "b2", sha1: "a1"))
+        let expires = ISOTime.parse("2027-09-11T00:00:00.000Z")
         XCTAssertNotNil(expires)
-        XCTAssertEqual(expires, ISOTime.parse("2027-09-11T00:00:00.000Z"))
+        XCTAssertEqual(config?.clientCertificate, .usable(expires: expires))
     }
 
     func testAnUnreadableCertificateIsNotNoCertificate() {
@@ -52,15 +49,6 @@ final class ClientCertificateTests: XCTestCase {
         let absent = FrameParser.parseNetworkReply(##"{"network":{"id":1,"name":"n","host":"h"}}"##)
         XCTAssertNotNil(absent)
         XCTAssertNil(absent?.clientCertificate)
-    }
-
-    func testTheCopyMenuOffersEveryDigestItHasStrongestFirst() {
-        let all = CertificateFingerprints(sha512: "c5", sha256: "b2", sha1: "a1").all
-        XCTAssertEqual(all.map { $0.name }, ["SHA-512", "SHA-256", "SHA-1"])
-        XCTAssertEqual(all.map { $0.value }, ["c5", "b2", "a1"])
-        // A digest the server didn't send isn't offered as an empty string to paste.
-        let partial = CertificateFingerprints(sha512: "c5", sha256: "", sha1: "a1").all
-        XCTAssertEqual(partial.map { $0.name }, ["SHA-512", "SHA-1"])
     }
 
     // MARK: - The create body

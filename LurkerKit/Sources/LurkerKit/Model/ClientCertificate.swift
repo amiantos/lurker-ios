@@ -8,37 +8,17 @@ import Foundation
 ///
 /// Never the PEM. The private key leaves the server through one route, and only when asked
 /// (`exportCertificate`); nothing on screen needs the certificate itself.
+///
+/// The description's fingerprints aren't read either. Nothing shows one, matching the web:
+/// `/msg NickServ CERT ADD` with no argument takes it from the live connection.
 public enum ClientCertificate: Equatable, Sendable {
-    /// `expires` is nil only when the server's date didn't parse — the certificate is still there.
-    case usable(CertificateFingerprints, expires: Date?)
+    /// `expires` is nil when the server's date didn't parse, or its reply didn't describe the
+    /// certificate at all. Either way the certificate is there.
+    case usable(expires: Date?)
     /// ⚠⚠ A certificate IS attached and doesn't parse. Not "no certificate": the server refuses
     /// to dial while it's there, so reading it as nil would show a network with no certificate
     /// that won't connect because of one. Removing it is the only thing that helps.
     case unusable
-}
-
-/// A certificate's digests, bare lowercase hex — the form `/msg NickServ CERT ADD` takes.
-public struct CertificateFingerprints: Equatable, Sendable {
-    public let sha512: String
-    public let sha256: String
-    public let sha1: String
-
-    public init(sha512: String, sha256: String, sha1: String) {
-        self.sha512 = sha512
-        self.sha256 = sha256
-        self.sha1 = sha1
-    }
-
-    /// The digests present, strongest first, named the way services name them.
-    ///
-    /// ⚠⚠ All three, never a favourite: which one a network accepts is the network's business —
-    /// Libera takes only SHA-512 — and none can be derived from another.
-    public var all: [(name: String, value: String)] {
-        let digests: [(name: String, value: String)] = [
-            (name: "SHA-512", value: sha512), (name: "SHA-256", value: sha256), (name: "SHA-1", value: sha1),
-        ]
-        return digests.filter { !$0.value.isEmpty }
-    }
 }
 
 /// Where a certificate comes from: minted by the server, or a pair brought from another client.

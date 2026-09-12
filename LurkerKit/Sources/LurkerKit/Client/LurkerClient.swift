@@ -422,10 +422,10 @@ final class LurkerClient {
         case .ok(let text):
             // ⚠⚠ A 2xx attached something even when the reply doesn't say what. Reported as a
             // failure, the form kept offering Generate over the certificate that did land, and
-            // the server's attach replaces without asking. So: attached, undescribed — no digests
-            // to copy until the next read of the list fills them in.
+            // the server's attach replaces without asking. So: attached, with no expiry until the
+            // next read of the list fills it in.
             let described = FrameParser.parseNetworkReply(text)?.clientCertificate
-            return .updated(described ?? .usable(CertificateFingerprints(sha512: "", sha256: "", sha1: ""), expires: nil))
+            return .updated(described ?? .usable(expires: nil))
         case .failure(let message):
             return .failure(message: message)
         }

@@ -268,12 +268,7 @@ enum FrameParser {
     static func parseClientCertificate(_ value: Any?) -> ClientCertificate? {
         guard let obj = value as? [String: Any] else { return nil }
         if obj.bool("unusable") { return .unusable }
-        return .usable(
-            CertificateFingerprints(
-                sha512: obj.string("sha512"), sha256: obj.string("sha256"), sha1: obj.string("sha1")
-            ),
-            expires: ISOTime.parse(obj.stringOrNull("validTo"))
-        )
+        return .usable(expires: ISOTime.parse(obj.stringOrNull("validTo")))
     }
 
     /// `proxy` on a network row (#303). Nil when it's null or missing: no proxy details were
@@ -282,6 +277,8 @@ enum FrameParser {
         guard let obj = value as? [String: Any] else { return nil }
         // The columns hold whatever was written — archive import writes them verbatim — so an
         // unknown type or an impossible port reads as a default rather than failing the row.
+        // The default is only shown: nothing is saved over the columns until the proxy itself
+        // is edited (`NetworkDraft.applyProxy`).
         let type = ProxyType(rawValue: obj.string("type").lowercased()) ?? .socks5
         let port = obj.int("port")
         return NetworkProxy(

@@ -144,8 +144,7 @@ final class FormSwitchCell: UITableViewCell {
     }
 }
 
-/// A label and a pop-up button: one choice among a few fixed options, or a few verbs on one
-/// thing.
+/// A label and a pop-up button: one choice among a few fixed options.
 ///
 /// A menu rather than a pushed list, because for two or three options a whole screen is a trip
 /// away from the form and back to learn nothing the menu couldn't show in place.
@@ -197,8 +196,8 @@ final class FormMenuCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// `value` is what the button reads: the current choice, or the verb. The menu is replaced
-    /// whole, so a cell reused for another row can't keep this one's actions.
+    /// `value` is the current choice, shown on the button. The menu is replaced whole, so a cell
+    /// reused for another row can't keep this one's actions.
     func configure(label text: String, value: String, menu: UIMenu) {
         label.text = text
         button.configuration?.title = value

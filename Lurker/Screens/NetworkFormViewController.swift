@@ -42,7 +42,7 @@ final class NetworkFormViewController: UITableViewController {
         /// it's about these rows, and the top row is Save's.
         case certificateError
         case generateCertificate, importCertificate
-        case copyFingerprint, exportCertificate, removeCertificate
+        case exportCertificate, removeCertificate
         /// Drop a certificate waiting on the create.
         case undoCertificate
         case defaultChannel
@@ -230,15 +230,13 @@ final class NetworkFormViewController: UITableViewController {
         var footer: String?
         if let certificate {
             switch certificate {
-            case .usable(let fingerprints, _):
-                rows.append(.certificateStatus)
-                if !fingerprints.all.isEmpty { rows.append(.copyFingerprint) }
-                rows += [.exportCertificate, .removeCertificate]
+            case .usable:
+                rows += [.certificateStatus, .exportCertificate, .removeCertificate]
             case .unusable:
                 rows += [.certificateStatus, .removeCertificate]
             }
-            // The server refuses to save TLS off while a certificate is attached. Say so before
-            // Save rather than after it.
+            // `save()` refuses TLS off while a certificate is attached, and so does the server.
+            // The footer says it before either has to.
             if !draft.tls { footer = "Remove the certificate before turning TLS off." }
         } else if draft.certificate != nil {
             rows += [.certificateStatus, .undoCertificate]
@@ -261,8 +259,8 @@ final class NetworkFormViewController: UITableViewController {
         draft.tls && existing?.tls != false && !certificateBusy && !saving
     }
 
-    /// The proxy (#303). Its details show only while it's switched on, and only what's shown is
-    /// sent — see `NetworkDraft.applyProxy`.
+    /// The proxy (#303). Its details show only while it's switched on — see
+    /// `NetworkDraft.applyProxy` for what gets sent.
     private func proxySection() -> Section {
         guard draft.proxy.enabled else {
             return Section(id: .proxy, header: "Proxy", footer: nil, rows: [.proxyEnabled])
@@ -374,8 +372,6 @@ final class NetworkFormViewController: UITableViewController {
             // A file, not a paste box: every CertFP guide hands you a .pem, and it's what Export
             // writes.
             return actionRow(indexPath, "Import Certificate…", enabled: canAddCertificate)
-        case .copyFingerprint:
-            return fingerprintRow(indexPath)
         case .exportCertificate:
             return actionRow(indexPath, "Export Certificate…")
         case .removeCertificate:
@@ -630,12 +626,12 @@ final class NetworkFormViewController: UITableViewController {
         var content = cell.defaultContentConfiguration()
         content.textProperties.numberOfLines = 0
         switch (certificate, draft.certificate) {
-        case (.usable(_, let expires?), _):
+        case (.usable(let expires?), _):
             content = .valueCell()
             // Past tense once the date has gone by, rather than "Expires" over a date in the past.
             content.text = expires < Date() ? "Expired" : "Expires"
             content.secondaryText = expires.formatted(date: .abbreviated, time: .omitted)
-        case (.usable(_, nil), _):
+        case (.usable(nil), _):
             content = .valueCell()
             content.text = "Certificate"
             content.secondaryText = "Attached"
@@ -651,26 +647,6 @@ final class NetworkFormViewController: UITableViewController {
         }
         cell.contentConfiguration = content
         cell.selectionStyle = .none
-        return cell
-    }
-
-    /// Copy, never show. On the web, `CERT ADD` with no argument (which reads the fingerprint off
-    /// the live connection) covers nearly every network, and `/network cert` covers the rest. This
-    /// app has no `/network`, so without this row a network that needs the digest typed in, like
-    /// ergo, couldn't be set up from the phone.
-    private func fingerprintRow(_ indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(
-            withIdentifier: FormMenuCell.reuseID, for: indexPath
-        ) as! FormMenuCell
-        var digests: [(name: String, value: String)] = []
-        if case .usable(let fingerprints, _) = certificate { digests = fingerprints.all }
-        cell.configure(label: "Fingerprint", value: "Copy", menu: UIMenu(children: digests.map { digest in
-            UIAction(title: digest.name) { [weak self] _ in
-                UIPasteboard.general.string = digest.value
-                guard let self else { return }
-                ToastView.show("Fingerprint Copied", symbol: "doc.on.doc", over: view)
-            }
-        }))
         return cell
     }
 
@@ -714,9 +690,12 @@ final class NetworkFormViewController: UITableViewController {
         certificateError = nil
         updateSaveButton()
         rebuild(section: .certificate)
-        Task { [weak self] in
+        // ⚠⚠ Holds the form until the reply — deliberately not weak. The write lands on the
+        // server whether anyone waits or not; a form let go on Back dropped the answer, and with
+        // it `certificate`'s report to the list, leaving the stale row that offers Generate over
+        // a certificate that's there.
+        Task {
             let result = await request()
-            guard let self else { return }
             certificateBusy = false
             switch result {
             case .updated(let next): certificate = next
@@ -766,6 +745,9 @@ final class NetworkFormViewController: UITableViewController {
             exporting = false
             switch result {
             case .pem(let pem):
+                // Not once the user has left this screen (Save pops it), and not over another
+                // sheet: either way there's nothing to present the share sheet from.
+                guard view.window != nil, presentedViewController == nil else { return }
                 // The server's own file name, so it matches what the web downloads.
                 share(pem, named: "lurker-\(existing.id)-client.pem")
             case .failure(let message):
@@ -809,6 +791,12 @@ final class NetworkFormViewController: UITableViewController {
         }
         if let problem = draft.validationError {
             show(error: problem)
+            return
+        }
+        // Not one the draft can catch: an attached certificate is this form's state, not the
+        // draft's. The server refuses it too; this says so without the round trip.
+        if certificate != nil && !draft.tls {
+            show(error: "Remove the certificate before turning TLS off.")
             return
         }
         saving = true
@@ -868,10 +856,13 @@ extension NetworkFormViewController: UIDocumentPickerDelegate {
     nonisolated private static func readPickedFile(_ url: URL) -> String {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        // A PEM pair is a few kilobytes, and the picker offers every file: without a bound, a video
-        // picked by mistake is read whole into memory to be told it isn't a certificate.
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-        guard size <= 1 << 20, let data = try? Data(contentsOf: url) else { return "" }
+        // ⚠ Bounded by what's READ, not by a reported size, which a file provider may not give. A
+        // PEM pair is a few kilobytes and the picker offers every file, so a video picked by
+        // mistake would otherwise be read whole into memory to be told it isn't a certificate.
+        let limit = 1 << 20
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: limit + 1), data.count <= limit else { return "" }
         return String(decoding: data, as: UTF8.self)
     }
 }

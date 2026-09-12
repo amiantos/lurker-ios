@@ -117,8 +117,8 @@ public enum SecretEdit: Equatable, Sendable {
 /// of them, so "what's on screen" and "what's stored" are the same set, and a partial PATCH
 /// would only reintroduce the question of which fields the form is authoritative for.
 ///
-/// The proxy's details follow that rule too, which is why they're sent only while the proxy is
-/// switched on: that's the only time the form shows them. See `applyProxy`.
+/// The proxy is the exception: it's sent only when the user changed something about it. See
+/// `applyProxy`.
 ///
 /// `defaultChannel` is create-only, matching the server: it seeds autojoin rows rather than
 /// updating a column, and there is nothing for it to mean on an edit. So is `certificate` —
@@ -142,12 +142,10 @@ public struct NetworkDraft: Equatable, Sendable {
     public var defaultChannel: String?
     /// The proxy section (#303).
     public var proxy: ProxyDraft
-    /// Whether the network being edited has proxy details saved. Set by `init(editing:)`.
+    /// The proxy the network being edited has saved, as it was read. Set by `init(editing:)`.
     ///
-    /// Decides what a draft with the proxy switched off says: "switch it off" to a network that
-    /// has one, and nothing at all to a network that never did — so an ordinary save of an
-    /// ordinary network carries no proxy keys at all.
-    public var hasSavedProxy: Bool
+    /// What `proxy` is measured against, so a proxy nobody touched isn't sent at all.
+    public var savedProxy: NetworkProxy?
     /// A certificate to attach as the network is created (CertFP, #459). Create only.
     ///
     /// It rides the create request rather than following it because the server attaches it
@@ -175,7 +173,7 @@ public struct NetworkDraft: Equatable, Sendable {
         saslPassword: SecretEdit = .unchanged,
         defaultChannel: String? = nil,
         proxy: ProxyDraft = ProxyDraft(),
-        hasSavedProxy: Bool = false,
+        savedProxy: NetworkProxy? = nil,
         certificate: CertificateSource? = nil
     ) {
         self.name = name
@@ -193,7 +191,7 @@ public struct NetworkDraft: Equatable, Sendable {
         self.saslPassword = saslPassword
         self.defaultChannel = defaultChannel
         self.proxy = proxy
-        self.hasSavedProxy = hasSavedProxy
+        self.savedProxy = savedProxy
         self.certificate = certificate
     }
 
@@ -213,8 +211,15 @@ public struct NetworkDraft: Equatable, Sendable {
             saslAccount: config.saslAccount,
             connectCommands: config.connectCommands,
             proxy: config.proxy.map(ProxyDraft.init(editing:)) ?? ProxyDraft(),
-            hasSavedProxy: config.proxy != nil
+            savedProxy: config.proxy
         )
+    }
+
+    /// Whether a save has anything to say about the proxy: a saved one changed, or a new one
+    /// switched on.
+    private var proxyIsEdited: Bool {
+        guard let savedProxy else { return proxy.enabled }
+        return proxy != ProxyDraft(editing: savedProxy)
     }
 
     /// Why this draft can't be sent, or nil when it can.
@@ -231,9 +236,10 @@ public struct NetworkDraft: Equatable, Sendable {
         if Self.trimmed(host).isEmpty { return "A server address is required." }
         if Self.trimmed(nick).isEmpty { return "A nickname is required." }
         if !(1...65535).contains(port) { return "Port must be between 1 and 65535." }
-        // Only while it's switched on, since only then is any of it sent. The server checks the
-        // rest (credentials, a space in the address) against the row as it will be stored.
-        if proxy.enabled {
+        // Only a proxy that will be sent: edited and on. An untouched saved one goes nowhere,
+        // whatever its columns hold. The server checks the rest (credentials, a space in the
+        // address) against the row as it will be stored.
+        if proxyIsEdited && proxy.enabled {
             if Self.trimmed(proxy.host).isEmpty { return "A proxy needs an address." }
             if !(1...65535).contains(proxy.port) { return "Proxy port must be between 1 and 65535." }
         }
@@ -291,13 +297,19 @@ public struct NetworkDraft: Equatable, Sendable {
         return body
     }
 
-    /// The proxy columns: all of them while the proxy is on, only the switch while it's off.
+    /// The proxy columns, only when the proxy was edited (`proxyIsEdited`).
     ///
-    /// Off, the details aren't on screen, so the switch is all the form has to say — and it says
-    /// it only to a network that has something to switch off (`hasSavedProxy`).
+    /// ⚠⚠ Untouched, nothing is sent — not even what was read. The form shows the columns
+    /// normalized (trimmed, and an unknown type or impossible port read as a default, since
+    /// archive import writes them verbatim), so resending what's shown would rewrite them on a
+    /// rename, and a locked-down instance refuses a rename that changes a proxy.
+    ///
+    /// Edited and on, all of it goes, as shown. Edited and off, only the switch, since the
+    /// details aren't on screen — and off only counts as an edit for a saved proxy.
     private func applyProxy(to body: inout [String: Any]) {
+        guard proxyIsEdited else { return }
         guard proxy.enabled else {
-            if hasSavedProxy { body["proxy_enabled"] = false }
+            body["proxy_enabled"] = false
             return
         }
         body["proxy_enabled"] = true

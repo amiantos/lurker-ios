@@ -65,7 +65,8 @@ final class NetworkProxyTests: XCTestCase {
 
     func testEditingStartsFromTheSavedProxyButNotItsPassword() {
         let d = draft(editing: Self.saved)
-        XCTAssertTrue(d.hasSavedProxy)
+        XCTAssertNotNil(d.savedProxy)
+        XCTAssertEqual(d.savedProxy, Self.row(proxy: Self.saved)?.proxy)
         XCTAssertEqual(d.proxy, ProxyDraft(enabled: true, type: .http, host: "127.0.0.1", port: 3128, username: "me"))
         XCTAssertEqual(d.proxy.password, .unchanged)
     }
@@ -100,17 +101,37 @@ final class NetworkProxyTests: XCTestCase {
         XCTAssertNil(body["proxy_password"])
     }
 
-    func testSavingAnUntouchedProxyResendsWhatWasSaved() {
-        // ⚠ A locked-down instance refuses a proxy being CHANGED, judged against the saved row.
-        // Saving a rename on a proxied network has to send back exactly what's stored, or the
-        // rename is refused as a proxy change.
-        let body = draft(editing: Self.saved).jsonBody(creating: false)
+    func testAnUntouchedProxyIsNotSent() {
+        // ⚠⚠ Not even resent as read. The form shows the columns normalized — trimmed, and an
+        // unknown type or impossible port read as a default — so resending what's shown would
+        // rewrite whatever archive import left there, on a rename, which a locked-down instance
+        // then refuses as a proxy change.
+        XCTAssertEqual(proxyKeys(draft(editing: Self.saved).jsonBody(creating: false)), [])
+        let odd = ##"{"enabled":true,"type":"socks4","host":" 127.0.0.1 ","port":99999,"username":" me "}"##
+        XCTAssertEqual(proxyKeys(draft(editing: odd).jsonBody(creating: false)), [])
+    }
+
+    func testAnUntouchedProxyIsNotValidated() {
+        // Nothing of it is sent, so whatever the columns hold mustn't block saving the rest.
+        XCTAssertNil(draft(editing: ##"{"enabled":true,"type":"socks5","host":"","port":1080}"##).validationError)
+    }
+
+    func testEditingASavedProxySendsTheWholeSetAsShown() {
+        var d = draft(editing: ##"{"enabled":true,"type":"socks5","host":" 127.0.0.1 ","port":9050,"username":" me "}"##)
+        d.proxy.port = 9150
+        let body = d.jsonBody(creating: false)
         XCTAssertEqual(body["proxy_enabled"] as? Bool, true)
-        XCTAssertEqual(body["proxy_type"] as? String, "http")
+        XCTAssertEqual(body["proxy_type"] as? String, "socks5")
         XCTAssertEqual(body["proxy_host"] as? String, "127.0.0.1")
-        XCTAssertEqual(body["proxy_port"] as? Int, 3128)
+        XCTAssertEqual(body["proxy_port"] as? Int, 9150)
         XCTAssertEqual(body["proxy_username"] as? String, "me")
-        XCTAssertNil(body["proxy_password"])
+    }
+
+    func testTurningAProxyOffAndOnAgainIsNoChange() {
+        var d = draft(editing: Self.saved)
+        d.proxy.enabled = false
+        d.proxy.enabled = true
+        XCTAssertEqual(proxyKeys(d.jsonBody(creating: false)), [])
     }
 
     func testTheProxyPasswordFollowsSecretEdit() {
