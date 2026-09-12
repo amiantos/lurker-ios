@@ -811,6 +811,11 @@ enum FrameParser {
         if obj.string("type") == "channel-parted" {
             return .channelParted(networkId: obj.intOrNull("networkId"), target: target)
         }
+        // A refused join (+i, banned, a bad key, too many channels): ephemeral, and aimed at the
+        // channel it refused, which we're not in. Nothing shows its reason yet (#57), so it's
+        // dropped here rather than handed to `applyLive` as a line for that channel. The raw
+        // numeric still reaches the network's server log.
+        if obj.string("type") == "join-error" { return .ignored }
         // `names` and `member-update` are state-only for the same reason as
         // `channel-topic`: no id, nothing to render, payload in fields `parseEvent`
         // doesn't read. Left to fall through they'd become `.other` Messages that

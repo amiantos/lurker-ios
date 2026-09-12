@@ -530,8 +530,8 @@ public final class ChatViewModel {
         /// `channel-joined` says it landed (§9.1). Switching immediately would put the user on
         /// a screen for a channel they may never be in — for a new one, a loading spinner that
         /// never resolves. So the UI waits for `joined` and navigates then; a refused join
-        /// simply never fires, leaving the user where they typed with the error printed in
-        /// front of them.
+        /// simply never fires, leaving the user where they typed. Its reason reaches only the
+        /// network's server log for now (#57).
         case awaitJoin(BufferKey)
         /// `/whois` — open this person's profile. Carries the network because a profile is
         /// about a person *on a connection*, and the buffer the command was typed in is the

@@ -2123,8 +2123,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `joined` is set by `channel-joined` alone — the only thing that proves we're actually in
     /// the channel. Waiting for it rather than navigating straight away is what keeps a refused
     /// join (no such channel, +i, banned, a 470 forward to another name) from stranding the user
-    /// on a screen that never fills: nothing fires, they stay where they typed, and the error
-    /// prints in front of them.
+    /// on a screen that never fills: nothing fires, and they stay where they typed. The refusal's
+    /// reason reaches only the network's server log for now (#57).
     ///
     /// ⚠ `joined`, not the row. A channel you parted keeps its row, so waiting for a row sent a
     /// `/join` for it straight there before the server had answered — refused or not.

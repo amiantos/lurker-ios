@@ -269,6 +269,17 @@ final class FrameParserTests: XCTestCase {
         )
     }
 
+    /// A refused join names the channel it refused, one we're not in. As a live event it reached
+    /// `applyLive`, which minted a row for that channel that read joined.
+    func testAJoinErrorIsNotParsedAsALiveLine() {
+        XCTAssertEqual(
+            FrameParser.parseWs(
+                ##"{"kind":"irc","networkId":1,"target":"#secret","type":"join-error","text":"Cannot join #secret (invite only)","reason":"Cannot join channel (+i)"}"##
+            ),
+            .ignored
+        )
+    }
+
     func testAMemberUpdateParsesItsMemberSnapshot() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"member-update","member":{"nick":"bob","modes":["v"],"away":true,"user":"rob","host":"new.example.org"}}"##

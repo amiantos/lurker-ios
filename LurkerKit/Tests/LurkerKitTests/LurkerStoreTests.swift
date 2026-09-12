@@ -948,6 +948,22 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.buffers["1::&local"]?.kind, .channel)
     }
 
+    /// §9.1: a channel row comes from a persisted line or not at all. An ephemeral event can name
+    /// a channel we aren't in — a refused join's `join-error` targets the channel it refused —
+    /// and the row minted for it read joined, so `/join`'s wait switched the user into a channel
+    /// they'd been refused. (A persisted line still creates one: see
+    /// `testAChannelRowMintedByALiveLineReadsJoined`.)
+    func testAnEphemeralLineForAChannelWithNoRowCreatesNothing() {
+        let store = LurkerStore()
+        store.apply(.live(
+            networkId: 1, target: "#secret",
+            message: Message(id: 0, type: .other, nick: "irc.example.org", text: "Cannot join #secret")
+        ))
+
+        XCTAssertNil(store.state.buffers["1::#secret"])
+        XCTAssertNil(store.state.messages["1::#secret"], "and no orphan line waiting for a row")
+    }
+
     func testIsPartedAsksTheStoredRowAndOnlyForChannels() {
         let store = LurkerStore()
         seedMembers(store, [Member(nick: "me")])
