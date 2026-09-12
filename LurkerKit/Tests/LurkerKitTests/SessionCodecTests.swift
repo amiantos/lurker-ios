@@ -9,14 +9,8 @@ import XCTest
 /// crashing. Mirrors the Android client's SessionCodecTest.
 final class SessionCodecTests: XCTestCase {
 
-    func testRoundTripsSelfHosted() {
-        let session = PersistedSession(backend: .selfHosted, server: "http://localhost:8010", token: "abc123")
-        let data = SessionCodec.encode(session)!
-        XCTAssertEqual(SessionCodec.decode(data), session)
-    }
-
-    func testRoundTripsHosted() {
-        let session = PersistedSession(backend: .hosted, server: "https://app.lurker.chat", token: "tok")
+    func testRoundTrips() {
+        let session = PersistedSession(server: "https://app.lurker.chat", token: "roswell~tok")
         let data = SessionCodec.encode(session)!
         XCTAssertEqual(SessionCodec.decode(data), session)
     }
@@ -26,15 +20,19 @@ final class SessionCodecTests: XCTestCase {
         XCTAssertNil(SessionCodec.decode(Data()))
     }
 
-    func testAnUnknownBackendDecodesToNil() {
-        // A dropped/renamed backend (e.g. the old direct-IRC mode) must not crash.
-        let json = #"{"backend":"directIrc","server":"http://x","token":"t"}"#
-        XCTAssertNil(SessionCodec.decode(Data(json.utf8)))
+    /// The password sign-in's session, which carried a `backend`. It has to decode so the
+    /// upgrade can end it on its server (`SessionStore.takeLegacySession`).
+    func testAPasswordEraSessionDecodes() {
+        let json = #"{"backend":"hosted","server":"https://app.lurker.chat","token":"old"}"#
+        XCTAssertEqual(
+            SessionCodec.decode(Data(json.utf8)),
+            PersistedSession(server: "https://app.lurker.chat", token: "old")
+        )
     }
 
     func testEmptyServerOrTokenDecodesToNil() {
-        let noServer = #"{"backend":"selfHosted","server":"","token":"t"}"#
-        let noToken = #"{"backend":"selfHosted","server":"http://x","token":""}"#
+        let noServer = #"{"server":"","token":"t"}"#
+        let noToken = #"{"server":"http://x","token":""}"#
         XCTAssertNil(SessionCodec.decode(Data(noServer.utf8)))
         XCTAssertNil(SessionCodec.decode(Data(noToken.utf8)))
     }

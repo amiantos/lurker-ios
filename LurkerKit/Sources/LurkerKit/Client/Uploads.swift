@@ -81,7 +81,7 @@ public enum UploadError: Error, Sendable, Equatable {
         case .notSignedIn:
             return "You're not signed in."
         case .unauthorized:
-            return "Your session expired. Sign in again to upload."
+            return "Your session ended. Sign in again to upload."
         case .tooLarge:
             return "The server rejected this file for being too large."
         case .cannotCompressEnough:

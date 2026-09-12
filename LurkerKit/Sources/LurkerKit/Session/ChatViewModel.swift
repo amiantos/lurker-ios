@@ -27,6 +27,7 @@ public final class ChatViewModel {
 
     private let store = LurkerStore()
     private let sessions: SessionStore
+    private let oauthClients: OAuthClients
     private lazy var client = LurkerClient(onFrame: { [weak self] frame in self?.handle(frame) })
 
     private let sessionSubject = CurrentValueSubject<SessionState, Never>(.loggedOut)
@@ -62,9 +63,14 @@ public final class ChatViewModel {
     /// whenever the bootstrap fetch lands — see `SettingsCache`.
     private let settingsCache: SettingsCache
 
-    public init(sessions: SessionStore = SessionStore(), settingsCache: SettingsCache = SettingsCache()) {
+    public init(
+        sessions: SessionStore = SessionStore(),
+        settingsCache: SettingsCache = SettingsCache(),
+        oauthClients: OAuthClients = OAuthClients()
+    ) {
         self.sessions = sessions
         self.settingsCache = settingsCache
+        self.oauthClients = oauthClients
         // Seed before anything can read a setting. Patched in as *values* only — no registry —
         // so `settings.loaded` stays honestly false until a real bootstrap arrives, while every
         // behavior gate already reads the user's actual choice.
@@ -91,25 +97,78 @@ public final class ChatViewModel {
 
     // MARK: - Actions
 
-    /// Password → session token → roster + socket, and persist the session so the next
-    /// launch reconnects without re-login. Returns whether sign-in succeeded; on failure
-    /// `statusPublisher` carries the reason.
+    /// Sign in through the server's approval page, then load the roster and open the socket,
+    /// saving the session so the next launch reconnects without signing in again. Returns
+    /// whether it worked; on failure `statusPublisher` carries the reason. Closing the browser
+    /// sheet, or choosing Deny, isn't a failure worth a message.
+    ///
+    /// `authorize` shows the page and returns the address the page sent the browser to, or
+    /// nil when the sheet closed first. The app supplies it, because the browser sheet is UIKit.
     @discardableResult
-    public func login(backend: Backend, server: String, identifier: String, password: String) async -> Bool {
+    public func signIn(
+        server rawServer: String,
+        appName: String,
+        authorize: @MainActor (URL) async -> URL?
+    ) async -> Bool {
         sessionSubject.value = .loggingIn
         statusSubject.value = nil
-        switch await client.login(backend: backend, server: server, identifier: identifier, password: password) {
-        case .success(let token):
-            sessions.save(PersistedSession(backend: backend, server: server, token: token))
+        let server = ServerAddress.normalize(rawServer)
+        // The transport policy runs before any request, so its verdict is sign-in copy rather
+        // than a failed connect (#29).
+        if let reason = ServerAddress.rejection(of: server) { return signInFailed(reason) }
+
+        // A saved registration is checked before it's used, because a server that lost it would
+        // say so on the approval page, where the app can't hear it (see `OAuthClients`).
+        var saved = oauthClients.clientId(for: server)
+        if let id = saved, await client.isClientKnown(server: server, clientId: id) == false {
+            oauthClients.forget(server)
+            saved = nil
+        }
+        let clientId: String
+        if let saved {
+            clientId = saved
+        } else {
+            switch await client.registerApp(server: server, name: appName) {
+            case .registered(let id):
+                oauthClients.save(id, for: server)
+                clientId = id
+            case .failure(let message):
+                return signInFailed(message)
+            }
+        }
+
+        let pkce = PKCE()
+        let state = OAuth.randomString()
+        guard let page = OAuth.authorizeURL(server: server, clientId: clientId, challenge: pkce.challenge, state: state)
+        else { return signInFailed("That server URL doesn't look right.") }
+        guard let callback = await authorize(page) else { return signInFailed(nil) }
+        let code: String
+        switch OAuth.callback(callback, state: state) {
+        case .code(let value): code = value
+        case .denied: return signInFailed(nil)
+        case .invalid: return signInFailed("Sign-in didn't finish. Try again.")
+        }
+
+        switch await client.exchangeCode(server: server, clientId: clientId, code: code, verifier: pkce.verifier) {
+        case .token(let token):
+            sessions.save(PersistedSession(server: server, token: token))
+            client.restore(server: server, token: token)
             sessionSubject.value = .loggedIn
             Task { await loadFeatures() }
             await client.start()
             return true
+        case .unknownClient:
+            oauthClients.forget(server)
+            return signInFailed("Sign-in didn't finish. Try again.")
         case .failure(let message):
-            sessionSubject.value = .loggedOut
-            statusSubject.value = message
-            return false
+            return signInFailed(message)
         }
+    }
+
+    private func signInFailed(_ message: String?) -> Bool {
+        sessionSubject.value = .loggedOut
+        statusSubject.value = message
+        return false
     }
 
     /// The deliberate sign-out. Local teardown is immediate — the client revokes
@@ -1032,6 +1091,11 @@ public final class ChatViewModel {
     /// afterward and deterministically wins the bounce back to sign-in rather than racing a
     /// `loggedIn` that arrives later.
     private func restoreSession() {
+        // A session from the password sign-in this app had before OAuth isn't restored:
+        // everyone signs in again once, through the approval page.
+        if let legacy = sessions.takeLegacySession() {
+            LurkerClient.endPasswordSession(server: legacy.server, token: legacy.token)
+        }
         guard let saved = sessions.load() else {
             sessionSubject.value = .loggedOut
             return

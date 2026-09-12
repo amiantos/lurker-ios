@@ -19,6 +19,9 @@ import Foundation
 /// ship-readiness. A self-hoster on a LAN uses plain http (allowed here); one on a real
 /// domain has Let's Encrypt via the documented Caddy setup.
 public enum ServerAddress {
+    /// lurker.chat, which the sign-in screen offers until another server is used.
+    public static let lurkerChat = "https://app.lurker.chat"
+
     /// What the user typed, made into a base URL: trimmed, trailing slashes stripped,
     /// and a missing scheme defaulted to `https://` — a bare `chat.example.org` should
     /// mean the secure thing, not be a parse error. The scheme sniff is `://` rather

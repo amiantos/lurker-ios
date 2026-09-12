@@ -5,9 +5,8 @@ import Combine
 import LurkerKit
 import UIKit
 
-/// Screen 1: password → session token. The Simulator shares the host's network, so a
-/// local dev server is just `http://localhost:8010` (no 10.0.2.2 equivalent as on
-/// Android). 8010 is the API/WS server — NOT the Vite client dev port.
+/// Screen 1: the server's address, then that server's own sign-in and approval pages in a
+/// browser sheet (`BrowserSignIn`). The app never handles the password.
 ///
 /// Navigation away from here on success is driven by `SceneDelegate` observing the
 /// session state; this screen just kicks off the sign-in.
@@ -15,16 +14,13 @@ final class LoginViewController: UIViewController {
     private let viewModel: ChatViewModel
     private var cancellables = Set<AnyCancellable>()
 
-    private let backendControl = UISegmentedControl(items: ["Self-hosted", "Hosted (lurker.chat)"])
     private let serverField = UITextField()
-    private let usernameField = UITextField()
-    private let passwordField = UITextField()
     private let signInButton = UIButton(type: .system)
     private let statusLabel = UILabel()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let scrollView = UIScrollView()
-
-    private var backend: Backend { backendControl.selectedSegmentIndex == 1 ? .hosted : .selfHosted }
+    /// The sheet in progress, held until the sign-in finishes.
+    private var browser: BrowserSignIn?
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -48,31 +44,19 @@ final class LoginViewController: UIViewController {
         heading.font = .preferredFont(forTextStyle: .largeTitle)
 
         let blurb = UILabel()
-        blurb.text = "Signs in with a password and opens the WebSocket with a bearer token."
+        blurb.text = "Enter your Lurker server. For lurker.chat, that's app.lurker.chat."
         blurb.font = .preferredFont(forTextStyle: .footnote)
         blurb.textColor = .secondaryLabel
         blurb.numberOfLines = 0
 
-        // Prefill the last-used backend + server so a returning user (after sign-out)
-        // doesn't retype them. The token itself is in the Keychain, not here.
-        let savedBackend = UserPreferences.standard.lastBackend
-        backendControl.selectedSegmentIndex = savedBackend == .hosted ? 1 : 0
-        backendControl.addTarget(self, action: #selector(backendChanged), for: .valueChanged)
-
-        configure(serverField, placeholder: "Server URL", text: UserPreferences.standard.lastServerURL)
+        // Prefill the last-used server so a returning user (after sign-out) doesn't retype
+        // it. The token itself is in the Keychain, not here.
+        configure(serverField, placeholder: "Server", text: UserPreferences.standard.lastServerURL)
         serverField.keyboardType = .URL
+        serverField.textContentType = .URL
         serverField.autocapitalizationType = .none
         serverField.autocorrectionType = .no
-
-        configure(usernameField, placeholder: savedBackend.identifierLabel)
-        usernameField.autocapitalizationType = .none
-        usernameField.autocorrectionType = .no
-        usernameField.textContentType = savedBackend == .hosted ? .emailAddress : .username
-        usernameField.keyboardType = savedBackend == .hosted ? .emailAddress : .default
-
-        configure(passwordField, placeholder: "Password")
-        passwordField.isSecureTextEntry = true
-        passwordField.textContentType = .password
+        serverField.returnKeyType = .go
 
         signInButton.setTitle("Sign in", for: .normal)
         signInButton.configuration = .filled()
@@ -82,9 +66,7 @@ final class LoginViewController: UIViewController {
         statusLabel.textColor = Palette.bad
         statusLabel.numberOfLines = 0
 
-        let stack = UIStackView(arrangedSubviews: [
-            heading, blurb, backendControl, serverField, usernameField, passwordField, signInButton, spinner, statusLabel,
-        ])
+        let stack = UIStackView(arrangedSubviews: [heading, blurb, serverField, signInButton, spinner, statusLabel])
         stack.axis = .vertical
         stack.spacing = 12
         stack.setCustomSpacing(24, after: blurb)
@@ -152,40 +134,31 @@ final class LoginViewController: UIViewController {
         field.heightAnchor.constraint(equalToConstant: 44).isActive = true
     }
 
-    /// Switching backends resets the server URL to that backend's default (unless the
-    /// field was hand-edited off both defaults) and relabels the identifier field: hosted
-    /// authenticates by account email, self-hosted by IRC-side username.
-    @objc private func backendChanged() {
-        if serverField.text == Backend.selfHosted.defaultURL || serverField.text == Backend.hosted.defaultURL {
-            serverField.text = backend.defaultURL
-        }
-        usernameField.placeholder = backend.identifierLabel
-        usernameField.textContentType = backend == .hosted ? .emailAddress : .username
-        usernameField.keyboardType = backend == .hosted ? .emailAddress : .default
-    }
-
     @objc private func signIn() {
+        guard browser == nil, let window = view.window else { return }
         view.endEditing(true)
         statusLabel.text = nil
-        let backend = self.backend
         let server = serverField.text ?? ""
-        let identifier = usernameField.text ?? ""
-        let password = passwordField.text ?? ""
 
-        // Remember the backend + server for the next sign-in (prefill after sign-out).
-        // Only a non-blank server, so a stray empty submit can't wipe a good value.
-        UserPreferences.standard.set(lastBackend: backend)
+        // Remember the server for the next sign-in (prefill after sign-out). Only a non-blank
+        // one, so a stray empty submit can't wipe a good value.
         if !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             UserPreferences.standard.set(lastServerURL: server)
         }
 
+        let browser = BrowserSignIn(anchor: window)
+        self.browser = browser
         setBusy(true)
-        // `@MainActor` is already implied here (the VC is main-isolated), but stated so
-        // the post-`await` UI calls are unambiguously on the main actor.
+        // Named for the device, so the member can tell an iPhone from an iPad in the web
+        // client's list of authorized apps.
+        let appName = "Lurker for \(UIDevice.current.model)"
         Task { @MainActor [weak self] in
-            await self?.viewModel.login(backend: backend, server: server, identifier: identifier, password: password)
+            await self?.viewModel.signIn(server: server, appName: appName) { url in
+                await browser.authorize(url)
+            }
             // On success SceneDelegate swaps this screen out; on failure statusLabel
             // already carries the reason. Either way, stop the spinner.
+            self?.browser = nil
             self?.setBusy(false)
         }
     }
@@ -203,5 +176,10 @@ extension LoginViewController: UITextFieldDelegate {
             let rect = textField.convert(textField.bounds, to: self.scrollView).insetBy(dx: 0, dy: -20)
             self.scrollView.scrollRectToVisible(rect, animated: true)
         }
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        signIn()
+        return true
     }
 }
