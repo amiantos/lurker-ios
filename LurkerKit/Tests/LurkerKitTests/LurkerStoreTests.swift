@@ -966,6 +966,49 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertTrue(store.state.isParted(lurker))
     }
 
+    private var aliceTyping: ServerFrame {
+        .typing(networkId: 1, target: "#lurker", nick: "alice", activity: .active, userhost: nil)
+    }
+
+    func testAPartClearsTheChannelsTypists() {
+        // A typist from before the part stayed on screen until their lease ran out.
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        let lurker = BufferKey(networkId: 1, target: "#lurker")
+        var state = LurkerStore.reduce(ChatState(), shell(joined: true), now: t0)
+        state = LurkerStore.reduce(state, aliceTyping, now: t0)
+        XCTAssertEqual(state.typists(in: lurker, now: t0), ["alice"], "precondition")
+
+        state = LurkerStore.reduce(state, .channelParted(networkId: 1, target: "#lurker"), now: t0)
+        XCTAssertEqual(state.typists(in: lurker, now: t0), [])
+    }
+
+    func testOnlyABacklogSayingNotJoinedClearsTheChannelsTypists() {
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        let lurker = BufferKey(networkId: 1, target: "#lurker")
+        var state = LurkerStore.reduce(ChatState(), shell(joined: true), now: t0)
+        state = LurkerStore.reduce(state, aliceTyping, now: t0)
+
+        state = LurkerStore.reduce(state, shell(joined: true), now: t0)
+        XCTAssertEqual(state.typists(in: lurker, now: t0), ["alice"], "a joined backlog keeps them")
+
+        state = LurkerStore.reduce(state, shell(joined: false), now: t0)
+        XCTAssertEqual(state.typists(in: lurker, now: t0), [])
+    }
+
+    /// Our own join's line reaches us before its `channel-joined` and mints the row. At the
+    /// initializer's `false`, a fresh join read as parted until `channel-joined` landed.
+    func testAChannelRowMintedByALiveLineReadsJoined() {
+        let store = LurkerStore()
+        store.apply(.live(
+            networkId: 1, target: "#new",
+            message: Message(id: 9, type: .join, nick: "me", text: nil, isSelf: true)
+        ))
+
+        let new = BufferKey(networkId: 1, target: "#new")
+        XCTAssertEqual(store.state.buffers[new.id]?.joined, true)
+        XCTAssertFalse(store.state.isParted(new))
+    }
+
     func testRestNamesMergeOntoSnapshotCreatedNetworksWithoutDroppingLiveState() {
         let store = LurkerStore()
         // Snapshot arrives first (name unknown), then the REST roster supplies it.

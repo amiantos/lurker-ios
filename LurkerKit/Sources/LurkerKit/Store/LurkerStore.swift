@@ -788,12 +788,14 @@ final class LurkerStore {
             return next
         case .channelParted(let networkId, let target):
             // Resolve, never materialize (§9.1): a forward's part names a channel we never had.
-            // The members go even without a row — `members` is a side table, and anything it
-            // holds for a channel we're not in is stale.
+            // The members and typists go even without a row — both are side tables, and anything
+            // they hold for a channel we're not in is stale. Left, a typist from before the part
+            // stayed on screen until their lease ran out, up to 30 seconds.
             var next = state
             let key = BufferKey(networkId: networkId, target: target).id
             next.buffers[key]?.joined = false
             next.members[key] = nil
+            next.typing[key] = nil
             return next
         case .ownNick(let networkId, let nick):
             // Patched onto a network we already know, never conjuring one: a nick for a
@@ -1331,10 +1333,14 @@ final class LurkerStore {
         }
         next.buffers[key] = buffer
         next.indexBufferId(buffer, key: key)
-        // Not in the channel, so nobody's list. The live `channel-parted` drops it too, but a part
-        // this device never heard — the connection dropped while the app was away — reaches it
-        // only as this frame's `joined`, and the old nicklist would otherwise outlive the part.
-        if buffer.kind == .channel, !buffer.joined { next.members[key] = nil }
+        // Not in the channel, so nobody's list and nobody typing. The live `channel-parted` clears
+        // both too, but a part this device never heard — the connection dropped while the app was
+        // away — reaches it only as this frame's `joined`, and the old nicklist would otherwise
+        // outlive the part.
+        if buffer.kind == .channel, !buffer.joined {
+            next.members[key] = nil
+            next.typing[key] = nil
+        }
 
         if detached {
             // The slice stands. See above.
@@ -1372,9 +1378,14 @@ final class LurkerStore {
         if next.buffers[key] == nil {
             // A live event can be the first sign of a buffer (a new incoming DM), so
             // materialize a row for it. Unhydrated, so tapping it fetches history.
+            let kind = BufferKind.of(networkId: networkId, target: target)
             next.buffers[key] = Buffer(
-                networkId: networkId, target: target,
-                kind: BufferKind.of(networkId: networkId, target: target)
+                networkId: networkId, target: target, kind: kind,
+                // A line is no statement that we left a channel, and our own join's line lands
+                // before its `channel-joined` — so a channel minted here reads joined until a
+                // part or a backlog says otherwise. At the initializer's `false`, a fresh join
+                // read as parted until `channel-joined` landed.
+                joined: kind == .channel
             )
             // A DM that materializes mid-burst was created after the server enumerated the
             // roster, so the burst legitimately won't name it — mark it seen or the closing
