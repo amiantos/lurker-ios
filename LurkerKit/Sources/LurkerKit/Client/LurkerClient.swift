@@ -352,7 +352,7 @@ final class LurkerClient {
     /// `autoconnect` — that flag governs cold start, not this.
     func createNetwork(_ draft: NetworkDraft) async -> NetworkSaveResult {
         if let problem = draft.validationError { return .failure(message: problem) }
-        return await save("POST", "/api/networks", body: draft.jsonBody(includeDefaultChannel: true))
+        return await save("POST", "/api/networks", body: draft.jsonBody(creating: true))
     }
 
     /// `PATCH /api/networks/:id`. Takes effect on the next connection: the server updates the
@@ -362,7 +362,7 @@ final class LurkerClient {
         // validates none of them, so this client is the only thing standing between an edit
         // and a network stored with no name. See `NetworkDraft.validationError`.
         if let problem = draft.validationError { return .failure(message: problem) }
-        return await save("PATCH", "/api/networks/\(id)", body: draft.jsonBody(includeDefaultChannel: false))
+        return await save("PATCH", "/api/networks/\(id)", body: draft.jsonBody(creating: false))
     }
 
     private func save(_ method: String, _ path: String, body: [String: Any]) async -> NetworkSaveResult {
@@ -403,6 +403,57 @@ final class LurkerClient {
 
     func reconnectNetwork(id: Int) async -> String? {
         await act("POST", "/api/networks/\(id)/reconnect")
+    }
+
+    // MARK: - Client certificates (#459)
+
+    /// `POST /api/networks/:id/certificate` — generate a pair, or import one, replacing any the
+    /// network had.
+    ///
+    /// Its own route, never the PATCH: the server parses and pair-checks the PEM before storing
+    /// it, because a malformed key reaching the TLS handshake throws. Like any network edit it
+    /// is used from the next connect.
+    func attachCertificate(networkId: Int, _ source: CertificateSource) async -> CertificateResult {
+        let body: [String: Any] = switch source {
+        case .generate: ["mode": "generate"]
+        case .imported(let cert, let key): ["mode": "import", "cert": cert, "key": key]
+        }
+        switch await rest("POST", "/api/networks/\(networkId)/certificate", body: body) {
+        case .ok(let text):
+            // ⚠ A 2xx we can't read still attached something, so it can't be reported as "no
+            // certificate". The list re-read when the form reopens describes it.
+            guard let config = FrameParser.parseNetworkReply(text) else {
+                return .failure(message: "The certificate was saved, but the server's reply couldn't be read.")
+            }
+            return .updated(config.clientCertificate)
+        case .failure(let message):
+            return .failure(message: message)
+        }
+    }
+
+    /// `DELETE /api/networks/:id/certificate`.
+    func removeCertificate(networkId: Int) async -> CertificateResult {
+        switch await rest("DELETE", "/api/networks/\(networkId)/certificate") {
+        // A removal has one possible outcome, so the status says everything the reply would.
+        case .ok: return .updated(nil)
+        case .failure(let message): return .failure(message: message)
+        }
+    }
+
+    /// `GET /api/networks/:id/certificate/export` — key and certificate as one PEM file. The
+    /// only route that returns the private key.
+    func exportCertificate(networkId: Int) async -> CertificateExport {
+        switch await rest("GET", "/api/networks/\(networkId)/certificate/export") {
+        case .ok(let text):
+            // A 2xx that isn't a PEM pair (a captive portal's page, say) must not reach the share
+            // sheet as someone's certificate file.
+            guard case .ready = ClientCertificatePEM.reading(text) else {
+                return .failure(message: "The server's reply wasn't a certificate.")
+            }
+            return .pem(text)
+        case .failure(let message):
+            return .failure(message: message)
+        }
     }
 
     private func act(_ method: String, _ path: String, body: [String: Any]? = nil) async -> String? {

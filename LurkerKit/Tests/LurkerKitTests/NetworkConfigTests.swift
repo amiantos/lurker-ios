@@ -240,7 +240,7 @@ final class NetworkConfigTests: XCTestCase {
         // field is both "leave it alone" and "remove it"; sending the field's contents on
         // every save would clear a password the user never touched. Omitted key = untouched
         // column, because the server patches only what it is given.
-        let body = draft().jsonBody(includeDefaultChannel: false)
+        let body = draft().jsonBody(creating: false)
         XCTAssertNil(body["server_password"])
         XCTAssertNil(body["sasl_password"])
     }
@@ -248,21 +248,21 @@ final class NetworkConfigTests: XCTestCase {
     func testAClearedSecretSendsAnExplicitNull() {
         var d = draft()
         d.password = .cleared
-        let body = d.jsonBody(includeDefaultChannel: false)
+        let body = d.jsonBody(creating: false)
         XCTAssertTrue(body["server_password"] is NSNull)
     }
 
     func testASetSecretSendsTheValue() {
         var d = draft()
         d.saslPassword = .set("hunter2")
-        XCTAssertEqual(d.jsonBody(includeDefaultChannel: false)["sasl_password"] as? String, "hunter2")
+        XCTAssertEqual(d.jsonBody(creating: false)["sasl_password"] as? String, "hunter2")
     }
 
     func testDefaultChannelsRideOnCreateOnly() {
         var d = draft()
         d.defaultChannel = "#lurker,#libera"
-        XCTAssertEqual(d.jsonBody(includeDefaultChannel: true)["default_channel"] as? String, "#lurker,#libera")
-        XCTAssertNil(d.jsonBody(includeDefaultChannel: false)["default_channel"])
+        XCTAssertEqual(d.jsonBody(creating: true)["default_channel"] as? String, "#lurker,#libera")
+        XCTAssertNil(d.jsonBody(creating: false)["default_channel"])
     }
 
     func testEmptyOptionalTextIsNullRatherThanEmpty() {
@@ -271,7 +271,7 @@ final class NetworkConfigTests: XCTestCase {
         var d = draft()
         d.username = ""
         d.realname = nil
-        let body = d.jsonBody(includeDefaultChannel: true)
+        let body = d.jsonBody(creating: true)
         XCTAssertTrue(body["username"] is NSNull)
         XCTAssertTrue(body["realname"] is NSNull)
     }
@@ -283,7 +283,7 @@ final class NetworkConfigTests: XCTestCase {
         var d = draft()
         d.password = .cleared
         d.defaultChannel = "#lurker"
-        XCTAssertTrue(JSONSerialization.isValidJSONObject(d.jsonBody(includeDefaultChannel: true)))
+        XCTAssertTrue(JSONSerialization.isValidJSONObject(d.jsonBody(creating: true)))
     }
 
     // MARK: - Certificate verification
@@ -296,7 +296,7 @@ final class NetworkConfigTests: XCTestCase {
         XCTAssertTrue(NetworkDraft().trustedCertificates)
         XCTAssertEqual(
             NetworkDraft(name: "n", host: "h", nick: "n")
-                .jsonBody(includeDefaultChannel: true)["trusted_certificates"] as? Bool,
+                .jsonBody(creating: true)["trusted_certificates"] as? Bool,
             true
         )
     }
@@ -317,7 +317,7 @@ final class NetworkConfigTests: XCTestCase {
             ##"{"networks":[{"id":1,"name":"n","host":"h","trusted_certificates":false}]}"##
         )!.first!
         XCTAssertFalse(config.trustedCertificates)
-        let body = NetworkDraft(editing: config).jsonBody(includeDefaultChannel: false)
+        let body = NetworkDraft(editing: config).jsonBody(creating: false)
         XCTAssertEqual(body["trusted_certificates"] as? Bool, false)
     }
 
@@ -346,7 +346,7 @@ final class NetworkConfigTests: XCTestCase {
 
     func testIdentityFieldsAreSentTrimmed() {
         let body = NetworkDraft(name: " Libera ", host: " irc.libera.chat ", nick: " me ")
-            .jsonBody(includeDefaultChannel: false)
+            .jsonBody(creating: false)
         XCTAssertEqual(body["name"] as? String, "Libera")
         XCTAssertEqual(body["host"] as? String, "irc.libera.chat")
         XCTAssertEqual(body["nick"] as? String, "me")

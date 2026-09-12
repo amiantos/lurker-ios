@@ -251,7 +251,9 @@ enum FrameParser {
             // Absent on a server older than the allowlist (#298), and absent must read as
             // "not blocked": an older server has no allowlist to be excluded from, and
             // defaulting the other way would grey out every network on it.
-            blocked: obj.bool("blocked")
+            blocked: obj.bool("blocked"),
+            clientCertificate: parseClientCertificate(obj["client_cert"]),
+            proxy: parseProxy(obj["proxy"])
         )
     }
 
@@ -259,6 +261,37 @@ enum FrameParser {
     static func parseNetworkReply(_ body: String) -> NetworkConfig? {
         guard let obj = object(from: body), let row = obj["network"] as? [String: Any] else { return nil }
         return parseNetworkConfig(row)
+    }
+
+    /// `client_cert` on a network row (#459). Nil when it's null or missing — no certificate —
+    /// and `.unusable` when one is attached that the server couldn't parse.
+    static func parseClientCertificate(_ value: Any?) -> ClientCertificate? {
+        guard let obj = value as? [String: Any] else { return nil }
+        if obj.bool("unusable") { return .unusable }
+        return .usable(
+            CertificateFingerprints(
+                sha512: obj.string("sha512"), sha256: obj.string("sha256"), sha1: obj.string("sha1")
+            ),
+            expires: ISOTime.parse(obj.stringOrNull("validTo"))
+        )
+    }
+
+    /// `proxy` on a network row (#303). Nil when it's null or missing: no proxy details were
+    /// ever saved.
+    static func parseProxy(_ value: Any?) -> NetworkProxy? {
+        guard let obj = value as? [String: Any] else { return nil }
+        // The columns hold whatever was written — archive import writes them verbatim — so an
+        // unknown type or an impossible port reads as a default rather than failing the row.
+        let type = ProxyType(rawValue: obj.string("type").lowercased()) ?? .socks5
+        let port = obj.int("port")
+        return NetworkProxy(
+            enabled: obj.bool("enabled"),
+            type: type,
+            host: obj.string("host"),
+            port: (1...65535).contains(port) ? port : type.defaultPort,
+            username: obj.stringOrNull("username"),
+            hasPassword: obj.bool("has_password")
+        )
     }
 
     /// Parse REST `GET /api/network-presets` — the networks this instance recommends, plus
