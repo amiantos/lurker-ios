@@ -955,39 +955,41 @@ public final class ChatViewModel {
     /// the asked-for name is dropped quietly, the forwarded channel arriving as its own row. A
     /// channel we're already in opens at once.
     ///
-    /// ⚠ Not sent while the network isn't connected, or when there's no socket to carry it: the
+    /// ⚠ Not sent unless this device, this app's socket and the network are all connected: the
     /// server drops a JOIN for a network that's down without a word, so the user hears it here.
     public func requestJoin(networkId: Int, channel: String, key joinKey: String? = nil, opens: Bool) {
         let name = channel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+        // A list (`/join #a,#b`) is one JOIN as typed, but each channel in it is answered, and so
+        // tracked, on its own. Only the first opens: there's one screen to land on.
+        let keys = PendingJoins.channels(in: name).map { BufferKey(networkId: networkId, target: $0) }
+        guard let first = keys.first else { return }
+        let toJoin = keys.filter { store.state.buffers[$0.id]?.joined != true }
+        // Already in the first: it opens now, before anything is asked of the connection. A joined
+        // row outlives a socket drop, and opening it needs nothing sent.
+        if opens, let row = store.state.buffers[first.id], row.joined {
+            onJoinOpened?(row.key)
+        }
+        // ⚠ All three, not just the network's row. After a drop `connection` reads `.reconnecting`
+        // while the network row still says `.connected`, and the client keeps the closed socket
+        // until it reconnects — so a send there "succeeds" and nothing ever answers.
         let network = store.state.networks[networkId]
-        let notConnected = JoinNotice.notConnected(
-            channel: name, network: network?.displayName ?? "the network"
-        )
-        guard network?.state == .connected else {
-            onJoinNotice?(notConnected)
-            return
-        }
-        guard client.joinChannel(networkId: networkId, channel: name, key: joinKey) else {
-            onJoinNotice?(notConnected)
-            return
-        }
-        // One JOIN as typed, but each channel in a list (`/join #a,#b`) is answered, and so tracked,
-        // on its own. Only the first opens: there's one screen to land on.
-        var waiting = false
-        for (index, target) in PendingJoins.channels(in: name).enumerated() {
-            let key = BufferKey(networkId: networkId, target: target)
-            let opensThis = opens && index == 0
-            // Sent even so: `/cycle` joins right behind its own part, while the row still reads
-            // joined.
-            if let row = store.state.buffers[key.id], row.joined {
-                if opensThis { onJoinOpened?(row.key) }
-                continue
+        let connected = store.state.reachable && store.state.connection == .connected
+            && network?.state == .connected
+        guard connected, client.joinChannel(networkId: networkId, channel: name, key: joinKey) else {
+            // Nothing to say when every channel was already open: that was `/join` for a channel
+            // you're in, and it opened.
+            if !toJoin.isEmpty {
+                onJoinNotice?(.notConnected(channel: name, network: network?.displayName ?? "the network"))
             }
-            pendingJoins.request(key, opens: opensThis, now: Date())
-            waiting = true
+            return
         }
-        guard waiting else { return }
+        // Sent for channels we're already in too, because `/cycle` joins right behind its own part
+        // while the row still reads joined. That rejoin isn't tracked: its own part would read as
+        // a forward. A refused one shows as the parted row it leaves.
+        for (index, key) in keys.enumerated() where toJoin.contains(key) {
+            pendingJoins.request(key, opens: opens && index == 0, now: Date())
+        }
+        guard !toJoin.isEmpty else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(PendingJoins.timeout))
             guard let self else { return }

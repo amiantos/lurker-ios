@@ -9,8 +9,8 @@ import Testing
 /// What became of a join this device asked for (#57).
 ///
 /// Before this, nothing tracked a join between asking and hearing back: a refusal said nothing, a
-/// join that never landed said nothing, and the only thing that moved the user was a wait in the
-/// chat screen that one of the four ways in used.
+/// join that never landed said nothing, and of the four ways to join, only the composer's `/join`
+/// waited for the server before moving the user.
 @Suite("Pending joins")
 struct PendingJoinsTests {
 
