@@ -150,9 +150,13 @@ final class ConnectionBanner: UIView {
             label.text = "Reconnecting…"
         case .offline:
             label.text = "No internet connection"
+        case .incompatible(.appTooOld):
+            label.text = "Update the app to connect"
+        case .incompatible(.serverTooOld):
+            label.text = "The server needs an update"
         }
-        // Working states spin (amber, "still trying"); offline shows a settled red dot —
-        // there's nothing in flight until the user brings a path back.
+        // Working states spin (amber, "still trying"); offline and incompatible show a settled
+        // red dot — nothing is in flight until the user brings a path back, or one side updates.
         if state.isWorking {
             spinner.color = Palette.warn
             spinner.startAnimating()

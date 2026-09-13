@@ -27,12 +27,29 @@ final class ConnectionBannerStateTests: XCTestCase {
         XCTAssertEqual(ConnectionBannerState.of(reachable: true, connection: .reconnecting), .reconnecting)
     }
 
+    func testAServerThatCantTakeThisBuildOutranksEverything() {
+        // No path included: coming back online won't fix it, and the banner is the one place
+        // that says which side needs the update (#17).
+        for reachable in [true, false] {
+            XCTAssertEqual(
+                ConnectionBannerState.of(reachable: reachable, connection: .incompatible(.appTooOld)),
+                .incompatible(.appTooOld)
+            )
+            XCTAssertEqual(
+                ConnectionBannerState.of(reachable: reachable, connection: .incompatible(.serverTooOld)),
+                .incompatible(.serverTooOld)
+            )
+        }
+    }
+
     func testOnlyConnectingAndReconnectingSpin() {
         // Offline has nothing to spin about — there's no attempt in flight until a path
         // comes back — so it reads as a settled, user-actionable state, not a busy one.
+        // Neither does a server that can't take this build: nothing is retrying.
         XCTAssertTrue(ConnectionBannerState.connecting.isWorking)
         XCTAssertTrue(ConnectionBannerState.reconnecting.isWorking)
         XCTAssertFalse(ConnectionBannerState.offline.isWorking)
+        XCTAssertFalse(ConnectionBannerState.incompatible(.appTooOld).isWorking)
         XCTAssertFalse(ConnectionBannerState.hidden.isWorking)
     }
 }

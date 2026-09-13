@@ -9,6 +9,15 @@ public enum SocketStatus: Equatable, Sendable {
     case connecting
     case connected
     case reconnecting
+    /// The server and this build can't talk (#17). Nothing reconnects: every attempt would end
+    /// the same way until the app or the server is updated.
+    case incompatible(Incompatibility)
+
+    /// Why the server and this build can't talk, when that's where things stand.
+    public var incompatibility: Incompatibility? {
+        if case .incompatible(let incompatibility) = self { return incompatibility }
+        return nil
+    }
 }
 
 /// Immutable snapshot of everything the chat UI renders. The map keys are `BufferKey.id`.
@@ -709,6 +718,19 @@ final class LurkerStore {
         subject.value.reachable = reachable
     }
 
+    /// Record that the server and this build can't talk (#17). A direct mutation rather than a
+    /// fold, because the answer comes from `/api/config` as often as from the socket.
+    func setIncompatible(_ incompatibility: Incompatibility) {
+        guard subject.value.connection != .incompatible(incompatibility) else { return }
+        subject.value.connection = .incompatible(incompatibility)
+    }
+
+    /// The server takes this build again. What follows is a fresh connect, not a reconnect.
+    func clearIncompatible() {
+        guard subject.value.connection.incompatibility != nil else { return }
+        subject.value.connection = .connecting
+    }
+
     /// Record a fetched page of saved messages as bookmarked, in ONE mutation.
     ///
     /// Not a `ServerFrame` because it isn't one — it comes from a REST read, like
@@ -1088,6 +1110,9 @@ final class LurkerStore {
             switch next.connection {
             case .connected, .reconnecting: next.connection = .reconnecting
             case .connecting: next.connection = .connecting
+            // Closed because the server can't take this build (#17). That's still the story,
+            // and nothing is reconnecting.
+            case .incompatible: break
             }
             // Nobody is typing at us over a socket that isn't there. The lease would retire
             // these on its own, but a `paused` entry holds for 30s — long enough to survive a
@@ -1102,8 +1127,9 @@ final class LurkerStore {
             // of the session, leaving the profile on "waiting…" with an inert Refresh.
             next.whoisPending = []
             return next
-        case .unauthorized, .ignored:
-            // Session-level / no-op; the view model intercepts `.unauthorized` first.
+        case .unauthorized, .incompatible, .ignored:
+            // Session-level / no-op; the view model intercepts `.unauthorized` and
+            // `.incompatible` first.
             return state
         case .uploadProgress:
             // Doesn't reach here — `LurkerClient` consumes it: an upload's progress drives the

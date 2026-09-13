@@ -165,7 +165,7 @@ public final class ChatViewModel {
             sessions.save(PersistedSession(server: server, token: token))
             client.restore(server: server, token: token)
             sessionSubject.value = .loggedIn
-            Task { await loadFeatures() }
+            Task { await loadConfig() }
             await client.start()
             return true
         case .unknownClient:
@@ -211,7 +211,6 @@ public final class ChatViewModel {
         client.clearMediaCache()
         client.clearStagedMedia()
         features = InstanceFeatures()
-        featuresKnown = false
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
@@ -342,7 +341,7 @@ public final class ChatViewModel {
     /// than a direct call because the image cache is UIKit and this package is not.
     public var onPreviewCachesCleared: (() -> Void)?
 
-    /// Instance feature flags, fetched once per session from `/api/config`.
+    /// Instance feature flags from `/api/config`, read again on every reconnect.
     ///
     /// ⚠ Off until proven on. Link previews are a whole feature behind an operator env flag: when
     /// it's off the server doesn't even mount the routes, so the settings rows are HIDDEN rather
@@ -357,14 +356,13 @@ public final class ChatViewModel {
     /// screen was built is a number that may since have moved.
     public var uploadCapBytes: Int { Uploads.compressionTarget(advertised: state.maxUploadBytes) }
 
-    /// Whether `features` is an ANSWER or still the off-by-default guess.
-    ///
-    /// ⚠⚠ A presence flag, because a default is not a statement. Without it, one 502 at cold
-    /// launch was indistinguishable from an instance that has the feature switched off — and it
-    /// latched for the whole session, because nothing re-fetched.
-    private var featuresKnown = false
+    /// Which `/api/config` read is the current one. Every reconnect attempt starts one, so several
+    /// can be out at once, and an older answer landing last must not undo a newer one — the guard
+    /// `LurkerClient.rosterGeneration` keeps over the roster, for the same reason.
+    private var configGeneration = 0
 
-    /// Resolve instance feature flags.
+    /// Read `/api/config`: the instance's feature flags, and whether this build can talk to the
+    /// server at all (#17).
     ///
     /// ⚠⚠ **Never awaited ahead of `client.start()`.** It was, and that put an untimed HTTP GET
     /// in front of the WebSocket for every user, previews or not: launch behind a captive portal
@@ -375,13 +373,42 @@ public final class ChatViewModel {
     /// DECORATE messages must never delay getting them.
     ///
     /// Ordering costs nothing now, because arriving late is handled rather than raced: turning
-    /// out to be enabled re-primes what is already loaded, exactly as flipping the setting does.
-    private func loadFeatures() async {
-        guard let fetched = await client.fetchFeatures() else { return }
+    /// out to be enabled re-primes what is already loaded, exactly as flipping the setting does,
+    /// and a socket that opened before a refusal arrived is closed when it does.
+    ///
+    /// ⚠ Read on EVERY reconnect, where it used to be re-read only until it had answered once. A
+    /// server's version moves when it's deployed, and a deploy is what drops the socket, so the
+    /// reconnect is exactly when to ask. A failed read keeps the last answer: one 502 must not
+    /// switch previews off, or clear a refusal.
+    private func loadConfig() async {
+        configGeneration += 1
+        let generation = configGeneration
+        guard let config = await client.fetchConfig(), generation == configGeneration,
+              session == .loggedIn
+        else { return }
         let wasEnabled = features.linkPreviews
-        features = fetched
-        featuresKnown = true
-        if fetched.linkPreviews, !wasEnabled { primeLoadedBuffers() }
+        features = config.features
+        if config.features.linkPreviews, !wasEnabled { primeLoadedBuffers() }
+        if let incompatibility = config.incompatibility {
+            onIncompatible(incompatibility)
+        } else if store.state.connection.incompatibility != nil {
+            // The server takes this build again: it was rolled back, or updated.
+            store.clearIncompatible()
+            guard isForeground else { return }
+            client.reconnect(since: store.state.maxEventId)
+        }
+    }
+
+    /// The server and this build can't talk (#17). Reconnecting stops, because every attempt
+    /// would be refused the same way, and the session stays: the token is fine, and the app
+    /// connects again once it or the server is updated.
+    ///
+    /// Only `/api/config` saying otherwise clears it, and that's asked again whenever the app
+    /// comes back to the foreground or back online (`doReconnect`).
+    private func onIncompatible(_ incompatibility: Incompatibility) {
+        cancelReconnect()
+        store.setIncompatible(incompatibility)
+        client.dropSocket()
     }
 
     /// Bytes from the server's media proxy, for a server-minted path off a `LinkPreview`.
@@ -1193,7 +1220,7 @@ public final class ChatViewModel {
         }
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
-        Task { await loadFeatures() }
+        Task { await loadConfig() }
         Task { await client.start() }
     }
 
@@ -1301,7 +1328,7 @@ public final class ChatViewModel {
     ///
     /// Two callers, and they are the two ways the answer can change after the messages arrived:
     /// a preview toggle moving, and the instance feature flag turning out to be on. The second
-    /// is what makes `loadFeatures` safe to detach — arriving late is handled rather than raced.
+    /// is what makes `loadConfig` safe to detach — arriving late is handled rather than raced.
     ///
     /// ⚠ Walked by BUFFER rather than over `state.messages.values`, because that dictionary is
     /// keyed by an id string with the network folded out of it, and the ignore check needs it.
@@ -1331,7 +1358,15 @@ public final class ChatViewModel {
             settingsCache.save(store.state.settings.values)
         case .unauthorized:
             onAuthLost()
+        case .incompatible(let incompatibility):
+            onIncompatible(incompatibility)
         case .socketOpen:
+            // A socket that opens after the server was found not to take this build (its config
+            // answered first) is closed rather than used.
+            guard store.state.connection.incompatibility == nil else {
+                client.dropSocket()
+                return
+            }
             store.apply(frame)
             reconnectAttempt = 0 // a clean connection resets the backoff
         case .socketClosed:
@@ -1467,9 +1502,11 @@ public final class ChatViewModel {
 
     // MARK: - Reconnect
 
-    /// A drop while signed-in + foregrounded schedules a backed-off reconnect.
+    /// A drop while signed-in + foregrounded schedules a backed-off reconnect — unless the server
+    /// can't take this build (#17), when every attempt would be refused.
     private func onSocketDropped() {
-        guard session == .loggedIn, isForeground else { return }
+        guard session == .loggedIn, isForeground, store.state.connection.incompatibility == nil
+        else { return }
         scheduleReconnect()
     }
 
@@ -1490,13 +1527,16 @@ public final class ChatViewModel {
     /// back meanwhile, so a pending timer can't tear down a good socket.
     private func doReconnect(force: Bool) {
         guard session == .loggedIn, isForeground else { return }
+        // A server that can't take this build would refuse the socket, so ask it again instead;
+        // `loadConfig` reconnects if the answer has changed (#17).
+        if store.state.connection.incompatibility != nil {
+            Task { await loadConfig() }
+            return
+        }
         if !force, store.state.connection == .connected { return }
-        // ⚠ Retry the feature flags if we never got an answer. They were fetched exactly once
-        // per session entry and never again, so a single 502 or DNS hiccup at cold launch
-        // disabled link previews for the whole app session on an instance that has them on —
-        // and the reconnect that fixes everything else went right past it. Only when UNKNOWN: a
-        // server that said no is not re-asked on every drop.
-        if !featuresKnown { Task { await loadFeatures() } }
+        // Every attempt re-reads the config, not only while it's unanswered: it carries the
+        // server's version, which moves exactly when a deploy drops the socket. See `loadConfig`.
+        Task { await loadConfig() }
         client.reconnect(since: store.state.maxEventId)
     }
 
@@ -1530,7 +1570,6 @@ public final class ChatViewModel {
         client.clearMediaCache()
         client.clearStagedMedia()
         features = InstanceFeatures()
-        featuresKnown = false
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and

@@ -74,16 +74,16 @@ struct PreviewDecodeTests {
         // /api/config call at cold launch silently disabled link previews for the whole app
         // session on an instance that has them on — with no retry and nothing to notice. A
         // default is not a statement.
-        #expect(LurkerClient.parseFeatures(Data("{}".utf8), code: 502) == nil)
-        #expect(LurkerClient.parseFeatures(Data("not json".utf8), code: 200) == nil)
-        #expect(LurkerClient.parseFeatures(Data("[]".utf8), code: 200) == nil)
+        #expect(LurkerClient.parseConfig(Data("{}".utf8), code: 502) == nil)
+        #expect(LurkerClient.parseConfig(Data("not json".utf8), code: 200) == nil)
+        #expect(LurkerClient.parseConfig(Data("[]".utf8), code: 200) == nil)
     }
 
     @Test("an absent features object IS an answer — an older instance without the feature")
     func absentFeaturesIsAVerdict() {
-        #expect(LurkerClient.parseFeatures(Data("{}".utf8), code: 200)?.linkPreviews == false)
+        #expect(LurkerClient.parseConfig(Data("{}".utf8), code: 200)?.features.linkPreviews == false)
         #expect(
-            LurkerClient.parseFeatures(Data("{\"features\":{}}".utf8), code: 200)?.linkPreviews
+            LurkerClient.parseConfig(Data("{\"features\":{}}".utf8), code: 200)?.features.linkPreviews
                 == false)
     }
 
@@ -111,8 +111,8 @@ struct PreviewDecodeTests {
     @Test("reads the flag when the server sets it")
     func flagIsRead() {
         let on = Data("{\"features\":{\"linkPreviews\":true}}".utf8)
-        #expect(LurkerClient.parseFeatures(on, code: 200)?.linkPreviews == true)
+        #expect(LurkerClient.parseConfig(on, code: 200)?.features.linkPreviews == true)
         let off = Data("{\"features\":{\"linkPreviews\":false}}".utf8)
-        #expect(LurkerClient.parseFeatures(off, code: 200)?.linkPreviews == false)
+        #expect(LurkerClient.parseConfig(off, code: 200)?.features.linkPreviews == false)
     }
 }
