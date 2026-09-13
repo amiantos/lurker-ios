@@ -322,6 +322,14 @@ final class LurkerClient {
         _ = await fetchNetworks(reportingUnauthorized: false)
     }
 
+    /// The token check a reconnect makes — the roster read, reporting a 401 — without the socket.
+    ///
+    /// For a server this build can't talk to (#17), where nothing else will notice a revoke: the
+    /// upgrade answers 426 before it reads the token, and `/api/config` never reads it.
+    func checkToken() async {
+        _ = await fetchNetworks()
+    }
+
     /// `GET /api/networks`, read as editable configuration rather than as the roster.
     ///
     /// Nil means no answer — unauthenticated, offline, unreadable — never "no networks",

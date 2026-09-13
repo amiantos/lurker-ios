@@ -1529,6 +1529,9 @@ public final class ChatViewModel {
         // `loadConfig` reconnects if the answer has changed (#17).
         if store.state.connection.incompatibility != nil {
             Task { await loadConfig() }
+            // ⚠ And check the token, which nothing else does while there's no socket. Without it, an
+            // app revoked in Settings would sit on "Update the app to connect" instead of signing out.
+            Task { await client.checkToken() }
             return
         }
         if !force, store.state.connection == .connected { return }
