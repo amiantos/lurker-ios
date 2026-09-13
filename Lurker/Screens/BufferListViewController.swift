@@ -107,8 +107,9 @@ final class BufferListViewController: UICollectionViewController {
         /// because the two answer different questions: this one is "would you otherwise
         /// confuse this chip with the one beside it", and it's nil far more often.
         var networkHint: String?
-        /// Set only on Friends chips (favorited DMs): the peer's presence dot state.
-        /// Equatable so a presence change reconfigures the one chip.
+        /// The peer's presence, set on every DM row and chip: it mutes an away or offline name
+        /// (#167), and on a Friends chip it also colours the dot. Nil for anything that isn't a
+        /// DM. Equatable so a presence change reconfigures the one cell.
         var presence: FriendPresence?
         /// A Friends chip — the one row kind whose buffer may be SYNTHESIZED (a
         /// favorite the store hasn't materialized), so a tap must open-buffer first.
@@ -314,6 +315,15 @@ final class BufferListViewController: UICollectionViewController {
         navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
         installSearch()
 
+        // Chips and offline DM rows name their buffer in a font built from this screen's traits
+        // (`nameFont`), which a text-size change doesn't reach on its own. `rebuild`'s diff can't
+        // see it either — no row's content moved — so reconfigure every item at the new size.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (list: Self, _) in
+            var snapshot = list.dataSource.snapshot()
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+            list.dataSource.apply(snapshot, animatingDifferences: false)
+        }
+
         // The list depends on networks, buffers, and connection state — a message arriving
         // in some channel shouldn't rebuild it (badge counts arrive as read-state updates,
         // which do change `buffers`). `connection` and `reachable` are here because the
@@ -324,6 +334,10 @@ final class BufferListViewController: UICollectionViewController {
                     && $0.buffers == $1.buffers
                     && $0.connection == $1.connection
                     && $0.reachable == $1.reachable
+                    // A DM row's presence waits for the reconnect's snapshot (`rowPresence`), and
+                    // that snapshot can leave everything else here unchanged. Without this the rows
+                    // would sit on "unknown" until some unrelated frame let a rebuild through.
+                    && $0.snapshotSinceOpen == $1.snapshotSinceOpen
                     // `backlog-complete` carries no state but this flag. On an account with
                     // nothing to list it moves nothing else at all, so leaving it out would
                     // drop the frame as a duplicate and spin "Loading buffers…" forever on
@@ -696,13 +710,21 @@ final class BufferListViewController: UICollectionViewController {
         // as its section header, so resolving a server log to its network's name would just
         // print "libera" above "libera".
         content.text = row.buffer.displayName()
-        // A channel we're not in reads as history, the way its chip does: the name steps down to
-        // secondary, and the badge below keeps its own colours.
-        if row.parted { content.textProperties.color = .secondaryLabel }
+        // A channel we're not in, or a person who's away or offline, reads quieter than a live
+        // conversation, the way its chip does: the name steps down to secondary, and the badge
+        // below keeps its own colours. An offline person's name is italic too (#167).
+        if row.parted || row.presence?.dimsName == true {
+            content.textProperties.color = .secondaryLabel
+        }
+        if row.presence?.italicizesName == true, let font = self?.nameFont(italic: true) {
+            content.textProperties.font = font
+        }
         cell.contentConfiguration = content
-        // Assigned both ways: cells are recycled, and a rejoined channel's row must not go on
-        // saying it isn't.
-        cell.accessibilityValue = row.parted ? "Not joined" : nil
+        // Assigned every time: cells are recycled, and a rejoined channel's row or a DM whose
+        // peer came back must not go on saying otherwise.
+        cell.accessibilityValue = row.parted
+            ? "Not joined"
+            : (row.presence?.dimsName == true ? row.presence?.title : nil)
 
         // The unread pill *replaces* the disclosure chevron, as the table did — a row either
         // says how much is waiting or it says "there's more inside", never both.
@@ -722,14 +744,29 @@ final class BufferListViewController: UICollectionViewController {
             // of its section, and it lost its network subtitle — so an unnamed one would read
             // as just "Server" with nothing anywhere on the card saying which.
             name: row.buffer.displayName(networkName: row.networkName),
+            nameFont: self?.nameFont(italic: row.presence?.italicizesName == true)
+                ?? .preferredFont(forTextStyle: .body),
             networkName: row.networkName,
             networkHint: row.networkHint,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence,
+            // The dot is a Friends chip's alone; any other DM chip shows presence in its name.
+            showsPresenceDot: row.isFriendChip,
             parted: row.parted,
             isOpen: self?.isOpen(row.buffer) == true
         )
+    }
+
+    /// The body font a row or chip names its buffer in, italic for an offline peer (#167).
+    ///
+    /// Built from THIS screen's traits, the rule `MemberListViewController` and `MessageRenderer`
+    /// follow: a cell's own traits aren't settled while it's configured. A font set this way no
+    /// longer tracks text size by itself, so a text-size change reconfigures every item to build
+    /// it again (see `viewDidLoad`).
+    private func nameFont(italic: Bool) -> UIFont {
+        let body = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
+        return italic ? body.italic : body
     }
 
     private lazy var headerRegistration = UICollectionView
@@ -1298,7 +1335,7 @@ final class BufferListViewController: UICollectionViewController {
             return Row(
                 buffer: buffer,
                 networkName: state.networks[entry.networkId]?.displayName,
-                presence: state.presence(networkId: entry.networkId, nick: entry.target),
+                presence: state.rowPresence(networkId: entry.networkId, nick: entry.target),
                 isFriendChip: true,
                 muted: Self.isMuted(buffer, state)
             )
@@ -1354,6 +1391,7 @@ final class BufferListViewController: UICollectionViewController {
         Row(
             buffer: buffer,
             networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
+            presence: Self.peerPresence(buffer, state),
             muted: Self.isMuted(buffer, state),
             parted: state.isParted(buffer.key)
         )
@@ -1361,9 +1399,16 @@ final class BufferListViewController: UICollectionViewController {
 
     private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
-            buffer: buffer, networkName: nil,
+            buffer: buffer, networkName: nil, presence: Self.peerPresence(buffer, state),
             muted: Self.isMuted(buffer, state), parted: state.isParted(buffer.key)
         )
+    }
+
+    /// A DM's peer presence, nil for anything that isn't a DM (#167). Every DM row and chip reads
+    /// it, not just Friends: a person who's away or offline looks it wherever their DM sits.
+    private static func peerPresence(_ buffer: Buffer, _ state: ChatState) -> FriendPresence? {
+        guard buffer.kind == .dm, let networkId = buffer.networkId else { return nil }
+        return state.rowPresence(networkId: networkId, nick: buffer.target)
     }
 
     /// Tag chips with a short `li` network hint — the ones whose names collide **within this
