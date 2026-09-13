@@ -55,6 +55,13 @@ final class BufferSplitViewController: UISplitViewController {
         if presentedViewController != nil { dismiss(animated: false) }
     }
 
+    /// The sheet on screen, whichever column put it up: `dismissPresented`'s counterpart, for
+    /// showing something over it rather than taking it down.
+    var topPresented: UIViewController? {
+        let presenters: [UIViewController] = [listNav, chatNav, self]
+        return presenters.lazy.compactMap(\.presentedViewController).first
+    }
+
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
         super.init(style: .doubleColumn)

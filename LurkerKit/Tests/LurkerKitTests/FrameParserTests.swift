@@ -270,13 +270,25 @@ final class FrameParserTests: XCTestCase {
     }
 
     /// A refused join names the channel it refused, one we're not in. As a live event it reached
-    /// `applyLive`, which minted a row for that channel that read joined.
-    func testAJoinErrorIsNotParsedAsALiveLine() {
+    /// `applyLive`, which minted a row for that channel that read joined (#168). Its own frame
+    /// carries the server's sentence for the refusal (#57).
+    func testAJoinErrorParsesToItsOwnFrameWithTheServersReason() {
         XCTAssertEqual(
             FrameParser.parseWs(
-                ##"{"kind":"irc","networkId":1,"target":"#secret","type":"join-error","text":"Cannot join #secret (invite only)","reason":"Cannot join channel (+i)"}"##
+                ##"{"kind":"irc","networkId":1,"target":"#secret","type":"join-error","text":"This channel is invite-only.","reason":"Cannot join channel (+i)"}"##
             ),
-            .ignored
+            .joinError(networkId: 1, target: "#secret", reason: "This channel is invite-only.")
+        )
+        // No sentence from the server: the IRC server's own, then a plain one.
+        XCTAssertEqual(
+            FrameParser.parseWs(
+                ##"{"kind":"irc","networkId":1,"target":"#secret","type":"join-error","reason":"Cannot join channel (+i)"}"##
+            ),
+            .joinError(networkId: 1, target: "#secret", reason: "Cannot join channel (+i)")
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"irc","networkId":1,"target":"#secret","type":"join-error"}"##),
+            .joinError(networkId: 1, target: "#secret", reason: "The server refused the join.")
         )
     }
 

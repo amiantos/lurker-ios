@@ -1106,12 +1106,16 @@ final class LurkerClient {
         send(["type": "mark-all-read"])
     }
 
-    /// Join a channel on a network, with an optional key for a `+k` channel. The server sends
-    /// its backlog once joined, which materializes the buffer in the list.
-    func joinChannel(networkId: Int, channel: String, key: String? = nil) {
+    /// Join a channel on a network, with an optional key for a `+k` channel. Its row arrives with
+    /// `channel-joined`, once the server has us in it.
+    ///
+    /// False when there is no socket to carry it: the verb went nowhere and nothing will answer,
+    /// which `ChatViewModel.requestJoin` tells the user.
+    @discardableResult
+    func joinChannel(networkId: Int, channel: String, key: String? = nil) -> Bool {
         var verb: [String: Any] = ["type": "join", "networkId": networkId, "channel": channel]
         if let key { verb["key"] = key }
-        send(verb)
+        return send(verb)
     }
 
     /// Close a buffer: parts a channel and stops tracking a DM. The server pseudo-buffer

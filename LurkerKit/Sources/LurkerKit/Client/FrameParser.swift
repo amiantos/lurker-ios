@@ -812,10 +812,17 @@ enum FrameParser {
             return .channelParted(networkId: obj.intOrNull("networkId"), target: target)
         }
         // A refused join (+i, banned, a bad key, too many channels): ephemeral, and aimed at the
-        // channel it refused, which we're not in. Nothing shows its reason yet (#57), so it's
-        // dropped here rather than handed to `applyLive` as a line for that channel. The raw
-        // numeric still reaches the network's server log.
-        if obj.string("type") == "join-error" { return .ignored }
+        // channel it refused, which we're not in — so its own frame, never a line for `applyLive`,
+        // or it becomes a row (#168). `text` is the server's sentence for the refusal; `reason`,
+        // the IRC server's own, is the fallback.
+        if obj.string("type") == "join-error" {
+            let text = obj.string("text").isEmpty ? obj.string("reason") : obj.string("text")
+            return .joinError(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                reason: text.isEmpty ? "The server refused the join." : text
+            )
+        }
         // `names` and `member-update` are state-only for the same reason as
         // `channel-topic`: no id, nothing to render, payload in fields `parseEvent`
         // doesn't read. Left to fall through they'd become `.other` Messages that

@@ -123,6 +123,13 @@ enum ServerFrame: Equatable, Sendable {
     /// do nothing, which is what a forward's part for a name we never had needs.
     case channelParted(networkId: Int?, target: String)
 
+    /// A `join-error` event: the server refused a join — invite-only, banned, a bad key, full, too
+    /// many channels, or it wants a registered nick (#57). Aimed at the channel it refused, which
+    /// we're not in, so the store records nothing and creates no row (a row made for it read
+    /// joined, #168). The view model tells the user when this device asked. `reason` is ready to
+    /// show: "This channel is invite-only."
+    case joinError(networkId: Int?, target: String, reason: String)
+
     /// An `own-nick` event: *our* nick on this network changed — by `/nick`, or because
     /// services renamed us. Network-scoped and target-less, like `peer-presence`.
     ///

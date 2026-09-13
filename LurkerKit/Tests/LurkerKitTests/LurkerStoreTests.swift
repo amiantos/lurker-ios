@@ -964,6 +964,15 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertNil(store.state.messages["1::#secret"], "and no orphan line waiting for a row")
     }
 
+    /// The refusal's own frame (#57) keeps the #168 guarantee: nothing for a channel we're not in.
+    func testAJoinErrorCreatesNoRow() {
+        let store = LurkerStore()
+        store.apply(.joinError(networkId: 1, target: "#secret", reason: "This channel is invite-only."))
+
+        XCTAssertNil(store.state.buffers["1::#secret"])
+        XCTAssertNil(store.state.messages["1::#secret"])
+    }
+
     func testIsPartedAsksTheStoredRowAndOnlyForChannels() {
         let store = LurkerStore()
         seedMembers(store, [Member(nick: "me")])

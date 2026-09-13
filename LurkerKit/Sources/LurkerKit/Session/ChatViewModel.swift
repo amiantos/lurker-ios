@@ -59,6 +59,17 @@ public final class ChatViewModel {
     /// republish by diffing `ChatState`.
     public var onSendRefused: ((_ key: BufferKey) -> Void)?
 
+    /// A join this device asked for landed, and the asker wanted to be taken there (#57). The app
+    /// navigates. Fired with the stored row's key, in the server's spelling of the name.
+    public var onJoinOpened: ((_ key: BufferKey) -> Void)?
+
+    /// A join this device asked for didn't happen: refused, unanswered, or never sent (#57). The
+    /// app shows it as a toast.
+    public var onJoinNotice: ((_ notice: JoinNotice) -> Void)?
+
+    /// The joins waiting on an answer — see `PendingJoins`, where the rules live and can be tested.
+    private var pendingJoins = PendingJoins()
+
     /// Last-known setting values, so behavior is right from the first frame rather than from
     /// whenever the bootstrap fetch lands — see `SettingsCache`.
     private let settingsCache: SettingsCache
@@ -208,6 +219,9 @@ public final class ChatViewModel {
         // cancels the socket without firing its handler, and a 401 arrives as `.unauthorized` —
         // so the abandon that path does would never run here.
         unsent.abandonAll()
+        // Joins too: a pending one names a channel the next account never asked for, and its timer
+        // would otherwise toast "No response" over the sign-in screen (#57).
+        pendingJoins.removeAll()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
@@ -518,21 +532,11 @@ public final class ChatViewModel {
     }
 
     /// What the UI should do after a line of input — almost always nothing, but `/msg` and
-    /// `/query` ask the composer's owner to switch to the DM they opened, and `/join` asks
-    /// it to switch once the channel actually exists.
+    /// `/query` ask the composer's owner to switch to the DM they opened. `/join` asks nothing
+    /// of the screen: it goes through `requestJoin`, which opens the channel once we're in it.
     public enum SendOutcome: Equatable, Sendable {
         case none
         case activate(BufferKey)
-        /// `/join` was sent. Switch to this buffer **once we're in it**, not now.
-        ///
-        /// Deliberately not `activate`: a join is a request the server can refuse (no such
-        /// channel, +i, banned, or a 470 forward to a different name), and only
-        /// `channel-joined` says it landed (§9.1). Switching immediately would put the user on
-        /// a screen for a channel they may never be in — for a new one, a loading spinner that
-        /// never resolves. So the UI waits for `joined` and navigates then; a refused join
-        /// simply never fires, leaving the user where they typed. Its reason reaches only the
-        /// network's server log for now (#57).
-        case awaitJoin(BufferKey)
         /// `/whois` — open this person's profile. Carries the network because a profile is
         /// about a person *on a connection*, and the buffer the command was typed in is the
         /// only thing that knows which one.
@@ -648,9 +652,11 @@ public final class ChatViewModel {
                 // same as every other network-scoped effect there.
                 if let networkId { outcome = .showProfile(networkId: networkId, nick: who) }
             case .join(let channel, let joinKey):
+                // The one join path: it opens the channel once we're in it, and says why when we
+                // aren't (#57). Typed in a buffer on that network, so opening it is what `/join`
+                // means.
                 if let networkId {
-                    client.joinChannel(networkId: networkId, channel: channel, key: joinKey)
-                    outcome = .awaitJoin(BufferKey(networkId: networkId, target: channel))
+                    requestJoin(networkId: networkId, channel: channel, key: joinKey, opens: true)
                 }
             case .part(let channel, let reason):
                 client.part(networkId: networkId, channel: channel, reason: reason)
@@ -940,10 +946,68 @@ public final class ChatViewModel {
         await client.updateSettings(changes)
     }
 
-    public func joinChannel(networkId: Int, channel: String) {
+    /// Join a channel: the one path every join takes — the composer's `/join`, the Join Channel
+    /// sheet, a channel on someone's profile, a parted row's Join (#57).
+    ///
+    /// A join is a request the server can refuse, forward, or never answer, so nothing moves until
+    /// it does. `channel-joined` opens the channel when `opens` asked for that. A refusal, or no
+    /// answer within `PendingJoins.timeout`, comes back as a `JoinNotice`. A 470 forward's part for
+    /// the asked-for name is dropped quietly, the forwarded channel arriving as its own row. A
+    /// channel we're already in opens at once.
+    ///
+    /// ⚠ Not sent unless this device, this app's socket and the network are all connected: the
+    /// server drops a JOIN for a network that's down without a word, so the user hears it here.
+    public func requestJoin(networkId: Int, channel: String, key joinKey: String? = nil, opens: Bool) {
         let name = channel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
-        client.joinChannel(networkId: networkId, channel: name)
+        // A list (`/join #a,#b`) is one JOIN as typed, but each channel in it is answered, and so
+        // tracked, on its own. Only the first opens: there's one screen to land on.
+        let keys = PendingJoins.channels(in: name).map { BufferKey(networkId: networkId, target: $0) }
+        guard let first = keys.first else { return }
+        let toJoin = keys.filter { store.state.buffers[$0.id]?.joined != true }
+        // Already in the first: it opens now, before anything is asked of the connection. A joined
+        // row outlives a socket drop, and opening it needs nothing sent.
+        if opens, let row = store.state.buffers[first.id], row.joined {
+            onJoinOpened?(row.key)
+        }
+        // ⚠ All three, not just the network's row. After a drop `connection` reads `.reconnecting`
+        // while the network row still says `.connected`, and the client keeps the closed socket
+        // until it reconnects — so a send there "succeeds" and nothing ever answers.
+        let network = store.state.networks[networkId]
+        let connected = store.state.reachable && store.state.connection == .connected
+            && network?.state == .connected
+        guard connected, client.joinChannel(networkId: networkId, channel: name, key: joinKey) else {
+            // Nothing to say when every channel was already open: that was `/join` for a channel
+            // you're in, and it opened.
+            if !toJoin.isEmpty {
+                onJoinNotice?(.notConnected(channel: name, network: network?.displayName ?? "the network"))
+            }
+            return
+        }
+        // Sent for channels we're already in too, because `/cycle` joins right behind its own part
+        // while the row still reads joined. That rejoin isn't tracked: its own part would read as
+        // a forward. A refused one shows as the parted row it leaves.
+        for (index, key) in keys.enumerated() where toJoin.contains(key) {
+            pendingJoins.request(key, opens: opens && index == 0, now: Date())
+        }
+        guard !toJoin.isEmpty else { return }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(PendingJoins.timeout))
+            guard let self else { return }
+            for outcome in self.pendingJoins.expire(now: Date()) { self.settle(outcome) }
+        }
+    }
+
+    /// Act on what became of a join this device asked for.
+    private func settle(_ outcome: PendingJoins.Outcome) {
+        switch outcome {
+        case .joined(let key, let opens):
+            // The stored row's key, so the screen that opens is the one the server named.
+            if opens { onJoinOpened?(store.state.buffer(for: key).key) }
+        case .refused(let key, let reason):
+            onJoinNotice?(.refused(channel: key.target, reason: reason))
+        case .timedOut(let key):
+            onJoinNotice?(.noResponse(channel: key.target))
+        }
     }
 
     /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
@@ -1280,8 +1344,26 @@ public final class ChatViewModel {
             // losing a line they can see was never delivered. Duplicate-in-public is the worse
             // one, and it is the call the web makes too.
             unsent.abandonAll()
+            // …and no join sent down that socket will be answered either. Dropped quietly: the
+            // banner already names the outage, and a "No response" for each would only pile up
+            // behind it (#57).
+            pendingJoins.removeAll()
             store.apply(frame)
             onSocketDropped()
+        case .channelJoined(let networkId, let target):
+            // Applied first, so the row the user is taken to is the one this frame made.
+            store.apply(frame)
+            if let outcome = pendingJoins.joined(BufferKey(networkId: networkId, target: target)) {
+                settle(outcome)
+            }
+        case .joinError(let networkId, let target, let reason):
+            store.apply(frame)
+            let key = BufferKey(networkId: networkId, target: target)
+            if let outcome = pendingJoins.refused(key, reason: reason) { settle(outcome) }
+        case .channelParted(let networkId, let target):
+            // A 470 forward parts the name we asked for: the join was answered, under another name.
+            store.apply(frame)
+            pendingJoins.parted(BufferKey(networkId: networkId, target: target))
         case .history(let networkId, let target, _, let mode, _, _, _):
             // The page in flight is done — clear the set that requested this mode so the next
             // scroll can page again. Only `before` arms `loadingOlder` and only `after` arms
@@ -1456,6 +1538,9 @@ public final class ChatViewModel {
         // cancels the socket without firing its handler, and a 401 arrives as `.unauthorized` —
         // so the abandon that path does would never run here.
         unsent.abandonAll()
+        // Joins too: a pending one names a channel the next account never asked for, and its timer
+        // would otherwise toast "No response" over the sign-in screen (#57).
+        pendingJoins.removeAll()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()

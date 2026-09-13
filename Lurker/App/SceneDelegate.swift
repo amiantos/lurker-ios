@@ -66,6 +66,37 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
         }
 
+        // A join this device asked for (#57). Landing is the same move as a notification tap:
+        // anything presented comes down, then the buffer opens.
+        viewModel.onJoinOpened = { [weak self] key in
+            guard let self, let navigation, viewModel.session == .loggedIn else { return }
+            // Animated only when nothing was up. Sliding a screen in while a sheet is still on its
+            // way down is the animation-fighting-itself the join sheet already avoids.
+            let animated = presentedSheet() == nil
+            dismissPresented()
+            navigation.showBuffer(
+                viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: animated
+            )
+        }
+        // …and one that didn't happen says why, over whatever is on screen: the sheet on top if
+        // there is one, else above a chat screen's composer (which the keyboard carries), else the
+        // buffer list.
+        viewModel.onJoinNotice = { [weak self] notice in
+            // `self.window`, spelled out: this closure sits inside `scene(_:willConnectTo:)`, whose
+            // local `window` a bare name would capture — strongly, from a closure the view model
+            // holds, while the window's screens hold the view model.
+            guard let self, let root = self.window?.rootViewController else { return }
+            let sheet = presentedSheet()
+            let chat = sheet == nil ? ChatViewController.activeChat() : nil
+            ToastView.show(
+                notice.message,
+                symbol: "exclamationmark.circle",
+                over: sheet?.view ?? chat?.view ?? root.view,
+                above: chat?.noticeAnchor,
+                hold: ToastView.readingHoldSeconds
+            )
+        }
+
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
         // trusts a send — `send` returns true over a dead socket — so the legacy list
@@ -347,6 +378,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         } else {
             navigation?.dismiss(animated: false)
         }
+    }
+
+    /// The sheet on top, wherever it was presented from: `dismissPresented`'s counterpart, for
+    /// putting something over it (a join's notice, #57). On iPad a column presents its own sheets,
+    /// which the root's `presentedViewController` never shows, so a toast hosted under one
+    /// couldn't be read.
+    private func presentedSheet() -> UIViewController? {
+        var sheet = split?.topPresented ?? window?.rootViewController?.presentedViewController
+        while let next = sheet?.presentedViewController { sheet = next }
+        return sheet
     }
 
     /// Where a launch lands. The store is empty at this point — the socket hasn't opened,

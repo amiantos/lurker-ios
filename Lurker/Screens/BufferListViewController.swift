@@ -1146,10 +1146,10 @@ final class BufferListViewController: UICollectionViewController {
         present(navigation, animated: true)
     }
 
-    /// Joining is also switching: you asked for a channel, so land in it. The buffer won't
-    /// exist yet — its row arrives with the server's `channel-joined` — so hand over a
-    /// synthesized one exactly as a notification tap does, and let the chat screen's
-    /// `hydrateIfNeeded` fill it in when the join completes.
+    /// Joining is also switching: you asked for a channel, so land in it — once the server says
+    /// you're in (#57). Nothing is pushed before then. A join can be refused, and a screen for a
+    /// channel you never got into had nothing to show and no way to learn it never would.
+    /// `requestJoin` opens the channel when `channel-joined` lands, and says why when it doesn't.
     private func join(network: Network, channel typed: String) {
         // A bare sigil is not a name: `ensurePrefix("#")` would send a JOIN for "#".
         guard ChannelName.namesAChannel(typed) else { return }
@@ -1158,11 +1158,7 @@ final class BufferListViewController: UICollectionViewController {
         // then gets a sigil prepended to a leading space: `JOIN "# #swift"`. Latent only
         // because the join sheet happens to trim first.
         let channel = ChannelName.ensurePrefix(typed.trimmingCharacters(in: .whitespacesAndNewlines))
-        viewModel.joinChannel(networkId: network.id, channel: channel)
-        // `buffer(for:)` rather than a hand-built one: the kind must come from the one
-        // classifier (`BufferKind.of`, the full sigil set) — hardcoding `.channel` here
-        // would hand the chat screen a row the store's own synthesis could disagree with.
-        onSelect?(state.buffer(for: BufferKey(networkId: network.id, target: channel)))
+        viewModel.requestJoin(networkId: network.id, channel: channel, opens: true)
     }
 
     // MARK: - Sections
@@ -1590,15 +1586,15 @@ final class BufferListViewController: UICollectionViewController {
             // A parted channel keeps its row and its history, and getting back in is the usual
             // reason to long-press one, so Join leads. Disabled while the network is down: a
             // JOIN needs a live connection, and the section header already says why. No
-            // navigation — the row lighting up is the answer, and a refusal prints where it
-            // always does.
+            // navigation — the row lighting up is the answer — and a refusal says why in a toast
+            // (#57).
             if parted {
                 children.append(UIMenu(options: .displayInline, children: [
                     UIAction(
                         title: "Join Channel",
                         image: UIImage(systemName: "number"),
                         attributes: canJoin ? [] : .disabled
-                    ) { _ in self?.viewModel.joinChannel(networkId: networkId, channel: target) },
+                    ) { _ in self?.viewModel.requestJoin(networkId: networkId, channel: target, opens: false) },
                 ]))
             }
             children.append(

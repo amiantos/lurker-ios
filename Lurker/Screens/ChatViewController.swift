@@ -199,9 +199,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// behind made the screen ask twice on the same burst and take two full backlogs for
     /// it.
     private var hydrateRequestedAtGeneration: Int?
-    /// The in-flight `/join` waiting for its channel to materialize (see `awaitJoin`).
-    /// At most one: a second `/join` supersedes the first rather than racing it.
-    private var pendingJoinCancellable: AnyCancellable?
     /// Whether the store has ever held a real row for this buffer. Latches true and never
     /// clears — see `handleBufferDisappeared`, which uses it to tell "the row hasn't arrived
     /// yet" from "the row was taken away".
@@ -2104,8 +2101,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         restoreRefusedSend()
         // `/msg`/`/query` opened a DM and asked us to switch to it.
         if case .activate(let key) = outcome { navigate(to: key) }
-        // `/join` asked us to switch once the channel is real — see `awaitJoin`.
-        if case .awaitJoin(let key) = outcome { awaitJoin(key) }
         // `/whois` — open the profile rather than leaving the numerics in the server buffer as
         // the only answer.
         if case .showProfile(let networkId, let who) = outcome {
@@ -2118,37 +2113,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Switch to a channel we just asked to join, the moment we're in it.
-    ///
-    /// `joined` is set by `channel-joined` alone — the only thing that proves we're actually in
-    /// the channel. Waiting for it rather than navigating straight away is what keeps a refused
-    /// join (no such channel, +i, banned, a 470 forward to another name) from stranding the user
-    /// on a screen that never fills: nothing fires, and they stay where they typed. The refusal's
-    /// reason reaches only the network's server log for now (#57).
-    ///
-    /// ⚠ `joined`, not the row. A channel you parted keeps its row, so waiting for a row sent a
-    /// `/join` for it straight there before the server had answered — refused or not.
-    ///
-    /// `statePublisher` replays current state on subscribe, so joining a channel you're already
-    /// in switches to it immediately — which is what typing `/join` for it means.
-    ///
-    /// The timeout only tidies up. It exists so a join that never lands doesn't leave a
-    /// subscription that could fire much later — switching the user somewhere unasked
-    /// because they happened to join that channel from another client ten minutes on.
-    private func awaitJoin(_ key: BufferKey) {
-        pendingJoinCancellable?.cancel()
-        pendingJoinCancellable = viewModel.statePublisher
-            .compactMap { $0.buffers[key.id] }
-            .first(where: \.joined)
-            .timeout(.seconds(15), scheduler: DispatchQueue.main)
-            .sink(
-                receiveCompletion: { [weak self] _ in self?.pendingJoinCancellable = nil },
-                receiveValue: { [weak self] joined in
-                    self?.pendingJoinCancellable = nil
-                    self?.navigate(to: joined.key)
-                }
-            )
-    }
+    /// Where a passing notice sits on this screen: just above the composer, which the keyboard
+    /// carries up, so a join's refusal (#57) isn't drawn behind either. The jump pill and the
+    /// suggestions ride the same edge.
+    var noticeAnchor: NSLayoutYAxisAnchor { composer.topAnchor }
 
     /// Switch to another buffer — what `/msg` and `/query` ask for once the DM is open. The
     /// target may not be in state yet (a brand-new DM whose `open-buffer` reply is still in
@@ -2433,7 +2401,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// ⚠ The window's root is a split view on iPad, so the navigation-controller cast fails
     /// for every window — silently: an upload's link stops reaching the composer that asked
     /// for it and lands on the clipboard behind an alert instead.
-    private static func activeChat() -> ChatViewController? {
+    static func activeChat() -> ChatViewController? {
         let root = keyWindow()?.rootViewController
         if let split = root as? BufferSplitViewController { return split.currentChat }
         return (root as? UINavigationController)?.topViewController as? ChatViewController
