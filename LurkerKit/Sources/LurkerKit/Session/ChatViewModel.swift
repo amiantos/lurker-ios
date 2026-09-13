@@ -356,10 +356,10 @@ public final class ChatViewModel {
     /// screen was built is a number that may since have moved.
     public var uploadCapBytes: Int { Uploads.compressionTarget(advertised: state.maxUploadBytes) }
 
-    /// Which `/api/config` read is the current one. Every reconnect attempt starts one, so several
-    /// can be out at once, and an older answer landing last must not undo a newer one — the guard
-    /// `LurkerClient.rosterGeneration` keeps over the roster, for the same reason.
-    private var configGeneration = 0
+    /// Which `/api/config` answer is the current one. Every reconnect attempt starts a read, so
+    /// several can be out at once, and an older answer landing last must not undo a newer one. See
+    /// `NewestAnswer` for why a newer read that fails doesn't count.
+    private var configReads = NewestAnswer()
 
     /// Read `/api/config`: the instance's feature flags, and whether this build can talk to the
     /// server at all (#17).
@@ -381,10 +381,8 @@ public final class ChatViewModel {
     /// reconnect is exactly when to ask. A failed read keeps the last answer: one 502 must not
     /// switch previews off, or clear a refusal.
     private func loadConfig() async {
-        configGeneration += 1
-        let generation = configGeneration
-        guard let config = await client.fetchConfig(), generation == configGeneration,
-              session == .loggedIn
+        let read = configReads.start()
+        guard let config = await client.fetchConfig(), session == .loggedIn, configReads.accept(read)
         else { return }
         let wasEnabled = features.linkPreviews
         features = config.features
