@@ -20,8 +20,9 @@ extension StatusLight {
     /// state meaningless:
     ///  1. **No network path at all** → red. Nothing else can be true, and it's the one
     ///     failure the user can act on (turn on wifi).
-    ///  2. **The Lurker socket** → amber while connecting/reconnecting. Note there's no
-    ///     red here: a dropped socket is always retrying, so it's amber, not broken.
+    ///  2. **The Lurker socket** → amber while connecting/reconnecting: a dropped socket is
+    ///     always retrying, so it's amber, not broken. The one red is a server that can't
+    ///     take this build (#17), which retrying won't fix.
     ///  3. **The IRC network** → green connected, amber connecting/reconnecting, red
     ///     disconnected. Red means the server gave up and isn't coming back on its own.
     ///
@@ -40,6 +41,7 @@ extension StatusLight {
         guard reachable else { return .bad }
         switch connection {
         case .connecting, .reconnecting: return .warn
+        case .incompatible: return .bad
         case .connected: break
         }
         guard let network else { return .good }

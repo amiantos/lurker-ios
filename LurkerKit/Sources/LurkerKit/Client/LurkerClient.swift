@@ -322,6 +322,14 @@ final class LurkerClient {
         _ = await fetchNetworks(reportingUnauthorized: false)
     }
 
+    /// The token check a reconnect makes — the roster read, reporting a 401 — without the socket.
+    ///
+    /// For a server this build can't talk to (#17), where nothing else will notice a revoke: the
+    /// upgrade answers 426 before it reads the token, and `/api/config` never reads it.
+    func checkToken() async {
+        _ = await fetchNetworks()
+    }
+
     /// `GET /api/networks`, read as editable configuration rather than as the roster.
     ///
     /// Nil means no answer — unauthenticated, offline, unreadable — never "no networks",
@@ -517,7 +525,7 @@ final class LurkerClient {
     /// A native client CAN set headers on the WS upgrade, so the session token rides as a
     /// bearer where a browser would need a cookie. `since > 0` resumes from that event id.
     private func openSocket(since: Int = 0) {
-        guard let token, let url = URL(string: Self.wsBase(baseURL) + "/ws" + Self.sinceQuery(since)) else { return }
+        guard let token, let url = Self.socketURL(baseURL: baseURL, since: since) else { return }
         // Replace any prior socket so a reconnect can't leave two live; callbacks from the
         // old one are ignored via the `task === socket` guard below.
         socket?.cancel(with: .goingAway, reason: nil)
@@ -567,6 +575,9 @@ final class LurkerClient {
             // DM to the phone in their hand.
             send(["type": "presence", "visible": presenceVisible])
             onFrame(.socketOpen)
+            // Whoever heard that may have closed this socket already (a server this build can't
+            // talk to, #17), and nothing read off it may reach the store.
+            guard task === socket else { return }
         }
         if let text {
             // Upload progress is a reply, not state: it answers about one thing this device
@@ -590,10 +601,19 @@ final class LurkerClient {
 
     private func handleClose(code: Int?, closeCode: Int, reason: String, from task: URLSessionWebSocketTask) {
         guard task === socket else { return }
-        onFrame(
-            Self.closeEndsSession(status: code, closeCode: closeCode)
-                ? .unauthorized : .socketClosed(reason: reason, code: code)
-        )
+        onFrame(Self.closeFrame(status: code, closeCode: closeCode, reason: reason))
+    }
+
+    /// What a socket's ending tells the owner:
+    ///  - a 426 refused the upgrade over the `?v=` this build announced, so the server no longer
+    ///    serves it (#17) and every reconnect would be refused the same way. Measured: a refused
+    ///    upgrade's 426 reads through `task.response` exactly as a 401 does;
+    ///  - a dead token (`closeEndsSession`) ends the session;
+    ///  - anything else is a drop, and the owner reconnects.
+    nonisolated static func closeFrame(status: Int?, closeCode: Int, reason: String) -> ServerFrame {
+        if status == 426 { return .incompatible(.appTooOld) }
+        return closeEndsSession(status: status, closeCode: closeCode)
+            ? .unauthorized : .socketClosed(reason: reason, code: status)
     }
 
     /// Whether a socket ended because the token is dead rather than because the connection
@@ -1334,6 +1354,17 @@ final class LurkerClient {
         hasEmittedOpen = false
     }
 
+    /// Drop the socket but keep the token, and report it like any other closure. For a server
+    /// this build can't talk to (#17): the session is still good, and connects again once one
+    /// side is updated.
+    func dropSocket() {
+        guard let socket else { return }
+        socket.cancel(with: .goingAway, reason: nil)
+        self.socket = nil
+        hasEmittedOpen = false
+        onFrame(.socketClosed(reason: nil, code: nil))
+    }
+
     /// The deliberate sign-out. Tears the local session down *immediately* (drops the
     /// socket + token) and fires the server-side revoke in the background, so sign-out
     /// feels instant even when the server is slow or unreachable. The revoke uses the
@@ -1511,23 +1542,29 @@ final class LurkerClient {
         }
     }
 
-    /// The instance's feature flags, or **nil if we didn't get an answer**.
+    /// The instance's config, or **nil if we didn't get an answer**.
     ///
     /// ⚠⚠ Optional deliberately. This used to collapse a transport error, a non-2xx, an
     /// unparseable body and a genuinely-off flag into the same all-off value — so one 502 or DNS
     /// hiccup on the single call at cold launch silently disabled link previews for the whole
     /// app session on an instance that has them on, with nothing to notice and no retry. A
     /// default is not a statement: the caller needs to tell "the server says no" from "the
-    /// server didn't say", because only one of those is worth latching.
+    /// server didn't say", because only one of those is worth acting on.
     ///
     /// ⚠ Short timeout, against the session's 60s default. Nothing waits on this to render, and
     /// a flag that decides whether to DECORATE messages must never be in a position to delay
     /// getting them.
-    func fetchFeatures() async -> InstanceFeatures? {
-        guard let request = Self.configRequest(baseURL: baseURL, token: token) else { return nil }
+    ///
+    /// ⚠ Nil too for an answer to a session that has since ended. The next one may be on another
+    /// server, and this reply says nothing about it — the rule `reportUnauthorized(sentWith:)`
+    /// keeps for a late 401.
+    func fetchConfig() async -> InstanceConfig? {
+        let sentWith = token
+        guard let request = Self.configRequest(baseURL: baseURL, token: sentWith) else { return nil }
         do {
             let (data, response) = try await session.data(for: request)
-            return Self.parseFeatures(data, code: (response as? HTTPURLResponse)?.statusCode ?? 0)
+            guard sentWith == token else { return nil }
+            return Self.parseConfig(data, code: (response as? HTTPURLResponse)?.statusCode ?? 0)
         } catch {
             return nil
         }
@@ -1560,20 +1597,25 @@ final class LurkerClient {
         return request
     }
 
-    /// `/api/config` → flags, or **nil for "that wasn't an answer"**.
+    /// `/api/config` → the instance's config, or **nil for "that wasn't an answer"**.
     ///
-    /// ⚠ An absent `features` object IS an answer: an older instance that doesn't have the
-    /// feature. Only a failure to obtain a well-formed response is unknown — and the difference
-    /// decides whether the caller latches the result or retries it on the next reconnect.
+    /// ⚠ An absent field IS an answer: an older instance without the feature, or without the
+    /// version fields (#17), which states no version rather than version 0. Only a failure to
+    /// obtain a well-formed response is unknown — and the difference decides whether the caller
+    /// acts on the result or keeps what it had.
     ///
     /// `nonisolated static` per `mediaRequest`'s note: this is the half worth asserting and it
     /// is unreachable through the awaiting method without a live server.
-    nonisolated static func parseFeatures(_ data: Data, code: Int) -> InstanceFeatures? {
+    nonisolated static func parseConfig(_ data: Data, code: Int) -> InstanceConfig? {
         guard (200..<300).contains(code),
             let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         let features = body["features"] as? [String: Any]
-        return InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true)
+        return InstanceConfig(
+            features: InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true),
+            protocolVersion: body.intOrNull("protocolVersion"),
+            minProtocolVersion: body.intOrNull("minProtocolVersion")
+        )
     }
 
     // MARK: - Link previews
@@ -1802,13 +1844,20 @@ final class LurkerClient {
 
     // MARK: - Helpers
 
-    private static func sinceQuery(_ since: Int) -> String {
-        since > 0 ? "?since=\(since)" : ""
+    /// The socket's address. It always announces the protocol version this build speaks (#17):
+    /// the server treats a missing `?v` as current, so a build that left it off could never be
+    /// told it's too old. `since > 0` resumes from that event id.
+    ///
+    /// `nonisolated static` so the address can be asserted without opening a socket.
+    nonisolated static func socketURL(baseURL: String, since: Int) -> URL? {
+        var address = wsBase(baseURL) + "/ws?v=\(ProtocolVersion.spoken)"
+        if since > 0 { address += "&since=\(since)" }
+        return URL(string: address)
     }
 
     /// http → ws, https → wss. Replacing only the leading `http` turns the trailing `s`
     /// of `https` into `wss` for free.
-    private static func wsBase(_ base: String) -> String {
+    nonisolated private static func wsBase(_ base: String) -> String {
         base.replacingOccurrences(of: "^http", with: "ws", options: .regularExpression)
     }
 

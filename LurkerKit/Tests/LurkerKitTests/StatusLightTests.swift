@@ -33,6 +33,16 @@ final class StatusLightTests: XCTestCase {
         )
     }
 
+    func testAServerThatCantTakeThisBuildIsRed() {
+        // The one socket state that isn't retrying, so amber would promise a fix that isn't coming.
+        XCTAssertEqual(
+            StatusLight.of(reachable: true, connection: .incompatible(.appTooOld), network: .connected), .bad
+        )
+        XCTAssertEqual(
+            StatusLight.of(reachable: true, connection: .incompatible(.serverTooOld), network: nil), .bad
+        )
+    }
+
     // MARK: - The system buffer
 
     func testTheSystemBufferIsGreenOnceTheSocketIsUp() {

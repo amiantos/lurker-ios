@@ -1103,6 +1103,34 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.connection, .connecting)
     }
 
+    /// #17: the close that follows a refusal must not read as a drop, or the banner would say
+    /// "Reconnecting…" over a server that will never take this build.
+    func testASocketClosedOverAnIncompatibleServerStaysIncompatible() {
+        let store = LurkerStore()
+        store.apply(.socketOpen)
+        store.setIncompatible(.appTooOld)
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertEqual(store.state.connection, .incompatible(.appTooOld))
+    }
+
+    func testAServerThatTakesThisBuildAgainStartsAFreshConnect() {
+        let store = LurkerStore()
+        store.setIncompatible(.serverTooOld)
+        store.clearIncompatible()
+        XCTAssertEqual(store.state.connection, .connecting)
+        // Only an incompatible socket is touched.
+        store.apply(.socketOpen)
+        store.clearIncompatible()
+        XCTAssertEqual(store.state.connection, .connected)
+    }
+
+    func testSignOutForgetsAnIncompatibleServer() {
+        let store = LurkerStore()
+        store.setIncompatible(.appTooOld)
+        store.reset()
+        XCTAssertEqual(store.state.connection, .connecting, "the next sign-in may be another server")
+    }
+
     func testMaxEventIdTracksTheHighestPersistedIdButIgnoresTheSystemBuffer() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(10, "a"), msg(7, "b")]))

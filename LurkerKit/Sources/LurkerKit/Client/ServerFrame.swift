@@ -337,6 +337,10 @@ enum ServerFrame: Equatable, Sendable {
     /// from another device. The owner drops to sign-in rather than a dead-end (#3).
     case unauthorized
 
+    /// The WS upgrade was refused with 426: the server no longer serves the protocol version
+    /// this build announced (#17). The owner stops reconnecting rather than retrying forever.
+    case incompatible(Incompatibility)
+
     /// Socket opened. Reconnect/resume is #4.
     case socketOpen
 
