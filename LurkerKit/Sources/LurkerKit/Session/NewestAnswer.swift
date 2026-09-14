@@ -24,4 +24,11 @@ struct NewestAnswer {
         landed = ticket
         return true
     }
+
+    /// Refuse every read already out, as if a newer answer had just landed. For an answer that came
+    /// another way: a 426 on the socket is newer than any `/api/config` read started before it, and
+    /// one of those saying "compatible" must not clear the refusal (#17).
+    mutating func supersedeInFlight() {
+        landed = started
+    }
 }

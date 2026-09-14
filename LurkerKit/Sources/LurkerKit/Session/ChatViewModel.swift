@@ -1357,6 +1357,8 @@ public final class ChatViewModel {
         case .unauthorized:
             onAuthLost()
         case .incompatible(let incompatibility):
+            // A 426 is newer than any `/api/config` read already out, so none of those may clear it.
+            configReads.supersedeInFlight()
             onIncompatible(incompatibility)
         case .socketOpen:
             // A socket that opens after the server was found not to take this build (its config

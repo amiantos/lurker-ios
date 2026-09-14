@@ -24,6 +24,17 @@ final class NewestAnswerTests: XCTestCase {
         XCTAssertTrue(reads.accept(older))
     }
 
+    /// Copilot on #171: a compatible `/api/config` answer to a read sent before a 426 cleared the
+    /// refusal the 426 had just set, and the app tried the socket again.
+    func testAnAnswerFromElsewhereRefusesReadsAlreadyOut() {
+        var reads = NewestAnswer()
+        let before = reads.start()
+        reads.supersedeInFlight()
+        XCTAssertFalse(reads.accept(before))
+        let after = reads.start()
+        XCTAssertTrue(reads.accept(after), "a read started afterwards can still land")
+    }
+
     func testAnswersThatLandInOrderAllApply() {
         var reads = NewestAnswer()
         let first = reads.start()
