@@ -105,6 +105,24 @@ public struct ChatState: Sendable {
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
     /// which layers the network's own connection state on top.
     public var peerPresence: [Int: [String: PresenceState]] = [:]
+    /// Peers with a live DCC chat session, keyed `networkId → display nicks` (lurker#270). Read
+    /// through `isDccChatLive`.
+    ///
+    /// ⚠ Independent of the network's state, which is the reverse of a DM: a DCC chat is a
+    /// socket the server holds straight to the peer, so it keeps working while the IRC link is
+    /// down — and a snapshot lists a disconnected network's chats for that reason. Seeded by
+    /// every snapshot, patched by `dcc-chat-state`.
+    public var dccChats: [Int: [String]] = [:]
+    /// DCC chat offers made to us and not yet answered, oldest first (lurker#270).
+    ///
+    /// Retired by `dcc-chat-offer-closed`, and reconciled against every snapshot's
+    /// `dccChatOffers` too, because that event is exactly the kind a phone misses: its socket
+    /// sleeps in the background. An offer that is gone but still here would leave the app asking
+    /// about it, and accepting then sends the peer a FRESH offer instead — a different act from
+    /// the one the question named.
+    public var dccChatOffers: [DccChatOffer] = []
+    /// The last id minted for a `DccChatOffer` — see its `id`.
+    var lastDccChatOfferId = 0
     /// Pinned buffer targets per network, in the user's own order (`pins-changed`).
     ///
     /// A list the user arranged on the web and this app only renders — so it's held verbatim
@@ -489,6 +507,17 @@ public struct ChatState: Sendable {
     public func rowPresence(networkId: Int, nick: String) -> FriendPresence {
         guard reachable, connection == .connected, snapshotSinceOpen else { return .unknown }
         return presence(networkId: networkId, nick: nick)
+    }
+
+    /// Whether a DCC chat buffer has a live session behind it — whether a line typed there will
+    /// arrive (lurker#270). False for anything that isn't a `=nick` buffer.
+    ///
+    /// The DCC counterpart to `presence`, and deliberately blind to the network's state: the chat
+    /// keeps working while the IRC link is down, and a dead chat can't be resumed, only replaced.
+    public func isDccChatLive(_ key: BufferKey) -> Bool {
+        guard let networkId = key.networkId, DccChat.isTarget(key.target) else { return false }
+        let peer = DccChat.peer(key.target).lowercased()
+        return dccChats[networkId]?.contains { $0.lowercased() == peer } ?? false
     }
 
     /// The one spelling of a `(network, nick)` cache key, so `whois` and `whoisPending` can't
@@ -1048,6 +1077,27 @@ final class LurkerStore {
             var next = state
             next.networks[networkId] = network
             return next
+        case .dccChatOffer(let networkId, let nick, let passive):
+            // A fresh id even when this peer already had an offer waiting: they offered again,
+            // and that is a new question. The server replaces its record the same way.
+            var next = state
+            next.dccChatOffers.removeAll { $0.isFrom(nick, on: networkId) }
+            next.lastDccChatOfferId += 1
+            next.dccChatOffers.append(DccChatOffer(
+                id: next.lastDccChatOfferId, networkId: networkId, nick: nick, passive: passive
+            ))
+            return next
+        case .dccChatOfferClosed(let networkId, let nick):
+            var next = state
+            next.dccChatOffers.removeAll { $0.isFrom(nick, on: networkId) }
+            return next
+        case .dccChatState(let networkId, let nick, let live):
+            var next = state
+            var peers = next.dccChats[networkId] ?? []
+            peers.removeAll { $0.lowercased() == nick.lowercased() }
+            if live { peers.append(nick) }
+            next.dccChats[networkId] = peers.isEmpty ? nil : peers
+            return next
         case .typing(let networkId, let target, let nick, let activity, let userhost):
             return applyTyping(
                 state, networkId: networkId, target: target,
@@ -1269,6 +1319,31 @@ final class LurkerStore {
             nickNotesByNetwork[snapshot.id] = snapshot.nickNotes
         }
         next.nickNotes = NickNoteSet(byNetwork: nickNotesByNetwork)
+        // DCC chats (lurker#270) replace wholesale too: the snapshot lists every live session,
+        // a disconnected network's included, so a chat that ended while this device was away is
+        // gone here rather than left reading as live.
+        var dccChats: [Int: [String]] = [:]
+        for snapshot in networks where !snapshot.dccChats.isEmpty {
+            dccChats[snapshot.id] = snapshot.dccChats
+        }
+        next.dccChats = dccChats
+        // Offers reconcile rather than replace. One the snapshot still lists keeps the offer we
+        // hold, id and `passive` flag included, so a reconnect doesn't make it a new question;
+        // one we'd missed arrives new; one it doesn't list is over.
+        var offers: [DccChatOffer] = []
+        for snapshot in networks {
+            for nick in snapshot.dccChatOffers where !offers.contains(where: { $0.isFrom(nick, on: snapshot.id) }) {
+                if let held = next.dccChatOffers.first(where: { $0.isFrom(nick, on: snapshot.id) }) {
+                    offers.append(held)
+                } else {
+                    next.lastDccChatOfferId += 1
+                    offers.append(DccChatOffer(
+                        id: next.lastDccChatOfferId, networkId: snapshot.id, nick: nick, passive: false
+                    ))
+                }
+            }
+        }
+        next.dccChatOffers = offers
         for snapshot in networks {
             if var existing = next.networks[snapshot.id] {
                 existing.state = snapshot.state

@@ -589,6 +589,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // its raw envelope until the next line happens to land. (`===` is the right
                     // test — see `RelayBotSet`.)
                     && old.relayBots === new.relayBots
+                    // A DCC chat's session opens and ends with nothing else changing — the
+                    // light and the field both read it (lurker#270).
+                    && old.isDccChatLive(bufferKey) == new.isDccChatLive(bufferKey)
+                    && old.snapshotSinceOpen == new.snapshotSinceOpen
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -699,6 +703,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         switch buffer.kind {
         case .channel: candidates = (state.members[buffer.key.id] ?? []).map(\.nick)
         case .dm: candidates = [buffer.target]
+        // The peer, not the buffer name: `=bob` never appears in a line, bob does.
+        case .dcc: candidates = [DccChat.peer(buffer.target)]
         default: candidates = []
         }
         let names = ownNick.map { own in candidates.filter { $0.lowercased() != own } } ?? candidates
@@ -719,8 +725,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// snapshot materialized has no name until the REST roster lands (#136) — and until it
     /// does, the fallback below is what shows, rather than a placeholder posing as a name.
     /// The system buffer is the app's own command console, so it invites one.
+    ///
+    /// A DCC chat's transport is the chat itself, not the network — and when it has no session,
+    /// the field is the one place always in view to say so before a line is typed into nothing.
+    /// The web puts the same sentence in its status bar.
     private var composerPlaceholder: String {
         guard let networkId = buffer.networkId else { return "Type a command…" }
+        if buffer.kind == .dcc {
+            let state = viewModel.state
+            guard state.snapshotSinceOpen, !state.isDccChatLive(buffer.key) else { return "DCC Chat" }
+            return "Not connected — /dcc chat \(DccChat.peer(buffer.target))"
+        }
         return networks[networkId]?.name ?? "Message"
     }
 
@@ -1539,6 +1554,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .dm:
             return .init(symbol: "text.bubble", title: "No messages yet",
                          subtitle: "Say hello to \(buffer.target).")
+        case .dcc:
+            return .init(symbol: "text.bubble", title: "No messages yet",
+                         subtitle: "A direct chat with \(DccChat.peer(buffer.target)).")
         case .server:
             return .init(symbol: "server.rack", title: "Nothing from the server yet")
         case .system:
@@ -1548,13 +1566,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     private func updateTitle(_ state: ChatState) {
-        pillStatus = StatusLight.of(
-            reachable: state.reachable,
-            connection: state.connection,
-            // A DM's light tracks its network, exactly like a channel's: real peer
-            // presence is 1.1 (see StatusLight.of).
-            network: buffer.networkId.flatMap { state.networks[$0]?.state }
-        )
+        pillStatus = buffer.kind == .dcc
+            // A DCC chat's light is its own session, never the network's (lurker#270) — see
+            // `ofDccChat`.
+            ? StatusLight.ofDccChat(
+                reachable: state.reachable,
+                connection: state.connection,
+                live: state.snapshotSinceOpen ? state.isDccChatLive(buffer.key) : nil
+            )
+            : StatusLight.of(
+                reachable: state.reachable,
+                connection: state.connection,
+                // A DM's light tracks its network, exactly like a channel's: real peer
+                // presence is 1.1 (see StatusLight.of).
+                network: buffer.networkId.flatMap { state.networks[$0]?.state }
+            )
         navigationPill?.refresh(from: self)
     }
 
@@ -1594,7 +1620,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// noise in the one place noise is already densest — the same call the web makes.
     private static func awayState(for state: ChatState, buffer: Buffer) -> AwayState? {
         switch buffer.kind {
-        case .channel, .dm:
+        case .channel, .dm, .dcc:
             return buffer.networkId.flatMap { state.networks[$0]?.away }
         case .server, .system:
             return nil

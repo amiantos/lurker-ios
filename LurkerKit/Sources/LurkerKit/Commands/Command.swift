@@ -14,7 +14,8 @@ import Foundation
 ///  - `/set` `/get` — web-only settings console; iOS settings are a native screen (#20).
 ///  - `/network` `/net` — network CRUD is REST-heavy and owns its own issue (#11).
 ///  - `/highlight` `/unhighlight` — highlight-rule management, still unported (#13).
-///  - `/dcc` `/e2e` `/list` `/jitsi` `/clear` — web-specific or unbuilt features.
+///  - `/e2e` `/list` `/jitsi` — web-specific or unbuilt features. `/dcc` carries its chat verbs
+///    only; DCC file transfers have no screen here, and say so.
 ///  - `/server` — adding a network is a form on this client (the networks screen), not a
 ///    command; intercepted with a note rather than left to the raw fallback.
 
@@ -114,6 +115,16 @@ public enum CommandEffect: Equatable, Sendable {
     /// Restart the issuing buffer's network — `/reconnect`. Idempotent server-side: it works
     /// whether the network is up, mid-retry, or stopped after a `/disconnect`.
     case reconnect
+    /// Open a DCC chat with `nick` on the issuing buffer's network — `/dcc chat` (lurker#270).
+    /// Also how an offer `nick` made us is ACCEPTED: the server answers a waiting offer rather
+    /// than making a counter-offer, the same doubling irssi's `/dcc chat` has.
+    ///
+    /// A REST verb (`POST /api/dcc/chat`), like the connection ones: the server answers once the
+    /// offer is away, and everything after — connected, refused, timed out — arrives as notices
+    /// in the chat's `=nick` buffer. `passive` asks the peer to listen instead of us.
+    case dccChat(nick: String, passive: Bool)
+    /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs — `/dcc close chat`.
+    case dccCloseChat(nick: String)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -247,6 +258,10 @@ public enum CommandRegistry {
                     args: [ArgSpec("target", .nick), ArgSpec("type", .word), ArgSpec("args", .text, optional: true, rest: true)]),
         CommandSpec(["ping"], .messaging, "CTCP PING a user",
                     args: [ArgSpec("nick", .nick)]),
+        // irssi's syntax exactly (lurker#270), type-first on close: `/dcc close chat bob`.
+        // `-passive` asks the peer to listen, for when this server can't be reached.
+        CommandSpec(["dcc"], .messaging, "Start a direct (DCC) chat, or end one",
+                    args: [ArgSpec("chat|close chat", .word), ArgSpec("nick", .nick)]),
 
         // Channels
         CommandSpec(["join"], .channels, "Join a channel",

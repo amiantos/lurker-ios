@@ -393,7 +393,9 @@ enum FrameParser {
                 relayBots: network.objects("relayBots").compactMap(parseRelayBot),
                 nickNotes: network.objects("nickNotes").compactMap(parseNickNote),
                 away: parseAwayState(network["away"]),
-                pinned: (network["pinned"] as? [String]) ?? []
+                pinned: (network["pinned"] as? [String]) ?? [],
+                dccChats: nonEmptyStrings(network["dccChats"]),
+                dccChatOffers: nonEmptyStrings(network["dccChatOffers"])
             )
         }
         return .snapshot(
@@ -401,6 +403,13 @@ enum FrameParser {
             globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule),
             maxUploadBytes: advertisedUploadCap(obj)
         )
+    }
+
+    /// A string array off the wire with anything that isn't a non-empty string dropped. An
+    /// empty peer names no one, and keying a live chat or an offer on it would be a row for
+    /// nobody.
+    private static func nonEmptyStrings(_ value: Any?) -> [String] {
+        ((value as? [Any]) ?? []).compactMap { ($0 as? String).flatMap { $0.isEmpty ? nil : $0 } }
     }
 
     /// The advertised upload cap off a frame that may carry one, or nil for "didn't say".
@@ -741,6 +750,26 @@ enum FrameParser {
         if obj.string("type") == "away-state" {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }
             return .awayState(networkId: networkId, away: parseAwayState(obj["away"]))
+        }
+        // The three DCC chat ephemerals (lurker#270) are network-scoped state in the same way:
+        // their `:server:<id>` target is a carrier, and the peer they are about rides in `from`.
+        // Lifted out here because below the guard they'd fold to `.other` and land in the server
+        // log as lines with no text — the offer as nothing, where it is a decision to make.
+        switch obj.string("type") {
+        case "dcc-chat-offer", "dcc-chat-offer-closed", "dcc-chat-state":
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let nick = obj.string("from")
+            if nick.isEmpty { return .ignored }
+            switch obj.string("type") {
+            case "dcc-chat-offer":
+                return .dccChatOffer(networkId: networkId, nick: nick, passive: obj.bool("passive"))
+            case "dcc-chat-offer-closed":
+                return .dccChatOfferClosed(networkId: networkId, nick: nick)
+            default:
+                return .dccChatState(networkId: networkId, nick: nick, live: obj.bool("live"))
+            }
+        default:
+            break
         }
         // `own-nick` is network-scoped state too, and carries no target at all — the visible
         // line is the ordinary `nick` event fanned out per channel, which arrives separately.

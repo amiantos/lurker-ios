@@ -39,10 +39,14 @@ final class UserProfileViewController: UITableViewController {
         peer: .unknown, whois: nil, isLookingUp: false, isSelf: false
     )
 
+    /// ⚠ `nick` may be a `=bob` DCC chat's buffer name — the info sheet's Whois row passes its
+    /// buffer's target, and `/whois =bob` passes what was typed. A chat is with bob, so this is
+    /// bob's profile: the title, the lookup, the note and Send Message all mean him. Peeled here,
+    /// the one door every profile comes through (lurker#270).
     init(viewModel: ChatViewModel, networkId: Int, nick: String) {
         self.viewModel = viewModel
         self.networkId = networkId
-        self.nick = nick
+        self.nick = DccChat.peer(nick)
         super.init(style: .insetGrouped)
     }
 

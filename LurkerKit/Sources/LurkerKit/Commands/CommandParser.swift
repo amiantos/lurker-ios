@@ -172,7 +172,7 @@ public enum CommandParser {
             return [.ctcp(target: rest[0], type: rest[1].uppercased(), args: ctcpArgs)]
         case "ping":
             // A bare /ping in a DM pings the peer.
-            let who = rest.first ?? (isNickTarget(target) ? target : "")
+            let who = rest.first ?? bufferPeer(target)
             guard !who.isEmpty else { return [.info("usage: /ping <nick>")] }
             return [.ctcp(target: who, type: "PING", args: "")]
 
@@ -243,7 +243,7 @@ public enum CommandParser {
             return [.raw(line: "NICK \(newNick)")]
         case "whois":
             // A bare `/whois` in a DM whoises the peer; in a channel it needs a nick.
-            let who = rest.first ?? (isNickTarget(target) ? target : "")
+            let who = rest.first ?? bufferPeer(target)
             guard !who.isEmpty else { return [.info("usage: /whois <nick>")] }
             return [.showProfile(nick: who)]
         case "invite":
@@ -315,6 +315,10 @@ public enum CommandParser {
             let line = argLine.isEmpty ? verb.uppercased() : "\(verb.uppercased()) \(argLine)"
             return [.raw(line: line)]
 
+        // DCC (lurker#270). Below the network gate: a chat rides one network's connection.
+        case "dcc":
+            return resolveDcc(rest: rest)
+
         // App
         case "relay":
             // Below the network gate above: a mark is per-(network, nick), so there is no
@@ -345,6 +349,82 @@ public enum CommandParser {
             // casing is preserved: `line.slice(1)`.
             return [.raw(line: fullBody.trimmingCharacters(in: .whitespaces))]
         }
+    }
+
+    // MARK: - DCC (lurker#270)
+
+    private static let dccUsage = "usage: /dcc chat [-passive] <nick> · /dcc close chat <nick>"
+
+    /// The irssi words for DCC file transfers, which this app has no screen for. The web's
+    /// transfer verbs and their aliases, so a habit carried over from either gets an answer
+    /// rather than a usage line that pretends the verb doesn't exist.
+    private static let dccTransferVerbs: Set<String> = [
+        "list", "ls", "accept", "ok", "yes", "get", "reject", "deny", "no", "cancel", "abort", "stop",
+    ]
+
+    /// `/dcc` — the chat verbs, in irssi's syntax exactly, as the web has them:
+    ///
+    ///     DCC CHAT [-passive] <nick>      irssi dcc-chat.c:442
+    ///     DCC CLOSE <type> <nick>         irssi dcc.c:490
+    ///
+    /// ⚠ Type-first on close is the reason this is strict. The web once took `/dcc close <nick>`
+    /// as a shorthand, which read irssi's `/dcc close chat bob` as closing a chat with a peer
+    /// named "chat" — and left the real one open. Accepting only irssi's shape leaves nothing to
+    /// guess.
+    ///
+    /// ⚠ `-passive` is opt-in, never a fallback: WeeChat and HexDroid turn a passive offer into
+    /// a silent dial to port 0, so the server refuses an active offer it can't make rather than
+    /// quietly degrading to one.
+    private static func resolveDcc(rest: [String]) -> [CommandEffect] {
+        let args = Array(rest.dropFirst())
+        switch rest.first?.lowercased() ?? "" {
+        case "chat":
+            let flags = args.filter { $0.hasPrefix("-") }
+            let positional = args.filter { !$0.hasPrefix("-") }
+            if let unknown = flags.first(where: { $0.lowercased() != "-passive" }) {
+                return [.info("/dcc: unknown option \"\(unknown)\". usage: /dcc chat [-passive] <nick>")]
+            }
+            // `/dcc chat close bob` isn't a command, and read literally it would OFFER a chat
+            // to someone called "close". Answer the intent instead.
+            if positional.count > 1 {
+                return [.info(positional[0].lowercased() == "close"
+                    ? "To end a chat: /dcc close chat <nick>"
+                    : "usage: /dcc chat [-passive] <nick>")]
+            }
+            guard let nick = dccPeer(positional.first) else {
+                return [.info("usage: /dcc chat [-passive] <nick>")]
+            }
+            return [.dccChat(nick: nick, passive: !flags.isEmpty)]
+        case "close":
+            switch args.first?.lowercased() ?? "" {
+            case "chat":
+                guard args.count == 2, let nick = dccPeer(args[1]) else {
+                    return [.info("usage: /dcc close chat <nick>")]
+                }
+                return [.dccCloseChat(nick: nick)]
+            case "send", "get":
+                return [.info("DCC file transfers aren't in the app yet.")]
+            default:
+                return [.info("usage: /dcc close chat <nick>")]
+            }
+        case let verb where dccTransferVerbs.contains(verb):
+            return [.info("DCC file transfers aren't in the app yet.")]
+        default:
+            return [.info(dccUsage)]
+        }
+    }
+
+    /// The peer a DCC verb names, or nil when the token can't be one.
+    ///
+    /// ⚠ A leading `=` is refused: that's a chat's BUFFER name, and `/dcc chat =bob` almost
+    /// certainly means bob — accepting it would offer a chat to someone literally called "=bob".
+    /// A channel is refused too, all four sigils: the offer is a CTCP to its target, so a channel
+    /// name would put it in front of everyone there.
+    private static func dccPeer(_ token: String?) -> String? {
+        guard let token = token?.trimmingCharacters(in: .whitespaces), !token.isEmpty,
+              !DccChat.isTarget(token), !ChannelName.isChannelTarget(token)
+        else { return nil }
+        return token
     }
 
     // MARK: - Ignore rules (#86)
@@ -662,5 +742,15 @@ public enum CommandParser {
     /// A DM/user target: has a network, isn't a channel, isn't a `:server:`/`:system:` pseudo.
     private static func isNickTarget(_ target: String) -> Bool {
         !ChannelName.isChannelTarget(target) && !target.hasPrefix(":")
+    }
+
+    /// The person a bare `/whois` or `/ping` means in this buffer, or "" for none: a DM's peer,
+    /// and a DCC chat's too.
+    ///
+    /// ⚠⚠ Peeled, never the buffer name. `=bob` isn't a nick, and both verbs put their argument
+    /// on the IRC wire — `/ping` as a CTCP, which no server-side `=` guard covers — so the raw
+    /// target here was a `PRIVMSG =bob` waiting to happen.
+    private static func bufferPeer(_ target: String) -> String {
+        isNickTarget(target) ? DccChat.peer(target) : ""
     }
 }

@@ -151,6 +151,7 @@ final class MemberListViewController: UITableViewController {
         switch buffer.kind {
         case .channel: return "No members yet."
         case .dm: return "Direct messages have no member list."
+        case .dcc: return "A DCC chat has no member list."
         case .server, .system: return "This buffer has no member list."
         }
     }

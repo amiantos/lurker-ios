@@ -1601,6 +1601,10 @@ final class BufferListViewController: UICollectionViewController {
         // the favorites-changed echo rebuilds this screen (favoriting also drops any pin
         // the web client held on the buffer: one placement per buffer).
         let isDm = buffer.kind == .dm
+        // A `=nick` DCC chat is neither: the server refuses to favorite one (a Friend gets a
+        // presence dot, and a DCC peer has no presence — the socket is the whole story), so the
+        // item would be a tap that does nothing (lurker#270).
+        let favoritable = buffer.kind != .dcc
         let target = buffer.target
         let isFavorite = state.isFavorite(buffer.key)
         let title = isFavorite
@@ -1622,7 +1626,7 @@ final class BufferListViewController: UICollectionViewController {
         //
         // A parted channel has nothing to leave, so for one it's Close.
         let parted = state.isParted(buffer.key)
-        let leaveTitle = isDm || parted ? "Close" : "Leave"
+        let leaveTitle = buffer.kind == .channel && !parted ? "Leave" : "Close"
         // Read as the menu opens, like the rest of it: a drop while the menu sits open leaves
         // Join enabled, and that JOIN goes nowhere — as a typed `/join` would.
         let canJoin = state.networks[networkId]?.state == .connected
@@ -1642,16 +1646,18 @@ final class BufferListViewController: UICollectionViewController {
                     ) { _ in self?.viewModel.requestJoin(networkId: networkId, channel: target, opens: false) },
                 ]))
             }
-            children.append(
-                UIAction(title: title, image: image, attributes: isFavorite && isDm ? .destructive : []) { _ in
-                    guard let self else { return }
-                    if isFavorite {
-                        self.viewModel.unfavoriteBuffer(networkId: networkId, target: target)
-                    } else {
-                        self.viewModel.favoriteBuffer(networkId: networkId, target: target)
+            if favoritable {
+                children.append(
+                    UIAction(title: title, image: image, attributes: isFavorite && isDm ? .destructive : []) { _ in
+                        guard let self else { return }
+                        if isFavorite {
+                            self.viewModel.unfavoriteBuffer(networkId: networkId, target: target)
+                        } else {
+                            self.viewModel.favoriteBuffer(networkId: networkId, target: target)
+                        }
                     }
-                }
-            )
+                )
+            }
             children.append(UIMenu(options: .displayInline, children: [
                 UIAction(
                     title: leaveTitle,

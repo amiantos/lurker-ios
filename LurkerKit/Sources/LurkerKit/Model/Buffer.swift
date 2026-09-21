@@ -212,7 +212,7 @@ public struct Buffer: Equatable, Sendable {
         switch kind {
         case .system: "Lurker" // the app's own buffer, not a target you'd recognize
         case .server: networkName ?? "Server"
-        case .channel, .dm: target
+        case .channel, .dm, .dcc: target
         }
     }
 }
@@ -239,6 +239,14 @@ public struct BufferKey: Equatable, Hashable, Sendable {
 public enum BufferKind: Sendable {
     case channel
     case dm
+    /// A `=nick` DCC chat (lurker#270): a conversation with one person, like a DM, but carried
+    /// on a direct socket rather than over IRC. See `DccChat`.
+    ///
+    /// Its own kind rather than a flavour of `.dm`, and the server draws the same line
+    /// (`kind: 'dcc'`). Classed as a DM it gets everything a DM gets, and most of that puts the
+    /// name somewhere it doesn't belong: a presence row that goes offline when the network drops
+    /// (the chat doesn't), a Friends entry the server refuses, a WHOIS for `=bob` on the wire.
+    case dcc
     case server
     case system
 
@@ -249,6 +257,7 @@ public enum BufferKind: Sendable {
         if networkId == nil || target == Buffer.systemTarget { return .system }
         if target.hasPrefix(":server:") { return .server }
         if ChannelName.isChannelTarget(target) { return .channel }
+        if DccChat.isTarget(target) { return .dcc }
         return .dm
     }
 
@@ -273,7 +282,7 @@ public enum BufferKind: Sendable {
         switch self {
         case .system: type == .system
         case .server: true
-        case .channel, .dm:
+        case .channel, .dm, .dcc:
             switch type {
             case .motd, .system, .other: false
             default: true
@@ -293,7 +302,7 @@ public enum BufferKind: Sendable {
     /// and this is once again just "don't ask for what you already have".
     public var hydratesOnDemand: Bool {
         switch self {
-        case .channel, .dm: true
+        case .channel, .dm, .dcc: true
         case .system, .server: false
         }
     }

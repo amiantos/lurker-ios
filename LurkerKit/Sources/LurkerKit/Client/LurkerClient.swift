@@ -413,6 +413,27 @@ final class LurkerClient {
         await act("POST", "/api/networks/\(id)/reconnect")
     }
 
+    // MARK: - DCC chat (lurker#270)
+
+    /// `POST /api/dcc/chat` — offer a DCC chat to `nick`, or accept the offer they already made.
+    /// Nil on success, a message otherwise: "DCC is not enabled for this account" is the one a
+    /// hosted cell answers, where the feature is off.
+    ///
+    /// Success only means the offer is away. A DCC handshake takes as long as the peer takes to
+    /// answer, so the outcome arrives as notices in the `=nick` buffer instead.
+    func openDccChat(networkId: Int, nick: String, passive: Bool) async -> String? {
+        await act(
+            "POST", "/api/dcc/chat",
+            body: ["networkId": networkId, "nick": nick, "passive": passive]
+        )
+    }
+
+    /// `POST /api/dcc/chat/close` — end a live chat with `nick`, cancel our pending offer to
+    /// them, or decline theirs.
+    func closeDccChat(networkId: Int, nick: String) async -> String? {
+        await act("POST", "/api/dcc/chat/close", body: ["networkId": networkId, "nick": nick])
+    }
+
     // MARK: - Client certificates (#459)
 
     /// `POST /api/networks/:id/certificate` — generate a pair, or import one, replacing any the
@@ -1112,8 +1133,12 @@ final class LurkerClient {
     /// over and a `:server:` log is a one-way feed, so both are dropped here rather than put on
     /// the wire as a frame the server would have to reject. That's also why there's no
     /// `NSNull()` branch — a null `networkId` never gets this far.
+    ///
+    /// A `=nick` DCC chat is dropped too. It has someone on the other end, but typing rides a
+    /// `TAGMSG` on the IRC wire, which a DCC socket has no equivalent of — the server refuses
+    /// the target rather than put `=bob` in one.
     func setTyping(networkId: Int?, target: String, signal: TypingSignal) {
-        guard let networkId, !target.hasPrefix(":server:") else { return }
+        guard let networkId, !target.hasPrefix(":server:"), !DccChat.isTarget(target) else { return }
         send([
             "type": "typing",
             "networkId": networkId,
