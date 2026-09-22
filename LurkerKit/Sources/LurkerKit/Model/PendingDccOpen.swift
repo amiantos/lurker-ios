@@ -50,3 +50,57 @@ struct PendingDccOpen: Equatable {
         return .waiting
     }
 }
+
+/// The DCC chats this device asked to open, from the request until the app has gone there — the
+/// bookkeeping around `PendingDccOpen`, kept pure so a test can drive the races.
+///
+/// ⚠ ONE wait, deliberately. A second open replaces the first: there is one screen to land on, and
+/// the chat asked for last is the one the user is looking for. (Two rows landing moments apart
+/// would otherwise bounce them through both.)
+///
+/// ⚠⚠ A close has to beat an open that is still IN FLIGHT, not just one that is waiting. Tap Start,
+/// then End before Start's request returns: the close found nothing to cancel, Start's reply then
+/// installed the wait, and the app took the user into the chat they had just ended. So each chat
+/// counts its successful closes, an open notes the count before it goes out, and a reply that finds
+/// the count moved installs nothing.
+struct DccOpens {
+    private(set) var waiting: PendingDccOpen?
+    private var closes: [String: Int] = [:]
+
+    /// Taken before an open is sent: what a close has to change for the open to count as overtaken.
+    func ticket(networkId: Int, nick: String) -> Int {
+        closes[Self.keyId(networkId, nick), default: 0]
+    }
+
+    /// An open succeeded: wait for its row — unless a close for the same chat landed while it was
+    /// in flight.
+    mutating func opened(networkId: Int, nick: String, ticket: Int, now: Date) {
+        guard closes[Self.keyId(networkId, nick), default: 0] == ticket else { return }
+        waiting = PendingDccOpen(networkId: networkId, nick: nick, now: now)
+    }
+
+    /// A close succeeded: stop waiting for that chat, and overtake any open for it still in flight.
+    mutating func closed(networkId: Int, nick: String) {
+        closes[Self.keyId(networkId, nick), default: 0] += 1
+        if waiting?.isFor(networkId: networkId, nick: nick) == true { waiting = nil }
+    }
+
+    /// The buffer to go to, if the wait just ended in one. Clears the wait either way it ends.
+    mutating func settle(buffers: [String: Buffer], now: Date) -> BufferKey? {
+        guard let pending = waiting else { return nil }
+        switch pending.settle(buffers: buffers, now: now) {
+        case .waiting:
+            return nil
+        case .expired:
+            waiting = nil
+            return nil
+        case .open(let key):
+            waiting = nil
+            return key
+        }
+    }
+
+    private static func keyId(_ networkId: Int, _ nick: String) -> String {
+        BufferKey(networkId: networkId, target: DccChat.target(for: nick)).id
+    }
+}

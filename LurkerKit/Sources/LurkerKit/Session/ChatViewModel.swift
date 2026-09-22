@@ -71,9 +71,9 @@ public final class ChatViewModel {
     /// navigates, the same move as `onJoinOpened`. Fired with the stored row's key.
     public var onDccChatOpened: ((_ key: BufferKey) -> Void)?
 
-    /// The DCC chat we just opened, until its `=nick` row exists — see `PendingDccOpen`. Giving up
-    /// is quiet: the chat's notices say what happened, in a buffer the list will show.
-    private var pendingDccOpen: PendingDccOpen?
+    /// The DCC chat we just opened, until its `=nick` row exists — see `DccOpens`. Giving up is
+    /// quiet: the chat's notices say what happened, in a buffer the list will show.
+    private var dccOpens = DccOpens()
 
     /// The joins waiting on an answer — see `PendingJoins`, where the rules live and can be tested.
     private var pendingJoins = PendingJoins()
@@ -229,7 +229,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
-        pendingDccOpen = nil
+        dccOpens = DccOpens()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
@@ -801,40 +801,34 @@ public final class ChatViewModel {
     /// message otherwise.
     ///
     /// On success the app is taken to the chat's `=nick` buffer through `onDccChatOpened` — at
-    /// once if the row exists, else as soon as the server mints it (see `pendingDccOpen`).
+    /// once if the row exists, else as soon as the server mints it (see `DccOpens`).
     public func openDccChat(networkId: Int, nick: String, passive: Bool = false) async -> String? {
+        // Taken before the request goes out, so a close that lands while it's in flight can
+        // overtake it — see `DccOpens`.
+        let ticket = dccOpens.ticket(networkId: networkId, nick: nick)
         if let refusal = await client.openDccChat(networkId: networkId, nick: nick, passive: passive) {
             return refusal
         }
-        pendingDccOpen = PendingDccOpen(networkId: networkId, nick: nick, now: Date())
+        dccOpens.opened(networkId: networkId, nick: nick, ticket: ticket, now: Date())
         settlePendingDccOpen()
         return nil
     }
 
     /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs. Nil on success.
     ///
-    /// ⚠ A chat closed before its buffer landed stops being waited for. The server writes its
-    /// "Cancelled…" notice into `=nick`, which mints the row — and a wait left standing would
-    /// then take the user into the chat they had just ended. Only on success: a refused close
-    /// ended nothing, and the chat is still coming.
+    /// ⚠ A chat closed before its buffer landed stops being waited for — and so does one whose
+    /// open is still in flight. The server writes its "Cancelled…" notice into `=nick`, which mints
+    /// the row, and a wait left standing would then take the user into the chat they had just
+    /// ended. Only on success: a refused close ended nothing, and the chat is still coming.
     public func closeDccChat(networkId: Int, nick: String) async -> String? {
         let refusal = await client.closeDccChat(networkId: networkId, nick: nick)
-        if refusal == nil, pendingDccOpen?.isFor(networkId: networkId, nick: nick) == true {
-            pendingDccOpen = nil
-        }
+        if refusal == nil { dccOpens.closed(networkId: networkId, nick: nick) }
         return refusal
     }
 
     /// Hand a DCC chat's buffer to the app once it exists, or let go once it's clearly not coming.
     private func settlePendingDccOpen() {
-        guard let pending = pendingDccOpen else { return }
-        switch pending.settle(buffers: store.state.buffers, now: Date()) {
-        case .waiting:
-            break
-        case .expired:
-            pendingDccOpen = nil
-        case .open(let key):
-            pendingDccOpen = nil
+        if let key = dccOpens.settle(buffers: store.state.buffers, now: Date()) {
             onDccChatOpened?(key)
         }
     }
@@ -1666,7 +1660,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
-        pendingDccOpen = nil
+        dccOpens = DccOpens()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()

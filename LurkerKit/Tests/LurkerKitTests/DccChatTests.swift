@@ -363,6 +363,59 @@ final class DccChatTests: XCTestCase {
         XCTAssertEqual(pending.settle(buffers: [row.key.id: row], now: late), .expired)
     }
 
+    // MARK: - Opens and closes that race
+
+    private func row(_ target: String) -> [String: Buffer] {
+        let buffer = Buffer(networkId: 1, target: target, kind: .dcc)
+        return [buffer.key.id: buffer]
+    }
+
+    /// ⚠⚠ Start, then End before Start's request returns: the close found nothing to cancel, and
+    /// Start's reply then installed a wait that took the user into the chat they had just ended.
+    func testACloseOvertakesAnOpenStillInFlight() {
+        var opens = DccOpens()
+        let ticket = opens.ticket(networkId: 1, nick: "bob")
+        opens.closed(networkId: 1, nick: "Bob")
+        opens.opened(networkId: 1, nick: "bob", ticket: ticket, now: opened)
+        XCTAssertNil(opens.waiting)
+        XCTAssertNil(opens.settle(buffers: row("=bob"), now: opened))
+    }
+
+    func testACloseOfAnotherChatDoesNot() {
+        var opens = DccOpens()
+        let ticket = opens.ticket(networkId: 1, nick: "bob")
+        opens.closed(networkId: 1, nick: "carol")
+        opens.opened(networkId: 1, nick: "bob", ticket: ticket, now: opened)
+        XCTAssertEqual(opens.settle(buffers: row("=bob"), now: opened), BufferKey(networkId: 1, target: "=bob"))
+    }
+
+    /// Once a close is behind it, opening the same chat again works as it did the first time.
+    func testAnOpenAfterACloseStillWaits() {
+        var opens = DccOpens()
+        opens.closed(networkId: 1, nick: "bob")
+        let ticket = opens.ticket(networkId: 1, nick: "bob")
+        opens.opened(networkId: 1, nick: "bob", ticket: ticket, now: opened)
+        XCTAssertNotNil(opens.waiting)
+    }
+
+    func testACloseStopsAWaitAlreadyInstalled() {
+        var opens = DccOpens()
+        opens.opened(networkId: 1, nick: "bob", ticket: opens.ticket(networkId: 1, nick: "bob"), now: opened)
+        opens.closed(networkId: 1, nick: "bob")
+        XCTAssertNil(opens.settle(buffers: row("=bob"), now: opened))
+    }
+
+    /// One wait, deliberately: there is one screen to land on, and the chat asked for last is the
+    /// one the user is looking for.
+    func testTheLatestOpenIsTheOneThatNavigates() {
+        var opens = DccOpens()
+        opens.opened(networkId: 1, nick: "bob", ticket: opens.ticket(networkId: 1, nick: "bob"), now: opened)
+        opens.opened(networkId: 1, nick: "carol", ticket: opens.ticket(networkId: 1, nick: "carol"), now: opened)
+        XCTAssertNil(opens.settle(buffers: row("=bob"), now: opened))
+        XCTAssertEqual(opens.settle(buffers: row("=carol"), now: opened), BufferKey(networkId: 1, target: "=carol"))
+        XCTAssertNil(opens.waiting, "settled once, then done")
+    }
+
     func testSignOutForgetsOffersAndChats() {
         let store = LurkerStore()
         store.apply(snapshot(chats: ["bob"], offers: ["carol"]))
