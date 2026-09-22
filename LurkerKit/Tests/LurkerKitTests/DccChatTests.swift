@@ -65,8 +65,8 @@ final class DccChatTests: XCTestCase {
     }
 
     /// The info line a command answered with, or nil if it did something else.
-    private func info(_ input: String) -> String? {
-        guard case .info(let text) = effects(input).first else { return nil }
+    private func info(_ input: String, target: String = "#chan") -> String? {
+        guard case .info(let text) = effects(input, target: target).first else { return nil }
         return text
     }
 
@@ -116,7 +116,8 @@ final class DccChatTests: XCTestCase {
     }
 
     func testFileTransfersSayTheyAreNotHereRatherThanGoingRaw() {
-        for input in ["/dcc list", "/dcc accept 3", "/dcc cancel 3", "/dcc close send bob"] {
+        for input in ["/dcc list", "/dcc accept 3", "/dcc cancel 3", "/dcc close send bob",
+                      "/dcc send bob file.txt", "/dcc resume bob file.txt"] {
             XCTAssertEqual(info(input), "DCC file transfers aren't in the app yet.", input)
         }
         // And nothing falls through to the raw default, which put `DCC chat bob` on the IRC wire.
@@ -139,11 +140,6 @@ final class DccChatTests: XCTestCase {
         XCTAssertEqual(effects("/whois", target: "=bob"), [.showProfile(nick: "bob")])
         XCTAssertEqual(effects("/ping", target: "=bob"), [.ctcp(target: "bob", type: "PING", args: "")])
         XCTAssertNotNil(info("/ping", target: "="), "a bare `=` has no peer to ping")
-    }
-
-    private func info(_ input: String, target: String) -> String? {
-        guard case .info(let text) = effects(input, target: target).first else { return nil }
-        return text
     }
 
     // MARK: - Status light
@@ -274,6 +270,60 @@ final class DccChatTests: XCTestCase {
         store.apply(.dccChatOffer(networkId: 1, nick: "bob", passive: false))
         store.apply(snapshot(offers: []))
         XCTAssertEqual(store.state.dccChatOffers, [])
+    }
+
+    /// ⚠ The list survives a reconnect until the new snapshot replaces it, so until then nobody may
+    /// read it as an answer — the info sheet offered End or Start off the last session's list.
+    func testASessionIsUnknownUntilThisSocketsSnapshot() {
+        let store = LurkerStore()
+        XCTAssertNil(store.state.dccChatSession(bob), "nothing heard yet")
+        store.apply(.socketOpen)
+        store.apply(snapshot(chats: ["bob"]))
+        XCTAssertEqual(store.state.dccChatSession(bob), true)
+        XCTAssertEqual(store.state.dccChatSession(BufferKey(networkId: 1, target: "=carol")), false)
+
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertNil(store.state.dccChatSession(bob), "the socket is down; the list is last session's")
+        store.apply(.socketOpen)
+        XCTAssertNil(store.state.dccChatSession(bob), "back, but the snapshot hasn't landed")
+        store.apply(snapshot(chats: []))
+        XCTAssertEqual(store.state.dccChatSession(bob), false)
+    }
+
+    /// A deleted network's chats end with it, and its offers can't be answered any more.
+    func testDroppingANetworkForgetsItsChatsAndOffers() {
+        let store = LurkerStore()
+        store.apply(.snapshot([
+            NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], dccChats: ["bob"], dccChatOffers: ["carol"]),
+            NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], dccChatOffers: ["dave"]),
+        ], globalIgnores: [], maxUploadBytes: nil))
+        store.apply(.networks([Network(id: 2, name: "Other")]))
+        XCTAssertFalse(store.state.isDccChatLive(bob))
+        XCTAssertEqual(store.state.dccChatOffers.map(\.nick), ["dave"], "the other network's offer stays")
+    }
+
+    // MARK: - Going to a chat once its buffer exists
+
+    private let opened = Date(timeIntervalSince1970: 1_000)
+
+    func testAnOpenWaitsForTheRowThenGoesThere() {
+        let pending = PendingDccOpen(networkId: 1, nick: "bob", now: opened)
+        XCTAssertEqual(pending.settle(buffers: [:], now: opened.addingTimeInterval(1)), .waiting)
+        let row = Buffer(networkId: 1, target: "=Bob", kind: .dcc)
+        XCTAssertEqual(
+            pending.settle(buffers: [row.key.id: row], now: opened.addingTimeInterval(1)),
+            .open(row.key), "the server's spelling of the name"
+        )
+    }
+
+    /// ⚠ The deadline wins over a row that arrives late: by then nobody is waiting for it, and
+    /// going there would pull the user out of whatever they're reading.
+    func testARowThatLandsAfterTheDeadlineGoesNowhere() {
+        let pending = PendingDccOpen(networkId: 1, nick: "bob", now: opened)
+        let late = opened.addingTimeInterval(PendingDccOpen.patience + 1)
+        XCTAssertEqual(pending.settle(buffers: [:], now: late), .expired)
+        let row = Buffer(networkId: 1, target: "=bob", kind: .dcc)
+        XCTAssertEqual(pending.settle(buffers: [row.key.id: row], now: late), .expired)
     }
 
     func testSignOutForgetsOffersAndChats() {

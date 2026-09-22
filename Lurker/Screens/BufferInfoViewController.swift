@@ -59,7 +59,8 @@ final class BufferInfoViewController: UITableViewController {
     /// that was about the old one.
     private var shownConnection: NetworkRow?
 
-    /// The same for a DCC chat's session: nil for any other kind of buffer.
+    /// The same for a DCC chat's session, as `ChatState.dccChatSession` answers it. Nil for any
+    /// other kind of buffer, and for a chat whose state isn't known yet.
     private var shownDccLive: Bool?
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
@@ -119,8 +120,8 @@ final class BufferInfoViewController: UITableViewController {
         /// One verb that changes it. Only the non-destructive ones reach this sheet — see
         /// `NetworkRow.connectionActions`.
         case networkAction(NetworkAction)
-        /// A DCC chat's session, as a status line (lurker#270).
-        case dccStatus(live: Bool)
+        /// A DCC chat's session, as a status line (lurker#270). Nil while it can't be known.
+        case dccStatus(live: Bool?)
         /// End the live session, or offer a new one when there's none — a dead chat can't be
         /// resumed, only replaced.
         case dccAction(DccChatAction)
@@ -150,7 +151,7 @@ final class BufferInfoViewController: UITableViewController {
         // — the footer would sit under rows that contradict it, with no way to clear it short
         // of another verb. The networks screen retires its refusal on a state change too.
         let connection = Self.connectionRow(in: state, networkId: buffer.networkId)
-        let dccLive = buffer.kind == .dcc ? state.isDccChatLive(buffer.key) : nil
+        let dccLive = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
         if connection != shownConnection || dccLive != shownDccLive {
             shownConnection = connection
             shownDccLive = dccLive
@@ -196,11 +197,15 @@ final class BufferInfoViewController: UITableViewController {
             // The session first: whether a line typed here will arrive is the thing about this
             // buffer most worth knowing, and its verbs live nowhere else a thumb can reach. The
             // Whois row is the peer's — the profile peels `=` off.
-            let isLive = state.isDccChatLive(buffer.key)
+            //
+            // No verb until the session is known: during a reconnect the list is the last
+            // session's, and End on a chat that has already ended — or Start on one that hasn't —
+            // is a request made on a guess.
+            let session = state.dccChatSession(buffer.key)
             return [
                 Section(
                     header: "DCC Chat", footer: actionError,
-                    rows: [.dccStatus(live: isLive), .dccAction(isLive ? .end : .start)]
+                    rows: [.dccStatus(live: session)] + (session.map { [.dccAction($0 ? .end : .start)] } ?? [])
                 ),
                 Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
                 notifications,
@@ -356,8 +361,8 @@ final class BufferInfoViewController: UITableViewController {
         case .dccStatus(let live):
             var content = UIListContentConfiguration.valueCell()
             content.text = "Status"
-            content.secondaryText = live ? "Connected" : "Not connected"
-            content.setStatusDot(live ? .good : .bad)
+            content.secondaryText = live.map { $0 ? "Connected" : "Not connected" } ?? "Checking…"
+            content.setStatusDot(live.map { $0 ? .good : .bad } ?? .warn)
             cell.contentConfiguration = content
 
         case .dccAction(let action):

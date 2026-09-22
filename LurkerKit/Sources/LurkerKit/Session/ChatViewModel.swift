@@ -71,16 +71,9 @@ public final class ChatViewModel {
     /// navigates, the same move as `onJoinOpened`. Fired with the stored row's key.
     public var onDccChatOpened: ((_ key: BufferKey) -> Void)?
 
-    /// The `=nick` buffer a DCC chat we just opened will live in, until its row exists.
-    ///
-    /// ⚠ The server doesn't answer the open with the buffer — it mints the row when it writes the
-    /// chat's first notice, and `open-buffer` can't make one (it reopens a `=nick` row it has and
-    /// otherwise does nothing). Going there before the row lands would pop straight back: a chat
-    /// screen whose buffer is absent from a settled roster reads that as a close. So this waits
-    /// for the row, and gives up quietly after `dccOpenPatience` — the notices say what happened
-    /// either way, in a buffer the list will show.
-    private var pendingDccOpen: (key: BufferKey, deadline: Date)?
-    private static let dccOpenPatience: TimeInterval = 15
+    /// The DCC chat we just opened, until its `=nick` row exists — see `PendingDccOpen`. Giving up
+    /// is quiet: the chat's notices say what happened, in a buffer the list will show.
+    private var pendingDccOpen: PendingDccOpen?
 
     /// The joins waiting on an answer — see `PendingJoins`, where the rules live and can be tested.
     private var pendingJoins = PendingJoins()
@@ -813,10 +806,7 @@ public final class ChatViewModel {
         if let refusal = await client.openDccChat(networkId: networkId, nick: nick, passive: passive) {
             return refusal
         }
-        pendingDccOpen = (
-            BufferKey(networkId: networkId, target: DccChat.target(for: nick)),
-            Date().addingTimeInterval(Self.dccOpenPatience)
-        )
+        pendingDccOpen = PendingDccOpen(networkId: networkId, nick: nick, now: Date())
         settlePendingDccOpen()
         return nil
     }
@@ -829,11 +819,14 @@ public final class ChatViewModel {
     /// Hand a DCC chat's buffer to the app once it exists, or let go once it's clearly not coming.
     private func settlePendingDccOpen() {
         guard let pending = pendingDccOpen else { return }
-        if let row = store.state.buffers[pending.key.id] {
+        switch pending.settle(buffers: store.state.buffers, now: Date()) {
+        case .waiting:
+            break
+        case .expired:
             pendingDccOpen = nil
-            onDccChatOpened?(row.key)
-        } else if Date() > pending.deadline {
+        case .open(let key):
             pendingDccOpen = nil
+            onDccChatOpened?(key)
         }
     }
 

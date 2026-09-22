@@ -355,11 +355,12 @@ public enum CommandParser {
 
     private static let dccUsage = "usage: /dcc chat [-passive] <nick> · /dcc close chat <nick>"
 
-    /// The irssi words for DCC file transfers, which this app has no screen for. The web's
-    /// transfer verbs and their aliases, so a habit carried over from either gets an answer
-    /// rather than a usage line that pretends the verb doesn't exist.
+    /// The words for DCC file transfers, which this app has no screen for: the web's transfer verbs
+    /// and their aliases, plus irssi's `send` and `resume`. A habit carried over from either gets an
+    /// answer rather than a usage line that pretends the verb doesn't exist.
     private static let dccTransferVerbs: Set<String> = [
         "list", "ls", "accept", "ok", "yes", "get", "reject", "deny", "no", "cancel", "abort", "stop",
+        "send", "resume",
     ]
 
     /// `/dcc` — the chat verbs, in irssi's syntax exactly, as the web has them:

@@ -330,6 +330,10 @@ public struct ChatState: Sendable {
         // a lookup out at the moment the network was deleted — and, if the id were reused, on
         // whoever now answers to those nicks.
         whoisPending = whoisPending.filter { !$0.hasPrefix("\(id)::") }
+        // A deleted network's chats end with it (the server closes them first), and an offer on
+        // it can no longer be answered — left here, the app would go on asking about one.
+        dccChats[id] = nil
+        dccChatOffers.removeAll { $0.networkId == id }
     }
 
     /// Move everything keyed by `from` onto `to` — the rename mirror of
@@ -518,6 +522,18 @@ public struct ChatState: Sendable {
         guard let networkId = key.networkId, DccChat.isTarget(key.target) else { return false }
         let peer = DccChat.peer(key.target).lowercased()
         return dccChats[networkId]?.contains { $0.lowercased() == peer } ?? false
+    }
+
+    /// `isDccChatLive` as a screen should show it: nil while this app can't know, because its
+    /// socket is down or is back but hasn't had its snapshot yet.
+    ///
+    /// ⚠ `dccChats` keeps the last session's list through a reconnect (a snapshot replaces it,
+    /// nothing else clears it), so read raw it shows a chat as live or dead on the strength of a
+    /// list that may have gone stale — and the info sheet offered End or Start on that basis. The
+    /// title light, the composer and the sheet all read this, so they can't disagree.
+    public func dccChatSession(_ key: BufferKey) -> Bool? {
+        guard connection == .connected, snapshotSinceOpen else { return nil }
+        return isDccChatLive(key)
     }
 
     /// The one spelling of a `(network, nick)` cache key, so `whois` and `whoisPending` can't

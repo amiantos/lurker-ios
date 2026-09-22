@@ -591,8 +591,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     && old.relayBots === new.relayBots
                     // A DCC chat's session opens and ends with nothing else changing — the
                     // light and the field both read it (lurker#270).
-                    && old.isDccChatLive(bufferKey) == new.isDccChatLive(bufferKey)
-                    && old.snapshotSinceOpen == new.snapshotSinceOpen
+                    && old.dccChatSession(bufferKey) == new.dccChatSession(bufferKey)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -732,8 +731,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var composerPlaceholder: String {
         guard let networkId = buffer.networkId else { return "Type a command…" }
         if buffer.kind == .dcc {
-            let state = viewModel.state
-            guard state.snapshotSinceOpen, !state.isDccChatLive(buffer.key) else { return "DCC Chat" }
+            guard viewModel.state.dccChatSession(buffer.key) == false else { return "DCC Chat" }
             return "Not connected — /dcc chat \(DccChat.peer(buffer.target))"
         }
         return networks[networkId]?.name ?? "Message"
@@ -1572,7 +1570,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             ? StatusLight.ofDccChat(
                 reachable: state.reachable,
                 connection: state.connection,
-                live: state.snapshotSinceOpen ? state.isDccChatLive(buffer.key) : nil
+                live: state.dccChatSession(buffer.key)
             )
             : StatusLight.of(
                 reachable: state.reachable,
