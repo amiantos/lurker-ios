@@ -239,7 +239,15 @@ final class BufferListViewController: UICollectionViewController {
         // the chat screen's bar. `.minimal` keeps the title for those while drawing the
         // indicator alone — a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
-        collectionView.backgroundColor = .systemGroupedBackground
+        // The message list's ground, so the list and the conversation are one theme rather
+        // than the system's cool grey beside a warm log. Set on the list configuration too —
+        // see `makeLayout`, whose own default would otherwise paint over this.
+        //
+        // In an expanded split this is moot: UIKit clears the sidebar's layer (measured,
+        // iOS 27.1 — `layer.backgroundColor` nil under this same property) and draws its glass
+        // there instead, which takes its colour from the conversation column running
+        // underneath — `Palette.bg` too, so the theme comes through either way.
+        collectionView.backgroundColor = Palette.bg
         // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
         // first thing that happens to touch it. `UICollectionViewController` installs itself
         // as the collection view's data source in `loadView`; constructing the diffable one
@@ -620,6 +628,10 @@ final class BufferListViewController: UICollectionViewController {
             switch id.layout {
             case .list:
                 var config = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
+                // ⚠ Or the list section repaints the collection view in the appearance's own
+                // grouped grey, over the `Palette.bg` set in `viewDidLoad`. Measured: with only
+                // the collection view's colour set, an inset-grouped list still drew #F2F2F7.
+                config.backgroundColor = Palette.bg
                 // The list's *own* header, not a manual boundary item: the native grouped
                 // header sits tight to the first row, whereas a hand-added header stacks on
                 // top of the list's top inset and leaves an oversized gap.

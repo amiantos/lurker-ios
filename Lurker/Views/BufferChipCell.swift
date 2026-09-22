@@ -71,35 +71,23 @@ final class BufferBadgeLabel: UILabel {
     }
 }
 
-/// The card a buffer chip or roster row sits on: `secondarySystemGroupedBackground`, except
-/// where elevation has moved the ground out from under it.
+/// The card a buffer chip or roster row sits on: a translucent system fill, so it lifts off
+/// whatever ground it lands on rather than being tuned to one.
 ///
-///     style  level     ground   secondary  tertiary
-///     light  base      #F2F2F7  #FFFFFF    #F2F2F7
-///     light  elevated  #F2F2F7  #FFFFFF    #F2F2F7
-///     dark   base      #000000  #1C1C1E    #2C2C2E
-///     dark   elevated  #1C1C1E  #2C2C2E    #3A3A3C
+/// There are two grounds, and only one of them is ours. Collapsed, the list paints
+/// `Palette.bg`, the message list's own backdrop. Side by side, UIKit clears the sidebar's
+/// layer and draws its glass there instead — measured on iOS 27.1, the property still reads
+/// our colour while the layer holds nil — and that glass renders differently in each style
+/// (`#FFFFFF` light, `#393C3E` dark over a black column). An opaque card picked against one
+/// ground vanished on another: `secondarySystemGroupedBackground` is white, and went white on
+/// white in a light-mode sidebar.
 ///
-/// A split view's sidebar is an elevated level, so on iPad the dark ground rises onto the
-/// colour the card was picked to contrast with and the cards stop reading as cards.
-///
-/// ⚠⚠ But only in dark. Light resolves identically at both levels and its tertiary IS the
-/// ground, so a rule that stepped up whenever it found itself elevated erased every chip on a
-/// light-mode iPad. Hence the test is whether elevation moved the ground, not whether we are
-/// elevated — which also means no idiom check, and a right answer for the collapsed iPad and
-/// the phone without enumerating them.
+/// A fill composites over the ground instead, so it's a step off it on both, in both styles:
+/// measured `#E0E0E0` on the white sidebar, `#55585A` on the dark one. It also retires the
+/// elevated-palette rule this replaced, which depended on the sidebar's ground being an
+/// opaque system colour it could predict.
 extension UIColor {
-    static var bufferCard: UIColor {
-        UIColor { traits in
-            let atBase = traits.modifyingTraits { $0.userInterfaceLevel = .base }
-            let groundWasLifted = UIColor.systemGroupedBackground.resolvedColor(with: traits)
-                != UIColor.systemGroupedBackground.resolvedColor(with: atBase)
-            let card: UIColor = groundWasLifted
-                ? .tertiarySystemGroupedBackground
-                : .secondarySystemGroupedBackground
-            return card.resolvedColor(with: traits)
-        }
-    }
+    static var bufferCard: UIColor { .tertiarySystemFill }
 }
 
 /// A buffer as a compact card, for the Friends, Favorites and Recent grids.
