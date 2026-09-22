@@ -370,50 +370,85 @@ final class DccChatTests: XCTestCase {
         return [buffer.key.id: buffer]
     }
 
+    private let bobKey = BufferKey(networkId: 1, target: "=bob")
+    private let carolKey = BufferKey(networkId: 1, target: "=carol")
+
     /// ⚠⚠ Start, then End before Start's request returns: the close found nothing to cancel, and
     /// Start's reply then installed a wait that took the user into the chat they had just ended.
     func testACloseOvertakesAnOpenStillInFlight() {
         var opens = DccOpens()
-        let ticket = opens.ticket(networkId: 1, nick: "bob")
-        opens.closed(networkId: 1, nick: "Bob")
-        opens.opened(networkId: 1, nick: "bob", ticket: ticket, now: opened)
+        let ticket = opens.begin(networkId: 1, nick: "bob")
+        _ = opens.closing(networkId: 1, nick: "Bob")
+        opens.opened(ticket, now: opened)
         XCTAssertNil(opens.waiting)
         XCTAssertNil(opens.settle(buffers: row("=bob"), now: opened))
     }
 
     func testACloseOfAnotherChatDoesNot() {
         var opens = DccOpens()
-        let ticket = opens.ticket(networkId: 1, nick: "bob")
-        opens.closed(networkId: 1, nick: "carol")
-        opens.opened(networkId: 1, nick: "bob", ticket: ticket, now: opened)
-        XCTAssertEqual(opens.settle(buffers: row("=bob"), now: opened), BufferKey(networkId: 1, target: "=bob"))
+        let ticket = opens.begin(networkId: 1, nick: "bob")
+        _ = opens.closing(networkId: 1, nick: "carol")
+        opens.opened(ticket, now: opened)
+        XCTAssertEqual(opens.settle(buffers: row("=bob"), now: opened), bobKey)
     }
 
     /// Once a close is behind it, opening the same chat again works as it did the first time.
     func testAnOpenAfterACloseStillWaits() {
         var opens = DccOpens()
-        opens.closed(networkId: 1, nick: "bob")
-        let ticket = opens.ticket(networkId: 1, nick: "bob")
-        opens.opened(networkId: 1, nick: "bob", ticket: ticket, now: opened)
+        _ = opens.closing(networkId: 1, nick: "bob")
+        let ticket = opens.begin(networkId: 1, nick: "bob")
+        opens.opened(ticket, now: opened)
         XCTAssertNotNil(opens.waiting)
     }
 
-    func testACloseStopsAWaitAlreadyInstalled() {
+    /// ⚠⚠ The close marks BEFORE its request goes out: its own "Cancelled…" notice mints the row
+    /// over the socket, usually ahead of the HTTP reply, and must find nothing waiting.
+    func testACloseStopsAWaitBeforeItsOwnNoticeCanSatisfyIt() {
         var opens = DccOpens()
-        opens.opened(networkId: 1, nick: "bob", ticket: opens.ticket(networkId: 1, nick: "bob"), now: opened)
-        opens.closed(networkId: 1, nick: "bob")
+        opens.opened(opens.begin(networkId: 1, nick: "bob"), now: opened)
+        _ = opens.closing(networkId: 1, nick: "bob")
         XCTAssertNil(opens.settle(buffers: row("=bob"), now: opened))
     }
 
-    /// One wait, deliberately: there is one screen to land on, and the chat asked for last is the
-    /// one the user is looking for.
-    func testTheLatestOpenIsTheOneThatNavigates() {
+    /// A refused close ended nothing: the chat is still coming, so the wait comes back.
+    func testARefusedClosePutsTheWaitBack() {
         var opens = DccOpens()
-        opens.opened(networkId: 1, nick: "bob", ticket: opens.ticket(networkId: 1, nick: "bob"), now: opened)
-        opens.opened(networkId: 1, nick: "carol", ticket: opens.ticket(networkId: 1, nick: "carol"), now: opened)
+        opens.opened(opens.begin(networkId: 1, nick: "bob"), now: opened)
+        let mark = opens.closing(networkId: 1, nick: "bob")
+        opens.closeRefused(mark)
+        XCTAssertEqual(opens.settle(buffers: row("=bob"), now: opened), bobKey)
+    }
+
+    /// …unless the user has asked for something else since.
+    func testARefusedCloseDoesNotOverrideANewerOpen() {
+        var opens = DccOpens()
+        opens.opened(opens.begin(networkId: 1, nick: "bob"), now: opened)
+        let mark = opens.closing(networkId: 1, nick: "bob")
+        _ = opens.begin(networkId: 1, nick: "carol")
+        opens.closeRefused(mark)
+        XCTAssertNil(opens.waiting)
+    }
+
+    /// One wait, deliberately — and "last" means the last ASKED, not the last to answer. Bob's
+    /// reply arriving after Carol's is stale and must not take the user to Bob.
+    func testTheLatestRequestWinsWhateverOrderTheRepliesArrive() {
+        var opens = DccOpens()
+        let bob = opens.begin(networkId: 1, nick: "bob")
+        let carol = opens.begin(networkId: 1, nick: "carol")
+        opens.opened(carol, now: opened)
+        opens.opened(bob, now: opened)
         XCTAssertNil(opens.settle(buffers: row("=bob"), now: opened))
-        XCTAssertEqual(opens.settle(buffers: row("=carol"), now: opened), BufferKey(networkId: 1, target: "=carol"))
+        XCTAssertEqual(opens.settle(buffers: row("=carol"), now: opened), carolKey)
         XCTAssertNil(opens.waiting, "settled once, then done")
+    }
+
+    /// An open sent before a sign-out must not land in whoever signs in next.
+    func testAReplyFromBeforeASignOutIsStale() {
+        var opens = DccOpens()
+        let ticket = opens.begin(networkId: 1, nick: "bob")
+        opens.reset()
+        opens.opened(ticket, now: opened)
+        XCTAssertNil(opens.waiting)
     }
 
     func testSignOutForgetsOffersAndChats() {

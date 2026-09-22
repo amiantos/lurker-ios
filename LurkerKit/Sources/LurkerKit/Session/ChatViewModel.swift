@@ -229,7 +229,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
-        dccOpens = DccOpens()
+        dccOpens.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
@@ -803,26 +803,28 @@ public final class ChatViewModel {
     /// On success the app is taken to the chat's `=nick` buffer through `onDccChatOpened` — at
     /// once if the row exists, else as soon as the server mints it (see `DccOpens`).
     public func openDccChat(networkId: Int, nick: String, passive: Bool = false) async -> String? {
-        // Taken before the request goes out, so a close that lands while it's in flight can
-        // overtake it — see `DccOpens`.
-        let ticket = dccOpens.ticket(networkId: networkId, nick: nick)
+        // Taken before the request goes out, so a later open, a close or a sign-out that lands
+        // while it's in flight can make its reply stale — see `DccOpens`.
+        let ticket = dccOpens.begin(networkId: networkId, nick: nick)
         if let refusal = await client.openDccChat(networkId: networkId, nick: nick, passive: passive) {
             return refusal
         }
-        dccOpens.opened(networkId: networkId, nick: nick, ticket: ticket, now: Date())
+        dccOpens.opened(ticket, now: Date())
         settlePendingDccOpen()
         return nil
     }
 
     /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs. Nil on success.
     ///
-    /// ⚠ A chat closed before its buffer landed stops being waited for — and so does one whose
-    /// open is still in flight. The server writes its "Cancelled…" notice into `=nick`, which mints
-    /// the row, and a wait left standing would then take the user into the chat they had just
-    /// ended. Only on success: a refused close ended nothing, and the chat is still coming.
+    /// ⚠ A chat being closed stops being waited for — and so does one whose open is still in
+    /// flight — BEFORE the request goes out. The server writes its "Cancelled…" notice into
+    /// `=nick` as it acts, which mints the row, and that frame usually beats the HTTP reply; a wait
+    /// still standing then would take the user into the chat they were ending. A refused close
+    /// ended nothing, so it puts the wait back.
     public func closeDccChat(networkId: Int, nick: String) async -> String? {
+        let mark = dccOpens.closing(networkId: networkId, nick: nick)
         let refusal = await client.closeDccChat(networkId: networkId, nick: nick)
-        if refusal == nil { dccOpens.closed(networkId: networkId, nick: nick) }
+        if refusal != nil { dccOpens.closeRefused(mark) }
         return refusal
     }
 
@@ -1660,7 +1662,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
-        dccOpens = DccOpens()
+        dccOpens.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
