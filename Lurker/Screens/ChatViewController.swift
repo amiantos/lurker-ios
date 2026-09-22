@@ -298,10 +298,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        // Explicitly never, not `.automatic`: automatic *inherits* from the screen below,
-        // which is the buffer list and its large title — a conversation shouldn't give a
-        // tall band of the screen to its own name.
-        navigationItem.largeTitleDisplayMode = .never
         // No leading item: the navigation controller's own back button goes there, and the
         // buffer list it returns to is this screen's parent rather than a sheet it summons.
         //

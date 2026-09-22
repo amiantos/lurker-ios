@@ -47,8 +47,5 @@ extension UINavigationItem {
         if title != status.title { title = status.title }
         let subtitle = status.subtitle
         if attributedSubtitle != subtitle { attributedSubtitle = subtitle }
-        // Set rather than left to fall back: the fallback is documented from `largeSubtitle`
-        // to the plain `subtitle`, which would drop the light's colour under a large title.
-        if largeAttributedSubtitle != subtitle { largeAttributedSubtitle = subtitle }
     }
 }

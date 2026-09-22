@@ -308,8 +308,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             setRoot(split, as: .main, animated: animated)
         } else {
             let nav = UINavigationController()
-            // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
-            nav.navigationBar.prefersLargeTitles = true
             navigation = nav
             if let restored {
                 nav.showBuffer(restored, viewModel: viewModel, animated: false)

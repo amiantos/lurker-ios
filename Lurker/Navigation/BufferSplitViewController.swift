@@ -75,10 +75,6 @@ final class BufferSplitViewController: UISplitViewController {
         // them. With the display-mode button present, the join "+" was measured going missing.
         presentsWithGesture = false
         displayModeButtonVisibility = .never
-
-        for nav in [listNav, chatNav] {
-            nav.navigationBar.prefersLargeTitles = true
-        }
         // The stack's own factory, which wires the list's `onSelect` and its search results'
         // jump to `showBuffer` — the funnel that forwards back here once these navs are
         // columns. So the list knows nothing about splits.

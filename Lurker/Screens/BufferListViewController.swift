@@ -227,9 +227,9 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // The title is "Lurker" and its subtitle is the connection's light — see `apply`. On
-        // iPad it stays inline: the sidebar is permanent, so a large title naming what the
-        // column obviously is spends a large-title row of a 320pt panel to say nothing.
+        // The title is "Lurker" and its subtitle is the connection's light — see `apply`.
+        // Inline, not large: the bar's own row is enough to say what the screen is, and a
+        // large title spends a band of the screen on it before the first buffer.
         navigationItem.apply(statusTitle)
         // The empty state's only button, and it has only one meaning here: this screen's
         // placeholder never asks anything else of the user.
@@ -239,7 +239,6 @@ final class BufferListViewController: UICollectionViewController {
         // the chat screen's bar. `.minimal` keeps the title for those while drawing the
         // indicator alone — a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
-        navigationItem.largeTitleDisplayMode = isSidebar ? .never : .always
         collectionView.backgroundColor = .systemGroupedBackground
         // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
         // first thing that happens to touch it. `UICollectionViewController` installs itself
