@@ -619,20 +619,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // marking read is what destroys the record of where the reader left off, so it can't
         // run before that record has been taken. The next `apply` picks it up.
         if dividerAfterId != nil { viewModel.markRead(buffer.key) }
-        // …and it's now the most recent, which is what the list promotes. Recorded on
-        // appear rather than on the pick, so the launch buffer counts too and a buffer
-        // reached any other way can't slip past the bookkeeping.
-        //
-        // Not for the screen the conversation column merely *rests* on (see `isResting`): side
-        // by side, that one appears whenever nothing is picked, and recording it would promote
-        // a buffer nobody opened — and make it the relaunch target, which a later launch at
-        // compact width then opens instead of the list.
-        if !isResting {
-            UserPreferences.standard.recordRecentBuffer(buffer.key.id)
-            // …and it's where a relaunch should land (#49). Same moment, same reason: whatever
-            // route brought you here, this is the buffer you were last looking at.
-            UserPreferences.standard.recordLastBuffer(buffer.key)
-        }
+        // …and it's now the buffer you're reading — see `recordVisit`.
+        if !isResting { recordVisit() }
         // An error that landed before we had a window — or while a sheet was covering us —
         // has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
@@ -671,6 +659,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `viewDidDisappear` it has no parent, so `splitViewController` is already nil — which
     /// is what silently disabled the back-out below until it was measured.
     private weak var owningSplit: BufferSplitViewController?
+
+    /// Record this buffer as the one you're reading: the most recent, which is what the list
+    /// promotes, and where a relaunch should land (#49).
+    ///
+    /// Done on appear rather than on the pick, so the launch buffer counts too and a buffer
+    /// reached any other way can't slip past the bookkeeping. The one pick that *doesn't*
+    /// reappear is choosing the system buffer while the column is already resting on it —
+    /// `BufferSplitViewController.showBuffer` calls this itself for that one.
+    ///
+    /// Never for the screen the column merely *rests* on (see `isResting`): side by side that
+    /// one appears whenever nothing is picked, and recording it would promote a buffer nobody
+    /// opened — and make it the relaunch target, which a later launch at compact width then
+    /// opens instead of the list.
+    func recordVisit() {
+        UserPreferences.standard.recordRecentBuffer(buffer.key.id)
+        UserPreferences.standard.recordLastBuffer(buffer.key)
+    }
 
     /// Whether this is the system buffer the conversation column shows when nothing is picked,
     /// rather than a buffer anyone opened. Opening it on purpose makes it the selection, which

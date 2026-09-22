@@ -177,6 +177,9 @@ final class BufferSplitViewController: UISplitViewController {
            let open = chatNav.viewControllers.last as? ChatViewController,
            open.buffer.key.id == buffer.key.id {
             selection = buffer.key
+            // The screen was already up, so it won't appear again to record itself — and it
+            // was resting until now, so it never did.
+            open.recordVisit()
             show(.secondary)
             list?.markSelection(buffer.key)
             return
