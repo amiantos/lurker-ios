@@ -158,6 +158,16 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // single left edge that makes a run of messages read as one column.
         attachments.isLayoutMarginsRelativeArrangement = true
 
+        // The column's side margins are the cell's own, not inherited from the table. Inherited,
+        // they're the table's margins less the safe area, and UIKit lets a wide enough safe area
+        // swallow the margin instead of adding to it: the iPhone Duo's side rail is an 84pt
+        // trailing inset, which left the trailing margin at 0 and ran every timestamp and line
+        // end flush against the rail's buttons. The content view is already inset by the safe
+        // area, so 20 from its edges is 20 clear of whatever's there — measured the same as the
+        // inherited value on an iPhone and beside an iPad's sidebar, where nothing was swallowed.
+        contentView.preservesSuperviewLayoutMargins = false
+        contentView.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)
+
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
         column.addArrangedSubview(attachments)

@@ -653,10 +653,14 @@ final class BufferListViewController: UICollectionViewController {
                 group.interItemSpacing = .fixed(10)
                 let grid = NSCollectionLayoutSection(group: group)
                 grid.interGroupSpacing = 10
-                // 16 matches the horizontal inset the insetGrouped list draws its cards at (and
-                // the nav-bar buttons), so a chip's edge lines up with a row's edge; the extra
-                // bottom inset spaces the grid off the section under it.
-                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 16, bottom: 18, trailing: 16)
+                // Inset by the layout margins, which is what the insetGrouped list draws its
+                // cards against, so a chip's edge lines up with a row's edge by construction
+                // rather than by a matching constant. A fixed 16 matched on an iPhone but not
+                // on the iPhone Duo, whose side rail widens the margin to the safe area: the
+                // chips measured 16…366 under rows at 20…382. The extra bottom inset spaces the
+                // grid off the section under it.
+                grid.contentInsetsReference = .layoutMargins
+                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 18, trailing: 0)
                 // A grid has no list header of its own, so it carries a boundary one — the
                 // small gap this leaves reads fine above cards.
                 if hasTitle {
