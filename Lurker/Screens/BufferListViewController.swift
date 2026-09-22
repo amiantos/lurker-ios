@@ -227,26 +227,17 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // `largeTitle`, NOT `title` — the two are separate on iOS 26, and `title` would also
-        // render in the *small-title row*, which is exactly where the shared pill sits. The
-        // pill used to be this screen's `titleView`, and a `titleView` suppresses the inline
-        // title; now that it belongs to the bar instead, nothing does, and "Buffers" draws
-        // underneath it as soon as the large title collapses on scroll.
-        // No title on iPad: the sidebar is permanent, so a heading naming what the column
-        // obviously is spends a large-title row of a 320pt panel to say nothing. On the phone
-        // the list is a screen you navigate to and back out of, and a screen needs a name.
-        if !isSidebar { navigationItem.largeTitle = "Buffers" }
+        // The title is "Lurker" and its subtitle is the connection's light — see `apply`. On
+        // iPad it stays inline: the sidebar is permanent, so a large title naming what the
+        // column obviously is spends a large-title row of a 320pt panel to say nothing.
+        navigationItem.apply(statusTitle)
         // The empty state's only button, and it has only one meaning here: this screen's
         // placeholder never asks anything else of the user.
         placeholderView.onAction = { [weak self] in self?.showAddNetwork() }
-        // `title` is what the back button would have borrowed, so name it explicitly — it
-        // still feeds the back button's long-press menu and VoiceOver.
-        navigationItem.backButtonTitle = "Buffers"
-        // …but only there. Setting `backButtonTitle` alone *promotes* the back button from
-        // iOS 26's bare chevron to a 95pt "‹ Buffers" pill, which is not what this screen
-        // looked like before and crowds the bar. `.minimal` keeps the title for the
-        // long-press menu while drawing the indicator alone — measured identical to the
-        // original: a 44pt button with no label.
+        // The back button borrows "Lurker" from the title for its long-press menu and
+        // VoiceOver, but a titled back button is iOS 26's 95pt "‹ Lurker" pill, which crowds
+        // the chat screen's bar. `.minimal` keeps the title for those while drawing the
+        // indicator alone — a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
         navigationItem.largeTitleDisplayMode = isSidebar ? .never : .always
         collectionView.backgroundColor = .systemGroupedBackground
@@ -428,10 +419,10 @@ final class BufferListViewController: UICollectionViewController {
     /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
-        // The pill is in the bar, not the list, so it tracks connection regardless of whether
-        // the roster below is worth rebuilding — and `refresh` no-ops both when this screen
-        // isn't the one on top and when nothing the pill shows has moved.
-        navigationPill?.refresh(from: self)
+        // The title is in the bar, not the list, so it tracks connection regardless of
+        // whether the roster below is worth rebuilding. `apply` no-ops when nothing it shows
+        // has moved.
+        navigationItem.apply(statusTitle)
         // The banner is about the connection, not the roster, so its *state* is tracked on
         // every apply regardless of whether the list below is worth rebuilding.
         bannerState = ConnectionBannerState.of(reachable: state.reachable, connection: state.connection)
@@ -706,7 +697,7 @@ final class BufferListViewController: UICollectionViewController {
         cell.backgroundConfiguration = background
 
         var content = UIListContentConfiguration.cell()
-        // No `networkName` here, unlike the pill: every roster row already states its network
+        // No `networkName` here, unlike the chat title: every roster row already states its network
         // as its section header, so resolving a server log to its network's name would just
         // print "libera" above "libera".
         content.text = row.buffer.displayName()
@@ -969,7 +960,7 @@ final class BufferListViewController: UICollectionViewController {
         let controller = UISearchController(searchResultsController: searchResults)
         controller.searchResultsUpdater = searchResults
         // The delegate is *this* screen, not the results: presenting search changes what this
-        // screen looks like (the pill goes), and the search controller belongs to it. What the
+        // screen looks like, and the search controller belongs to it. What the
         // results need from those callbacks, they're asked for directly — see the extension.
         controller.delegate = self
         // Show the results the moment search is activated, not once there's text in the field.
@@ -1009,7 +1000,7 @@ final class BufferListViewController: UICollectionViewController {
     /// handled — see `viewWillAppear`.
     ///
     /// ⚠ Not a style choice on iPad — an integrated field does not fit. The list is a ~320pt
-    /// sidebar whose bar already carries the status pill, and UIKit resolves an overfull bar
+    /// sidebar whose bar already carries the title, and UIKit resolves an overfull bar
     /// by silently DROPPING trailing items: measured, `.integrated` cost the join "+" outright.
     /// `.stacked` is where iPad search goes anyway, and all four controls fit.
     private func installSearch() {
@@ -1065,9 +1056,18 @@ final class BufferListViewController: UICollectionViewController {
             guard let self else { return }
             showUploads(viewModel: viewModel)
         }
+        // The Lurker buffer — the app's own log and command console. It has no row in the list,
+        // and this is its door now that the title isn't a button. Set apart at the top because
+        // it's a buffer you open, not a view over all of them.
+        let lurker = UIAction(title: "Lurker", image: UIImage(systemName: "sparkles")) { [weak self] _ in
+            self?.openSystemBuffer()
+        }
         let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
-            menu: UIMenu(children: [highlights, bookmarks, uploads])
+            menu: UIMenu(children: [
+                UIMenu(options: .displayInline, children: [lurker]),
+                highlights, bookmarks, uploads,
+            ])
         )
         item.accessibilityLabel = "More"
         return item
@@ -1670,28 +1670,18 @@ final class BufferListViewController: UICollectionViewController {
     }
 }
 
-// MARK: - The shared title pill
+// MARK: - Title
 
-/// The same pill the chat screen wears, in the same centre spot — literally the same view,
-/// owned by `NavigationPill`. The one control that means "Lurker, and how it's doing" is in
-/// one place on both screens. It stands in for the Lurker row this list used to carry, moving
-/// that status off a row (which read oddly above the grids) and into the bar.
-extension BufferListViewController: PillPresenting {
+extension BufferListViewController {
 
     /// Fixed except for the light: this screen is the app, not a buffer, so it always reads
     /// "Lurker" and follows the socket rather than any one network.
-    var pillContent: PillContent {
-        PillContent(
+    var statusTitle: StatusTitle {
+        StatusTitle(
             title: Buffer.system.displayName(),
             status: StatusLight.of(reachable: state.reachable, connection: state.connection, network: nil),
-            hint: "Opens the Lurker buffer"
+            detail: nil
         )
-    }
-
-    /// Opens the system buffer rather than a buffer-info sheet, which is what the chat screen's
-    /// tap does — this screen *is* the app, so there's no one buffer to describe.
-    func pillTapped() {
-        openSystemBuffer()
     }
 }
 
@@ -1899,14 +1889,9 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
 
 // MARK: - Search presentation
 
-/// Search presents *over* this screen without changing the navigation stack, so everything the
-/// bar is wearing stays put underneath it — including the pill, which belongs to the stack
-/// rather than to any one screen.
-///
-/// The delegate lives here rather than on the results screen because these callbacks are about
-/// what *this* screen does while it's covered. What the results need from them, they're asked
-/// for directly: a plain method call reads better than forwarding a protocol, and it keeps the
-/// results screen from having to know that a pill exists.
+/// The delegate lives here rather than on the results screen because the search controller
+/// belongs to this screen. What the results need from its callbacks, they're asked for
+/// directly: a plain method call reads better than forwarding a protocol.
 extension BufferListViewController: UISearchControllerDelegate {
 
     func willPresentSearchController(_ searchController: UISearchController) {
@@ -1914,17 +1899,5 @@ extension BufferListViewController: UISearchControllerDelegate {
         // isn't asking — the results screen is reused across searches and can still be holding
         // the last one.
         searchResults.syncToField(searchController.searchBar.text ?? "")
-        // "Lurker" floating over a search field belongs to neither: the pill names this screen,
-        // and this screen is no longer the one you're looking at.
-        navigationPill?.isSuppressed = true
-    }
-
-    func willDismissSearchController(_ searchController: UISearchController) {
-        // On `willDismiss`, so the pill fades back in alongside the results leaving rather than
-        // popping in after them. Note this also runs when a tapped result has *already*
-        // navigated — the stack is on the chat screen by then, and the pill correctly returns
-        // wearing that buffer's name, because suppression only ever hid what the stack asked
-        // for rather than overwriting it.
-        navigationPill?.isSuppressed = false
     }
 }

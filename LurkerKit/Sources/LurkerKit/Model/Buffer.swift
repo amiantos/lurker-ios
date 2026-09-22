@@ -201,9 +201,9 @@ public struct Buffer: Equatable, Sendable {
 
     /// What to call this buffer wherever the user sees it.
     ///
-    /// Shared rather than per-screen: the title pill and the buffer switcher name the same
+    /// Shared rather than per-screen: the chat title and the buffer switcher name the same
     /// buffer one tap apart, and two copies of this drifted immediately — the switcher
-    /// called a server log "Server" while the pill it opened called it "libera".
+    /// called a server log "Server" while the title it opened called it "libera".
     ///
     /// `networkName` is the network this buffer belongs to, when it's known; only a server
     /// log uses it, and it falls back rather than requiring the caller to have resolved the

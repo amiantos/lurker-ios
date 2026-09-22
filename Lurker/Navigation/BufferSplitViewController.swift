@@ -6,15 +6,13 @@ import UIKit
 
 /// The iPad root: the buffer list and the conversation, side by side.
 ///
-/// iPad only — the phone keeps a plain `PilledNavigationController` root, untouched by any of
+/// iPad only — the phone keeps a plain `UINavigationController` root, untouched by any of
 /// this — because a split view expands at *any* regular width, including a Pro Max in
 /// landscape.
 ///
-/// Both columns are `PilledNavigationController`s, which is what brings the status pill along
-/// for free: `navigationPill` resolves through `navigationController`, so each column's screens
-/// find their own column's pill, and the two already do the two jobs a split needs. The list's
-/// reads "Lurker" and follows the socket — on the phone that vanishes the moment you open a
-/// buffer, here the column is always up, so it becomes a permanent connection indicator.
+/// The list's title reads "Lurker" with the socket's light under it — on the phone that
+/// vanishes the moment you open a buffer, here the column is always up, so it becomes a
+/// permanent connection indicator.
 ///
 /// The secondary column is never empty: nothing selected means `Buffer.system` — the app-wide
 /// Lurker log, and NOT a network's `.server` buffer, which this codebase keeps sharply
@@ -31,8 +29,8 @@ final class BufferSplitViewController: UISplitViewController {
     /// since you can also open that deliberately, and then collapsing should leave you in it.
     private(set) var selection: BufferKey?
 
-    private let listNav = PilledNavigationController()
-    private let chatNav = PilledNavigationController()
+    private let listNav = UINavigationController()
+    private let chatNav = UINavigationController()
 
     private var list: BufferListViewController? {
         listNav.viewControllers.first as? BufferListViewController
@@ -72,7 +70,7 @@ final class BufferSplitViewController: UISplitViewController {
         preferredDisplayMode = .oneBesideSecondary
         preferredSplitBehavior = .tile
         // No hide-the-sidebar button and no swipe: the list stays up, as it does in Messages.
-        // The bar also can't afford one — a ~320pt column already carrying the status pill, and
+        // The bar also can't afford one — a ~320pt column already carrying the title, and
         // UIKit answers an overfull bar by dropping trailing items rather than overflowing
         // them. With the display-mode button present, the join "+" was measured going missing.
         presentsWithGesture = false

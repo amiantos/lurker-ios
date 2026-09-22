@@ -307,10 +307,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             if let restored { split.showBuffer(restored, animated: false) }
             setRoot(split, as: .main, animated: animated)
         } else {
-            // Pilled, so the status pill belongs to the stack rather than to either screen —
-            // see NavigationPill. Its `viewDidLoad` installs the pill, which the calls below
-            // trigger.
-            let nav = PilledNavigationController()
+            let nav = UINavigationController()
             // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
             nav.navigationBar.prefersLargeTitles = true
             navigation = nav
@@ -333,7 +330,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         dismissPresented()
         navigation = nil
         split = nil
-        let nav = PilledNavigationController()
+        let nav = UINavigationController()
         nav.setViewControllers([LoginViewController(viewModel: viewModel)], animated: false)
         setRoot(nav, as: .login, animated: animated)
     }

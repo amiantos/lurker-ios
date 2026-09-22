@@ -5,16 +5,16 @@ import Combine
 import LurkerKit
 import UIKit
 
-/// What this buffer *is*, rather than what's been said in it — the title pill expands into
-/// this. A channel gets its topic, a count of who's here, and how it notifies; a DM gets
+/// What this buffer *is*, rather than what's been said in it — the chat screen's info
+/// button opens this. A channel gets its topic, a count of who's here, and how it notifies; a DM gets
 /// the person and how it notifies; a server log gets the connection behind it and the
 /// verbs that change it (#152); a DCC chat gets its session and the verb that ends or restarts
 /// it, then the person (lurker#270).
 ///
-/// The pill means the same thing on every buffer: "about this one". That's why a DM lands
+/// The button means the same thing on every buffer: "about this one". That's why a DM lands
 /// here and not straight in a whois — whois is about a *person*, and a person is one of
 /// the things a DM is about, not the whole of it. It gets a row that leads there (#12),
-/// the same way a channel's members do, so the pill keeps one meaning and whois still has
+/// the same way a channel's members do, so the button keeps one meaning and whois still has
 /// somewhere to live. That row is live now.
 ///
 /// Notification rows are placeholders and say so. The per-channel flag they'll drive
@@ -251,7 +251,7 @@ final class BufferInfoViewController: UITableViewController {
     /// has no topic, no members, no connection of its own and nothing to notify about — and,
     /// for the moment before the store holds its network, a server log.
     ///
-    /// The pill opens this sheet from every buffer — that consistency is the point of the pill —
+    /// The info button opens this sheet from every buffer — that consistency is its point —
     /// so the honest answer to "what is there to configure here" has to be a sentence rather than
     /// a blank sheet with a Done button.
     private lazy var emptyLabel: UILabel = {
@@ -346,7 +346,7 @@ final class BufferInfoViewController: UITableViewController {
             var content = UIListContentConfiguration.valueCell()
             content.text = "Status"
             content.secondaryText = row.connection.label
-            // The networks screen's row in miniature, and the same light the pill behind this
+            // The networks screen's row in miniature, and the same light the title behind this
             // sheet is showing.
             content.setStatusDot(row.light)
             cell.contentConfiguration = content
@@ -438,7 +438,7 @@ final class BufferInfoViewController: UITableViewController {
     ///
     /// A refusal that arrives after Done was tapped goes nowhere: this sheet is what shows
     /// it, and the sheet is gone. The slash-command form of the same verb prints into the
-    /// buffer instead; here, a pill light that didn't move is what's left to notice.
+    /// buffer instead; here, a title light that didn't move is what's left to notice.
     private func perform(_ action: NetworkAction) {
         guard let networkId = buffer.networkId else { return }
         // Whatever the last attempt said is now stale — a new attempt is under way. The

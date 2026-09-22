@@ -932,7 +932,7 @@ extension UIFont {
     var bold: UIFont { withTrait(.traitBold) }
     var italic: UIFont { withTrait(.traitItalic) }
 
-    /// One weight step up, for the nick above a bubble and the pill's title. `size: 0`
+    /// One weight step up, for the nick above a bubble. `size: 0`
     /// keeps the descriptor's own size, so a text style's Dynamic Type scaling survives.
     var semibold: UIFont {
         let descriptor = fontDescriptor.addingAttributes([

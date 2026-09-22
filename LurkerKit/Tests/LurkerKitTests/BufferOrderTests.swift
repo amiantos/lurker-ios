@@ -140,7 +140,7 @@ final class BufferOrderTests: XCTestCase {
     }
 
     func testTheSystemBufferHasNoNetworkSection() {
-        // It has no network and no row of its own — it's the title pill in the bar.
+        // It has no network and no row of its own — it's opened from the buffer list's menu.
         let grouped = BufferOrder.byNetwork([Buffer.system, buffer("#chan")], excluding: [])
         XCTAssertEqual(grouped.count, 1)
         XCTAssertEqual(grouped[1]?.map(\.target), ["#chan"])

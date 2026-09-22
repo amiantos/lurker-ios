@@ -24,7 +24,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private let tableView = UITableView()
     /// The floating "your connection is unhappy" capsule at the top — offline/connecting/
-    /// reconnecting in words, the loud counterpart to the title pill's dot (#19).
+    /// reconnecting in words, the loud counterpart to the subtitle's light (#19).
     private let connectionBanner = ConnectionBanner()
     /// The empty/loading placeholder drawn behind an empty message list — the difference
     /// between "still fetching" and "genuinely nothing here", which a blank list conflates.
@@ -68,11 +68,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
     /// only decides whether the breathing gap applies (see `keyboardWillChange`).
     private var keyboardOverlap: CGFloat = 0
-
-    /// The pill's light. Stored, unlike its title, because the state it comes from arrives by
-    /// subscription and isn't kept — `updateTitle` is the one place it's recomputed. Amber
-    /// until the first state lands: this screen is built before there's anything to ask.
-    private var pillStatus: StatusLight = .warn
 
     private var messages: [Message] = [] // filtered to what this buffer renders; drives anchoring + mark-read
     private var rows: [MessageRow] = [] // messages + dividers; what the table renders
@@ -304,12 +299,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         view.backgroundColor = .systemBackground
 
         // Explicitly never, not `.automatic`: automatic *inherits* from the screen below,
-        // which is the buffer list and its large title — leaving this screen a tall empty
-        // band under a pill that is already the title.
+        // which is the buffer list and its large title — a conversation shouldn't give a
+        // tall band of the screen to its own name.
         navigationItem.largeTitleDisplayMode = .never
         // No leading item: the navigation controller's own back button goes there, and the
         // buffer list it returns to is this screen's parent rather than a sheet it summons.
-        navigationItem.rightBarButtonItem = overflowItem()
+        //
+        // Info next to the menu rather than inside it: the sheet holds the member list and
+        // this buffer's settings, and it used to be one tap on the title — burying it a level
+        // down would have made the most-used sheet on this screen the slowest to reach. First element is the trailing-most, so the menu keeps its corner.
+        navigationItem.rightBarButtonItems = [overflowItem(), infoItem()]
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -417,8 +416,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // every position; the notifications below only add the breathing gap.
         composerBottom = composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
         NSLayoutConstraint.activate([
-            // Full height, under everything. The conversation scrolls beneath the floating
-            // title pill at the top and the floating composer at the bottom, and off into
+            // Full height, under everything. The conversation scrolls beneath the glass
+            // navigation bar at the top and the floating composer at the bottom, and off into
             // both safe areas — `updateBottomInset` reserves the composer's height as inset
             // so the newest message still clears it.
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -427,10 +426,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             // Centered just below the nav bar — the safe-area top sits right under it, so
-            // the capsule drops into the gap between the title pill and the conversation.
+            // the capsule drops into the gap between the bar and the conversation.
             //
-            // ⚠ The safe area horizontally too, matching the title pill and the buffer list's
-            // own banner. In a split view this view is the full width of the window with the
+            // ⚠ The safe area horizontally too, matching the buffer list's own banner. In a split view this view is the full width of the window with the
             // sidebar tiled over its leading edge, so centring on `view` would put the capsule
             // ~165pt left of the column, half under the list. Same guide, same reason.
             connectionBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
@@ -495,7 +493,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func subscribeToState() {
         cancellables.removeAll()
         // Re-render when this buffer's messages or the error change — a frame for some
-        // other channel shouldn't reload this screen. The title pill's light also depends
+        // other channel shouldn't reload this screen. The title's light also depends
         // on the socket, the network path, and this buffer's network, so those count too.
         //
         // `buffers[key]` is in here for hydration, not for rendering: a shell arriving for
@@ -712,15 +710,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         nickHighlighter = NickHighlighter(nicks: names)
     }
 
-    /// What the pill calls this buffer. The system buffer's connection state used to be
-    /// spelled out here as the title text ("Connecting…"); it's the pill's light now.
+    /// What the title calls this buffer.
     private var displayName: String {
         buffer.displayName(networkName: buffer.networkId.flatMap { networks[$0]?.name })
     }
 
     /// What the empty field says: the network's name — the transport, the way iMessage
     /// captions its field "iMessage" or "Text Message" rather than the recipient, who is
-    /// already named by the title pill. Re-read on every `apply`, because a network the
+    /// already named by the title. Re-read on every `apply`, because a network the
     /// snapshot materialized has no name until the REST roster lands (#136) — and until it
     /// does, the fallback below is what shows, rather than a placeholder posing as a name.
     /// The system buffer is the app's own command console, so it invites one.
@@ -1563,8 +1560,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
+    /// The title, and the light in the subtitle under it.
+    ///
+    /// Runs on every apply, which is also what keeps it right across a rename (`buffer` is
+    /// swapped under it) and when a network's name arrives after the network did (#136).
     private func updateTitle(_ state: ChatState) {
-        pillStatus = buffer.kind == .dcc
+        let status = buffer.kind == .dcc
             // A DCC chat's light is its own session, never the network's (lurker#270) — see
             // `ofDccChat`.
             ? StatusLight.ofDccChat(
@@ -1579,7 +1580,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 // presence is 1.1 (see StatusLight.of).
                 network: buffer.networkId.flatMap { state.networks[$0]?.state }
             )
-        navigationPill?.refresh(from: self)
+        navigationItem.apply(StatusTitle(title: displayName, status: status, detail: titleDetail))
+    }
+
+    /// What the subtitle names beside the light: the network a conversation is on. Nothing for
+    /// a server buffer, whose title already is the network, or for the system buffer, which has
+    /// none. A DCC chat's light is its own session rather than the network (lurker#270), so it
+    /// says that instead.
+    private var titleDetail: String? {
+        switch buffer.kind {
+        case .channel, .dm: buffer.networkId.flatMap { networks[$0]?.name }
+        case .dcc: "DCC chat"
+        case .server, .system: nil
+        }
     }
 
     /// The channel-mode glyph for each current member, keyed by lowercased nick.
@@ -2633,7 +2646,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
 
-    /// What the pill opens: this buffer's own info, not a picker for a different one.
+    /// What the info button opens: this buffer's own info, not a picker for a different one.
     /// Medium-height first, like the nick list — it's a glance about the conversation
     /// behind it, so it leaves that conversation on screen.
     private func showBufferInfo() {
@@ -2669,6 +2682,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
+    /// This buffer's info sheet: its members, its settings, and searching just this buffer.
+    private func infoItem() -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "info.circle"),
+            primaryAction: UIAction { [weak self] _ in self?.showBufferInfo() }
+        )
+        item.accessibilityLabel = "Info"
+        item.accessibilityHint = "Shows this buffer's info and settings"
+        return item
+    }
+
     /// The views menu, opposite the back button: the surfaces you *look at*, as against the
     /// buffer you're in. Search, Highlights, Bookmarks and Uploads — the set the desktop client
     /// keeps in its bottom toolbar (#49), now complete.
@@ -2677,7 +2701,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// where the things that outlast the buffer you happen to be reading belong.
     ///
     /// **Members is deliberately not here.** It describes *this channel*, which is what the
-    /// buffer-info sheet behind the title pill is for — and that sheet already lists it. A
+    /// buffer-info sheet behind the info button is for — and that sheet already lists it. A
     /// second door to the same room, one that had to be conditioned on `buffer.kind` because
     /// a DM has nobody to list, only made this menu's contents depend on which buffer you
     /// happened to open. Everything left is app-scoped and present on every buffer, so the
@@ -2687,7 +2711,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func overflowItem() -> UIBarButtonItem {
         let actions: [UIMenuElement] = [
             // Unscoped, like everything else in this menu. Searching *this* buffer is a fact
-            // about this buffer, so it lives in the buffer-info sheet behind the title pill,
+            // about this buffer, so it lives in the buffer-info sheet behind the info button,
             // where the per-buffer things are — see `BufferInfoViewController`.
             UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
                 guard let self else { return }
@@ -3228,21 +3252,3 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
 }
-
-// MARK: - The shared title pill
-
-extension ChatViewController: PillPresenting {
-
-    /// The title is computed rather than stored so it is right from the moment this screen
-    /// exists: the pill is asked for its content as the push *begins*, which is before any
-    /// state has arrived, and a stored title would leave the pill briefly blank and then
-    /// cross-fade the buffer's name in on top of a transition that was already running.
-    var pillContent: PillContent {
-        PillContent(title: displayName, status: pillStatus, hint: "Shows this buffer's info and settings")
-    }
-
-    func pillTapped() {
-        showBufferInfo()
-    }
-}
-

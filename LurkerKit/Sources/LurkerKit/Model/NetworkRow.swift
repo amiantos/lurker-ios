@@ -30,7 +30,7 @@ public struct NetworkRow: Equatable, Sendable {
         self.isBlocked = isBlocked
     }
 
-    /// The dot, sharing the buffer pill's three-state vocabulary so one colour means one
+    /// The dot, sharing the buffer title's three-state vocabulary so one colour means one
     /// thing across the app. Amber is "still trying", red is "not fixing itself".
     ///
     /// Follows the connection alone. Blocked is a fact about what this network can do *next*,

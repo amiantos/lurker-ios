@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-/// The indicator light shown in a buffer's title pill, mirroring the web client's
+/// The indicator light shown under a buffer's title, mirroring the web client's
 /// `.indicator` dots (`good` / `warn` / `bad`).
 ///
 /// Three states, not two: amber is the honest default while something is still trying,

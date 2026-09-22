@@ -28,7 +28,7 @@ public enum BufferOrder {
     /// The buffers each network section lists, grouped by network id.
     ///
     /// Two things don't appear here. The **system buffer** has no network and no row of its
-    /// own — it's the title pill in the bar. And a **favorited** buffer lives in its
+    /// own — it's opened from the buffer list's menu. And a **favorited** buffer lives in its
     /// Friends/Favorites chip: the favorite is a relocation, not a shortcut, matching the web
     /// (`isFavoriteBuf`, which filters them out of both halves of every network group).
     ///

@@ -6,8 +6,8 @@ import UIKit
 
 /// The message composer, in the shape Messages uses: a glass field that grows with the
 /// text, flanked by a paperclip and a round send button. It floats over the conversation
-/// rather than sitting on an opaque bar — the same iOS 26 glass the title pill and nav bar
-/// use — so the messages scroll *under* it and off the bottom of the screen.
+/// rather than sitting on an opaque bar — the same iOS 26 glass the nav bar
+/// uses — so the messages scroll *under* it and off the bottom of the screen.
 ///
 /// The three pieces live in one `UIGlassContainerEffect`, which gives them a shared
 /// sampling region: at rest they read as three separate pills, but interacting with one
