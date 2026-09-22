@@ -78,6 +78,17 @@ final class CommandCompletionTests: XCTestCase {
         )
     }
 
+    /// Completion reads the typed words now rather than counting them. For every single-form
+    /// command that must come to the same thing — including a trailing `rest` slot, which keeps
+    /// answering past its end.
+    func testARestSlotKeepsAnsweringPastTheEnd() {
+        XCTAssertEqual(
+            CommandCompletion.context(in: "/op a b c", caret: 9),
+            .argument(verb: "op", index: 2, kind: .nick, query: "c",
+                      range: NSRange(location: 8, length: 1))
+        )
+    }
+
     // MARK: - No completion
 
     func testFreeTextSlotYieldsNothing() {

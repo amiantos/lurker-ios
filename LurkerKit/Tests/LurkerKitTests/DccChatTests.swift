@@ -132,6 +132,35 @@ final class DccChatTests: XCTestCase {
         XCTAssertEqual(effects.count, 1)
     }
 
+    // MARK: - /dcc help and completion
+
+    /// Both come from the spec, and one positional list could only describe `/dcc` as a shape
+    /// neither form has (`/dcc <chat|close chat> <nick>`, no `-passive`).
+    func testTheHelpShowsBothFormsAsTheyAreTyped() {
+        XCTAssertEqual(
+            CommandRegistry.spec(for: "dcc")?.usage,
+            "/dcc chat [-passive] <nick> · /dcc close chat <nick>"
+        )
+    }
+
+    private func completes(_ text: String) -> ArgKind? {
+        guard case .argument(_, _, let kind, _, _) =
+            CommandCompletion.context(in: text, caret: (text as NSString).length)
+        else { return nil }
+        return kind
+    }
+
+    func testCompletionFindsTheNickInEitherForm() {
+        XCTAssertEqual(completes("/dcc chat b"), .nick)
+        XCTAssertEqual(completes("/dcc chat "), .nick, "the optional flag is skipped")
+        XCTAssertEqual(completes("/dcc chat -passive b"), .nick)
+        XCTAssertEqual(completes("/dcc close chat b"), .nick)
+        XCTAssertNil(completes("/dcc close b"), "the word after close is `chat`, not a nick")
+        XCTAssertNil(completes("/dcc chat -pa"), "a flag is typed, not completed")
+        XCTAssertNil(completes("/dcc ch"))
+        XCTAssertNil(completes("/dcc chat bob b"), "nothing after the nick")
+    }
+
     // MARK: - Bare /whois and /ping in a chat
 
     /// ⚠⚠ Both put their argument on the IRC wire, and `/ping` as a CTCP no server guard covers —

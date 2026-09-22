@@ -65,29 +65,44 @@ public enum CommandCompletion {
         // Walk the argument tokens to find which one the caret sits in (or the empty slot it's
         // poised to start).
         var argIndex = 0
+        // The whole tokens before the one under the caret — what a command with several forms
+        // (`/dcc`) reads to tell which form is being typed.
+        var preceding: [String] = []
         var scan = verbEnd
         while scan < chars.count {
             while scan < chars.count, isWhitespace(chars[scan]) { scan += 1 }
             let tokenStart = scan
             // Caret is in the whitespace gap before this token → an empty new argument here.
             if caret < tokenStart {
-                return argument(spec: spec, index: argIndex, query: "", range: NSRange(location: caret, length: 0))
+                return argument(
+                    spec: spec, index: argIndex, preceding: preceding, query: "",
+                    range: NSRange(location: caret, length: 0)
+                )
             }
             while scan < chars.count, !isWhitespace(chars[scan]) { scan += 1 }
             let tokenEnd = scan
             if caret >= tokenStart, caret <= tokenEnd {
                 let query = string(chars[tokenStart..<caret])
-                return argument(spec: spec, index: argIndex, query: query, range: NSRange(location: tokenStart, length: tokenEnd - tokenStart))
+                return argument(
+                    spec: spec, index: argIndex, preceding: preceding, query: query,
+                    range: NSRange(location: tokenStart, length: tokenEnd - tokenStart)
+                )
             }
+            preceding.append(string(chars[tokenStart..<tokenEnd]))
             argIndex += 1
         }
         // Caret is past the last token, in trailing whitespace → a fresh empty argument.
-        return argument(spec: spec, index: argIndex, query: "", range: NSRange(location: caret, length: 0))
+        return argument(
+            spec: spec, index: argIndex, preceding: preceding, query: "",
+            range: NSRange(location: caret, length: 0)
+        )
     }
 
     /// Wrap an argument slot in a `Context`, but only when its kind is one we can suggest for.
-    private static func argument(spec: CommandSpec, index: Int, query: String, range: NSRange) -> Context? {
-        let kind = spec.argKind(at: index)
+    private static func argument(
+        spec: CommandSpec, index: Int, preceding: [String], query: String, range: NSRange
+    ) -> Context? {
+        let kind = spec.argKind(after: preceding, typing: query)
         guard kind == .channel || kind == .nick else { return nil }
         return .argument(verb: spec.name, index: index, kind: kind, query: query, range: range)
     }
