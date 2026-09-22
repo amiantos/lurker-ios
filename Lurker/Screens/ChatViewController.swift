@@ -424,9 +424,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // Centered just below the nav bar — the safe-area top sits right under it, so
             // the capsule drops into the gap between the bar and the conversation.
             //
-            // ⚠ The safe area horizontally too, matching the buffer list's own banner. In a split view this view is the full width of the window with the
-            // sidebar tiled over its leading edge, so centring on `view` would put the capsule
-            // ~165pt left of the column, half under the list. Same guide, same reason.
+            // ⚠ The safe area horizontally too, matching the buffer list's own banner. In a
+            // split view this view is the full width of the window with the sidebar tiled over
+            // its leading edge, so centring on `view` would put the capsule ~165pt left of the
+            // column, half under the list. Every floating control below uses the same guide for
+            // the same reason — and the iPhone Duo's side rail is another inset like it.
             connectionBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             connectionBanner.leadingAnchor.constraint(
@@ -443,32 +445,50 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // Above the composer so it clears the newest message's landing zone, on the
             // trailing edge where Messages and Slack put theirs. Anchored to the composer,
             // so the keyboard carries both up together.
-            jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            //
+            // ⚠ To the composer's MARGINS, not the view's edge: that's what lines it up over
+            // the send button, which sits inside them. The margins include the safe area, so
+            // they move in wherever the screen's edge isn't usable — the iPhone Duo's side rail,
+            // a notched phone in landscape — and the view's edge doesn't. Pinned to the view,
+            // the button sat under the Duo's rail, off the end of the composer.
+            jumpButton.trailingAnchor.constraint(equalTo: composer.layoutMarginsGuide.trailingAnchor),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
             // Up at the top, where it's pointing — the connection banner's slot, which the two
             // take turns in (see `updateFloatingPills`). Down at the bottom, up at the top: each
             // control sits on the edge it takes you to, and neither covers the newest message.
-            unreadBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            unreadBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             unreadBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            unreadBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            unreadBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            unreadBanner.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            unreadBanner.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
 
             // The suggestion pills: centered over the field for tap reach (the jump pill
             // owns the trailing edge), riding the composer for the same
             // keyboard-carries-both reason. The edge insets only bite on a title long
             // enough to need truncating.
-            suggestions.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            suggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            suggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            suggestions.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            suggestions.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            suggestions.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
             suggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
 
             // Centered just above the composer, riding it up with the keyboard — the same
             // slot the suggestion pills use, which is fine because an upload and mid-token
             // completion never run at once.
-            uploadStatus.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            uploadStatus.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            uploadStatus.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            uploadStatus.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            uploadStatus.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            uploadStatus.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
             uploadStatus.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
