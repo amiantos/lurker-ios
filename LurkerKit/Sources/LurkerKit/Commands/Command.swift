@@ -14,7 +14,8 @@ import Foundation
 ///  - `/set` `/get` — web-only settings console; iOS settings are a native screen (#20).
 ///  - `/network` `/net` — network CRUD is REST-heavy and owns its own issue (#11).
 ///  - `/highlight` `/unhighlight` — highlight-rule management, still unported (#13).
-///  - `/dcc` `/e2e` `/list` `/jitsi` `/clear` — web-specific or unbuilt features.
+///  - `/e2e` `/list` `/jitsi` — web-specific or unbuilt features. `/dcc` carries its chat verbs
+///    only; DCC file transfers have no screen here, and say so.
 ///  - `/server` — adding a network is a form on this client (the networks screen), not a
 ///    command; intercepted with a note rather than left to the raw fallback.
 
@@ -114,6 +115,16 @@ public enum CommandEffect: Equatable, Sendable {
     /// Restart the issuing buffer's network — `/reconnect`. Idempotent server-side: it works
     /// whether the network is up, mid-retry, or stopped after a `/disconnect`.
     case reconnect
+    /// Open a DCC chat with `nick` on the issuing buffer's network — `/dcc chat` (lurker#270).
+    /// Also how an offer `nick` made us is ACCEPTED: the server answers a waiting offer rather
+    /// than making a counter-offer, the same doubling irssi's `/dcc chat` has.
+    ///
+    /// A REST verb (`POST /api/dcc/chat`), like the connection ones: the server answers once the
+    /// offer is away, and everything after — connected, refused, timed out — arrives as notices
+    /// in the chat's `=nick` buffer. `passive` asks the peer to listen instead of us.
+    case dccChat(nick: String, passive: Bool)
+    /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs — `/dcc close chat`.
+    case dccCloseChat(nick: String)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -155,6 +166,12 @@ public enum ArgKind: Equatable, Sendable {
     case word
     /// Your own new nick — a value only you can supply.
     case newNick
+    /// A literal word, typed as-is — `chat` in `/dcc chat <nick>`. Shown bare in usage, never
+    /// completed, and what tells one of a command's forms from another.
+    case keyword
+    /// An option that may be typed in this position — `-passive`. Always optional: a token that
+    /// doesn't start with `-` skips past it.
+    case flag
     case none
 }
 
@@ -185,7 +202,12 @@ public struct CommandSpec: Equatable, Sendable {
     public let names: [String]
     public let category: CommandCategory
     public let summary: String
-    public let args: [ArgSpec]
+    /// The grammar, one entry per form. Nearly every command has one. `/dcc` has two —
+    /// `chat [-passive] <nick>` and `close chat <nick>` — told apart by their keywords, because
+    /// one positional list could only describe them as a shape neither form actually has.
+    public let forms: [[ArgSpec]]
+    /// The first form: a single-form command's whole grammar.
+    public var args: [ArgSpec] { forms.first ?? [] }
     /// Runs without an active network — the system buffer can issue it (`/away`, `/back`,
     /// `/commands`, `/ignore`, `/unignore`). Everything else needs a channel or DM.
     ///
@@ -200,34 +222,73 @@ public struct CommandSpec: Equatable, Sendable {
         _ category: CommandCategory,
         _ summary: String,
         args: [ArgSpec] = [],
+        forms: [[ArgSpec]]? = nil,
         networkAgnostic: Bool = false
     ) {
         self.names = names
         self.category = category
         self.summary = summary
-        self.args = args
+        self.forms = forms ?? [args]
         self.networkAgnostic = networkAgnostic
     }
 
     /// The canonical name, without the leading slash.
     public var name: String { names[0] }
 
-    /// The kind of the argument at `index`, following a trailing `rest` slot for any index
-    /// past the last declared one (so the third nick of `/op a b c` still reads as a nick).
-    public func argKind(at index: Int) -> ArgKind {
-        guard !args.isEmpty else { return .none }
-        if index < args.count { return args[index].kind }
-        let last = args[args.count - 1]
-        return last.rest ? last.kind : .none
+    /// The kind of the argument being typed, given the whole tokens already typed after the verb
+    /// (`preceding`) and the part of this one before the caret (`typing`).
+    ///
+    /// Resolved from what was typed rather than by counting, so a form's keywords can pick it and
+    /// an optional flag can be there or not: `/dcc close chat b` and `/dcc chat -passive b` both
+    /// land on the nick. The first form the tokens fit answers. For a command with neither — every
+    /// command but `/dcc` — this is exactly a position count, with a trailing `rest` slot answering
+    /// past its end (so the third nick of `/op a b c` still reads as a nick).
+    public func argKind(after preceding: [String], typing: String = "") -> ArgKind {
+        for form in forms {
+            if let kind = Self.kind(in: form, after: preceding, typing: typing) { return kind }
+        }
+        return .none
     }
 
-    /// The usage line shown by `/commands`, e.g. `/msg <nick> [message]`.
+    /// Walk one form. Nil when the typed tokens don't fit it.
+    private static func kind(in form: [ArgSpec], after preceding: [String], typing: String) -> ArgKind? {
+        // A flag slot is filled by a `-` token and skipped by anything else.
+        func skipFlags(_ slot: inout Int, before token: String) {
+            while slot < form.count, form[slot].kind == .flag, !token.hasPrefix("-") { slot += 1 }
+        }
+        var slot = 0
+        for token in preceding {
+            skipFlags(&slot, before: token)
+            guard slot < form.count else {
+                // Past the end, only a trailing `rest` slot takes more.
+                if form.last?.rest == true { continue }
+                return nil
+            }
+            let arg = form[slot]
+            if arg.kind == .keyword, token.lowercased() != arg.label.lowercased() { return nil }
+            slot += 1
+        }
+        skipFlags(&slot, before: typing)
+        if slot < form.count { return form[slot].kind }
+        if let last = form.last, last.rest { return last.kind }
+        return .none
+    }
+
+    /// The usage line shown by `/commands`, e.g. `/msg <nick> [message]` — one per form, joined.
     public var usage: String {
-        let parts = args.map { arg -> String in
+        forms.map { form in
+            (["/" + name] + form.map(Self.usage(of:))).joined(separator: " ")
+        }.joined(separator: " · ")
+    }
+
+    private static func usage(of arg: ArgSpec) -> String {
+        switch arg.kind {
+        case .keyword: return arg.label
+        case .flag: return "[\(arg.label)]"
+        default:
             let inner = arg.rest && arg.kind == .nick ? "\(arg.label)…" : arg.label
             return arg.optional ? "[\(inner)]" : "<\(inner)>"
         }
-        return (["/" + name] + parts).joined(separator: " ")
     }
 }
 
@@ -247,6 +308,14 @@ public enum CommandRegistry {
                     args: [ArgSpec("target", .nick), ArgSpec("type", .word), ArgSpec("args", .text, optional: true, rest: true)]),
         CommandSpec(["ping"], .messaging, "CTCP PING a user",
                     args: [ArgSpec("nick", .nick)]),
+        // irssi's syntax exactly (lurker#270), type-first on close: `/dcc close chat bob`.
+        // `-passive` asks the peer to listen, for when this server can't be reached.
+        CommandSpec(["dcc"], .messaging, "Start a direct (DCC) chat, or end one",
+                    forms: [
+                        [ArgSpec("chat", .keyword), ArgSpec("-passive", .flag, optional: true),
+                         ArgSpec("nick", .nick)],
+                        [ArgSpec("close", .keyword), ArgSpec("chat", .keyword), ArgSpec("nick", .nick)],
+                    ]),
 
         // Channels
         CommandSpec(["join"], .channels, "Join a channel",

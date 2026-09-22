@@ -130,17 +130,23 @@ public enum BufferOrder {
     /// network the same way. All four sigils, via `ChannelName.stripSigils` — a hand-written
     /// `#&` here floated `+`/`!` channels above every named one until lurker-ios#98, which
     /// the web (`stripChannelPrefix`) never did.
+    ///
+    /// A `=bob` DCC chat files among the DMs under its PEER, beside a DM with bob — keyed on the
+    /// buffer name, every chat piled up at the top of the block under `=`. The web does the same
+    /// (`bufferSortKey`). When the two tie, the DM goes first.
     public static func order(_ lhs: Buffer, _ rhs: Buffer) -> Bool {
         func rank(_ kind: BufferKind) -> Int {
             switch kind {
             case .channel: 0
-            case .dm: 1
+            case .dm, .dcc: 1
             case .server: 2
             case .system: 3
             }
         }
         if rank(lhs.kind) != rank(rhs.kind) { return rank(lhs.kind) < rank(rhs.kind) }
-        return ChannelName.stripSigils(lhs.target)
-            .localizedCaseInsensitiveCompare(ChannelName.stripSigils(rhs.target)) == .orderedAscending
+        let byName = ChannelName.stripSigils(DccChat.peer(lhs.target))
+            .localizedCaseInsensitiveCompare(ChannelName.stripSigils(DccChat.peer(rhs.target)))
+        if byName != .orderedSame { return byName == .orderedAscending }
+        return lhs.kind == .dm && rhs.kind == .dcc
     }
 }

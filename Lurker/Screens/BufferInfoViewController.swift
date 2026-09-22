@@ -8,7 +8,8 @@ import UIKit
 /// What this buffer *is*, rather than what's been said in it — the title pill expands into
 /// this. A channel gets its topic, a count of who's here, and how it notifies; a DM gets
 /// the person and how it notifies; a server log gets the connection behind it and the
-/// verbs that change it (#152).
+/// verbs that change it (#152); a DCC chat gets its session and the verb that ends or restarts
+/// it, then the person (lurker#270).
 ///
 /// The pill means the same thing on every buffer: "about this one". That's why a DM lands
 /// here and not straight in a whois — whois is about a *person*, and a person is one of
@@ -57,6 +58,10 @@ final class BufferInfoViewController: UITableViewController {
     /// The connection as last rendered, so a state event that moves it retires a refusal
     /// that was about the old one.
     private var shownConnection: NetworkRow?
+
+    /// The same for a DCC chat's session, as `ChatState.dccChatSession` answers it. Nil for any
+    /// other kind of buffer, and for a chat whose state isn't known yet.
+    private var shownDccLive: Bool?
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -115,6 +120,16 @@ final class BufferInfoViewController: UITableViewController {
         /// One verb that changes it. Only the non-destructive ones reach this sheet — see
         /// `NetworkRow.connectionActions`.
         case networkAction(NetworkAction)
+        /// A DCC chat's session, as a status line (lurker#270). Nil while it can't be known.
+        case dccStatus(live: Bool?)
+        /// End the live session, or offer a new one when there's none — a dead chat can't be
+        /// resumed, only replaced.
+        case dccAction(DccChatAction)
+    }
+
+    private enum DccChatAction: Equatable {
+        case start
+        case end
     }
 
     private struct Section: Equatable {
@@ -136,8 +151,10 @@ final class BufferInfoViewController: UITableViewController {
         // — the footer would sit under rows that contradict it, with no way to clear it short
         // of another verb. The networks screen retires its refusal on a state change too.
         let connection = Self.connectionRow(in: state, networkId: buffer.networkId)
-        if connection != shownConnection {
+        let dccLive = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
+        if connection != shownConnection || dccLive != shownDccLive {
             shownConnection = connection
+            shownDccLive = dccLive
             actionError = nil
         }
         let next = sections(for: state)
@@ -173,6 +190,23 @@ final class BufferInfoViewController: UITableViewController {
             ]
         case .dm:
             return [
+                Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
+                notifications,
+            ]
+        case .dcc:
+            // The session first: whether a line typed here will arrive is the thing about this
+            // buffer most worth knowing, and its verbs live nowhere else a thumb can reach. The
+            // Whois row is the peer's — the profile peels `=` off.
+            //
+            // No verb until the session is known: during a reconnect the list is the last
+            // session's, and End on a chat that has already ended — or Start on one that hasn't —
+            // is a request made on a guess.
+            let session = state.dccChatSession(buffer.key)
+            return [
+                Section(
+                    header: "DCC Chat", footer: actionError,
+                    rows: [.dccStatus(live: session)] + (session.map { [.dccAction($0 ? .end : .start)] } ?? [])
+                ),
                 Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
                 notifications,
             ]
@@ -323,6 +357,20 @@ final class BufferInfoViewController: UITableViewController {
             content.image = UIImage(systemName: action.symbolName)
             cell.contentConfiguration = content
             cell.selectionStyle = .default
+
+        case .dccStatus(let live):
+            var content = UIListContentConfiguration.valueCell()
+            content.text = "Status"
+            content.secondaryText = live.map { $0 ? "Connected" : "Not connected" } ?? "Checking…"
+            content.setStatusDot(live.map { $0 ? .good : .bad } ?? .warn)
+            cell.contentConfiguration = content
+
+        case .dccAction(let action):
+            var content = UIListContentConfiguration.cell()
+            content.text = action == .end ? "End Chat" : "Start New Chat"
+            content.image = UIImage(systemName: action == .end ? "xmark.circle" : "arrow.clockwise")
+            cell.contentConfiguration = content
+            cell.selectionStyle = .default
         }
         return cell
     }
@@ -350,8 +398,34 @@ final class BufferInfoViewController: UITableViewController {
             navigationController?.pushViewController(profile, animated: true)
         case .networkAction(let action):
             perform(action)
-        case .topic, .notifyPlaceholder, .connection:
+        case .dccAction(let action):
+            perform(action)
+        case .topic, .notifyPlaceholder, .connection, .dccStatus:
             break
+        }
+    }
+
+    /// End or restart this DCC chat, pinning a refusal under its section — the connection verbs'
+    /// rules below, with the session standing in for the connection.
+    ///
+    /// Starting one takes the app to this buffer when the server has minted it, which brings
+    /// this sheet down: what happens next is narrated in the chat ("Offered a DCC chat…"), not
+    /// here. Ending one leaves the sheet up so its rows can be seen to move.
+    private func perform(_ action: DccChatAction) {
+        guard let networkId = buffer.networkId else { return }
+        let nick = DccChat.peer(buffer.target)
+        attempt += 1
+        let mine = attempt
+        let sentAgainst = shownDccLive
+        setActionError(nil)
+        Task { [weak self, viewModel] in
+            let refusal: String?
+            switch action {
+            case .start: refusal = await viewModel.openDccChat(networkId: networkId, nick: nick)
+            case .end: refusal = await viewModel.closeDccChat(networkId: networkId, nick: nick)
+            }
+            guard let self, mine == attempt, shownDccLive == sentAgainst, let refusal else { return }
+            setActionError(refusal)
         }
     }
 

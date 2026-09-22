@@ -26,6 +26,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Same shape again: the app owns the OS-facing bit (permission, APNs) and feeds the
     /// resulting token into the view model.
     private let push = PushRegistrar()
+    /// Asks about DCC chat offers (lurker#270). Built in `scene(_:willConnectTo:)`, where the
+    /// window it presents over exists.
+    private var dccOfferPrompt: DccOfferPrompt?
     /// Same shape once more: LurkerKit decides the number, the app makes the
     /// `UserNotifications` call.
     private let badge = AppBadge { count in
@@ -66,36 +69,20 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
         }
 
-        // A join this device asked for (#57). Landing is the same move as a notification tap:
-        // anything presented comes down, then the buffer opens.
-        viewModel.onJoinOpened = { [weak self] key in
-            guard let self, let navigation, viewModel.session == .loggedIn else { return }
-            // Animated only when nothing was up. Sliding a screen in while a sheet is still on its
-            // way down is the animation-fighting-itself the join sheet already avoids.
-            let animated = presentedSheet() == nil
-            dismissPresented()
-            navigation.showBuffer(
-                viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: animated
-            )
-        }
-        // …and one that didn't happen says why, over whatever is on screen: the sheet on top if
-        // there is one, else above a chat screen's composer (which the keyboard carries), else the
-        // buffer list.
-        viewModel.onJoinNotice = { [weak self] notice in
-            // `self.window`, spelled out: this closure sits inside `scene(_:willConnectTo:)`, whose
-            // local `window` a bare name would capture — strongly, from a closure the view model
-            // holds, while the window's screens hold the view model.
-            guard let self, let root = self.window?.rootViewController else { return }
-            let sheet = presentedSheet()
-            let chat = sheet == nil ? ChatViewController.activeChat() : nil
-            ToastView.show(
-                notice.message,
-                symbol: "exclamationmark.circle",
-                over: sheet?.view ?? chat?.view ?? root.view,
-                above: chat?.noticeAnchor,
-                hold: ToastView.readingHoldSeconds
-            )
-        }
+        // A join this device asked for (#57), and a DCC chat it opened or accepted (lurker#270).
+        viewModel.onJoinOpened = { [weak self] key in self?.land(on: key) }
+        viewModel.onDccChatOpened = { [weak self] key in self?.land(on: key) }
+        // …and a join that didn't happen says why.
+        viewModel.onJoinNotice = { [weak self] notice in self?.showNotice(notice.message) }
+        // A DCC chat offer asks, over whatever is on screen (lurker#270).
+        dccOfferPrompt = DccOfferPrompt(
+            viewModel: viewModel,
+            host: { [weak self] in
+                guard let self, viewModel.session == .loggedIn else { return nil }
+                return presentedSheet() ?? self.window?.rootViewController
+            },
+            onRefusal: { [weak self] message in self?.showNotice(message) }
+        )
 
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
@@ -372,6 +359,34 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Drop every sheet, wherever it was presented from. A sheet put up from the conversation
     /// column is attached to *that* column, and the primary's `dismiss` walks up to the split
     /// and never sees it.
+    /// Go to a buffer this device asked to open — a join that landed, a DCC chat that started.
+    /// The same move as a notification tap: anything presented comes down, then the buffer opens.
+    private func land(on key: BufferKey) {
+        guard let navigation, viewModel.session == .loggedIn else { return }
+        // Animated only when nothing was up. Sliding a screen in while a sheet is still on its
+        // way down is the animation-fighting-itself the join sheet already avoids.
+        let animated = presentedSheet() == nil
+        dismissPresented()
+        navigation.showBuffer(
+            viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: animated
+        )
+    }
+
+    /// Say something that went wrong, over whatever is on screen: the sheet on top if there is
+    /// one, else above a chat screen's composer (which the keyboard carries), else the buffer list.
+    private func showNotice(_ message: String) {
+        guard let root = window?.rootViewController else { return }
+        let sheet = presentedSheet()
+        let chat = sheet == nil ? ChatViewController.activeChat() : nil
+        ToastView.show(
+            message,
+            symbol: "exclamationmark.circle",
+            over: sheet?.view ?? chat?.view ?? root.view,
+            above: chat?.noticeAnchor,
+            hold: ToastView.readingHoldSeconds
+        )
+    }
+
     private func dismissPresented() {
         if let split {
             split.dismissPresented()

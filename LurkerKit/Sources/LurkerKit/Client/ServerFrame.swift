@@ -283,6 +283,19 @@ enum ServerFrame: Equatable, Sendable {
     /// drop: it is how "cleared" arrives.
     case awayState(networkId: Int, away: AwayState?)
 
+    /// A `dcc-chat-offer` ephemeral (lurker#270): `nick` wants to open a DCC chat with us.
+    /// Nothing is dialled until we accept. Network-scoped via a `:server:<id>` carrier target;
+    /// the peer rides in `from`, not `target`.
+    case dccChatOffer(networkId: Int, nick: String, passive: Bool)
+
+    /// A `dcc-chat-offer-closed` ephemeral: `nick`'s offer is gone — accepted, declined,
+    /// expired or torn down. Whatever was asking about it should stop.
+    case dccChatOfferClosed(networkId: Int, nick: String)
+
+    /// A `dcc-chat-state` ephemeral: a session with `nick` opened (`live`) or ended. The live set
+    /// also rides every snapshot, which is what a fresh connect reads.
+    case dccChatState(networkId: Int, nick: String, live: Bool)
+
     /// WS `pins-changed`: this network's pinned buffers, in the user's order.
     ///
     /// Authoritative and wholesale — the server re-sends the whole list on every pin, unpin
@@ -392,6 +405,11 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// superset of what can be shown, since a pin row survives its buffer being parted or
     /// closed.
     var pinned: [String] = []
+    /// Peers with a live DCC chat on this network (lurker#270) — listed for a disconnected
+    /// network too, because a chat's socket outlives the IRC link.
+    var dccChats: [String] = []
+    /// Peers whose DCC chat offer to us still awaits an answer.
+    var dccChatOffers: [String] = []
 }
 
 struct ChannelSnapshot: Equatable, Sendable {

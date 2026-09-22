@@ -189,6 +189,11 @@ public final class IgnoreSet: Sendable {
     /// all four sigils (lurker#724), so a DMs-level rule and an `&local` channel rendered two
     /// ways on one account — hidden on iOS, visible on the web. The classification now comes
     /// from `ChannelName.isChannelTarget`, the one definition both tiers mirror.
+    ///
+    /// A `=bob` DCC chat counts, deliberately (lurker#270): the verdict the server reaches for
+    /// its lines comes from `wsHub.isDmTarget`, which counts it too, so a DMs-level rule covers a
+    /// direct chat on both tiers. (`isDmTargetName` does NOT count it — but that one asks "can
+    /// this go on the IRC wire", not "is this direct conversation".)
     static func isDmTarget(_ target: String) -> Bool {
         !target.isEmpty && !ChannelName.isChannelTarget(target) && !target.hasPrefix(":server:")
     }

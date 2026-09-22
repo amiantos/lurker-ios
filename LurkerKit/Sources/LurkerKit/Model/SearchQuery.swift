@@ -107,7 +107,11 @@ public struct SearchQuery: Equatable, Sendable {
     /// is the part that matters — a channel name colliding across two networks is rare, and a
     /// few extra rows beats a filter that silently means something else.
     public static func scope(for buffer: Buffer, networkName: String?) -> String? {
-        guard buffer.kind == .channel || buffer.kind == .dm, !buffer.target.isEmpty else { return nil }
+        switch buffer.kind {
+        case .channel, .dm, .dcc: break
+        case .server, .system: return nil
+        }
+        guard !buffer.target.isEmpty else { return nil }
         let on = networkName.flatMap { name in
             !name.isEmpty && !name.contains(where: \.isWhitespace) ? " on:\(name)" : nil
         } ?? ""

@@ -51,4 +51,21 @@ extension StatusLight {
         case .disconnected: return .bad
         }
     }
+
+    /// Resolve the light for a `=nick` DCC chat (lurker#270): the same outer layers, then the
+    /// chat's own session in place of the network.
+    ///
+    /// ⚠ Never the network's state. The session is a socket the server holds straight to the
+    /// peer, so it keeps working while the IRC link is down — a network light here went red over
+    /// a chat that worked, and stayed green over one that had died with a server restart.
+    ///
+    /// Red for a chat with no session, not amber: a dead chat is broken and doesn't fix itself —
+    /// it can't be resumed, only replaced with `/dcc chat`. `live` is nil until this socket's
+    /// snapshot has said which chats are live, and that reads amber, like anything still settling.
+    public static func ofDccChat(reachable: Bool, connection: SocketStatus, live: Bool?) -> StatusLight {
+        let outer = of(reachable: reachable, connection: connection, network: nil)
+        guard outer == .good else { return outer }
+        guard let live else { return .warn }
+        return live ? .good : .bad
+    }
 }

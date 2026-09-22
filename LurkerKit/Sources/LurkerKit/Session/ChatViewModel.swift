@@ -67,6 +67,14 @@ public final class ChatViewModel {
     /// app shows it as a toast.
     public var onJoinNotice: ((_ notice: JoinNotice) -> Void)?
 
+    /// A DCC chat this device opened or accepted has a buffer to go to (lurker#270). The app
+    /// navigates, the same move as `onJoinOpened`. Fired with the stored row's key.
+    public var onDccChatOpened: ((_ key: BufferKey) -> Void)?
+
+    /// The DCC chat we just opened, until its `=nick` row exists — see `DccOpens`. Giving up is
+    /// quiet: the chat's notices say what happened, in a buffer the list will show.
+    private var dccOpens = DccOpens()
+
     /// The joins waiting on an answer — see `PendingJoins`, where the rules live and can be tested.
     private var pendingJoins = PendingJoins()
 
@@ -221,6 +229,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
+        dccOpens.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
@@ -727,6 +736,14 @@ public final class ChatViewModel {
                     receipt,
                     in: key
                 )
+            case .dccChat(let nick, let passive):
+                dcc(in: key) { [weak self] networkId in
+                    await self?.openDccChat(networkId: networkId, nick: nick, passive: passive) ?? nil
+                }
+            case .dccCloseChat(let nick):
+                dcc(in: key) { [weak self] networkId in
+                    await self?.closeDccChat(networkId: networkId, nick: nick) ?? nil
+                }
             case .connect:
                 lifecycle(.connect, in: key)
             case .disconnect(let reason):
@@ -764,6 +781,57 @@ public final class ChatViewModel {
                 return
             }
             store.appendLocal(key, text: "\(action.rawValue.capitalized) failed: \(refusal)")
+        }
+    }
+
+    /// Run a `/dcc` verb on `key`'s network and print its refusal, if any, where it was typed.
+    ///
+    /// Silent on success, like `lifecycle` and for the same reason: the server narrates the chat
+    /// itself, in the `=nick` buffer — "Offered a DCC chat…", "connected", "closed" — and a
+    /// receipt here would be the app's own word for something that hasn't happened yet.
+    private func dcc(in key: BufferKey, _ verb: @escaping (Int) async -> String?) {
+        guard let networkId = key.networkId else { return }
+        Task { [weak self] in
+            guard let refusal = await verb(networkId), let self else { return }
+            store.appendLocal(key, text: "/dcc failed: \(refusal)")
+        }
+    }
+
+    /// Offer a DCC chat to `nick`, or accept the one they offered (lurker#270). Nil on success, a
+    /// message otherwise.
+    ///
+    /// On success the app is taken to the chat's `=nick` buffer through `onDccChatOpened` — at
+    /// once if the row exists, else as soon as the server mints it (see `DccOpens`).
+    public func openDccChat(networkId: Int, nick: String, passive: Bool = false) async -> String? {
+        // Taken before the request goes out, so a later open, a close or a sign-out that lands
+        // while it's in flight can make its reply stale — see `DccOpens`.
+        let ticket = dccOpens.begin(networkId: networkId, nick: nick)
+        if let refusal = await client.openDccChat(networkId: networkId, nick: nick, passive: passive) {
+            return refusal
+        }
+        dccOpens.opened(ticket, now: Date())
+        settlePendingDccOpen()
+        return nil
+    }
+
+    /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs. Nil on success.
+    ///
+    /// ⚠ A chat being closed stops being waited for — and so does one whose open is still in
+    /// flight — BEFORE the request goes out. The server writes its "Cancelled…" notice into
+    /// `=nick` as it acts, which mints the row, and that frame usually beats the HTTP reply; a wait
+    /// still standing then would take the user into the chat they were ending. A refused close
+    /// ended nothing, so it puts the wait back.
+    public func closeDccChat(networkId: Int, nick: String) async -> String? {
+        let mark = dccOpens.closing(networkId: networkId, nick: nick)
+        let refusal = await client.closeDccChat(networkId: networkId, nick: nick)
+        if refusal != nil { dccOpens.closeRefused(mark) }
+        return refusal
+    }
+
+    /// Hand a DCC chat's buffer to the app once it exists, or let go once it's clearly not coming.
+    private func settlePendingDccOpen() {
+        if let key = dccOpens.settle(buffers: store.state.buffers, now: Date()) {
+            onDccChatOpened?(key)
         }
     }
 
@@ -1097,8 +1165,13 @@ public final class ChatViewModel {
     ///   without any malformed input at all.
     ///
     /// `setNickNote` trims for the first reason too; both entry points here now agree.
+    ///
+    /// ⚠⚠ And a `=bob` DCC chat buffer name becomes bob. This goes out as a `raw` line, which
+    /// skips every `=` guard the server has — by design, since it is what `/quote` uses — so a
+    /// caller handing over the buffer's target would put `WHOIS =bob` on the wire. Normalized
+    /// here, at the one door every profile goes through, rather than trusted to each screen.
     public func requestWhois(networkId: Int, nick: String) {
-        let nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
+        let nick = DccChat.peer(nick.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !nick.isEmpty, !store.state.isWhoisPending(networkId: networkId, nick: nick)
         else { return }
         if client.sendRaw(networkId: networkId, line: "WHOIS \(nick)") {
@@ -1109,8 +1182,12 @@ public final class ChatViewModel {
     /// Write or clear the note about a nick (#12). No local mutation — the note appears when
     /// the server's `nick-note-updated` echo folds in, like every other server-authoritative
     /// list here. An empty `note` deletes it.
+    ///
+    /// ⚠ A `=bob` DCC chat is a conversation with bob, so its note IS bob's note. The server
+    /// stores whatever nick it is handed, so without this a note written from the chat would be
+    /// filed under `=bob` — a second note about the same person that the DM with bob never shows.
     public func setNickNote(networkId: Int, nick: String, note: String) {
-        client.setNickNote(networkId: networkId, nick: nick, note: note)
+        client.setNickNote(networkId: networkId, nick: DccChat.peer(nick), note: note)
     }
 
     /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
@@ -1458,6 +1535,8 @@ public final class ChatViewModel {
             store.apply(frame)
         }
 
+        settlePendingDccOpen()
+
         // ⚠⚠ AFTER `store.apply`, never before. `primePreviews` reads the settings out of the
         // store to decide whether either feature is on — so running it first meant a
         // `settingsChanged` frame was evaluated against the OLD values, the guard returned
@@ -1583,6 +1662,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
+        dccOpens.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
