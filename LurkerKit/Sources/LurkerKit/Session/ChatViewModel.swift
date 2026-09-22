@@ -812,8 +812,17 @@ public final class ChatViewModel {
     }
 
     /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs. Nil on success.
+    ///
+    /// ⚠ A chat closed before its buffer landed stops being waited for. The server writes its
+    /// "Cancelled…" notice into `=nick`, which mints the row — and a wait left standing would
+    /// then take the user into the chat they had just ended. Only on success: a refused close
+    /// ended nothing, and the chat is still coming.
     public func closeDccChat(networkId: Int, nick: String) async -> String? {
-        await client.closeDccChat(networkId: networkId, nick: nick)
+        let refusal = await client.closeDccChat(networkId: networkId, nick: nick)
+        if refusal == nil, pendingDccOpen?.isFor(networkId: networkId, nick: nick) == true {
+            pendingDccOpen = nil
+        }
+        return refusal
     }
 
     /// Hand a DCC chat's buffer to the app once it exists, or let go once it's clearly not coming.

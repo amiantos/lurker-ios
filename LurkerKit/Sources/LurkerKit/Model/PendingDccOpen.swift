@@ -27,6 +27,11 @@ struct PendingDccOpen: Equatable {
         deadline = now.addingTimeInterval(Self.patience)
     }
 
+    /// Whether this is the wait for a chat with `nick` on that network — folded, as `BufferKey` is.
+    func isFor(networkId: Int, nick: String) -> Bool {
+        key.id == BufferKey(networkId: networkId, target: DccChat.target(for: nick)).id
+    }
+
     enum Outcome: Equatable {
         case waiting
         /// Go there — the stored row's key, in the server's spelling of the name.

@@ -168,7 +168,7 @@ final class DccChatTests: XCTestCase {
         XCTAssertEqual(networks.first?.dccChatOffers, ["carol"])
     }
 
-    func testTheThreeEventsReadThePeerFromFrom() {
+    func testTheThreeEventsNameThePeerInTheFromField() {
         XCTAssertEqual(
             FrameParser.parseWs(##"{"kind":"irc","type":"dcc-chat-offer","networkId":1,"target":":server:1","from":"bob","passive":true}"##),
             .dccChatOffer(networkId: 1, nick: "bob", passive: true)
@@ -314,6 +314,14 @@ final class DccChatTests: XCTestCase {
             pending.settle(buffers: [row.key.id: row], now: opened.addingTimeInterval(1)),
             .open(row.key), "the server's spelling of the name"
         )
+    }
+
+    /// What a close checks before it cancels the wait: the same chat, however it was spelled.
+    func testAWaitKnowsWhichChatItIsFor() {
+        let pending = PendingDccOpen(networkId: 1, nick: "bob", now: opened)
+        XCTAssertTrue(pending.isFor(networkId: 1, nick: "Bob"))
+        XCTAssertFalse(pending.isFor(networkId: 1, nick: "carol"))
+        XCTAssertFalse(pending.isFor(networkId: 2, nick: "bob"))
     }
 
     /// ⚠ The deadline wins over a row that arrives late: by then nobody is waiting for it, and
