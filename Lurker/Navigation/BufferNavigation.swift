@@ -172,11 +172,11 @@ extension UINavigationController {
 
     /// The stack arrangement itself: this conversation, with the list under it.
     ///
-    /// Split out from `showBuffer` so a COLLAPSED split can reuse it. Collapsed, UIKit merges
-    /// the secondary column's contents into the primary's stack, so "the columns" are just
-    /// this — and driving it here rather than through `show(.secondary)` keeps the one
-    /// invariant that matters in both layouts: exactly one chat screen exists, because the
-    /// stack is SET rather than pushed.
+    /// Split out from `showBuffer` so a COLLAPSED split can reuse it. Collapsed, the split keeps
+    /// the conversation on the list's stack (`BufferSplitViewController`'s collapse handling
+    /// puts it there), so "the columns" are just this — and driving it here rather than through
+    /// `show(.secondary)` keeps the one invariant that matters in both layouts: exactly one chat
+    /// screen exists, because the stack is SET rather than pushed.
     func setBufferStack(
         _ buffer: Buffer,
         viewModel: ChatViewModel,

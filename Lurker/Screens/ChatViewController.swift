@@ -622,10 +622,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // …and it's now the most recent, which is what the list promotes. Recorded on
         // appear rather than on the pick, so the launch buffer counts too and a buffer
         // reached any other way can't slip past the bookkeeping.
-        UserPreferences.standard.recordRecentBuffer(buffer.key.id)
-        // …and it's where a relaunch should land (#49). Same moment, same reason: whatever
-        // route brought you here, this is the buffer you were last looking at.
-        UserPreferences.standard.recordLastBuffer(buffer.key)
+        //
+        // Not for the screen the conversation column merely *rests* on (see `isResting`): side
+        // by side, that one appears whenever nothing is picked, and recording it would promote
+        // a buffer nobody opened — and make it the relaunch target, which a later launch at
+        // compact width then opens instead of the list.
+        if !isResting {
+            UserPreferences.standard.recordRecentBuffer(buffer.key.id)
+            // …and it's where a relaunch should land (#49). Same moment, same reason: whatever
+            // route brought you here, this is the buffer you were last looking at.
+            UserPreferences.standard.recordLastBuffer(buffer.key)
+        }
         // An error that landed before we had a window — or while a sheet was covering us —
         // has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
@@ -665,6 +672,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// is what silently disabled the back-out below until it was measured.
     private weak var owningSplit: BufferSplitViewController?
 
+    /// Whether this is the system buffer the conversation column shows when nothing is picked,
+    /// rather than a buffer anyone opened. Opening it on purpose makes it the selection, which
+    /// is what tells the two apart.
+    private var isResting: Bool {
+        buffer.kind == .system && owningSplit?.selection?.id != buffer.key.id
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         if let split = splitViewController as? BufferSplitViewController { owningSplit = split }
@@ -689,7 +703,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `showBufferList` (this buffer vanished) has already cleared it.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        guard navigationController == nil, let split = owningSplit else { return }
+        // A collapse or expand moves this screen between the two navigation controllers in
+        // two steps, and between them it has no parent while the selection still names it —
+        // this method's exact test for a back-out. Measured not to land there, but nothing
+        // promises the ordering, so the split says when it's the one doing the moving.
+        guard navigationController == nil, let split = owningSplit, !split.isRearranging else { return }
         let selected = split.selection
         guard selected == nil || selected?.id == buffer.key.id else { return }
         UserPreferences.standard.forgetLastBuffer()
@@ -831,11 +849,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // The split handles both layouts: collapsed it pops to the list, side by side it
             // clears the selection, which drops the column to the system buffer and un-marks
             // the row that just vanished.
-            if let split = splitViewController as? BufferSplitViewController {
-                split.showBufferList()
-            } else {
-                navigationController?.popToRootViewController(animated: true)
-            }
+            (splitViewController as? BufferSplitViewController)?.showBufferList()
             return true
         }
         sawBufferRow = true
@@ -2450,7 +2464,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// window rather than `self`, so it finds the CURRENT buffer even when the originating VC
     /// is offscreen. Nil when the user has backed out to the list and no buffer is open.
     ///
-    /// ⚠ The window's root is a split view on iPad, so the navigation-controller cast fails
+    /// ⚠ The window's root is a split view, so the navigation-controller cast fails
     /// for every window — silently: an upload's link stops reaching the composer that asked
     /// for it and lands on the clipboard behind an alert instead.
     static func activeChat() -> ChatViewController? {

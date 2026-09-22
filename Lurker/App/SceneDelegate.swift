@@ -295,19 +295,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// root, and the conversation you were in rides across the fold. `BufferSplitViewController`
     /// keeps a Pro Max in landscape collapsed: it only expands at regular × regular.
     private func showMain(animated: Bool) {
-        var restored = launchBuffer()
-        // ⚠ Not `Buffer.system` — the app-wide Lurker log, not a network's `.server` buffer,
-        // which this codebase keeps sharply distinct. Side by side, the conversation column
-        // *rests* on it whenever nothing is picked, and that resting screen records itself as
-        // the last buffer exactly like a screen you chose — so restoring it would turn "nothing
-        // selected" into "the system buffer is selected", and a later collapse would land in it
-        // rather than the list. Collapsed there's no resting screen, so a system buffer you
-        // really were reading is restored like any other.
-        if restored?.kind == .system,
-           let traits = window?.windowScene?.traitCollection,
-           BufferSplitViewController.expands(in: traits) {
-            restored = nil
-        }
+        // A remembered system buffer is restored like any other. That's safe only because the
+        // screen the conversation column merely rests on no longer records itself as the last
+        // buffer (`ChatViewController.isResting`) — so one stored here was opened on purpose.
+        let restored = launchBuffer()
         let split = BufferSplitViewController(viewModel: viewModel)
         self.split = split
         navigation = split.primaryNavigation

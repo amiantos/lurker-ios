@@ -86,8 +86,31 @@ final class BufferBadgeLabel: UILabel {
 /// measured `#E0E0E0` on the white sidebar, `#55585A` on the dark one. It also retires the
 /// elevated-palette rule this replaced, which depended on the sidebar's ground being an
 /// opaque system colour it could predict.
+///
+/// Translucent only where it has to be, though. Collapsed, the ground is ours and known, so the
+/// same fill is composited over `Palette.bg` into an opaque colour that looks identical — and
+/// stays solid where a translucent card shows what's behind it: the lifted preview of a chip
+/// being reordered, and a roster row sliding over its swipe actions.
 extension UIColor {
-    static var bufferCard: UIColor { .tertiarySystemFill }
+    static var bufferCard: UIColor {
+        UIColor { traits in
+            let fill = UIColor.tertiarySystemFill.resolvedColor(with: traits)
+            guard traits.splitViewControllerLayoutEnvironment != .expanded else { return fill }
+            return fill.composited(over: Palette.bg.resolvedColor(with: traits))
+        }
+    }
+
+    /// This colour laid over an opaque `ground`, as a single opaque colour.
+    fileprivate func composited(over ground: UIColor) -> UIColor {
+        var (r, g, b, a): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+        var (gr, gg, gb, ga): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+        guard getRed(&r, green: &g, blue: &b, alpha: &a),
+              ground.getRed(&gr, green: &gg, blue: &gb, alpha: &ga)
+        else { return self }
+        return UIColor(
+            red: r * a + gr * (1 - a), green: g * a + gg * (1 - a), blue: b * a + gb * (1 - a), alpha: 1
+        )
+    }
 }
 
 /// A buffer as a compact card, for the Friends, Favorites and Recent grids.

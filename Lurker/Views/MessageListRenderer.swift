@@ -338,6 +338,26 @@ struct MessageListRenderer {
     }
 }
 
+// MARK: - Side margins
+
+extension MessageListRenderer {
+
+    /// Give a message-list row's content view its own 20pt side margins rather than inheriting
+    /// the table's.
+    ///
+    /// Inherited, they're the table's margins less the safe area, and UIKit lets a wide enough
+    /// safe area swallow the margin instead of adding to it: the iPhone Duo's side rail is an
+    /// 84pt trailing inset, which left the trailing margin at 0 — every timestamp and line end
+    /// flush against the rail's buttons, and every centred marker 10pt off centre. The content
+    /// view is already inset by the safe area, so 20 from its edges is 20 clear of whatever's
+    /// there — measured the same as the inherited value on an iPhone and beside an iPad's
+    /// sidebar, where nothing was swallowed.
+    static func useOwnSideMargins(_ contentView: UIView) {
+        contentView.preservesSuperviewLayoutMargins = false
+        contentView.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)
+    }
+}
+
 // MARK: - Markers
 
 /// A centered marker row — the unread divider, a day change, the start of history, your own
@@ -351,6 +371,9 @@ enum MessageListMarker {
 
     static func cell(_ text: String, color: UIColor, bold: Bool, in tableView: UITableView) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: reuseID)!
+        // Centred text is centred between the margins, so a swallowed one pushes it off centre
+        // by half the difference — see `useOwnSideMargins`.
+        MessageListRenderer.useOwnSideMargins(cell.contentView)
         var content = cell.defaultContentConfiguration()
         content.text = text
         content.textProperties.color = color

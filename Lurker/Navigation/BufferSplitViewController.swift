@@ -108,18 +108,23 @@ final class BufferSplitViewController: UISplitViewController {
         list?.marksOpenBuffer = !isCollapsed
     }
 
+    /// The column rule, re-asserted before every layout as well as on trait changes. The trait
+    /// registration is the real trigger; this is so a launch straight into compact height (a
+    /// Pro Max already on its side) can't lay out expanded once before the registration has
+    /// been heard from. `applyColumnRule` no-ops when nothing would change.
+    override func viewWillLayoutSubviews() {
+        applyColumnRule()
+        super.viewWillLayoutSubviews()
+    }
+
     // MARK: - When to show two columns
 
-    /// Whether a screen with these traits gets both columns: regular in both directions.
+    /// Hold the split collapsed at compact height by telling it its width is compact too, so
+    /// both columns show only at regular × regular.
     ///
     /// Width alone would say yes to a Pro Max in landscape, which is regular wide but compact
     /// tall — a phone on its side, not a place for a sidebar. Height is what separates it from
     /// an iPad and an opened iPhone Duo, which are regular both ways in either orientation.
-    static func expands(in traits: UITraitCollection) -> Bool {
-        traits.horizontalSizeClass == .regular && traits.verticalSizeClass == .regular
-    }
-
-    /// Hold the split collapsed at compact height by telling it its width is compact too.
     ///
     /// A split decides collapsing from its horizontal size class alone and offers no delegate
     /// hook to refuse an expansion, so the override is the lever. It reaches the columns as
@@ -127,9 +132,12 @@ final class BufferSplitViewController: UISplitViewController {
     /// compact wide. Only ever the width, and only ever overridden downward — the height is
     /// read, never changed, so this can't feed back into its own trigger.
     private func applyColumnRule() {
+        let overridden = traitOverrides.contains(UITraitHorizontalSizeClass.self)
         if traitCollection.verticalSizeClass == .compact {
-            traitOverrides.horizontalSizeClass = .compact
-        } else if traitOverrides.contains(UITraitHorizontalSizeClass.self) {
+            // Only when not already set: this runs before every layout, and writing an
+            // override — even an unchanged one — starts a trait update.
+            if !overridden { traitOverrides.horizontalSizeClass = .compact }
+        } else if overridden {
             traitOverrides.remove(UITraitHorizontalSizeClass.self)
         }
     }
@@ -143,12 +151,11 @@ final class BufferSplitViewController: UISplitViewController {
     /// and it forwards here. Collapsed, the columns are one merged stack and `show(.secondary)`
     /// pushes onto it, which is the phone's list-then-chat arrangement.
     func showBuffer(_ buffer: Buffer, jumpTo messageId: Int? = nil, animated: Bool) {
-        // ⚠ Collapsed, `chatNav` is EMPTY — UIKit merged its contents into the primary's
-        // stack, which is what `currentChat` relies on too. So none of the code below applies:
-        // the early-out could never fire (nothing in `chatNav` left to match), and setting a
-        // nav that isn't in the hierarchy would leave `show(.secondary)` doing the real
-        // navigation on semantics we'd be guessing at. Collapsed simply IS the stack
-        // arrangement, so hand it to the one place that builds it.
+        // ⚠ Collapsed, the conversation lives on the LIST's stack — `splitViewControllerDid
+        // Collapse` moved it there, and `chatNav` is off screen and empty. So none of the code
+        // below applies: the early-out could never fire, and `show(.secondary)` would be
+        // navigating a column nobody can see. Collapsed simply IS the stack arrangement, so
+        // hand it to the one place that builds it.
         if isCollapsed {
             selection = buffer.key
             list?.markSelection(buffer.key)
@@ -184,42 +191,63 @@ final class BufferSplitViewController: UISplitViewController {
         list?.markSelection(buffer.key)
     }
 
-    /// The conversation on screen, whichever column holds it. Never nil once signed in, since
-    /// the column rests on the system buffer — which is the right answer: that screen has a
-    /// composer, and is what a finished upload should insert into.
+    /// The conversation on screen, whichever column holds it. Side by side that's never nil,
+    /// since the column rests on the system buffer — which is the right answer: that screen
+    /// has a composer, and is what a finished upload should insert into. Collapsed on the
+    /// list, it's nil: there is no conversation on screen.
     var currentChat: ChatViewController? {
         let nav = isCollapsed ? listNav : chatNav
         return nav.topViewController as? ChatViewController
     }
 
-    /// Forget which conversation is open, and drop the column back to the system buffer. For
-    /// exit this class doesn't own: a Back tap in a collapsed split. `showBufferList` is the
-    /// expanded equivalent, plus showing the primary column — already done by the time a
-    /// collapsed pop reaches here.
+    /// Forget which conversation is open, and put the column back to rest. For exit this class
+    /// doesn't own: a Back tap in a collapsed split. `showBufferList` is the owned equivalent,
+    /// plus getting back to the list — already done by the time a collapsed pop reaches here.
     func clearSelection() {
         guard selection != nil else { return }
         selection = nil
-        chatNav.setViewControllers(
-            [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-        )
+        restColumn()
         list?.markSelection(nil)
     }
 
-    /// Nothing selected: the list, with the system buffer beside it. Where sign-in lands with
-    /// no remembered buffer, and where a buffer that disappears under its reader goes — the
-    /// split's answer to `popToRootViewController`, which has nothing to pop to here.
+    /// The conversation column with nothing picked: the system buffer side by side, and empty
+    /// while collapsed.
     ///
-    /// Takes no `animated`: there is no transition to animate. The column is swapped outright
-    /// and `show(.primary)` offers no say in it, so the parameter only misled its one caller
-    /// into thinking it had asked for something.
+    /// Empty rather than a system screen waiting off stage, because a chat screen subscribes to
+    /// state from its `viewDidLoad` and one that's been shown keeps rendering every frame while
+    /// nobody can see it. `splitViewControllerDidExpand` builds the resting screen when there's
+    /// somewhere to show it.
+    private func restColumn() {
+        chatNav.setViewControllers(
+            isCollapsed ? [] : [ChatViewController(viewModel: viewModel, buffer: .system)],
+            animated: false
+        )
+    }
+
+    /// Nothing selected: the list, with the system buffer beside it, or the list alone when
+    /// collapsed. Where a buffer that disappears under its reader goes.
+    ///
+    /// Collapsed, the conversation was put on the list's stack by hand (`setBufferStack`, or
+    /// `splitViewControllerDidCollapse`), so it's popped by hand rather than trusting
+    /// `show(.primary)` to find something UIKit never pushed.
+    ///
+    /// Takes no `animated`: side by side there is no transition to animate — the column is
+    /// swapped outright and `show(.primary)` offers no say in it.
     func showBufferList() {
         selection = nil
-        chatNav.setViewControllers(
-            [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-        )
-        show(.primary)
+        if isCollapsed {
+            listNav.popToRootViewController(animated: true)
+        } else {
+            show(.primary)
+        }
+        restColumn()
         list?.markSelection(nil)
     }
+
+    /// True while the collapse and expand callbacks are moving a chat screen between the two
+    /// navigation controllers — which, for a moment, leaves it with neither. Read by the chat's
+    /// back-out bookkeeping, which would otherwise take that moment for the reader leaving.
+    private(set) var isRearranging = false
 }
 
 // MARK: - Collapsing
@@ -253,13 +281,16 @@ extension BufferSplitViewController: UISplitViewControllerDelegate {
     /// the list is the right screen to land on. `selection` is the question, not "is the column
     /// showing something", which is always true.
     func splitViewControllerDidCollapse(_ svc: UISplitViewController) {
-        guard let selection,
-              let chat = chatNav.viewControllers.last as? ChatViewController,
-              chat.buffer.key.id == selection.id,
+        isRearranging = true
+        defer { isRearranging = false }
+        // Out of the column either way — onto the stack if it's the conversation, and dropped
+        // if it's only the resting system screen, which would otherwise go on rendering every
+        // frame off screen (see `restColumn`). Out before onto: a controller has one parent.
+        let chat = chatNav.viewControllers.last as? ChatViewController
+        chatNav.setViewControllers([], animated: false)
+        guard let selection, let chat, chat.buffer.key.id == selection.id,
               let list = listNav.viewControllers.first
         else { return }
-        // Out of the column before onto the stack: a controller can have one parent.
-        chatNav.setViewControllers([], animated: false)
         listNav.setViewControllers([list, chat], animated: false)
     }
 
@@ -267,6 +298,8 @@ extension BufferSplitViewController: UISplitViewControllerDelegate {
     /// the sidebar. With none there, the column keeps what it holds — the system buffer it rests
     /// on — and is given that if it's somehow empty.
     func splitViewControllerDidExpand(_ svc: UISplitViewController) {
+        isRearranging = true
+        defer { isRearranging = false }
         if let list = listNav.viewControllers.first,
            let chat = listNav.viewControllers.last as? ChatViewController {
             listNav.setViewControllers([list], animated: false)
