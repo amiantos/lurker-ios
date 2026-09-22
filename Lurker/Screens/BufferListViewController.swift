@@ -854,7 +854,7 @@ final class BufferListViewController: UICollectionViewController {
     /// snapshot carries identifiers and not content.
     private var rowsByID: [ItemID: Row] = [:]
 
-    // MARK: - Which conversation is open (iPad)
+    // MARK: - Which conversation is open (side by side)
 
     /// The buffer showing in the split's conversation column, or nil.
     ///
@@ -872,8 +872,13 @@ final class BufferListViewController: UICollectionViewController {
     /// Whether this list is beside a conversation rather than under one.
     ///
     /// Pushed in by `BufferSplitViewController` rather than read from `isCollapsed`: the moment
-    /// it matters is a resize into or out of Slide Over, which is exactly when that property
-    /// still answers for the layout being left. False on the phone, which has no split.
+    /// it matters is a resize into or out of Slide Over, or an iPhone Duo opening or closing,
+    /// which is exactly when that property still answers for the layout being left. False
+    /// whenever the split is collapsed — on every iPhone but an opened Duo, all the time.
+    ///
+    /// It's also what decides what this screen *is*: a sidebar beside the conversation, or a
+    /// screen you navigate to and back out of. On a Duo that changes under a live list, so
+    /// everything that depends on it is re-applied here rather than decided once at load.
     var marksOpenBuffer = false {
         didSet {
             guard marksOpenBuffer != oldValue else { return }
@@ -881,6 +886,9 @@ final class BufferListViewController: UICollectionViewController {
             // The banner yields to the conversation column's whenever there is one, so this
             // flag flipping is exactly when that answer changes.
             refreshBanner()
+            applySearchPlacement()
+            // Recent comes and goes with the sidebar — see `buildSections`.
+            if isOnScreen { rebuild() }
         }
     }
 
@@ -1002,30 +1010,43 @@ final class BufferListViewController: UICollectionViewController {
     /// the push into a chat screen, whose bottom is a composer) still holds and is still
     /// handled — see `viewWillAppear`.
     ///
-    /// ⚠ Not a style choice on iPad — an integrated field does not fit. The list is a ~320pt
-    /// sidebar whose bar already carries the title, and UIKit resolves an overfull bar
-    /// by silently DROPPING trailing items: measured, `.integrated` cost the join "+" outright.
-    /// `.stacked` is where iPad search goes anyway, and all four controls fit.
+    /// ⚠ Not a style choice in a sidebar — an integrated field does not fit. Beside a
+    /// conversation the list is a ~320pt column whose bar already carries the title, and UIKit
+    /// resolves an overfull bar by silently DROPPING trailing items: measured on iPad,
+    /// `.integrated` cost the join "+" outright. `.stacked` fits all four controls.
     private func installSearch() {
         navigationItem.searchController = searchController
-        guard usesBottomSearchBar else {
-            navigationItem.preferredSearchBarPlacement = .stacked
-            return
-        }
-        navigationItem.preferredSearchBarPlacement = .integrated
-        toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+        applySearchPlacement()
     }
 
-    /// Whether this list is the iPad's permanent sidebar rather than a screen you navigate to.
-    ///
-    /// Idiom, not `marksOpenBuffer`: this decides what the list is *built* from, in
-    /// `viewDidLoad`, long before there is a window to ask whether the split is collapsed.
-    private var isSidebar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    /// Put the field where the current layout wants it. Re-run whenever the split expands or
+    /// collapses, since on an iPhone Duo that happens to a list that's already on screen.
+    private func applySearchPlacement() {
+        if usesBottomSearchBar {
+            navigationItem.preferredSearchBarPlacement = .integrated
+            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+        } else {
+            navigationItem.preferredSearchBarPlacement = .stacked
+            toolbarItems = nil
+        }
+        // The toolbar is the navigation controller's, and `viewWillAppear`/`Disappear` raise
+        // and lower it on navigation — a layout change isn't a navigation, so do it here, but
+        // only while this list is what that controller is showing. Collapsed with a chat on
+        // top, the composer owns the bottom edge and the toolbar stays down.
+        guard isOnScreen, navigationController?.topViewController === self else { return }
+        navigationController?.setToolbarHidden(!usesBottomSearchBar, animated: false)
+    }
 
     /// Whether the search field is riding a bottom toolbar this screen has to raise and lower.
-    /// False on iPad, where it is stacked under the title and there is no toolbar at all —
-    /// asking for one would raise an empty bar across the foot of the sidebar.
-    private var usesBottomSearchBar: Bool { !isSidebar }
+    ///
+    /// Only on an iPhone, and only while this list is its own screen. The idiom is right here
+    /// where it's wrong for layout: folding an `.integrated` field into the toolbar is a
+    /// behaviour UIKit has only on iPhone, and on iPad the same placement lands in the nav bar
+    /// and costs the "+" (above). Beside a conversation it's stacked under the title, with no
+    /// toolbar at all — asking for one would raise an empty bar across the foot of the column.
+    private var usesBottomSearchBar: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && !marksOpenBuffer
+    }
 
     /// Take the search UI down — what a result tap calls once it's decided where to go. Not a
     /// dismiss: the results are presented *by* the search controller, so the thing to undo is
@@ -1263,10 +1284,10 @@ final class BufferListViewController: UICollectionViewController {
         // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
         // having no sidebar, so it sits below the two curated sections rather than pushing
         // them down with buffers you merely passed through.
-        // ⚠ Phone only, for the reason the comment above gives: Recent is "the iOS answer to
-        // having no sidebar", and iPad has the sidebar — every chip in it is already a row
-        // further down the same permanently-visible column.
-        if !recents.isEmpty, !isSidebar {
+        // ⚠ Not beside a conversation, for the reason the comment above gives: Recent is "the
+        // iOS answer to having no sidebar", and a sidebar is what this list then is — every chip
+        // in it would already be a row further down the same permanently-visible column.
+        if !recents.isEmpty, !marksOpenBuffer {
             sections.append(Section(id: .recent, title: "Recent", rows: recents))
         }
 

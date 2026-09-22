@@ -652,47 +652,46 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.restore(text)
     }
 
-    /// Backing out to the list means the *list* is where you were, not this buffer. Without
-    /// this the restore target could only ever be a chat screen: leave a conversation on
-    /// purpose, quit, and the next launch shoves you straight back into it, which is the one
-    /// move a home screen is supposed to make unnecessary.
-    ///
-    /// Gated on the list being what we're uncovering — the stack is already updated by the
-    /// time this runs — so a buffer *swap* (`/msg`, a notification tap, a highlight) doesn't
-    /// trip it, and a cancelled interactive pop re-records on the `viewDidAppear` that follows.
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // Leaving with a half-written draft shouldn't leave the channel thinking you're still
-        // mid-sentence for the next 30 seconds. Unconditional — unlike the restore-target
-        // bookkeeping below, this applies however you left, including a buffer swap.
+        // mid-sentence for the next 30 seconds. Unconditional: this applies however you left,
+        // including a buffer swap.
         endTyping()
-        guard isMovingFromParent, navigationController?.topViewController is BufferListViewController else {
-            return
-        }
-        // ⚠ iPad backs out through `viewDidDisappear` instead — see below.
-        guard !(splitViewController is BufferSplitViewController) else { return }
-        UserPreferences.standard.forgetLastBuffer()
     }
 
-    /// The split's back-out bookkeeping, which cannot be done on the way out.
+    /// The split this screen was shown in, kept past the moment it leaves: by
+    /// `viewDidDisappear` it has no parent, so `splitViewController` is already nil — which
+    /// is what silently disabled the back-out below until it was measured.
+    private weak var owningSplit: BufferSplitViewController?
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if let split = splitViewController as? BufferSplitViewController { owningSplit = split }
+    }
+
+    /// Backing out to the list means the *list* is where you were, not this buffer. Without
+    /// this the restore target could only ever be a chat screen: leave a conversation on
+    /// purpose, quit, and the next launch shoves you straight back into it, which is the one
+    /// move a home screen is supposed to make unnecessary. And the split has to hear it too, or
+    /// it goes on believing this buffer is open: it would put it back on the next collapse and
+    /// mark its row on the next expand.
     ///
-    /// Collapsed — Slide Over, or a narrow Stage Manager window — the columns are a single
-    /// stack and Back pops this screen off it, which no `showBufferList` hears about. Left
-    /// unsaid, the split goes on believing this buffer is open: it would collapse straight
-    /// back into the conversation you just left, and mark its row on expanding.
+    /// ⚠ Not `viewWillDisappear`: from inside that a collapse or expand — this screen being
+    /// moved between the split's two navigation controllers — looks like leaving, and it runs
+    /// for a swipe-back released below threshold. By `viewDidDisappear` a move has already
+    /// handed this screen its new navigation controller, so `navigationController == nil`
+    /// means it really is gone.
     ///
-    /// ⚠ Not `viewWillDisappear`, where the phone does this, because from inside that method a
-    /// COLLAPSE is indistinguishable from a back-out: UIKit moves this screen out of the
-    /// conversation column and into the primary's stack, and while it does, the list is on top
-    /// and this screen is moving from its parent — the phone's exact test, passed by a window
-    /// resize. By `viewDidDisappear` a migration has already handed this screen its new
-    /// navigation controller, so `navigationController == nil` means it really left. It also
-    /// never runs for a swipe-back released below threshold, which `viewWillDisappear` does.
+    /// Gone isn't enough on its own, though: a buffer *swap* (`/msg`, a notification tap, a
+    /// highlight) removes this screen too. The split's selection tells them apart — a swap has
+    /// already moved it to the new buffer, while a back-out leaves it on this one, and a
+    /// `showBufferList` (this buffer vanished) has already cleared it.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        guard let split = splitViewController as? BufferSplitViewController,
-              navigationController == nil
-        else { return }
+        guard navigationController == nil, let split = owningSplit else { return }
+        let selected = split.selection
+        guard selected == nil || selected?.id == buffer.key.id else { return }
         UserPreferences.standard.forgetLastBuffer()
         split.clearSelection()
     }
@@ -829,9 +828,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // (This is what `showMemberList`'s "nothing replaces this screen" reasoning
             // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
             navigationController?.dismiss(animated: false)
-            // iPad: nothing to pop *to* — the list is beside this column, not under it. Back
-            // to the list means clearing the selection, which drops the column to the system
-            // buffer and un-marks the row that just vanished.
+            // The split handles both layouts: collapsed it pops to the list, side by side it
+            // clears the selection, which drops the column to the system buffer and un-marks
+            // the row that just vanished.
             if let split = splitViewController as? BufferSplitViewController {
                 split.showBufferList()
             } else {

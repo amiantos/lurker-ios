@@ -157,7 +157,8 @@ extension UINavigationController {
         jumpTo messageId: Int? = nil,
         animated: Bool
     ) {
-        // iPad: the columns are the arrangement, so hand over rather than build a stack.
+        // Inside the split — which is everywhere the app is signed in — the split owns the
+        // arrangement, so hand over rather than build a stack.
         // Branching here rather than at the five call sites is the point of the funnel —
         // `/msg`, a highlight and the rest go on saying "show me this buffer" and stay
         // ignorant of the layout. Collapsed splits come through here too; the split hands
