@@ -78,6 +78,12 @@ final class BufferSplitViewController: UISplitViewController {
         // dims the conversation to show the list would make switching buffers modal.
         preferredDisplayMode = .oneBesideSecondary
         preferredSplitBehavior = .tile
+        // An opaque sidebar that paints the list's own ground, not the floating glass panel.
+        // ⚠ `.doubleColumn` defaults to `.sidebar` (measured, iOS 27.1), which clears the
+        // collection view's layer and draws glass over a secondary column running full width
+        // underneath it — a washed-out grey in dark mode (#393C3E over a black column).
+        // `.none` keeps the layer and tiles the columns side by side with a 1pt separator.
+        primaryBackgroundStyle = .none
         // No hide-the-sidebar button and no swipe: the list stays up, as it does in Messages.
         // The bar also can't afford one — a ~320pt column already carrying the title, and
         // UIKit answers an overfull bar by dropping trailing items rather than overflowing

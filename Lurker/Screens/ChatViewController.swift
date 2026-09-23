@@ -424,11 +424,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // Centered just below the nav bar — the safe-area top sits right under it, so
             // the capsule drops into the gap between the bar and the conversation.
             //
-            // ⚠ The safe area horizontally too, matching the buffer list's own banner. In a
-            // split view this view is the full width of the window with the sidebar tiled over
-            // its leading edge, so centring on `view` would put the capsule ~165pt left of the
-            // column, half under the list. Every floating control below uses the same guide for
-            // the same reason — and the iPhone Duo's side rail is another inset like it.
+            // ⚠ The safe area horizontally too, matching the buffer list's own banner. The iPhone
+            // Duo's side rail is an inset on this view, so centring on `view` would put the
+            // capsule off the column's centre — and before the split opted out of the sidebar's
+            // glass, the sidebar tiled over this view's leading edge the same way. Every
+            // floating control below uses the same guide for the same reason.
             connectionBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             connectionBanner.leadingAnchor.constraint(
