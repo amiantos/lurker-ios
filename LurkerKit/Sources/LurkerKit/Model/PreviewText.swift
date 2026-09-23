@@ -3,6 +3,15 @@
 
 import Foundation
 
+extension NSAttributedString.Key {
+    /// Marks text that paints something even where it is only whitespace — a background (which
+    /// includes a spoiler's box and every reversed run), an underline, a strike. Stamped by the
+    /// renderer and honoured by `PreviewText.stripHiddenUrls`, whose end-trim must not eat it:
+    /// a run of background-painted spaces beside a hidden link is part of the picture (ASCII art
+    /// is made of them), not padding. The web's `isTrimmableText` is the same rule.
+    public static let ink = NSAttributedString.Key("chat.lurker.ink")
+}
+
 /// Where the URLs in a message body are — the single scan both preview modules read.
 ///
 /// ⚠⚠ **Matched over the ASSEMBLED body, never per formatting run**, and that is the whole
@@ -68,7 +77,7 @@ public enum PreviewText {
         for run in IRCFormatting.parse(text) {
             let base = (visible as NSString).length
             visible += run.text
-            if PreviewSelection.isSpoilerRun(run) {
+            if run.hidesText {
                 spoilers.append(
                     NSRange(location: base, length: (run.text as NSString).length))
             }
@@ -220,21 +229,30 @@ public enum PreviewText {
         // than as one with a hole in it: dropping the address from "look at this: <url>" leaves
         // a colon and a trailing space, and dropping it from a message that WAS only a link
         // leaves pure whitespace, which still paints a blank line above the picture.
+        //
+        // ⚠ Whitespace that is `.ink` is not padding, and stops the trim like a letter would.
         guard !hidden.isEmpty else { return }
         let text = attributed.string as NSString
-        let firstInk = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
-        if firstInk.location == NSNotFound {
-            attributed.deleteCharacters(in: NSRange(location: 0, length: attributed.length))
+        let whole = NSRange(location: 0, length: text.length)
+        let firstText = text.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines.inverted)
+        let lastText = text.rangeOfCharacter(
+            from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards)
+        var head = firstText.location == NSNotFound ? text.length : firstText.location
+        var tail = lastText.location == NSNotFound ? 0 : NSMaxRange(lastText)
+        attributed.enumerateAttribute(.ink, in: whole) { value, range, _ in
+            guard value != nil else { return }
+            head = min(head, range.location)
+            tail = max(tail, NSMaxRange(range))
+        }
+        guard head < tail else {
+            attributed.deleteCharacters(in: whole)
             return
         }
-        let lastInk = text.rangeOfCharacter(
-            from: CharacterSet.whitespacesAndNewlines.inverted, options: .backwards)
-        let tail = lastInk.location + lastInk.length
         if tail < text.length {
             attributed.deleteCharacters(in: NSRange(location: tail, length: text.length - tail))
         }
-        if firstInk.location > 0 {
-            attributed.deleteCharacters(in: NSRange(location: 0, length: firstInk.location))
+        if head > 0 {
+            attributed.deleteCharacters(in: NSRange(location: 0, length: head))
         }
     }
 }

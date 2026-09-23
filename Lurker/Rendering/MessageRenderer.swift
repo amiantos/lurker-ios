@@ -648,19 +648,36 @@ enum MessageRenderer {
         // -1 so the first box becomes 0; see the coalescing note where it's bumped.
         var spoilerOrdinal = -1
         var previousRunWasSpoiler = false
-        var previousSpoilerColor: Int?
+        var previousSpoilerColor: IRCColor?
+        // Reversed runs the nick pass may still colour, with the ink their text is drawn in — see
+        // the nick pass for why it needs both.
+        var reversed: [(range: NSRange, ink: UIColor)] = []
         for run in IRCFormatting.parse(message.text ?? "") {
+            let explicitFg = run.fg.flatMap(ircColor)
+            let explicitBg = run.bg.flatMap(ircColor)
+            let isSpoiler = run.hidesText
             // Always set an explicit color: unlike a label, a UITextView's attributed runs
             // without a foreground color fall back to a static black, not the dynamic
             // `.label`, so uncolored text would be unreadable in dark mode.
-            let explicitFg = run.fg.flatMap(mircColor)
+            var foreground = explicitFg ?? fallback
+            var background = explicitBg
+            // Reverse (\x16) swaps the pair. A side the run leaves unset, or names with a slot
+            // the palette can't paint, is the theme's own — so reversed plain text reads as the
+            // theme inverted rather than as nothing. The foreground side is whatever the text
+            // would otherwise be drawn in, which is how a reversed `/me` comes out as a block of
+            // the nick's colour. An equal pair is a spoiler, and reverse changes nothing about it.
+            if run.reverse, !isSpoiler {
+                foreground = explicitBg ?? Palette.bg
+                background = explicitFg ?? fallback
+            }
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font(base, bold: run.bold, italic: run.italic),
-                .foregroundColor: explicitFg ?? fallback,
+                .foregroundColor: foreground,
             ]
-            if let bg = run.bg, let color = mircColor(bg) { attributes[.backgroundColor] = color }
+            if let background { attributes[.backgroundColor] = background }
             if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             if run.strike { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if background != nil || run.underline || run.strike { attributes[.ink] = true }
 
             // A run whose foreground and background match is the IRC spoiler convention: text
             // the sender deliberately made invisible. Hidden, it already renders as a solid box
@@ -669,12 +686,11 @@ enum MessageRenderer {
             // which is the web's treatment and for its reason: the two commonest spoiler colours
             // are black and white, and either as *text* on a tint of itself is unreadable in the
             // scheme that matches it. A reveal that reveals nothing is the one failure here.
-            // ⚠ `explicitFg != nil`, not just `fg == bg`. The palette has 16 entries, so slots
-            // 16–98 and mIRC's 99 ("default") resolve to nil — and `\u{3}99,99text\u{3}` satisfies
-            // fg == bg while drawing no fill at all. Marking that as a spoiler announced "hidden
-            // spoiler" to VoiceOver over text rendered in the clear, and a tap revealed nothing,
-            // which is precisely the failure the comment below calls the one we can't have.
-            let isSpoiler = explicitFg != nil && run.fg == run.bg
+            // ⚠ `hidesText`, not just `fg == bg`. The palette has 16 entries, so slots 16–98 and
+            // mIRC's 99 ("default") resolve to nil — and `\u{3}99,99text\u{3}` satisfies fg == bg
+            // while drawing no fill at all. Marking that as a spoiler announced "hidden spoiler"
+            // to VoiceOver over text rendered in the clear, and a tap revealed nothing, which is
+            // precisely the failure the comment below calls the one we can't have.
             if isSpoiler {
                 // ⚠ `id` is 0 for every ephemeral event (see `Message`), so a reveal keyed by it
                 // would be shared by all of them in a buffer, and the redraw — which finds the
@@ -709,6 +725,7 @@ enum MessageRenderer {
             let range = NSRange(location: start, length: attributed.length - start)
             if explicitFg != nil { mircColored.append(range) }
             if isSpoiler { spoilered.append(range) }
+            if run.reverse, !isSpoiler, explicitFg == nil { reversed.append((range, foreground)) }
         }
         // Auto-link URLs over the assembled plain text (control codes already stripped).
         //
@@ -757,7 +774,19 @@ enum MessageRenderer {
                     // of invisible ones — the shape of the secret, and possibly the secret.
                     || spoilered.contains { NSIntersectionRange($0, range).length > 0 }
                 if taken { continue }
-                attributed.addAttribute(.foregroundColor, value: hashedColor(text.substring(with: range)), range: range)
+                let color = hashedColor(text.substring(with: range))
+                attributed.addAttribute(.foregroundColor, value: color, range: range)
+                // A nick's colour is its text's foreground, so under reverse it is the BLOCK the
+                // name sits on, and the text keeps the ink the swap gave it. Per overlap, because
+                // a name can straddle a \x16.
+                //
+                // ⚠ This is how a `\u{3}99` run still lets a nick be coloured under reverse, as it
+                // does without: 99 paints nothing, so `mircColored` never claimed it.
+                for span in reversed {
+                    let overlap = NSIntersectionRange(span.range, range)
+                    guard overlap.length > 0 else { continue }
+                    attributed.addAttributes([.foregroundColor: span.ink, .backgroundColor: color], range: overlap)
+                }
             }
         }
         // ⚠⚠ Both deletions happen HERE, last, after every pass that holds ranges into the
@@ -909,14 +938,28 @@ enum MessageRenderer {
         nickColors[NickColor.index(for: name)]
     }
 
-    /// mIRC index → color. Every slot in range is a literal from the palette; 16+ don't render.
+    /// The colour a formatting code named, or nil for a slot the palette can't paint (16+).
+    ///
+    /// Every value is a literal: a slot is the palette's, and a truecolour `\x04` is exactly what
+    /// was sent, with no light variant — the sender picked it knowing what it'd be drawn on, and
+    /// ASCII art in particular is a picture, not text to re-theme.
     ///
     /// There is no theme-slot branch any more, and there must not be one again — see the ⚠ on
     /// `IRCPalette.mirc`. A run can carry its own background, so a slot that resolved against the
     /// theme was being resolved against the wrong surface.
-    private nonisolated static func mircColor(_ index: Int) -> UIColor? {
-        guard index >= 0, index < mircColors.count else { return nil }
-        return mircColors[index]
+    private nonisolated static func ircColor(_ color: IRCColor) -> UIColor? {
+        switch color {
+        case .slot(let index):
+            guard index >= 0, index < mircColors.count else { return nil }
+            return mircColors[index]
+        case .rgb(let value):
+            return UIColor(
+                red: CGFloat((value >> 16) & 0xFF) / 255,
+                green: CGFloat((value >> 8) & 0xFF) / 255,
+                blue: CGFloat(value & 0xFF) / 255,
+                alpha: 1
+            )
+        }
     }
 
     private static func font(_ base: UIFont, bold: Bool, italic: Bool) -> UIFont {

@@ -292,6 +292,27 @@ struct PreviewAbsorptionTests {
         #expect(out.string == "then \(a)", "the spoilered twin must survive intact")
     }
 
+    @Test("the end-trim keeps whitespace that paints something")
+    func inkedWhitespaceSurvivesTheTrim() {
+        // A block of background-painted (or reversed) spaces beside a hidden link is part of the
+        // picture — ASCII art is made of them — so it stops the trim the way a letter would.
+        // Plain whitespace between it and the link still goes.
+        let a = "https://e.test/a.png"
+        let out = NSMutableAttributedString(string: "  \(a)  ")
+        out.append(NSAttributedString(string: "   ", attributes: [.ink: true]))
+        out.append(NSAttributedString(string: " \n"))
+        out.insert(NSAttributedString(string: "  ", attributes: [.ink: true]), at: 0)
+        PreviewText.stripHiddenUrls(from: out, hidden: [a], spoilered: [])
+        #expect(
+            out.string == String(repeating: " ", count: 2 + 4 + 3),
+            "both inked blocks and what lies between them, nothing outside")
+
+        let bare = NSMutableAttributedString(string: " \(a) ")
+        bare.append(NSAttributedString(string: " ", attributes: [.ink: true]))
+        PreviewText.stripHiddenUrls(from: bare, hidden: [a], spoilered: [])
+        #expect(bare.string == " ", "a lone inked space is still a body")
+    }
+
     /// The body a reader is left with, after `hidden`'s addresses are taken out.
     private func stripped(_ body: String, hiding hidden: Set<String>) -> String {
         let out = NSMutableAttributedString(

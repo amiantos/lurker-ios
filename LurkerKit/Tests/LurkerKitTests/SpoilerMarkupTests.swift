@@ -166,8 +166,8 @@ final class SpoilerRoundTripTests: XCTestCase {
         let parsed = runs(SpoilerMarkup.apply(to: "||secret||"))
         XCTAssertEqual(parsed.count, 1)
         XCTAssertEqual(parsed.first?.text, "secret")
-        XCTAssertEqual(parsed.first?.fg, 14)
-        XCTAssertEqual(parsed.first?.bg, 14)
+        XCTAssertEqual(parsed.first?.fg, .slot(14))
+        XCTAssertEqual(parsed.first?.bg, .slot(14))
     }
 
     /// The colour code is two digits and so is the hidden text here: `\u{3}14,14` followed by
@@ -175,16 +175,16 @@ final class SpoilerRoundTripTests: XCTestCase {
     func testDoesNotSwallowLeadingDigitsOfTheHiddenText() {
         let parsed = runs(SpoilerMarkup.apply(to: "the answer is ||42||"))
         XCTAssertEqual(parsed.map(\.text), ["the answer is ", "42"])
-        XCTAssertEqual(parsed.last?.fg, 14)
-        XCTAssertEqual(parsed.last?.bg, 14)
+        XCTAssertEqual(parsed.last?.fg, .slot(14))
+        XCTAssertEqual(parsed.last?.bg, .slot(14))
     }
 
     /// Spoilers from clients that use the older black-on-black convention still have to read as
     /// spoilers — the rule is "fg == bg", not "fg == 14".
     func testRecognisesAnIncomingBlackOnBlackSpoiler() {
         let parsed = runs("\u{3}01,01secret\u{3}")
-        XCTAssertEqual(parsed.first?.fg, 1)
-        XCTAssertEqual(parsed.first?.bg, 1)
+        XCTAssertEqual(parsed.first?.fg, .slot(1))
+        XCTAssertEqual(parsed.first?.bg, .slot(1))
     }
 
     /// ⚠⚠ The close is the dangerous end. A bare `\u{3}` followed by a digit is a COLOUR CODE,
@@ -203,18 +203,18 @@ final class SpoilerRoundTripTests: XCTestCase {
             ("the code is ||1234||5678", "1234", "5678"),
         ] {
             let parsed = runs(SpoilerMarkup.apply(to: input))
-            let spoiler = parsed.first { $0.fg == 14 && $0.bg == 14 }
+            let spoiler = parsed.first { $0.fg == .slot(14) && $0.bg == .slot(14) }
             XCTAssertEqual(spoiler?.text, hidden, "hidden half of \(input)")
 
             // Everything after the hidden run, concatenated, must equal what was typed after it.
-            guard let index = parsed.firstIndex(where: { $0.fg == 14 && $0.bg == 14 }) else {
+            guard let index = parsed.firstIndex(where: { $0.fg == .slot(14) && $0.bg == .slot(14) }) else {
                 XCTFail("no spoiler run in \(input)"); continue
             }
             let tail = parsed[(index + 1)...]
             XCTAssertEqual(tail.map(\.text).joined(), after, "text after \(input)")
             // …and it must not still be sitting on the spoiler's grey box.
             for run in tail {
-                XCTAssertNotEqual(run.bg, 14, "background leaked past the spoiler in \(input)")
+                XCTAssertNotEqual(run.bg, .slot(14), "background leaked past the spoiler in \(input)")
             }
         }
     }

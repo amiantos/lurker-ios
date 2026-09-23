@@ -26,11 +26,6 @@ import Foundation
 ///  - **Regex shorthands.** A user's `-pattern regex` is compiled by V8 without the `u` flag,
 ///    where `\d`/`\w`/`\s`/`\b` are ASCII-only; ICU makes them Unicode-aware. So
 ///    `-pattern regex \w+bank` matches `Ünterbank` here and not on the server.
-///  - **Truecolor stripping.** `cleanForMatch` reuses `IRCFormatting.strip`, which consumes a
-///    `\u{04}` code plus up to six hex and an optional `,hex6`; the server's `FORMAT_RE` only
-///    strips it when followed by *exactly* six hex and has no `,bg` branch. A content pattern
-///    can therefore match against slightly different text on either side of a malformed
-///    truecolor code.
 ///
 /// These are documented rather than fixed because each is a whole engine's worth of work to
 /// close, and every one needs a non-ASCII rule to reach. If a report ever lands that fits one,

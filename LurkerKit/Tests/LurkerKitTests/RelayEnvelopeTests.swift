@@ -292,6 +292,8 @@ final class RelayEnvelopeTests: XCTestCase {
             "\u{03}04,not-a-background — the comma is text",
             "\u{03} bare reset, \u{03}99 out of palette, \u{0f} full reset",
             "\u{04}ff8800truecolor\u{04}00ff00,0000ff pair\u{04}nothex",
+            "\u{04}abcde short hex\u{04}ABCDEF,12345 short bg\u{04}abcdef,zzzzzz stray comma\u{04}",
+            "\u{04}123456,\u{04}654321,abcdef\u{16}\u{04}",
             "\u{02}bold\u{02} \u{1d}italic\u{1d} \u{1f}under\u{1f} \u{1e}strike\u{1e} \u{11}mono\u{16}rev",
             "🌈🏳️‍🌈 astral \u{03}03and colour\u{03} 𝔅𝔢𝔩𝔦𝔞𝔩",
             "trailing code at the very end\u{03}",
