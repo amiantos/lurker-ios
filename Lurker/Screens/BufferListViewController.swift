@@ -247,6 +247,9 @@ final class BufferListViewController: UICollectionViewController {
     /// store snapshot it permutes — see `orderedFavorites(_:)`.
     private var optimisticFavoriteOrder: [Int]?
     private var favoritesAtDrop: [FavoriteEntry]?
+    /// The store's favorites when the live drag lifted. A drop is refused if they've moved
+    /// since — see `performDropWith`.
+    private var favoritesAtDragStart: [FavoriteEntry]?
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
@@ -1192,10 +1195,15 @@ final class BufferListViewController: UICollectionViewController {
         }
         // Buffers whose network isn't in the roster yet (snapshot race). Sorted, because a
         // dictionary's order isn't stable from one rebuild to the next.
+        //
+        // With its log synthesized like a rostered network's, so the header is the way into the
+        // log here too rather than a label you can't open.
         for networkId in byNetwork.keys.sorted() where !seen.contains(networkId) {
-            guard let section = networkSection(
-                .unrostered(networkId), networkId, nil, byNetwork[networkId] ?? [], state
-            ) else { continue }
+            let buffers = BufferOrder.withServerLog(
+                byNetwork[networkId] ?? [], networkId: networkId, networkHasOpenBuffers: true
+            )
+            guard let section = networkSection(.unrostered(networkId), networkId, nil, buffers, state)
+            else { continue }
             sections.append(section)
         }
 
@@ -1576,6 +1584,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         let item = UIDragItem(itemProvider: NSItemProvider())
         item.localObject = row(at: indexPath)?.buffer.key.id
         dragSourceSection = indexPath.section
+        favoritesAtDragStart = state.favorites
         return [item]
     }
 
@@ -1656,6 +1665,13 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         _ collectionView: UICollectionView,
         performDropWith coordinator: UICollectionViewDropCoordinator
     ) {
+        // ⚠ Refused outright if the favorites changed while the row was in the air — another
+        // device's edit, say. `rebuild` defers during a drag, so the rows the finger was moving
+        // among are the drag-start order while `state` already holds the new one, and mapping
+        // that stale arrangement onto the new order would send a reorder that overwrote the
+        // other edit. Not calling `coordinator.drop` flies the row home, and `dragSessionDidEnd`
+        // rebuilds from the current order.
+        guard state.favorites == favoritesAtDragStart else { return }
         guard let item = coordinator.items.first,
               let proposed = coordinator.destinationIndexPath,
               let sectionID = sectionID(at: proposed), sectionID.reorderable,
@@ -1735,6 +1751,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // `sections`, after which a stashed section index would be a fact about a
         // model that no longer exists.
         dragSourceSection = nil
+        favoritesAtDragStart = nil
         guard rebuildDeferredByDrag else { return }
         rebuild()
     }
