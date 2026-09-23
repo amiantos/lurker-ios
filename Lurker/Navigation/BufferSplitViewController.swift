@@ -84,12 +84,20 @@ final class BufferSplitViewController: UISplitViewController {
         // underneath it — a washed-out grey in dark mode (#393C3E over a black column).
         // `.none` keeps the layer and tiles the columns side by side with a 1pt separator.
         primaryBackgroundStyle = .none
-        // No hide-the-sidebar button and no swipe: the list stays up, as it does in Messages.
-        // The bar also can't afford one — a ~320pt column already carrying the title, and
-        // UIKit answers an overfull bar by dropping trailing items rather than overflowing
-        // them. With the display-mode button present, the join "+" was measured going missing.
-        presentsWithGesture = false
-        displayModeButtonVisibility = .never
+        // The system's show/hide-sidebar button, as in Mail and Notes: hidden, the conversation
+        // runs the full width, and its bar already carries the views and search, so all that's
+        // behind the button is "+", Lurker and Settings. Only affordable since the sidebar's bar
+        // went down to "+" and "…" — with the cog there too, UIKit made room for this button by
+        // dropping the "+" (it drops trailing items rather than overflowing them).
+        //
+        // ⚠ The gesture is what shows the button: measured on iPad (27.0), with
+        // `presentsWithGesture = false` an `.automatic` button never appears — not in the
+        // sidebar, and not in the conversation bar once the sidebar is hidden, which would strand
+        // it hidden. The left-edge swipe it adds costs nothing here: side by side the conversation
+        // is its column's root, so there's no Back swipe to collide with, and collapsed (the
+        // phone's stack) the split doesn't use it.
+        presentsWithGesture = true
+        displayModeButtonVisibility = .automatic
         // The stack's own factory, which wires the list's `onSelect` and its search results'
         // jump to `showBuffer` — the funnel that forwards back here once these navs are
         // columns. So the list knows nothing about splits.
