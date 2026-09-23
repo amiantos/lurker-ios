@@ -334,14 +334,11 @@ final class BufferListViewController: UICollectionViewController {
         // the push into a chat screen — whose bottom is a composer — so it has to leave and
         // come back on every navigation, which is a lot of movement to buy two buttons.
         //
-        // Set once here and never replaced: `apply` runs on every unread-count change, and
-        // swapping a bar button item out closes any menu it happens to be showing.
-        navigationItem.leftBarButtonItem = accountItem()
-        // First element is the *trailing-most*, so this reads "+ then …" left to right —
-        // the views menu sits in the same corner it occupies on the chat screen, so the one
-        // button that means the same thing on both screens is in the same place on both.
-        navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
-        installSearch()
+        // Never touched by `apply`: it runs on every unread-count change, and swapping a bar
+        // button item out closes any menu it happens to be showing. Only a layout change
+        // touches the bar — see `applyBarLayout`.
+        applyBarLayout()
+        registerForVerticalBarChanges { list in list.applyBarLayout() }
 
         // Every row and header is set in a font built from this screen's traits (`listFont`),
         // which a text-size change doesn't reach on its own. `rebuild`'s diff can't
@@ -795,7 +792,7 @@ final class BufferListViewController: UICollectionViewController {
             // The banner yields to the conversation column's whenever there is one, so this
             // flag flipping is exactly when that answer changes.
             refreshBanner()
-            applySearchPlacement()
+            applyBarLayout()
         }
     }
 
@@ -846,14 +843,67 @@ final class BufferListViewController: UICollectionViewController {
     /// A direct tap now that Settings exists (#20) — the cog said "Settings" and opened a
     /// one-item menu, which is a menu standing in for the screen it was named after. Sign-out
     /// moved inside, where it sits behind a confirmation rather than one slipped thumb away.
-    private func accountItem() -> UIBarButtonItem {
+    ///
+    /// Folded into the "…" menu side by side — see `applyBarLayout`.
+    private lazy var settingsItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "gearshape"),
             primaryAction: UIAction { [weak self] _ in self?.showSettings() }
         )
         item.accessibilityLabel = "Settings"
         return item
+    }()
+
+    /// Fit the bar to what this screen currently is: a screen of its own or a sidebar, and a
+    /// bar across the top or a rail down the side.
+    ///
+    /// Side by side the sidebar is kept to the title, "+" and "…". The views (Highlights,
+    /// Bookmarks, Uploads) and search are the conversation column's there, where the bar has
+    /// room to show them as buttons rather than menu rows, and a copy here would be the same
+    /// button twice on one screen. Settings folds into the "…" menu, which is left holding the
+    /// app-wide entries — see `viewsMenuElements`.
+    ///
+    /// On its own screen this is the phone's list: the cog, the views menu and the search field,
+    /// because nothing else on screen carries them.
+    ///
+    /// In an iPhone Duo's vertical rail there's height to spare, so the "…" opens out: every
+    /// entry it would have held is a button of its own, in either layout.
+    private func applyBarLayout() {
+        let layout = BarLayout(sidebar: marksOpenBuffer, rail: traitCollection.hasVerticalBar)
+        // Replaced only when the layout moves — replacing an item closes a menu it's showing,
+        // and re-placing the search field under a live one can collapse it.
+        guard layout != barLayout else { return }
+        let sidebarChanged = layout.sidebar != barLayout?.sidebar
+        barLayout = layout
+        if sidebarChanged { applySearchPlacement() }
+        // A sidebar's title reads from the leading edge, like a Duo rail's and like Mail's
+        // mailbox column — centred over a narrow column it floats between the edge and the
+        // buttons. `.browser` is the style that leads the title; the list is a root, so the
+        // back-button behaviour that style also changes never comes up. On its own screen it
+        // keeps the phone's centred title.
+        navigationItem.style = layout.sidebar ? .browser : .navigator
+        // First element is the *trailing-most*, so this reads "+ then …" left to right — the
+        // views menu sits in the same corner it occupies on the chat screen, so the one button
+        // that means the same thing on both screens is in the same place on both. Opened out,
+        // the Lurker buffer keeps that corner.
+        let views: [UIBarButtonItem] = !layout.rail ? [viewsItem]
+            : layout.sidebar ? [lurkerItem, settingsItem]
+            : [lurkerItem, uploadsItem, bookmarksItem, highlightsItem]
+        // The cog changes sides when a rail's sidebar becomes a rail's stack or back, and an
+        // item mustn't sit in both groups at once — so it leaves the left before the right is
+        // set, and returns to the left only after.
+        navigationItem.leftBarButtonItem = nil
+        navigationItem.rightBarButtonItems = views + [joinItem]
+        if !layout.sidebar { navigationItem.leftBarButtonItem = settingsItem }
     }
+
+    private struct BarLayout: Equatable {
+        var sidebar: Bool
+        var rail: Bool
+    }
+
+    /// What the bar was last laid out for.
+    private var barLayout: BarLayout?
 
     /// Presented as a sheet, like every other secondary surface off this screen (buffer info,
     /// members, highlights) — Settings is somewhere you visit and leave, not somewhere the
@@ -874,31 +924,7 @@ final class BufferListViewController: UICollectionViewController {
         viewModel: viewModel, presentation: .resultsController
     )
 
-    private lazy var searchController: UISearchController = {
-        let controller = UISearchController(searchResultsController: searchResults)
-        controller.searchResultsUpdater = searchResults
-        // The delegate is *this* screen, not the results: presenting search changes what this
-        // screen looks like, and the search controller belongs to it. What the
-        // results need from those callbacks, they're asked for directly — see the extension.
-        controller.delegate = self
-        // Show the results the moment search is activated, not once there's text in the field.
-        //
-        // UIKit's default is `automaticallyShowsSearchResultsController`, which presents the
-        // results controller "based on the contents of its text property" — so an empty field
-        // presents nothing at all, and tapping search just raised the keyboard and slid this
-        // list up behind it. That default is right for a results controller that would be blank
-        // until you type; ours opens on your recent highlights, so there is something to show
-        // from the first tap. Setting this flips `automaticallyShowsSearchResultsController` to
-        // false.
-        controller.showsSearchResultsController = true
-        controller.searchBar.placeholder = "Search messages"
-        // The filter grammar is typed, not tapped: autocapitalization turns `from:` into
-        // `From:` and autocorrect rewrites nicks and channel names into English words.
-        controller.searchBar.autocapitalizationType = .none
-        controller.searchBar.autocorrectionType = .no
-        controller.searchBar.spellCheckingType = .no
-        return controller
-    }()
+    private lazy var searchController = searchResults.makeHostedSearchController()
 
     /// Put the search field in the bottom bar, which on iOS 26 is where search goes on a
     /// phone — within reach of the thumb that's already holding the device, rather than at the
@@ -917,24 +943,36 @@ final class BufferListViewController: UICollectionViewController {
     /// the push into a chat screen, whose bottom is a composer) still holds and is still
     /// handled — see `viewWillAppear`.
     ///
-    /// ⚠ Not a style choice in a sidebar — an integrated field does not fit. Beside a
-    /// conversation the list is a ~320pt column whose bar already carries the title, and UIKit
-    /// resolves an overfull bar by silently DROPPING trailing items: measured on iPad,
-    /// `.integrated` cost the join "+" outright. `.stacked` fits all four controls.
-    private func installSearch() {
-        navigationItem.searchController = searchController
-        applySearchPlacement()
-    }
-
-    /// Put the field where the current layout wants it. Re-run whenever the split expands or
-    /// collapses, since on an iPhone Duo that happens to a list that's already on screen.
+    /// Side by side there's no field here at all: the conversation column carries it, at the
+    /// trailing edge of its bar (`ChatViewController.applyBarLayout`). Not
+    /// `searchBarPlacementAllowsExternalIntegration`, which draws this screen's field over there
+    /// — measured on iPad, it then presents the results in THIS column, a 320pt strip beside the
+    /// field you're typing into.
+    ///
+    /// Re-run whenever the split expands or collapses, since on an iPhone Duo that happens to a
+    /// list that's already on screen.
     private func applySearchPlacement() {
-        if usesBottomSearchBar {
-            navigationItem.preferredSearchBarPlacement = .integrated
-            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
-        } else {
-            navigationItem.preferredSearchBarPlacement = .stacked
+        if marksOpenBuffer {
+            // Taken down before the field is removed, and removed a turn later: this runs from
+            // the split's layout pass, and pulling a search controller out from under its own
+            // dismissal mid-transition is the shape of a UIKit crash NetNewsWire hit on expand.
+            if searchController.isActive {
+                searchController.isActive = false
+                DispatchQueue.main.async { [weak self] in self?.applySearchPlacement() }
+                return
+            }
+            navigationItem.searchController = nil
             toolbarItems = nil
+        } else {
+            navigationItem.searchController = searchController
+            if usesBottomSearchBar {
+                navigationItem.preferredSearchBarPlacement = .integrated
+                toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+            } else {
+                // An iPad list on its own screen — Slide Over, a narrow window.
+                navigationItem.preferredSearchBarPlacement = .stacked
+                toolbarItems = nil
+            }
         }
         // The toolbar is the navigation controller's, and `viewWillAppear`/`Disappear` raise
         // and lower it on navigation — a layout change isn't a navigation, so do it here, but
@@ -948,9 +986,10 @@ final class BufferListViewController: UICollectionViewController {
     ///
     /// Only on an iPhone, and only while this list is its own screen. The idiom is right here
     /// where it's wrong for layout: folding an `.integrated` field into the toolbar is a
-    /// behaviour UIKit has only on iPhone, and on iPad the same placement lands in the nav bar
-    /// and costs the "+" (above). Beside a conversation it's stacked under the title, with no
-    /// toolbar at all — asking for one would raise an empty bar across the foot of the column.
+    /// behaviour UIKit has only on iPhone, and on iPad the same placement lands in the nav bar,
+    /// where UIKit drops trailing items to fit it rather than overflowing them. Beside a
+    /// conversation there's no field here and no toolbar — asking for one would raise an empty
+    /// bar across the foot of the column.
     private var usesBottomSearchBar: Bool {
         UIDevice.current.userInterfaceIdiom == .phone && !marksOpenBuffer
     }
@@ -962,47 +1001,69 @@ final class BufferListViewController: UICollectionViewController {
         searchController.isActive = false
     }
 
-    /// The same views menu the chat screen carries, minus the entries that need a buffer.
+    /// The app-wide menu: the Lurker buffer, plus whatever else this layout has no other place
+    /// for.
     ///
-    /// Highlights, Bookmarks and Uploads are app-scoped — they span every network — so being
-    /// able to reach them only from inside some arbitrary conversation was an artifact of the chat
-    /// screen having once been the only screen. Search is the entry this screen doesn't need: its
-    /// field is already in the bottom bar.
+    /// On its own screen that's the views — Highlights, Bookmarks and Uploads, the same menu
+    /// the chat screen carries minus the entries that need a buffer. They're app-scoped (they
+    /// span every network), so being able to reach them only from inside some arbitrary
+    /// conversation was an artifact of the chat screen having once been the only screen. Search
+    /// isn't here: its field is already in the bottom bar.
+    ///
+    /// Side by side the conversation column shows the views as buttons of its own, so here
+    /// they'd be the same thing twice on one screen; this menu holds Settings instead, the cog
+    /// having left the sidebar to keep it to "+" and "…".
+    ///
+    /// **Deferred**, so which of the two it offers is decided when it opens rather than
+    /// whenever the item was built — an iPhone Duo opens and closes under a live list.
     ///
     /// Members is deliberately absent: it describes a channel, and there isn't one here.
-    private func viewsItem() -> UIBarButtonItem {
-        let highlights = UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
-            guard let self else { return }
-            showHighlights(viewModel: viewModel)
-        }
-        let bookmarks = UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
-            guard let self else { return }
-            showBookmarks(viewModel: viewModel)
-        }
-        // ⚠ No `onInsert`. There is no composer mounted behind this screen, so an "Add to
-        // Message" offered from here would land nowhere and report nothing. Copy Link and Share
-        // are the answers from the list, and both are in the same menu on the tile.
-        let uploads = UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) {
-            [weak self] _ in
-            guard let self else { return }
-            showUploads(viewModel: viewModel)
-        }
-        // The Lurker buffer — the app's own log and command console. It has no row in the list,
-        // and this is its door now that the title isn't a button. Set apart at the top because
-        // it's a buffer you open, not a view over all of them.
-        let lurker = UIAction(title: "Lurker", image: UIImage(systemName: "sparkles")) { [weak self] _ in
-            self?.openSystemBuffer()
-        }
+    private lazy var viewsItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
             menu: UIMenu(children: [
-                UIMenu(options: .displayInline, children: [lurker]),
-                highlights, bookmarks, uploads,
+                UIDeferredMenuElement.uncached { [weak self] completion in
+                    completion(self?.viewsMenuElements() ?? [])
+                },
             ])
         )
         item.accessibilityLabel = "More"
         return item
+    }()
+
+    private func viewsMenuElements() -> [UIMenuElement] {
+        // Set apart at the top because it's a buffer you open, not a view over all of them.
+        let head = UIMenu(options: .displayInline, children: [
+            AppView.lurker.action { [weak self] in self?.openSystemBuffer() },
+        ])
+        guard !marksOpenBuffer else {
+            return [head, UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
+                self?.showSettings()
+            }]
+        }
+        return [
+            head,
+            AppView.highlights.action { [weak self] in self?.openHighlights() },
+            AppView.bookmarks.action { [weak self] in self?.openBookmarks() },
+            AppView.uploads.action { [weak self] in self?.openUploads() },
+        ]
     }
+
+    // The "…" menu's entries opened out, for a vertical rail (`applyBarLayout`). The Lurker
+    // buffer has no row in the list; the menu, or this button, is its door.
+
+    private lazy var lurkerItem = AppView.lurker.barItem { [weak self] in self?.openSystemBuffer() }
+    private lazy var highlightsItem = AppView.highlights.barItem { [weak self] in self?.openHighlights() }
+    private lazy var bookmarksItem = AppView.bookmarks.barItem { [weak self] in self?.openBookmarks() }
+    private lazy var uploadsItem = AppView.uploads.barItem { [weak self] in self?.openUploads() }
+
+    private func openHighlights() { showHighlights(viewModel: viewModel) }
+    private func openBookmarks() { showBookmarks(viewModel: viewModel) }
+
+    /// ⚠ No `onInsert`. There is no composer mounted behind this screen, so an "Add to Message"
+    /// offered from here would land nowhere and report nothing. Copy Link and Share are the
+    /// answers from the list, and both are in the same menu on the tile.
+    private func openUploads() { showUploads(viewModel: viewModel) }
 
     // MARK: - Joining
 
@@ -1783,20 +1844,5 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
     /// Whether this index path is a row in a section that can be reordered.
     private func reorderable(_ indexPath: IndexPath) -> Bool {
         sectionID(at: indexPath)?.reorderable == true && row(at: indexPath) != nil
-    }
-}
-
-// MARK: - Search presentation
-
-/// The delegate lives here rather than on the results screen because the search controller
-/// belongs to this screen. What the results need from its callbacks, they're asked for
-/// directly: a plain method call reads better than forwarding a protocol.
-extension BufferListViewController: UISearchControllerDelegate {
-
-    func willPresentSearchController(_ searchController: UISearchController) {
-        // Before the results appear, so they never show an answer to a question the field
-        // isn't asking — the results screen is reused across searches and can still be holding
-        // the last one.
-        searchResults.syncToField(searchController.searchBar.text ?? "")
     }
 }

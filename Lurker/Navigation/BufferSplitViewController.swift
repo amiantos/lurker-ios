@@ -50,6 +50,9 @@ final class BufferSplitViewController: UISplitViewController {
     /// there — so asking the split to dismiss never reaches one the conversation column put up.
     /// Both columns have to be asked.
     func dismissPresented() {
+        // The conversation presents its own column search (it defines the presentation context),
+        // which neither navigation controller would find.
+        currentChat?.endColumnSearch()
         for nav in [listNav, chatNav] where nav.presentedViewController != nil {
             nav.dismiss(animated: false)
         }
@@ -59,7 +62,8 @@ final class BufferSplitViewController: UISplitViewController {
     /// The sheet on screen, whichever column put it up: `dismissPresented`'s counterpart, for
     /// showing something over it rather than taking it down.
     var topPresented: UIViewController? {
-        let presenters: [UIViewController] = [listNav, chatNav, self]
+        // The conversation too: an open column search is presented by it — see `dismissPresented`.
+        let presenters: [UIViewController] = [listNav, chatNav] + [currentChat].compactMap { $0 } + [self]
         return presenters.lazy.compactMap(\.presentedViewController).first
     }
 
@@ -84,19 +88,25 @@ final class BufferSplitViewController: UISplitViewController {
         // underneath it — a washed-out grey in dark mode (#393C3E over a black column).
         // `.none` keeps the layer and tiles the columns side by side with a 1pt separator.
         primaryBackgroundStyle = .none
-        // No hide-the-sidebar button and no swipe: the list stays up, as it does in Messages.
-        // The bar also can't afford one — a ~320pt column already carrying the title, and
-        // UIKit answers an overfull bar by dropping trailing items rather than overflowing
-        // them. With the display-mode button present, the join "+" was measured going missing.
-        presentsWithGesture = false
-        displayModeButtonVisibility = .never
+        // The system's show/hide-sidebar button, as in Mail and Notes: hidden, the conversation
+        // runs the full width, and its bar already carries the views and search, so all that's
+        // behind the button is "+", Lurker and Settings. Only affordable since the sidebar's bar
+        // went down to "+" and "…" — with the cog there too, UIKit made room for this button by
+        // dropping the "+" (it drops trailing items rather than overflowing them).
+        //
+        // ⚠ The gesture is what shows the button: measured on iPad (27.0), with
+        // `presentsWithGesture = false` an `.automatic` button never appears — not in the
+        // sidebar, and not in the conversation bar once the sidebar is hidden, which would strand
+        // it hidden. The left-edge swipe it adds costs nothing here: side by side the conversation
+        // is its column's root, so there's no Back swipe to collide with, and collapsed (the
+        // phone's stack) the split doesn't use it.
+        presentsWithGesture = true
+        displayModeButtonVisibility = .automatic
         // The stack's own factory, which wires the list's `onSelect` and its search results'
         // jump to `showBuffer` — the funnel that forwards back here once these navs are
         // columns. So the list knows nothing about splits.
         listNav.showBufferList(viewModel: viewModel, animated: false)
-        chatNav.setViewControllers(
-            [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-        )
+        chatNav.setViewControllers([makeChat(.system)], animated: false)
         setViewController(listNav, for: .primary)
         setViewController(chatNav, for: .secondary)
     }
@@ -112,6 +122,16 @@ final class BufferSplitViewController: UISplitViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         list?.marksOpenBuffer = !isCollapsed
+        currentChat?.isBesideList = !isCollapsed
+    }
+
+    /// A conversation screen that already knows which bar it's getting. Every screen built for
+    /// the conversation column comes from here: a new one lays out its bar at load, before the
+    /// next layout pass would tell it (`viewDidLayoutSubviews`).
+    private func makeChat(_ buffer: Buffer, jumpTo messageId: Int? = nil) -> ChatViewController {
+        let chat = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
+        chat.isBesideList = !isCollapsed
+        return chat
     }
 
     /// The column rule, re-asserted before every layout as well as on trait changes. The trait
@@ -191,7 +211,9 @@ final class BufferSplitViewController: UISplitViewController {
             return
         }
         selection = buffer.key
-        let chat = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
+        let chat = makeChat(buffer, jumpTo: messageId)
+        // The screen going out may be presenting its column search — see `endColumnSearch`.
+        (chatNav.viewControllers.last as? ChatViewController)?.endColumnSearch()
         // Set, never pushed. One conversation exists at a time — `/msg` from a channel or a
         // notification tapped mid-read must not leave a stack of live subscriptions behind a
         // back button that walks you through your own history.
@@ -237,8 +259,9 @@ final class BufferSplitViewController: UISplitViewController {
     /// nobody can see it. `splitViewControllerDidExpand` builds the resting screen when there's
     /// somewhere to show it.
     private func restColumn() {
+        (chatNav.viewControllers.last as? ChatViewController)?.endColumnSearch()
         chatNav.setViewControllers(
-            isCollapsed ? [] : [ChatViewController(viewModel: viewModel, buffer: .system)],
+            isCollapsed ? [] : [makeChat(.system)],
             animated: false
         )
     }
@@ -324,9 +347,7 @@ extension BufferSplitViewController: UISplitViewControllerDelegate {
             listNav.setViewControllers([list], animated: false)
             chatNav.setViewControllers([chat], animated: false)
         } else if chatNav.viewControllers.isEmpty {
-            chatNav.setViewControllers(
-                [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-            )
+            chatNav.setViewControllers([makeChat(.system)], animated: false)
         }
     }
 

@@ -301,10 +301,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // No leading item: the navigation controller's own back button goes there, and the
         // buffer list it returns to is this screen's parent rather than a sheet it summons.
         //
-        // Info next to the menu rather than inside it: the sheet holds the member list and
-        // this buffer's settings, and it used to be one tap on the title — burying it a level
-        // down would have made the most-used sheet on this screen the slowest to reach. First element is the trailing-most, so the menu keeps its corner.
-        navigationItem.rightBarButtonItems = [overflowItem(), infoItem()]
+        // The trailing items depend on whether this screen is beside the buffer list or on top
+        // of it, which an iPhone Duo changes under a live conversation — so they're set per
+        // layout rather than once. See `applyBarLayout`.
+        applyBarLayout()
+        registerForVerticalBarChanges { chat in chat.applyBarLayout() }
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -697,6 +698,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         if let split = splitViewController as? BufferSplitViewController { owningSplit = split }
+    }
+
+    /// By now this screen has the navigation controller it's showing in — which a collapse or
+    /// expand changes, and which the column search's jump has to go through.
+    override func viewIsAppearing(_ animated: Bool) {
+        super.viewIsAppearing(animated)
+        wireColumnSearch()
     }
 
     /// Backing out to the list means the *list* is where you were, not this buffer. Without
@@ -2743,15 +2751,192 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
+    /// Whether this screen sits beside the buffer list rather than on top of it — an iPad, or an
+    /// iPhone Duo opened up.
+    ///
+    /// Pushed in by `BufferSplitViewController`, as the list's `marksOpenBuffer` is, and for the
+    /// same reason: `isCollapsed` still answers for the layout being left while a transition
+    /// runs. Not the iOS 26 `splitViewControllerLayoutEnvironment` trait either — measured on an
+    /// iPad collapsing, every screen in the split went on reading `.expanded`.
+    var isBesideList = false {
+        didSet { applyBarLayout() }
+    }
+
+    /// The layout the bar was last fitted to, so re-asserting the same one doesn't replace the
+    /// items — which would close a menu one of them is showing.
+    private var barLayout: BarLayout?
+
+    private struct BarLayout: Equatable {
+        var besideList: Bool
+        var rail: Bool
+    }
+
+    /// Fit the bar to the layout.
+    ///
+    /// **On top of the list** (every iPhone, a folded Duo, an iPad in Slide Over): Info plus
+    /// the views menu, as ever — Search, Highlights, Bookmarks and Uploads behind one "…",
+    /// because this screen is all there is and its bar is phone-width.
+    ///
+    /// **Beside the list**: the views come out of the menu as buttons of their own, and search
+    /// becomes a field at the bar's trailing edge — the column with the room, and the macOS
+    /// toolbar arrangement Apple asks split views on iPad to follow (Mail puts Compose over the
+    /// message, not in the sidebar). The sidebar sheds its copies of all of it in the same
+    /// layout (`BufferListViewController.applyBarLayout`), so nothing appears twice on screen.
+    /// Where the bar runs short UIKit folds the leading-most of these into an overflow menu of
+    /// its own — measured on an iPad mini in portrait, all four fit until the field opens.
+    ///
+    /// **In a vertical rail** (an iPhone Duo) the menu opens out on top of the list too: the
+    /// rail runs the height of the display, with room for every entry as a button. Search is a
+    /// button there, opening the same sheet the menu row does.
+    private func applyBarLayout() {
+        let layout = BarLayout(besideList: isBesideList, rail: traitCollection.hasVerticalBar)
+        guard layout != barLayout else { return }
+        barLayout = layout
+        // First element is the trailing-most. Info sits nearest the field and the edge on all
+        // three, since it's the one item that's about THIS buffer rather than a view over all.
+        let views = [uploadsItem, bookmarksItem, highlightsItem]
+        navigationItem.rightBarButtonItems = layout.besideList ? [infoItem] + views
+            : layout.rail ? [infoItem] + views + [searchItem]
+            : [overflowItem, infoItem]
+        applyColumnSearch()
+    }
+
     /// This buffer's info sheet: its members, its settings, and searching just this buffer.
-    private func infoItem() -> UIBarButtonItem {
+    ///
+    /// Next to the menu rather than inside it: the sheet holds the member list and this buffer's
+    /// settings, and it used to be one tap on the title — burying it a level down would have
+    /// made the most-used sheet on this screen the slowest to reach.
+    private lazy var infoItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "info.circle"),
-            primaryAction: UIAction { [weak self] _ in self?.showBufferInfo() }
+            primaryAction: UIAction { [weak self] _ in self?.afterColumnSearch { $0.showBufferInfo() } }
         )
         item.accessibilityLabel = "Info"
         item.accessibilityHint = "Shows this buffer's info and settings"
         return item
+    }()
+
+    // The views as buttons, beside the list or in a vertical rail (`applyBarLayout`). Each ends a
+    // column search first — see `afterColumnSearch`.
+
+    /// Search as a button — on top of the list in a vertical rail, where there's no field.
+    private lazy var searchItem = AppView.search.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showSearch(viewModel: $0.viewModel) }
+    }
+    private lazy var highlightsItem = AppView.highlights.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showHighlights(viewModel: $0.viewModel) }
+    }
+    private lazy var bookmarksItem = AppView.bookmarks.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showBookmarks(viewModel: $0.viewModel) }
+    }
+    /// A file picked in the browser goes into THIS composer, as from the menu — see
+    /// `overflowItem`.
+    private lazy var uploadsItem = AppView.uploads.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showUploadsHere() }
+    }
+
+    private func showUploadsHere() {
+        showUploads(viewModel: viewModel) { [weak self] url in
+            self?.composer.insert(url)
+        }
+    }
+
+    // MARK: - Search (beside the list)
+
+    /// Point the column search's results at the navigation controller this screen is in now.
+    /// Re-wired rather than wired once: collapsing and expanding moves this screen between the
+    /// split's two navigation controllers, and a jump has to go through the current one.
+    ///
+    /// Closes first: a jump replaces this screen, which is what presents the results.
+    private func wireColumnSearch() {
+        guard isBesideList, let navigationController else { return }
+        navigationController.wireSearchResults(columnSearchResults, viewModel: viewModel, closesFirst: true) {
+            [weak self] in
+            self?.endColumnSearch()
+        }
+    }
+
+    /// The results for the column's own search field, and the field. Built with the first
+    /// beside-the-list layout — on iPad, every conversation — because the field has to be in the
+    /// bar to be tapped. Neither loads anything until search is opened: the results fetch from
+    /// their `viewDidLoad`.
+    private lazy var columnSearchResults = MessageSearchViewController(
+        viewModel: viewModel, presentation: .resultsController
+    )
+
+    private lazy var columnSearch = columnSearchResults.makeHostedSearchController()
+
+    /// Take the column search down at once, without its animation. Returns whether there was one
+    /// up.
+    ///
+    /// For whatever is about to replace this screen, or present over it. With this screen
+    /// defining the presentation context, an open search is presented BY it: a sheet asked for
+    /// meanwhile is refused as "already presenting", and swapping the screen out tears the
+    /// search from the window mid-presentation. Unanimated so the dismissal can't still be
+    /// running when that happens.
+    @discardableResult
+    func endColumnSearch() -> Bool {
+        guard let search = navigationItem.searchController, search.isActive else { return false }
+        UIView.performWithoutAnimation { search.isActive = false }
+        return true
+    }
+
+    /// Run `action` once the column search is out of the way, so this screen can present again.
+    ///
+    /// ⚠ After the dismissal's transition completes, not a turn later: measured on iPad, a
+    /// Highlights sheet asked for on the next runloop turn was still refused — unanimated or not,
+    /// the dismissal hadn't finished.
+    private func afterColumnSearch(_ action: @escaping (ChatViewController) -> Void) {
+        let search = navigationItem.searchController
+        guard endColumnSearch() else { return action(self) }
+        let run = { [weak self] in
+            guard let self else { return }
+            action(self)
+        }
+        if let coordinator = search?.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { _ in run() }
+        } else {
+            DispatchQueue.main.async(execute: run)
+        }
+    }
+
+    /// Carry the search field while beside the list; drop it on top of one.
+    ///
+    /// This screen's rather than the list's because of where the results land. The list's field
+    /// can be drawn over here (`searchBarPlacementAllowsExternalIntegration`), but its results
+    /// are still presented by the list — measured on iPad, a 320pt strip of results in the
+    /// sidebar beside the field you're typing into. Owned here, with this screen defining the
+    /// presentation context, they cover the conversation column instead.
+    ///
+    /// On top of the list the field goes: the phone's bar has no room for it, and search is in
+    /// the "…" menu, as a sheet with its own bottom field.
+    private func applyColumnSearch() {
+        if isBesideList {
+            definesPresentationContext = true
+            navigationItem.searchController = columnSearch
+            navigationItem.preferredSearchBarPlacement = .integrated
+            // A Duo is `.phone`, and on a phone an integrated field may be folded into the
+            // toolbar — this screen's bottom edge is the composer, so keep it in the bar.
+            navigationItem.searchBarPlacementAllowsToolbarIntegration = false
+            wireColumnSearch()
+            return
+        }
+        // Nothing to take down if the field was never built.
+        guard navigationItem.searchController != nil else { return }
+        // Taken down before it's removed, and removed a turn later: this runs as the split
+        // collapses, and pulling a search controller out from under its own dismissal mid-
+        // transition is the shape of a UIKit crash NetNewsWire hit on a split changing layout.
+        if columnSearch.isActive {
+            columnSearch.isActive = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !isBesideList else { return }
+                navigationItem.searchController = nil
+                definesPresentationContext = false
+            }
+            return
+        }
+        navigationItem.searchController = nil
+        definesPresentationContext = false
     }
 
     /// The views menu, opposite the back button: the surfaces you *look at*, as against the
@@ -2769,20 +2954,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// menu is now the same menu everywhere. The right-edge swipe remains as the shortcut.
     ///
     /// A bare "…" means "there's a menu here" on iOS, so nothing in it fires on tap.
-    private func overflowItem() -> UIBarButtonItem {
+    private lazy var overflowItem: UIBarButtonItem = {
         let actions: [UIMenuElement] = [
             // Unscoped, like everything else in this menu. Searching *this* buffer is a fact
             // about this buffer, so it lives in the buffer-info sheet behind the info button,
             // where the per-buffer things are — see `BufferInfoViewController`.
-            UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+            AppView.search.action { [weak self] in
                 guard let self else { return }
                 showSearch(viewModel: viewModel)
             },
-            UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+            AppView.highlights.action { [weak self] in
                 guard let self else { return }
                 showHighlights(viewModel: viewModel)
             },
-            UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+            AppView.bookmarks.action { [weak self] in
                 guard let self else { return }
                 showBookmarks(viewModel: viewModel)
             },
@@ -2790,12 +2975,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // browser goes into THIS composer. That's the whole reason the screen is worth
             // having on a phone, and it's why the closure is passed from here and not from the
             // buffer list, which has no composer to insert into.
-            UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
-                guard let self else { return }
-                showUploads(viewModel: viewModel) { [weak self] url in
-                    self?.composer.insert(url)
-                }
-            },
+            AppView.uploads.action { [weak self] in self?.showUploadsHere() },
         ]
         // Built once, not deferred: nothing in here varies at all now, let alone per press.
         // (The deferral this used to need was for Join, whose networks come and go; that's
@@ -2803,7 +2983,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let item = UIBarButtonItem(image: UIImage(systemName: "ellipsis"), menu: UIMenu(children: actions))
         item.accessibilityLabel = "More"
         return item
-    }
+    }()
 
     // MARK: - Date-label invalidation
 

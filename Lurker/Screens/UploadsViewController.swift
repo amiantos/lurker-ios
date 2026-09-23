@@ -105,10 +105,6 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         title = "Uploads"
         view.backgroundColor = .systemBackground
         navigationItem.largeTitleDisplayMode = .always
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .done,
-            primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
-        )
         navigationItem.leftBarButtonItem = filterItem
 
         collectionView.backgroundColor = .clear
@@ -154,7 +150,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         // The toolbar holding the search field belongs to the navigation controller, not to this
         // screen, so it has to be asked for on the way in — and put back on the way out, since
         // the sheet may show other screens that have no business with a bottom bar.
-        navigationController?.setToolbarHidden(false, animated: animated)
+        if searchesFromToolbar { navigationController?.setToolbarHidden(false, animated: animated) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -240,6 +236,11 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     /// Own the search field, in the bottom bar — the same arrangement message search uses, and
     /// for the same reason: on a phone that is where a thumb already is.
+    ///
+    /// Only on iPhone, though — UIKit folds an integrated field into the toolbar there alone.
+    /// On iPad it lands at the top-right of the navigation bar, and there's no toolbar: it would
+    /// be a bar holding nothing. Done stays top-right either way, and on iPad keeps the edge,
+    /// to the right of the field.
     private func installSearchBar() {
         let controller = UISearchController(searchResultsController: nil)
         controller.searchResultsUpdater = self
@@ -252,8 +253,22 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         controller.searchBar.spellCheckingType = .no
         navigationItem.searchController = controller
         navigationItem.preferredSearchBarPlacement = .integrated
-        toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+        let done = UIBarButtonItem(
+            systemItem: .done,
+            primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
+        )
+        if searchesFromToolbar {
+            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+            navigationItem.rightBarButtonItem = done
+        } else {
+            // Pinned rather than a right item: UIKit lays an integrated field trailing-most,
+            // after the right items, and the pinned group is the one slot that goes past it.
+            navigationItem.pinnedTrailingGroup = UIBarButtonItemGroup(barButtonItems: [done], representativeItem: nil)
+        }
     }
+
+    /// Whether the search field is in a bottom toolbar — see `installSearchBar`.
+    private var searchesFromToolbar: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
     /// Fires for activation and dismissal as well as for edits, so unchanged text is dropped —
     /// otherwise merely focusing the field would re-run the search already on screen and scroll
