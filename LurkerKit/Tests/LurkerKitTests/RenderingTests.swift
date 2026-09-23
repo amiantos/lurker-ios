@@ -38,13 +38,13 @@ final class RenderingTests: XCTestCase {
         let runs = IRCFormatting.parse("\u{03}04,08red")
         XCTAssertEqual(runs.count, 1)
         XCTAssertEqual(runs[0].text, "red")
-        XCTAssertEqual(runs[0].fg, 4)
-        XCTAssertEqual(runs[0].bg, 8)
+        XCTAssertEqual(runs[0].fg, .slot(4))
+        XCTAssertEqual(runs[0].bg, .slot(8))
     }
 
     func testForegroundOnlyLeavesNoBackground() {
         let runs = IRCFormatting.parse("\u{03}04red")
-        XCTAssertEqual(runs[0].fg, 4)
+        XCTAssertEqual(runs[0].fg, .slot(4))
         XCTAssertNil(runs[0].bg)
         XCTAssertEqual(runs[0].text, "red")
     }
@@ -56,15 +56,91 @@ final class RenderingTests: XCTestCase {
         XCTAssertNil(runs.last?.fg)
     }
 
-    func testMonospaceAndReverseAreConsumedNotRendered() {
-        let runs = IRCFormatting.parse("a\u{11}b\u{16}c")
-        XCTAssertEqual(runs.map(\.text).joined(), "abc")
+    func testMonospaceIsConsumed() {
+        let runs = IRCFormatting.parse("a\u{11}b")
+        XCTAssertEqual(runs.map(\.text).joined(), "ab")
+    }
+
+    /// Reverse is a toggle on the run, cleared by a reset — and the colours stay as sent, because
+    /// the swap is the renderer's (an unset side swaps with the theme, which only it knows).
+    func testReverseTogglesAndResets() {
+        let runs = IRCFormatting.parse("a\u{16}\u{03}04b\u{16}c\u{16}d\u{0F}e")
+        XCTAssertEqual(runs.map(\.text), ["a", "b", "c", "d", "e"])
+        XCTAssertEqual(runs.map(\.reverse), [false, true, false, true, false])
+        XCTAssertEqual(runs[1].fg, .slot(4))
+        XCTAssertNil(runs[1].bg)
+    }
+
+    // MARK: - Truecolour (\x04)
+
+    func testTruecolourParsesForegroundAndBackground() {
+        let runs = IRCFormatting.parse("\u{04}FF8800,00ff00art")
+        XCTAssertEqual(runs.count, 1)
+        XCTAssertEqual(runs[0].text, "art")
+        XCTAssertEqual(runs[0].fg, .rgb(0xFF8800))
+        XCTAssertEqual(runs[0].bg, .rgb(0x00FF00))
+    }
+
+    /// A foreground alone keeps the background in effect, whichever code set it — and a bare
+    /// \x04 resets both, like a bare \x03.
+    func testTruecolourForegroundKeepsBackgroundAndBareResets() {
+        let runs = IRCFormatting.parse("\u{03}04,08a\u{04}123456b\u{04}c")
+        XCTAssertEqual(runs.map(\.text), ["a", "b", "c"])
+        XCTAssertEqual(runs[1].fg, .rgb(0x123456))
+        XCTAssertEqual(runs[1].bg, .slot(8))
+        XCTAssertNil(runs[2].fg)
+        XCTAssertNil(runs[2].bg)
+    }
+
+    /// Exactly six hex per colour, as the web and the server's `FORMAT_RE` take it. Short hex is
+    /// no colour: the \x04 is bare and its would-be digits are text. A comma without a full
+    /// colour after it is text too.
+    func testTruecolourNeedsSixHexAndLeavesAStrayComma() {
+        XCTAssertEqual(IRCFormatting.strip("\u{04}abcde!"), "abcde!")
+        XCTAssertEqual(IRCFormatting.strip("\u{04}abcdef,12345 x"), ",12345 x")
+        XCTAssertEqual(IRCFormatting.strip("\u{04}abcdef,nothex"), ",nothex")
+        XCTAssertEqual(IRCFormatting.strip("\u{04}abcdefabc"), "abc")
+        let runs = IRCFormatting.parse("\u{03}04,08a\u{04}abcdef,zz")
+        XCTAssertEqual(runs.last?.text, ",zz")
+        XCTAssertEqual(runs.last?.bg, .slot(8), "a failed background must not touch the one in effect")
+    }
+
+    /// The spoiler test: an equal PAINTABLE pair, hex included. Slots past 15 paint nothing.
+    func testHidesTextNeedsAPaintableEqualPair() {
+        XCTAssertTrue(IRCFormatting.parse("\u{03}01,01x")[0].hidesText)
+        XCTAssertTrue(IRCFormatting.parse("\u{04}AABBCC,aabbcc x")[0].hidesText)
+        XCTAssertFalse(IRCFormatting.parse("\u{03}99,99x")[0].hidesText)
+        XCTAssertFalse(IRCFormatting.parse("\u{04}aabbcc,aabbcd x")[0].hidesText)
+        XCTAssertFalse(IRCFormatting.parse("\u{03}01x")[0].hidesText)
+        // The parser never yields a negative slot, but `IRCColor` is public and none is paintable.
+        XCTAssertFalse(FormattingRun(
+            text: "x", bold: false, italic: false, underline: false, strike: false,
+            reverse: false, fg: .slot(-1), bg: .slot(-1)
+        ).hidesText)
+    }
+
+    /// The reverse swap, with strings standing in for colours. An unset or unpaintable side is
+    /// the theme's own; a spoiler is not swapped.
+    func testPaintSwapsUnderReverse() {
+        func paint(_ raw: String, fg: String?, bg: String?) -> [String?] {
+            let pair = IRCFormatting.parse(raw)[0].paint(fg: fg, bg: bg, text: "text", canvas: "canvas")
+            return [pair.ink, pair.fill]
+        }
+        XCTAssertEqual(paint("x", fg: nil, bg: nil), ["text", nil])
+        XCTAssertEqual(paint("\u{03}04,08x", fg: "red", bg: "yellow"), ["red", "yellow"])
+        XCTAssertEqual(paint("\u{16}x", fg: nil, bg: nil), ["canvas", "text"])
+        XCTAssertEqual(paint("\u{16}\u{03}04,08x", fg: "red", bg: "yellow"), ["yellow", "red"])
+        XCTAssertEqual(paint("\u{16}\u{03}04x", fg: "red", bg: nil), ["canvas", "red"])
+        // 99 is a slot the caller can't paint, so it resolves to nil and swaps as unset.
+        XCTAssertEqual(paint("\u{16}\u{03}99,08x", fg: nil, bg: "yellow"), ["yellow", "text"])
+        XCTAssertEqual(paint("\u{16}\u{03}01,01x", fg: "black", bg: "black"), ["black", "black"])
     }
 
     func testPlainTextIsASingleRun() {
         let runs = IRCFormatting.parse("hello world")
         XCTAssertEqual(runs, [FormattingRun(
-            text: "hello world", bold: false, italic: false, underline: false, strike: false, fg: nil, bg: nil
+            text: "hello world", bold: false, italic: false, underline: false, strike: false,
+            reverse: false, fg: nil, bg: nil
         )])
     }
 

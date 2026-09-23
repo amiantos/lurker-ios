@@ -133,6 +133,8 @@ struct PreviewSelectionTests {
         #expect(urls(hidden, media: true, pages: false).isEmpty)
         // A visible link in the same message is unaffected.
         #expect(urls("ok https://e.test/fine.png \(hidden)") == ["https://e.test/fine.png"])
+        // A truecolour pair hides its text just the same.
+        #expect(urls("\u{4}112233,112233https://secret.example/leak.png\u{4}").isEmpty)
     }
 
     @Test("still resolves a link in an unrenderable matched pair, which is not a spoiler")

@@ -68,19 +68,6 @@ public enum PreviewSelection {
         return mediaExtensions.contains { path.hasSuffix(".\($0)") || path.contains(".\($0)/") }
     }
 
-    /// Whether a formatting run is the IRC spoiler convention: text painted in its own
-    /// background colour, i.e. invisible until selected or revealed.
-    ///
-    /// ⚠ The `<= 15` half has to match the renderer exactly. Slots above 15 paint nothing, so
-    /// such a run is not hidden and its links are ordinary links — and since `SpoilerMarkup`
-    /// closes a spoiler with `\u{3}99,99` when a digit follows, the tail of those messages IS a
-    /// 99,99 run. Without the bound, a URL anywhere after a spoiler would silently lose its
-    /// preview, which is a hard failure to trace back to a colour code.
-    static func isSpoilerRun(_ run: FormattingRun) -> Bool {
-        guard let fg = run.fg, let bg = run.bg else { return false }
-        return fg == bg && fg <= 15
-    }
-
     /// The URLs to resolve for a buffer's worth of events — the whole priming policy, in one
     /// testable call.
     ///
