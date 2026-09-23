@@ -7,10 +7,11 @@ import UIKit
 /// Lurker's own colors: the two built-in themes as the web client ships them — **Monokai Plus**
 /// (dark) and **Monokai Plus Light** — from `shared/themePresets.ts`.
 ///
-/// The app is otherwise a UIKit semantic-color app on purpose. This exists in two places only:
+/// The app is otherwise a UIKit semantic-color app on purpose. This exists in three places only:
 /// where a system color would be a lie about which signal is being shown (the status lights, the
-/// connection banner), and on the message list, which is Lurker's canvas rather than the system's.
-/// Chrome — the buffer list, settings, login — stays native, in both schemes.
+/// connection banner), on the message list, which is Lurker's canvas rather than the system's,
+/// and on the buffer list, which is drawn as the web sidebar's tree on that same canvas. Other
+/// chrome — settings, login — stays native, in both schemes.
 ///
 /// ⚠ This is the two built-ins' *values*, not a theme engine. The web client points each scheme
 /// at a theme the user can edit; iOS reads none of that, so a token here is always the built-in.
@@ -37,10 +38,19 @@ enum Palette {
     /// `look.color.fg_muted` — timestamps, system events, secondary labels on `bg`.
     nonisolated static let fgMuted = dynamicHex(dark: "#939293", light: "#706b6e")
 
-    // The rest of the web palette — `bg_soft` (#2c2a2e / #ede7e5) and `border`
-    // (#38353b / #e0dad9) — is deliberately absent. Their roles are raised surfaces and region
-    // separators, both of which are native chrome here, and a token nothing draws is a token
-    // nobody keeps in sync.
+    /// `look.color.bg_soft` — a raised step off `bg`: the buffer list's pressed and open rows,
+    /// which is the web sidebar's use of it too.
+    nonisolated static let bgSoft = dynamicHex(dark: "#2c2a2e", light: "#ede7e5")
+
+    /// `look.color.accent` — the web's unread colour (`--buffer-unread` is `var(--accent)`) and
+    /// its open-row edge, both of which the buffer list now draws. Not the app's tint: buttons
+    /// and links stay the system's, and this is Lurker's signal for "something is waiting".
+    nonisolated static let accent = dynamicHex(dark: "#a99dec", light: "#7058be")
+
+    // `border` (#38353b / #e0dad9) is deliberately absent. Its role is region separators, which
+    // are native chrome here — and the buffer list's rules derive from `fgMuted` instead, since
+    // `border` vanishes on the sidebar's glass. A token nothing draws is a token nobody keeps in
+    // sync.
 
     /// One tier below `fgMuted`: text that is a *hint* rather than information — the
     /// start-of-history rule, a relay line's source tag. Present enough to read when looked for,

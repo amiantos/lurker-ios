@@ -13,36 +13,23 @@ import UIKit
 /// way in and out. It used to be a sheet over the chat screen, which meant a bespoke button
 /// to summon it, an edge swipe wired by hand, and a chat screen that could never be left.
 ///
-/// Not a directory: the buffers you actually move between are a handful you keep returning
-/// to, so Friends, Favorites and Recent come first as two-across grids of cards you can hit
-/// without looking, and the full grouped roster sits underneath. The grids are *shortcuts* — a
-/// favorite or recent buffer also keeps its ordinary row in its network's section below, so
-/// the roster stays a complete list rather than one with holes punched in it. Only the roster
-/// rows carry swipe-to-leave, so the two never read as the same control.
+/// Drawn as the web sidebar's tree, not as iOS grouped lists: Friends, Favorites, then each
+/// network, every group an uppercase header over `├─`/`└─` rows in the log's monospaced face,
+/// on the log's own ground. It used to be two-up chip grids over inset-grouped cards, which
+/// spent most of a phone's height on padding and rounded corners, and a Recent grid that
+/// reshuffled every time you backed out of a buffer and printed rows that were already further
+/// down. The cells are in `BufferRowCell.swift`.
 ///
-/// A `UICollectionView` with a compositional layout rather than a table, because one scroll
-/// view has to hold both full-width rows and a two-up grid — the layout is chosen per section
-/// (`.list` vs. a grid group), which a table can't do and a hand-rolled scroll view would
-/// have to reinvent.
+/// A network's header is its server log (the web's shape), so a network has no "Server" row.
 ///
-/// "Denser" is spacing, not type size — one font size app-wide. The hierarchy is the card,
-/// a network line on the grid chips, weight, and order.
-///
-
-/// Grid of chips, or inset-grouped list.
-nonisolated private enum Layout {
-    case list
-    case grid
-}
+/// "Denser" is spacing, not type size — one font size for rows and headers alike. The hierarchy
+/// is case, colour and the tree.
 
 /// What a section *is*, independent of where it currently sits.
 ///
-/// ⚠⚠ The fix for a class of bug that cost a long QA session. This screen's sections are
-/// not interchangeable — Friends/Favorites/Recent are two-up grids of chips, the network
-/// rosters are inset-grouped lists — and they arrive in a different order than they
-/// finally sit in: during the connect burst the list is `Recent | libera | …` and
-/// moments later `Friends | Favorites | Recent | libera | …`, so index 1 stops being a
-/// list and becomes a grid.
+/// ⚠⚠ The fix for a class of bug that cost a long QA session. Sections arrive in a different
+/// order than they finally sit in: during the connect burst the list is `libera | …` and
+/// moments later `Friends | Favorites | libera | …`, so index 0 stops being a network.
 ///
 /// Everything that used to key off the *index* — which layout to build, which title to
 /// draw, whether a drag may land — followed the position rather than the content, and a
@@ -54,33 +41,30 @@ nonisolated private enum Layout {
 nonisolated private enum SectionID: Hashable {
     case friends
     case favorites
-    case recent
-    /// A network's roster. `pinned` splits it into the two sections a network can have.
-    case network(Int, pinned: Bool)
+    /// A network's group: its header (the server log), its pinned buffers, then the rest.
+    case network(Int)
     /// Buffers whose network isn't in the roster yet (snapshot race).
-    case unrostered(Int, pinned: Bool)
+    case unrostered(Int)
 
-    var layout: Layout {
-        switch self {
-        case .friends, .favorites, .recent: .grid
-        case .network, .unrostered: .list
-        }
-    }
-
-    /// Whether these chips can be dragged into a new order (#53). Friends and Favorites,
-    /// the two views of the server's one global favorites order (lurker#721) — not
-    /// Recent, which is MRU-ordered, and not the rosters, which are the same sorted list
-    /// this screen has always shown; a drag in either would be undone by the next
-    /// rebuild.
+    /// Whether these rows can be dragged into a new order (#53). Friends and Favorites,
+    /// the two views of the server's one global favorites order (lurker#721) — not the
+    /// networks, which are the same sorted list this screen has always shown; a drag there
+    /// would be undone by the next rebuild.
     var reorderable: Bool { self == .friends || self == .favorites }
 }
 
-/// One row's identity. Section-qualified because the same buffer legitimately appears
-/// twice — Recent keeps its rows in their network sections — and a diffable data source
-/// requires item identifiers to be unique across the whole snapshot.
+/// One item's identity. Section-qualified because a diffable data source requires item
+/// identifiers to be unique across the whole snapshot, and the header and pinned-break items
+/// every group can carry share a key from one section to the next.
 nonisolated private struct ItemID: Hashable {
     let section: SectionID
     let key: String
+
+    /// The keys of the two items that aren't buffers. A `BufferKey.id` always starts with a
+    /// network id or `sys`, so these can't collide with one. A network's header takes its
+    /// server log's key instead — see `Header.log`.
+    static let headerKey = "::header"
+    static let pinBreakKey = "::pins"
 }
 
 /// It reports the pick through `onSelect` and doesn't know what happens next.
@@ -91,38 +75,34 @@ final class BufferListViewController: UICollectionViewController {
     /// Called with the picked buffer. The presenter owns opening it.
     var onSelect: ((Buffer) -> Void)?
 
-    /// How many recents to promote. A quick switcher that lists thirty "recent" buffers is
-    /// just the roster again — this is a display cap, not a limit on what's remembered. Four,
-    /// not three, so the two-across grid fills whole rows rather than leaving a ragged half.
-    private static let recentLimit = 4
-
-
     private struct Row: Equatable {
         let buffer: Buffer
-        /// The full network name. Grid chips carry it for their accessibility label; roster
-        /// rows leave it nil, already sitting under their network's header.
+        /// The full network name. Friends and Favorites rows carry it for their accessibility
+        /// label; network rows leave it nil, already sitting under their network's header.
         let networkName: String?
         /// The short `li` disambiguator drawn after the name, set by `addNetworkHints` only
-        /// on chips whose name collides with another chip's. Separate from `networkName`
-        /// because the two answer different questions: this one is "would you otherwise
-        /// confuse this chip with the one beside it", and it's nil far more often.
+        /// on rows whose name collides with another in the same group. Separate from
+        /// `networkName` because the two answer different questions: this one is "would you
+        /// otherwise confuse this row with the one beside it", and it's nil far more often.
         var networkHint: String?
-        /// The peer's presence, set on every DM row and chip: it mutes an away or offline name
+        /// The peer's presence, set on every DM row: it mutes an away or offline name
         /// (#167). Nil for anything that isn't a DM. Equatable so a presence change reconfigures the one cell.
         var presence: FriendPresence?
-        /// A Friends chip — the one row kind whose buffer may be SYNTHESIZED (a
+        /// A Friends row — the one row kind whose buffer may be SYNTHESIZED (a
         /// favorite the store hasn't materialized), so a tap must open-buffer first.
         /// An explicit flag, not "has presence": presence is styling every DM row carries,
         /// not a fact about where the buffer came from, and this gates a WRITE.
-        var isFriendChip: Bool = false
+        var isFriend: Bool = false
         /// Whether an ignore rule mutes this buffer's plain-unread signal (lurker #359).
         /// Carried on the row — and therefore compared by `Equatable` — so muting or unmuting
         /// from another device reconfigures the one cell it affects.
         var muted: Bool = false
         /// A channel we hold a row for and aren't in (`ChatState.isParted`): drawn dimmed, and
         /// offered Join on long-press. Read from the store, never from `buffer` — a favorite's
-        /// chip can carry a synthesized buffer whose `joined` is a default, not a statement.
+        /// row can carry a synthesized buffer whose `joined` is a default, not a statement.
         var parted: Bool = false
+        /// `├─` or `└─`, set once the group's rows are known — see `Section.init`.
+        var guide: TreeGuide = .tee
 
         /// What the unread pill counts.
         ///
@@ -137,23 +117,46 @@ final class BufferListViewController: UICollectionViewController {
             buffer: Buffer,
             networkName: String?,
             presence: FriendPresence? = nil,
-            isFriendChip: Bool = false,
+            isFriend: Bool = false,
             muted: Bool = false,
             parted: Bool = false
         ) {
             self.buffer = buffer
             self.networkName = networkName
             self.presence = presence
-            self.isFriendChip = isFriendChip
+            self.isFriend = isFriend
             self.muted = muted
             self.parted = parted
         }
     }
 
+    /// A group's header. For a network it's also the network's server log — tapping it opens
+    /// the log, as the web's header does — and `log` carries that buffer's row.
+    private struct Header: Equatable {
+        let title: String
+        /// The network's state as a dot. Nil for Friends and Favorites.
+        var light: StatusLight?
+        /// The same state in words, only when it isn't connected.
+        var state: String?
+        var log: Row?
+        /// Every header but the first draws the rule between it and the group above.
+        var ruleAbove = false
+    }
+
+    /// Everything an item can be. The list is one flat sequence of these per group.
+    private enum Entry: Equatable {
+        case header(Header)
+        case buffer(Row)
+        case pinBreak
+    }
+
     private struct Section {
         let id: SectionID
-        let title: String?
+        var header: Header
+        /// The buffer rows, pinned first. What a drag's index arithmetic works on.
         var rows: [Row]
+        /// How many of `rows` are pinned. A break is drawn after them when rows follow.
+        let pinnedCount: Int
 
         /// ⚠⚠ De-duplicated once, HERE, so the model and the snapshot cannot disagree.
         ///
@@ -168,17 +171,48 @@ final class BufferListViewController: UICollectionViewController {
         /// UIKit hands back index paths addressing the de-duplicated snapshot — so with a
         /// duplicate present the two lists are off by one and a drop lands in the wrong
         /// place. One list, de-duplicated at the door, and the question doesn't arise.
-        init(id: SectionID, title: String?, rows: [Row]) {
+        ///
+        /// The guides are set here too, since only the finished list knows which row is last.
+        /// The last pinned row keeps `├─` when rows follow the break, because the spine runs on
+        /// through it.
+        init(id: SectionID, header: Header, pinned: [Row] = [], rows rest: [Row]) {
             self.id = id
-            self.title = title
+            self.header = header
             var seen = Set<String>()
-            self.rows = rows.filter { seen.insert($0.buffer.key.id).inserted }
+            if let log = header.log { seen.insert(log.buffer.key.id) }
+            let pinned = pinned.filter { seen.insert($0.buffer.key.id).inserted }
+            let rest = rest.filter { seen.insert($0.buffer.key.id).inserted }
+            var rows = pinned + rest
+            for index in rows.indices { rows[index].guide = index == rows.count - 1 ? .elbow : .tee }
+            self.rows = rows
+            self.pinnedCount = pinned.count
         }
 
-        var layout: Layout { id.layout }
         var reorderable: Bool { id.reorderable }
-        /// One per row, and `rows` is unique by construction — see `init`.
-        var items: [ItemID] { rows.map { ItemID(section: id, key: $0.buffer.key.id) } }
+        var hasPinBreak: Bool { pinnedCount > 0 && pinnedCount < rows.count }
+
+        var headerItem: ItemID {
+            ItemID(section: id, key: header.log?.buffer.key.id ?? ItemID.headerKey)
+        }
+
+        /// The header, then the rows, with the pinned break where it belongs. `rows` is unique by
+        /// construction — see `init`.
+        var entries: [(ItemID, Entry)] {
+            var out: [(ItemID, Entry)] = [(headerItem, .header(header))]
+            for (index, row) in rows.enumerated() {
+                if hasPinBreak, index == pinnedCount {
+                    out.append((ItemID(section: id, key: ItemID.pinBreakKey), .pinBreak))
+                }
+                out.append((ItemID(section: id, key: row.buffer.key.id), .buffer(row)))
+            }
+            return out
+        }
+
+        var items: [ItemID] { entries.map(\.0) }
+
+        /// Where the rows start among the items: after the header. Only reorderable sections
+        /// ask, and they never have a pinned break.
+        static let firstRowItem = 1
     }
 
     private var state = ChatState()
@@ -202,10 +236,10 @@ final class BufferListViewController: UICollectionViewController {
     /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
     /// this, each one rebuilds every section and reloads a list nobody can see.
     private var isOnScreen = false
-    /// Whether a state change arrived while a chip was being dragged and is still owed a
+    /// Whether a state change arrived while a row was being dragged and is still owed a
     /// rebuild (#53). See `rebuild()` for why it waits and `dragSessionDidEnd` for the release.
     private var rebuildDeferredByDrag = false
-    /// The section a live drag was lifted from — chips reorder only within their own
+    /// The section a live drag was lifted from — rows reorder only within their own
     /// section, and this is the O(1) identity `dropSessionDidUpdate` checks per
     /// touch-move (sections are frozen during a drag; rebuild defers).
     private var dragSourceSection: Int?
@@ -257,10 +291,10 @@ final class BufferListViewController: UICollectionViewController {
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
         // Drag-and-drop rather than `moveItemAt` + the standard interactive-movement gesture
-        // (#53). That gesture is a long press, which is already the chip's context menu — the
+        // (#53). That gesture is a long press, which is already the row's context menu — the
         // two would race, and the one that lost would be the discoverable one. A drag session
         // is how UIKit reconciles them: a lift that *moves* reorders, a lift that stays put
-        // opens the menu, which is what every reorderable grid on the system does.
+        // opens the menu, which is what every reorderable list on the system does.
         //
         // No `dragInteractionEnabled = true` alongside these: it has defaulted to true on
         // iPhone as well as iPad since iOS 15, and this app floors at 26.
@@ -274,7 +308,7 @@ final class BufferListViewController: UICollectionViewController {
         //    bounds — and bounds.origin is the content offset — so the banner rides along and
         //    stays put in the viewport, while still clearing the nav bar.
         //  - Cells are inserted above it in subview order as they're dequeued, so a plain
-        //    `addSubview` would let a chip draw over it. `zPosition` wins regardless of order,
+        //    `addSubview` would let a row draw over it. `zPosition` wins regardless of order,
         //    where a `bringSubviewToFront` would need repeating after every reload.
         connectionBanner.translatesAutoresizingMaskIntoConstraints = false
         connectionBanner.layer.zPosition = 1
@@ -294,9 +328,9 @@ final class BufferListViewController: UICollectionViewController {
         // registration is first *created* inside `cellForItemAt` — a lazy var is created
         // once, but "once" is on first access, and its first access would otherwise be the
         // dequeue itself. Touching them here moves creation out of that call.
-        _ = listRegistration
-        _ = chipRegistration
+        _ = rowRegistration
         _ = headerRegistration
+        _ = pinBreakRegistration
 
         // Both in the navigation bar, and deliberately not in a bottom toolbar. A toolbar
         // would be a second floating bar over a scrolling list, and it can't persist across
@@ -312,8 +346,8 @@ final class BufferListViewController: UICollectionViewController {
         navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
         installSearch()
 
-        // Chips and offline DM rows name their buffer in a font built from this screen's traits
-        // (`nameFont`), which a text-size change doesn't reach on its own. `rebuild`'s diff can't
+        // Every row and header is set in a font built from this screen's traits (`listFont`),
+        // which a text-size change doesn't reach on its own. `rebuild`'s diff can't
         // see it either — no row's content moved — so reconfigure every item at the new size.
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (list: Self, _) in
             var snapshot = list.dataSource.snapshot()
@@ -366,13 +400,9 @@ final class BufferListViewController: UICollectionViewController {
         apply(viewModel.state)
     }
 
-    /// Coming back from a buffer rebuilds, always — not just when state moved under us.
-    ///
-    /// Recent order lives in `UserPreferences`, written by the chat screen on appear, and
-    /// nothing publishes it. As a sheet this screen was built fresh on every summon so it
-    /// always re-read it; as a reused root it would show the order from before you opened the
-    /// buffer you just backed out of — which on a quiet connection is exactly the buffer
-    /// missing from the top of a list whose whole job is putting it there.
+    /// Coming back from a buffer rebuilds, always — not just when state moved under us:
+    /// `apply` skips the rebuild while this screen is covered, so whatever changed in the
+    /// meantime is drawn here, before the pop reveals it.
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         isOnScreen = true
@@ -452,7 +482,7 @@ final class BufferListViewController: UICollectionViewController {
     /// (a buffer opened or closed, a network connecting, favorites reordered) still reloads.
     ///
     /// **Deferred entirely while a drag is up (#53).** Every frame that arrives lands here, so
-    /// the odds of one during the seconds a chip is held are not small — and a `reloadData`
+    /// the odds of one during the seconds a row is held are not small — and a `reloadData`
     /// under a live drag resets the layout the drag is drawing against and invalidates the
     /// index paths the drop will be resolved with. So the rebuild waits for
     /// `dragSessionDidEnd`, which runs on both a completed drop and a cancelled one. Nothing is
@@ -491,8 +521,7 @@ final class BufferListViewController: UICollectionViewController {
         // `false` is the reset, and nothing has to notice a session change to do it.
         guard state.rosterSettled || hasRenderedList else {
             sections = []
-            rowsByID = [:]
-            shownTitles = [:]
+            entriesByID = [:]
             if !dataSource.snapshot().sectionIdentifiers.isEmpty {
                 dataSource.apply(NSDiffableDataSourceSnapshot<SectionID, ItemID>(), animatingDifferences: false)
             }
@@ -504,58 +533,28 @@ final class BufferListViewController: UICollectionViewController {
         burstFallback = nil
         hasRenderedList = true
 
-        let previous = rowsByID
+        let previous = entriesByID
         sections = buildSections(state)
-        rowsByID = Dictionary(
-            sections.flatMap { section in
-                section.rows.map { (ItemID(section: section.id, key: $0.buffer.key.id), $0) }
-            },
-            // A section can't hold one buffer twice, and `ItemID` is section-qualified, so a
-            // collision here is impossible rather than merely unlikely — keep the first and
-            // move on rather than trapping on it in front of a user.
-            uniquingKeysWith: { first, _ in first }
-        )
+        indexEntries()
         updatePlaceholder()
 
         var snapshot = NSDiffableDataSourceSnapshot<SectionID, ItemID>()
         snapshot.appendSections(sections.map(\.id))
         for section in sections { snapshot.appendItems(section.items, toSection: section.id) }
-        // Identity alone can't see a row whose *contents* moved — an unread count, a peer's
-        // presence — because those don't change the item's identifier. Naming them keeps
-        // the cheap path cheap: everything else in the snapshot is left exactly as it is.
+        // Identity alone can't see an item whose *contents* moved — an unread count, a peer's
+        // presence, a network going offline — because those don't change the item's
+        // identifier. Naming them keeps the cheap path cheap: everything else in the snapshot
+        // is left exactly as it is.
+        //
+        // Headers are items, so this covers them too. They used to be section headers, which a
+        // snapshot can't reconfigure at all — a network kept showing "Unnamed network" after
+        // its name arrived until the header scrolled off and back — and fixing that needed a
+        // separate record of every title drawn and a `reloadSections` for the ones that moved.
         let restyled = snapshot.itemIdentifiers.filter { id in
-            guard let was = previous[id], let now = rowsByID[id] else { return false }
+            guard let was = previous[id], let now = entriesByID[id] else { return false }
             return was != now
         }
         if !restyled.isEmpty { snapshot.reconfigureItems(restyled) }
-        // ⚠⚠ And the same problem one level up, for HEADERS.
-        //
-        // A section's title is deliberately not part of its identity: a network's header
-        // carries its connection state ("libera — offline"), so folding the title into
-        // `SectionID` would delete and re-insert the whole section every time it reconnected.
-        // The cost is that a snapshot diff can't see a title change either — the section is
-        // "the same", so its header view is never re-requested and keeps whatever it last
-        // drew.
-        //
-        // That is how a network shows as "Unnamed network" after its real name has arrived:
-        // the roster landed, the model updated, the rows are right, and nothing asked the
-        // header to say so. It looks fixed the moment you scroll the header off screen and
-        // back, because that recycles the view. Same for a network that connects while you're
-        // looking at it and keeps its "— offline" suffix.
-        //
-        // `reloadSections` re-requests the header. It reloads that section's cells too, which
-        // is more than strictly needed — but only for the sections whose title actually moved,
-        // which is a handful of rows on a rare event, and there is no "reconfigure
-        // supplementary" to reach for.
-        let renamed = sections.filter { section in
-            // A section absent from `shownTitles` is being inserted, and draws fresh anyway.
-            guard let shown = shownTitles[section.id] else { return false }
-            return shown != section.title
-        }
-        shownTitles = Dictionary(
-            sections.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first }
-        )
-        if !renamed.isEmpty { snapshot.reloadSections(renamed.map(\.id)) }
         // Never animated: this runs on every frame that changes the roster, and a list that
         // slides every time someone speaks is a list you can't read.
         dataSource.apply(snapshot, animatingDifferences: false)
@@ -610,216 +609,115 @@ final class BufferListViewController: UICollectionViewController {
 
     // MARK: - Layout
 
-    /// One scroll view, section by section: the per-network rosters lay out as grouped lists
-    /// (with swipe-to-leave, under a native list header), and Friends/Favorites/Recent lay out
-    /// as a two-column grid of cards (under a boundary header). Every section carries a title.
+    /// One plain list, section by section: a section per group, each opening with its header
+    /// item, no separators, and a gap under each group for the rule over the next.
     private func makeLayout() -> UICollectionViewLayout {
-        UICollectionViewCompositionalLayout { [weak self] index, environment in
-            // ⚠⚠ By IDENTITY, not by index. This closure is called lazily and its result is
-            // cached per index, so reading a positional array here is what let a section keep
-            // another section's geometry when the two swapped places mid-burst.
-            guard let self, let id = self.dataSource.sectionIdentifier(for: index) else {
-                return nil
+        UICollectionViewCompositionalLayout { [weak self] _, environment in
+            var config = UICollectionLayoutListConfiguration(appearance: .plain)
+            config.showsSeparators = false
+            // ⚠ Or the list section repaints the collection view in the appearance's own
+            // background, over the `Palette.bg` set in `viewDidLoad`.
+            config.backgroundColor = Palette.bg
+            // The header is an item, not a supplementary view: a network's header is a buffer
+            // you can open, and an item is what can be tapped, marked open, and reconfigured
+            // when its network's state changes.
+            config.headerMode = .none
+            config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
+                self?.trailingSwipe(at: indexPath)
             }
-            let hasTitle = self.sections.first { $0.id == id }?.title != nil
-            let layoutSection: NSCollectionLayoutSection
-
-            switch id.layout {
-            case .list:
-                var config = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
-                // ⚠ Or the list section repaints the collection view in the appearance's own
-                // grouped grey, over the `Palette.bg` set in `viewDidLoad`. Measured: with only
-                // the collection view's colour set, an inset-grouped list still drew #F2F2F7.
-                config.backgroundColor = Palette.bg
-                // The list's *own* header, not a manual boundary item: the native grouped
-                // header sits tight to the first row, whereas a hand-added header stacks on
-                // top of the list's top inset and leaves an oversized gap.
-                config.headerMode = hasTitle ? .supplementary : .none
-                config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
-                    self?.trailingSwipe(at: indexPath)
-                }
-                layoutSection = .list(using: config, layoutEnvironment: environment)
-
-            case .grid:
-                // Two-up grid. Unlike the deprecated `subitem:count:` (which forced equal-sized
-                // items), `repeatingSubitem:count:` makes it *your* job to size the item to fit
-                // `count` repetitions — so the item is `.fractionalWidth(0.5)`, half the group.
-                // Left at `.fractionalWidth(1)` each item takes the full row and the second chip
-                // is pushed off, collapsing the grid to one column. (See SO 77092978.)
-                let item = NSCollectionLayoutItem(layoutSize: NSCollectionLayoutSize(
-                    widthDimension: .fractionalWidth(0.5),
-                    heightDimension: .fractionalHeight(1)
-                ))
-                let group = NSCollectionLayoutGroup.horizontal(
-                    layoutSize: NSCollectionLayoutSize(
-                        widthDimension: .fractionalWidth(1),
-                        // Estimated, not absolute: the chip's `card` floors at 44 but grows
-                        // with its text, so at accessibility sizes the row expands to fit
-                        // rather than clipping the name and its network hint.
-                        heightDimension: .estimated(44)
-                    ),
-                    repeatingSubitem: item,
-                    count: 2
-                )
-                group.interItemSpacing = .fixed(10)
-                let grid = NSCollectionLayoutSection(group: group)
-                grid.interGroupSpacing = 10
-                // Inset by the layout margins, which is what the insetGrouped list draws its
-                // cards against, so a chip's edge lines up with a row's edge by construction
-                // rather than by a matching constant. A fixed 16 matched on an iPhone but not
-                // on the iPhone Duo, whose side rail widens the margin to the safe area: the
-                // chips measured 16…366 under rows at 20…382. The extra bottom inset spaces the
-                // grid off the section under it.
-                grid.contentInsetsReference = .layoutMargins
-                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 18, trailing: 0)
-                // A grid has no list header of its own, so it carries a boundary one — the
-                // small gap this leaves reads fine above cards.
-                if hasTitle {
-                    let header = NSCollectionLayoutBoundarySupplementaryItem(
-                        layoutSize: NSCollectionLayoutSize(
-                            widthDimension: .fractionalWidth(1),
-                            heightDimension: .estimated(30)
-                        ),
-                        elementKind: UICollectionView.elementKindSectionHeader,
-                        alignment: .top
-                    )
-                    grid.boundarySupplementaryItems = [header]
-                }
-                layoutSection = grid
-            }
-            return layoutSection
+            let section = NSCollectionLayoutSection.list(using: config, layoutEnvironment: environment)
+            section.contentInsets = NSDirectionalEdgeInsets(
+                top: 0, leading: 0, bottom: RosterMetrics.groupGap, trailing: 0
+            )
+            return section
         }
     }
 
-    // MARK: - Cell & header registrations
+    // MARK: - Cell registrations
 
-    private lazy var listRegistration = UICollectionView.CellRegistration<UICollectionViewListCell, Row> {
+    private lazy var rowRegistration = UICollectionView.CellRegistration<BufferRowCell, Row> {
         [weak self] cell, _, row in
-        // ⚠ The colour is named on EVERY row, never left to the default.
-        // `defaultBackgroundConfiguration()` returns the colour of the ground the list is drawn
-        // on — measured, #1C1C1E over #1C1C1E on an iPad sidebar — while UIKit ends up applying
-        // one step lighter. In the window between, a row wears a card the exact colour of its
-        // own background: the blink-in-and-out that leaving the configuration nil didn't fix.
-        //
-        // ⚠ The cost is that these rows no longer highlight while held: the default's
-        // `backgroundColorTransformer` is nil, so UIKit's `updated(for:)` over an explicit
-        // colour is a no-op. Accepted — the flicker showed on every scroll, the highlight
-        // shows for the instant before the buffer opens. Buying it back means deriving the
-        // pressed shade in a `configurationUpdateHandler`.
-        var background = cell.defaultBackgroundConfiguration()
-        background.backgroundColor = self?.isOpen(row.buffer) == true ? Self.openRowTint : .bufferCard
-        cell.backgroundConfiguration = background
-
-        var content = UIListContentConfiguration.cell()
-        // No `networkName` here, unlike the chat title: every roster row already states its network
-        // as its section header, so resolving a server log to its network's name would just
-        // print "libera" above "libera".
-        content.text = row.buffer.displayName()
-        // A channel we're not in, or a person who's away or offline, reads quieter than a live
-        // conversation, the way its chip does: the name steps down to secondary, and the badge
-        // below keeps its own colours. An offline person's name is italic too (#167).
-        if row.parted || row.presence?.dimsName == true {
-            content.textProperties.color = .secondaryLabel
-        }
-        if row.presence?.italicizesName == true, let font = self?.nameFont(italic: true) {
-            content.textProperties.font = font
-        }
-        cell.contentConfiguration = content
-        // Assigned every time: cells are recycled, and a rejoined channel's row or a DM whose
-        // peer came back must not go on saying otherwise.
-        cell.accessibilityValue = row.parted
-            ? "Not joined"
-            : (row.presence?.dimsName == true ? row.presence?.title : nil)
-
-        // The unread pill *replaces* the disclosure chevron, as the table did — a row either
-        // says how much is waiting or it says "there's more inside", never both.
-        if let badge = makeUnreadBadge(unread: row.displayUnread, highlights: row.buffer.highlights) {
-            cell.accessories = [.customView(configuration: .init(customView: badge, placement: .trailing()))]
-        } else {
-            cell.accessories = [.disclosureIndicator()]
-        }
-    }
-
-    private lazy var chipRegistration = UICollectionView.CellRegistration<BufferChipCell, Row> {
-        [weak self] cell, _, row in
+        guard let self else { return }
+        let font = listFont(italic: false)
         cell.configure(
-            // `networkName` here, unlike the roster rows: a `.server` buffer has no target to
-            // print, so `displayName` falls back to the literal "Server" without one. A roster
-            // row can afford that (its section header names the network); a chip is lifted out
-            // of its section, and it lost its network subtitle — so an unnamed one would read
-            // as just "Server" with nothing anywhere on the card saying which.
+            // `networkName` for a server log that isn't a header (an unrostered network's):
+            // without it `displayName` falls back to the bare "Server".
             name: row.buffer.displayName(networkName: row.networkName),
-            nameFont: self?.nameFont(italic: row.presence?.italicizesName == true)
-                ?? .preferredFont(forTextStyle: .body),
+            // An offline person's name is italic (#167).
+            font: row.presence?.italicizesName == true ? listFont(italic: true) : font,
+            hintFont: font,
             networkName: row.networkName,
             networkHint: row.networkHint,
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence,
             parted: row.parted,
-            isOpen: self?.isOpen(row.buffer) == true
+            isOpen: isOpen(row.buffer),
+            guide: row.guide
         )
     }
 
-    /// The body font a row or chip names its buffer in, italic for an offline peer (#167).
+    private lazy var headerRegistration = UICollectionView.CellRegistration<RosterHeaderCell, Header> {
+        [weak self] cell, _, header in
+        guard let self else { return }
+        cell.configure(
+            title: header.title,
+            font: listFont(italic: false),
+            light: header.light,
+            state: header.state,
+            unread: header.log?.displayUnread ?? 0,
+            highlights: header.log?.buffer.highlights ?? 0,
+            ruleAbove: header.ruleAbove,
+            opensLog: header.log != nil,
+            isOpen: header.log.map { self.isOpen($0.buffer) } ?? false
+        )
+    }
+
+    private lazy var pinBreakRegistration = UICollectionView.CellRegistration<PinBreakCell, Void> { _, _, _ in }
+
+    /// The one face this list is set in: the compact message log's, so the list and the log
+    /// beside it read as one surface. Italic for an offline peer (#167).
     ///
     /// Built from THIS screen's traits, the rule `MemberListViewController` and `MessageRenderer`
     /// follow: a cell's own traits aren't settled while it's configured. A font set this way no
     /// longer tracks text size by itself, so a text-size change reconfigures every item to build
     /// it again (see `viewDidLoad`).
-    private func nameFont(italic: Bool) -> UIFont {
-        let body = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
-        return italic ? body.italic : body
+    private func listFont(italic: Bool) -> UIFont {
+        let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        return italic ? font.italic : font
     }
-
-    private lazy var headerRegistration = UICollectionView
-        .SupplementaryRegistration<UICollectionViewListCell>(
-            elementKind: UICollectionView.elementKindSectionHeader
-        ) { [weak self] view, _, indexPath in
-            var content = UIListContentConfiguration.header()
-            // ⚠⚠ Always assigned, even when there's nothing to say. Supplementary views are
-            // RECYCLED, so an early `return` here left the previous section's title on a
-            // header now sitting over a different section — which is what "the buffer list is
-            // showing two `local` headers" turned out to be.
-            content.text = self?.dataSource.sectionIdentifier(for: indexPath.section)
-                .flatMap { id in self?.sections.first { $0.id == id }?.title }
-            view.contentConfiguration = content
-        }
 
     /// The list, handed over whole.
     ///
     /// ⚠⚠ Diffable rather than the manual data source this had, and the reason is identity.
     /// The old one answered `numberOfSections`/`cellForItemAt` out of an array, so a section
     /// *was* its index — and the indices shift as sections arrive during the connect burst.
-    /// Everything keyed off position went with them: the layout's grid-or-list decision, the
-    /// header's title, the collection view's cached self-sizing metrics. Rows stayed correct
+    /// Everything keyed off position went with them: the layout's grid-or-list decision (the
+    /// list had grids then), the header's title, the collection view's cached self-sizing metrics. Rows stayed correct
     /// and the picture didn't.
     ///
-    /// `SectionID`/`ItemID` make identity explicit, so a section that moves takes its layout
-    /// and its geometry with it and UIKit computes the moves itself from one snapshot.
+    /// `SectionID`/`ItemID` make identity explicit, so a section that moves takes its
+    /// geometry with it and UIKit computes the moves itself from one snapshot.
     private lazy var dataSource: UICollectionViewDiffableDataSource<SectionID, ItemID> = {
-        let source = UICollectionViewDiffableDataSource<SectionID, ItemID>(
+        UICollectionViewDiffableDataSource<SectionID, ItemID>(
             collectionView: collectionView
         ) { [weak self] collectionView, indexPath, item in
-            guard let self, let row = rowsByID[item] else { return UICollectionViewCell() }
-            switch item.section.layout {
-            case .list:
+            guard let self, let entry = entriesByID[item] else { return UICollectionViewCell() }
+            switch entry {
+            case let .header(header):
                 return collectionView.dequeueConfiguredReusableCell(
-                    using: listRegistration, for: indexPath, item: row
+                    using: headerRegistration, for: indexPath, item: header
                 )
-            case .grid:
+            case let .buffer(row):
                 return collectionView.dequeueConfiguredReusableCell(
-                    using: chipRegistration, for: indexPath, item: row
+                    using: rowRegistration, for: indexPath, item: row
+                )
+            case .pinBreak:
+                return collectionView.dequeueConfiguredReusableCell(
+                    using: pinBreakRegistration, for: indexPath, item: ()
                 )
             }
         }
-        source.supplementaryViewProvider = { [weak self] _, _, indexPath in
-            guard let self else { return nil }
-            return collectionView.dequeueConfiguredReusableSupplementary(
-                using: headerRegistration, for: indexPath
-            )
-        }
-        return source
     }()
 
     /// Gives up waiting for `backlog-complete` and draws whatever has arrived.
@@ -855,13 +753,20 @@ final class BufferListViewController: UICollectionViewController {
     /// `rebuild`. Reset when the store is, so signing into another account waits again.
     private var hasRenderedList = false
 
-    /// The title each section was last drawn with, so a rename can be spotted — see the note
-    /// in `rebuild`. Not derivable from the snapshot, which holds identifiers and not titles.
-    private var shownTitles: [SectionID: String?] = [:]
-
-    /// Every row on screen, by identity — what the cell provider configures from, since a
+    /// Every item on screen, by identity — what the cell provider configures from, since a
     /// snapshot carries identifiers and not content.
-    private var rowsByID: [ItemID: Row] = [:]
+    private var entriesByID: [ItemID: Entry] = [:]
+
+    /// Rebuild `entriesByID` from `sections`.
+    private func indexEntries() {
+        entriesByID = Dictionary(
+            sections.flatMap(\.entries),
+            // `ItemID` is section-qualified and `Section.init` de-duplicates its rows, so a
+            // collision here is impossible rather than merely unlikely — keep the first and
+            // move on rather than trapping on it in front of a user.
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
 
     // MARK: - Which conversation is open (side by side)
 
@@ -871,12 +776,6 @@ final class BufferListViewController: UICollectionViewController {
     /// marked after you navigate away is stale emphasis. `marksOpenBuffer` gates the drawing,
     /// so this stays set through a collapse and the mark comes back on expanding.
     private var openBufferKey: BufferKey?
-
-    /// The tint an open row wears — the chip's, so the two rows a favorited channel owns are
-    /// marked identically. Deliberately a wash rather than a filled `.tintColor` row: unread
-    /// badges and the highlight red already compete for attention in this list, and a solid
-    /// accent bar would outrank the one signal that actually needs to be seen.
-    private static let openRowTint = BufferChipCell.openTint
 
     /// Whether this list is beside a conversation rather than under one.
     ///
@@ -896,8 +795,6 @@ final class BufferListViewController: UICollectionViewController {
             // flag flipping is exactly when that answer changes.
             refreshBanner()
             applySearchPlacement()
-            // Recent comes and goes with the sidebar — see `buildSections`.
-            if isOnScreen { rebuild() }
         }
     }
 
@@ -908,9 +805,9 @@ final class BufferListViewController: UICollectionViewController {
     /// Point the mark at a buffer, or clear it. Reconfigures only the rows whose answer moved,
     /// since nothing about what the list *contains* has changed.
     ///
-    /// ⚠ A buffer can hold more than one row — `ItemID` is section-qualified, so a favorited
-    /// channel is a chip **and** a roster row under its network — so this filters every item
-    /// identifier with a matching key rather than asking for one `indexPath(for:)`.
+    /// Filters every item identifier by key rather than asking for one `indexPath(for:)`:
+    /// `ItemID` is section-qualified, so the key alone doesn't name an item, and a server log
+    /// is marked on its network's *header*, which carries the log's key.
     func markSelection(_ key: BufferKey?) {
         guard key?.id != openBufferKey?.id else { return }
         let moved = Set([openBufferKey?.id, key?.id].compactMap { $0 })
@@ -1234,22 +1131,16 @@ final class BufferListViewController: UICollectionViewController {
     // MARK: - Sections
 
     private func buildSections(_ state: ChatState) -> [Section] {
-        // Partition the favorites list ONCE — the sections, the roster exclusion, and the
-        // Recent dedupe all derive from the same two slices, so a future classification
-        // change can't update one walk and miss another (the double-printed-DM bug the
-        // split exists to prevent).
+        // Partition the favorites list ONCE — the sections and the roster exclusion both
+        // derive from the same two slices, so a future classification change can't update one
+        // walk and miss another (the double-printed-DM bug the split exists to prevent).
         let orderedFavorites = orderedFavorites(state)
         let friendEntries = orderedFavorites.filter(Self.isFriendEntry)
         let channelEntries = orderedFavorites.filter { !Self.isFriendEntry($0) }
-        // ⚠⚠ A favorite is a RELOCATION, not a shortcut. Its chip is where it lives, so it's
-        // hidden from its network's roster (and from Recent) rather than printed twice —
+        // ⚠⚠ A favorite is a RELOCATION, not a shortcut. Its row under Friends or Favorites is
+        // where it lives, so it's hidden from its network's group rather than printed twice —
         // matching the web, where `isFavoriteBuf` filters favorites out of both the pinned
         // and unpinned halves of every network group.
-        //
-        // This used to be true of friends only, on the reasoning that a card and a row read
-        // as different things so the duplication was a quick way in rather than a mistake.
-        // In use it doesn't read that way: the buffers you favorite are the ones you look at
-        // most, so the list you scan most is the one with every important row in it twice.
         let favoriteKeys = Set(orderedFavorites.map(\.key.id))
 
         let byNetwork = BufferOrder.byNetwork(state.buffers.values, excluding: favoriteKeys)
@@ -1259,117 +1150,70 @@ final class BufferListViewController: UICollectionViewController {
 
         var sections: [Section] = []
 
-        // Friends and Favorites are a relocation (see `favoriteKeys` above); Recent is the
-        // one shortcut left, and it keeps its rows in their network sections because it isn't
-        // curated — it's just where you've been, and hiding a row from its network because
-        // you happened to pass through it would make the list you scan depend on what you did
-        // five minutes ago.
         var favorites = favoriteRows(channelEntries, state)
-        var recents = recentRows(state, favoriteKeys: favoriteKeys)
         var friends = friendRows(friendEntries, state)
-        // Each grid on its own — a collision is a fact about one section's rows. Recent hints
-        // every chip rather than just its collisions: it's the one grid you didn't curate.
-        // Abbreviations are per-account, so they're computed once and shared by all three;
+        // Abbreviations are per-account, so they're computed once and shared by both groups;
         // they're measured against every network the user has, not the ones on screen, which
         // is also what the web computes for the same rows (see `NetworkAbbreviation`).
         let abbreviations = NetworkAbbreviation.shortestUniquePrefixes(state.networks.mapValues(\.displayName))
         Self.addNetworkHints(abbreviations, &friends)
         Self.addNetworkHints(abbreviations, &favorites)
-        Self.addNetworkHints(abbreviations, &recents, everyRow: true)
         // Friends first, then Favorites — the web sidebar's order (FRIENDS above FAVORITES),
         // and the two are one list on the server, so the halves reading top-to-bottom
         // differently was a needless thing to have to re-learn per client. People also earn
-        // the top slot on their own: a friend chip is the only row carrying live presence, so
-        // it's the one grid whose contents change while you look at it.
+        // the top slot on their own: theirs are the rows whose presence changes while you look.
         //
         // Both are reorderable since lurker#721 — the order is the server's global favorites
         // order, shared with the web client.
         if !friends.isEmpty {
-            sections.append(Section(id: .friends, title: "Friends", rows: friends))
+            sections.append(Section(id: .friends, header: Header(title: "Friends"), rows: friends))
         }
         if !favorites.isEmpty {
-            sections.append(Section(id: .favorites, title: "Favorites", rows: favorites))
-        }
-        // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
-        // having no sidebar, so it sits below the two curated sections rather than pushing
-        // them down with buffers you merely passed through.
-        // ⚠ Not beside a conversation, for the reason the comment above gives: Recent is "the
-        // iOS answer to having no sidebar", and a sidebar is what this list then is — every chip
-        // in it would already be a row further down the same permanently-visible column.
-        if !recents.isEmpty, !marksOpenBuffer {
-            sections.append(Section(id: .recent, title: "Recent", rows: recents))
+            sections.append(Section(id: .favorites, header: Header(title: "Favorites"), rows: favorites))
         }
 
         // The user's own order, not ours: they arranged their networks on the web, and a
         // phone that re-alphabetises them is a phone you have to re-read every time you pick
         // it up. Same for the pins inside each one.
-        let networks = BufferOrder.networks(state.networks)
         var seen = Set<Int>()
-        for network in networks {
+        for network in BufferOrder.networks(state.networks) {
             seen.insert(network.id)
-            // `withServerLog`, so a network always has at least its log and therefore always
-            // has a row — the web's network header is that buffer, and iOS's server row was
-            // coming and going with the connect burst's prune.
-            let rows = BufferOrder.withServerLog(
+            // `withServerLog`, so a network in use always has its log and therefore a header —
+            // the server row used to come and go with the connect burst's prune.
+            let buffers = BufferOrder.withServerLog(
                 byNetwork[network.id] ?? [],
                 networkId: network.id,
                 networkHasOpenBuffers: networksInUse.contains(network.id)
             )
-            let split = BufferOrder.split(rows, pinned: state.pinned[network.id] ?? [])
-            sections.append(contentsOf: networkSections(
-                { .network(network.id, pinned: $0) }, header(for: network), split, state
-            ))
+            guard let section = networkSection(.network(network.id), network, buffers, state) else { continue }
+            sections.append(section)
         }
-        // Buffers whose network isn't in the roster yet (snapshot race).
-        for (networkId, buffers) in byNetwork where !seen.contains(networkId) {
-            let split = BufferOrder.split(buffers, pinned: state.pinned[networkId] ?? [])
-            // NOT the literal "network" this used to say — that was #136's placeholder
-            // surviving in the one place the fix didn't reach, and it reads as a real name.
-            sections.append(contentsOf: networkSections(
-                { .unrostered(networkId, pinned: $0) }, Network.unnamedDisplayName, split, state
-            ))
+        // Buffers whose network isn't in the roster yet (snapshot race). Sorted, because a
+        // dictionary's order isn't stable from one rebuild to the next.
+        for networkId in byNetwork.keys.sorted() where !seen.contains(networkId) {
+            guard let section = networkSection(.unrostered(networkId), nil, byNetwork[networkId] ?? [], state)
+            else { continue }
+            sections.append(section)
         }
+
+        // The rule sits BETWEEN groups, so the first one doesn't draw it.
+        for index in sections.indices.dropFirst() { sections[index].header.ruleAbove = true }
         return sections
     }
 
-    /// The buffers you've actually been in lately, newest first.
-    ///
-    /// The buffer you were *just* in is included, and sits at the top. As a sheet over the
-    /// chat screen this list excluded it — the row you were already on would have been the
-    /// first thing under your thumb, doing nothing. Backing out to a home screen inverts
-    /// that: the conversation you just left is the single likeliest place you'd want to
-    /// return to, and a list that hid it would be the thing that looked broken.
-    ///
-    /// Keys that no longer resolve (a closed buffer, a left channel) just fall out, and the
-    /// system buffer is excluded because it already has its own row above.
-    private func recentRows(_ state: ChatState, favoriteKeys: Set<String>) -> [Row] {
-        // Favorites (both kinds — friend DMs have their own chip too) claim a buffer
-        // before Recent does, so a favorite you just opened stays a single chip rather
-        // than printing a second, identical one in the Recent grid right beside it.
-        // (Channels still keep their ordinary roster row below — this only dedups
-        // between the grids.)
-        let excluded = favoriteKeys
-        return UserPreferences.standard.recentBufferKeys
-            .filter { !excluded.contains($0) }
-            .compactMap { state.buffers[$0] }
-            .filter { $0.kind != .system }
-            .prefix(Self.recentLimit)
-            .map { chipRow($0, state) }
-    }
-
-    /// One chip per friend — the DM slice of the server's favorites list, in the user's
+    /// One friend per favorited DM — the DM slice of the server's favorites list, in the user's
     /// global order (shared with the web client's FRIENDS section since lurker#721).
     private func friendRows(_ entries: [FavoriteEntry], _ state: ChatState) -> [Row] {
         entries.map { entry in
             // `buffer(for:)` resolves an existing DM (keeping its server-cased target and
             // unread count) or synthesizes an unhydrated one to open — the same handoff the
-            // join flow uses, so tapping the chip hydrates on the chat screen.
+            // join flow uses, so tapping the row hydrates on the chat screen.
             let buffer = state.buffer(for: entry.key)
             return Row(
                 buffer: buffer,
                 networkName: state.networks[entry.networkId]?.displayName,
                 presence: state.rowPresence(networkId: entry.networkId, nick: entry.target),
-                isFriendChip: true,
+                isFriend: true,
                 muted: Self.isMuted(buffer, state)
             )
         }
@@ -1395,14 +1239,20 @@ final class BufferListViewController: UICollectionViewController {
         entries.compactMap { entry -> Row? in
             let buffer = state.buffer(for: entry.key)
             guard buffer.kind != .system, buffer.kind != .server else { return nil }
-            return chipRow(buffer, state)
+            return Row(
+                buffer: buffer,
+                networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
+                presence: Self.peerPresence(buffer, state),
+                muted: Self.isMuted(buffer, state),
+                parted: state.isParted(buffer.key)
+            )
         }
     }
 
     /// `state.favorites` with the just-dropped-but-not-yet-echoed order applied. A drop
     /// permutes the local sections AND sends the reorder, but any frame that folded
     /// mid-drag releases a deferred rebuild the instant the drag ends — rebuilding from
-    /// the store's PRE-drop order, which snapped the chip home for a round-trip and made
+    /// the store's PRE-drop order, which snapped the row home for a round-trip and made
     /// a quick second drag compute from the reverted base. The shadow order bridges the
     /// gap; ANY favorites change (the echo, or another device's edit) is authoritative
     /// and drops it.
@@ -1420,16 +1270,6 @@ final class BufferListViewController: UICollectionViewController {
         return out
     }
 
-    private func chipRow(_ buffer: Buffer, _ state: ChatState) -> Row {
-        Row(
-            buffer: buffer,
-            networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
-            presence: Self.peerPresence(buffer, state),
-            muted: Self.isMuted(buffer, state),
-            parted: state.isParted(buffer.key)
-        )
-    }
-
     private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer, networkName: nil, presence: Self.peerPresence(buffer, state),
@@ -1437,64 +1277,36 @@ final class BufferListViewController: UICollectionViewController {
         )
     }
 
-    /// A DM's peer presence, nil for anything that isn't a DM (#167). Every DM row and chip reads
-    /// it, not just Friends: a person who's away or offline looks it wherever their DM sits.
+    /// A DM's peer presence, nil for anything that isn't a DM (#167). Every DM row reads it,
+    /// not just Friends: a person who's away or offline looks it wherever their DM sits.
     private static func peerPresence(_ buffer: Buffer, _ state: ChatState) -> FriendPresence? {
         guard buffer.kind == .dm, let networkId = buffer.networkId else { return nil }
         return state.rowPresence(networkId: networkId, nick: buffer.target)
     }
 
-    /// Tag chips with a short `li` network hint — the ones whose names collide **within this
-    /// one grid**, or every chip when `everyRow` is set.
+    /// Tag the rows whose names collide **within this one group** with a short `li` network
+    /// hint.
     ///
-    /// Per section, not pooled across all three, because Recent churns and Friends/Favorites
-    /// don't. Pooling let a stable Favorites chip gain and lose its hint as unrelated buffers
-    /// drifted in and out of Recent — a label changing under you with nothing you did to cause
-    /// it, which is the same failure `NetworkAbbreviation` avoids by measuring uniqueness
-    /// against every network rather than the visible ones. A section is also the set you
-    /// actually scan as a set: two identical names under one header are the confusion worth
-    /// spending a label on; the same name under two different headers already reads as two
-    /// different things.
+    /// Per group, not pooled across Friends and Favorites: a group is the set you actually scan
+    /// as a set. Two identical names under one header are the confusion worth spending a label
+    /// on; the same name under two different headers already reads as two different things.
+    /// And only on a collision, because both groups are curated — you put each row there, so
+    /// you know which network it's on until two of them read alike.
     ///
-    /// `everyRow` is Recent's, and the asymmetry is the point. Friends and Favorites are
-    /// **curated** — you put each one there, so you know which network it's on and the hint is
-    /// only worth its space when two of them read alike. Recent is the grid you didn't choose:
-    /// it's wherever you happened to be, in whatever order you were there, so which network a
-    /// chip belongs to is context for *every* row rather than a tiebreaker between two.
+    /// Gated on the ACCOUNT having more than one network, which only changes when you add or
+    /// remove one, so a label can't come and go under rows you never touched. The gate is a
+    /// no-op for the collision itself — two rows sharing a name in one group are necessarily on
+    /// different networks, a buffer key being network + target.
     ///
-    /// Both modes are gated on the ACCOUNT having more than one network — not on the rows in
-    /// front of you spanning more than one, which is what this gate used to ask and which
-    /// broke the very rule the paragraph above states. With the row-based gate, a Recent grid
-    /// sitting entirely on one network showed no hints; opening a single buffer on a second
-    /// network pushed the grid's network count 1 → 2 and made three untouched chips *all*
-    /// sprout a label, then lose it again when that buffer aged out. Churn moving labels on
-    /// chips the user never touched, in the churniest grid — exactly what per-section counting
-    /// was meant to stop. The number of networks configured only changes when you add or
-    /// remove one, so gating on that is stable by construction.
-    ///
-    /// The gate is a no-op for the collision path either way: two chips sharing a name in one
-    /// section are necessarily on different networks, a buffer key being network + target.
-    ///
-    /// `abbreviations` is computed once by the caller and passed to all three grids: it
-    /// depends only on the account's networks, so deriving it here would recompute the same
-    /// answer up to three times per rebuild — and a rebuild runs on every state change.
-    /// It carries exactly one entry per network (see `NetworkAbbreviation`), which is what
-    /// makes its count the network-count gate above.
-    private static func addNetworkHints(
-        _ abbreviations: [Int: String],
-        _ rows: inout [Row],
-        everyRow: Bool = false
-    ) {
+    /// `abbreviations` is computed once by the caller: it depends only on the account's
+    /// networks, and a rebuild runs on every state change. It carries exactly one entry per
+    /// network (see `NetworkAbbreviation`), which is what makes its count the gate above.
+    private static func addNetworkHints(_ abbreviations: [Int: String], _ rows: inout [Row]) {
         guard abbreviations.count > 1 else { return }
 
-        let hinted: Set<String>
-        if everyRow {
-            hinted = Set(rows.map { $0.buffer.target.lowercased() })
-        } else {
-            var counts: [String: Int] = [:]
-            for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
-            hinted = Set(counts.filter { $0.value > 1 }.keys)
-        }
+        var counts: [String: Int] = [:]
+        for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
+        let hinted = Set(counts.filter { $0.value > 1 }.keys)
         guard !hinted.isEmpty else { return }
 
         for index in rows.indices {
@@ -1515,61 +1327,64 @@ final class BufferListViewController: UICollectionViewController {
         state.ignores.mutesUnread(networkId: buffer.networkId, target: buffer.target)
     }
 
-    /// A network's rows as one or two sections: its pinned buffers, then the rest.
+    /// A network's group: its header, its pinned buffers, a break, then the rest. Nil when it
+    /// has nothing to show.
     ///
-    /// Two sections rather than one ordered list, because a list on iOS has no separator
-    /// *inside* it — the section header is the separator. Pins ordered first within a single
-    /// section would have been an arrangement with nothing to explain it, which reads as a
-    /// sort bug rather than as the order you set.
+    /// The server log isn't a row. It's the header — the web sidebar's shape — so the network's
+    /// name is the way into its log, and the list doesn't spend a row per network saying
+    /// "Server" under a header that already names the network.
     ///
-    /// ⚠ **Both** headers are built from the network's own, with " — pinned" appended to the
-    /// first. Putting the connection state on the unpinned header alone loses it entirely for
-    /// a network whose every open buffer is pinned — which is not a corner case, it's what
-    /// two pinned channels and nothing else looks like — and it would read as if the pinned
-    /// half were online while the rest wasn't.
+    /// Pins used to be a section of their own under a "libera — pinned" header, because an iOS
+    /// grouped list has no separator inside a section. A dashed break inside the group says the
+    /// same thing without a second header, which is how the web draws it.
     ///
-    /// Either section is dropped when empty, so a network with no pins looks exactly as it
-    /// did, and a pin whose buffer isn't open costs nothing.
-    private func networkSections(
-        _ id: (Bool) -> SectionID,
-        _ header: String,
-        _ split: (pinned: [Buffer], rest: [Buffer]),
-        _ state: ChatState
-    ) -> [Section] {
-        var sections: [Section] = []
-        if !split.pinned.isEmpty {
-            sections.append(Section(
-                // Lowercase, matching the connection suffixes this header already carries
-                // ("— offline", "— connecting…") — `UIListContentConfiguration.header()`
-                // renders the string as given, so the two would otherwise disagree in the
-                // same line: "Libera — offline — Pinned".
-                id: id(true),
-                title: "\(header) — pinned",
-                rows: split.pinned.map { rosterRow($0, state) }
-            ))
+    /// `network` is nil for buffers whose network hasn't arrived in the roster yet.
+    private func networkSection(
+        _ id: SectionID, _ network: Network?, _ buffers: [Buffer], _ state: ChatState
+    ) -> Section? {
+        guard !buffers.isEmpty else { return nil }
+        let log = buffers.first { $0.kind == .server }
+        let split = BufferOrder.split(
+            buffers.filter { $0.kind != .server },
+            pinned: network.flatMap { state.pinned[$0.id] } ?? []
+        )
+        var header = Header(
+            // NOT the literal "network" an unrostered group once said — that was #136's
+            // placeholder surviving where its fix didn't reach, and it reads as a real name.
+            title: network?.displayName ?? Network.unnamedDisplayName,
+            log: log.map { rosterRow($0, state) }
+        )
+        switch network?.state {
+        case .connected: header.light = .good
+        case .connecting: (header.light, header.state) = (.warn, "connecting…")
+        case .reconnecting: (header.light, header.state) = (.warn, "reconnecting…")
+        case .disconnected: (header.light, header.state) = (.bad, "offline")
+        case nil: break
         }
-        if !split.rest.isEmpty {
-            sections.append(Section(
-                id: id(false), title: header, rows: split.rest.map { rosterRow($0, state) }
-            ))
-        }
-        return sections
+        return Section(
+            id: id,
+            header: header,
+            pinned: split.pinned.map { rosterRow($0, state) },
+            rows: split.rest.map { rosterRow($0, state) }
+        )
     }
 
-    private func header(for network: Network) -> String {
-        switch network.state {
-        case .connected: return network.displayName
-        case .connecting: return "\(network.displayName) — connecting…"
-        case .reconnecting: return "\(network.displayName) — reconnecting…"
-        case .disconnected: return "\(network.displayName) — offline"
-        }
+    // MARK: - Collection view delegate
+
+    /// Buffer rows, and a network header, which opens its server log. Not the Friends and
+    /// Favorites headers or the pinned break, which lead nowhere — a press that lights up and
+    /// does nothing reads as broken.
+    override func collectionView(_ collectionView: UICollectionView, shouldHighlightItemAt indexPath: IndexPath) -> Bool {
+        target(at: indexPath) != nil
     }
 
-    // MARK: - Collection view data source
+    override func collectionView(_ collectionView: UICollectionView, shouldSelectItemAt indexPath: IndexPath) -> Bool {
+        target(at: indexPath) != nil
+    }
 
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
-        guard let row = row(at: indexPath) else { return }
+        guard let row = target(at: indexPath) else { return }
         // A friend's primary DM often isn't a materialized buffer — a DM that's closed
         // server-side has no row in `state.buffers`, and the chat screen's hydrate only fires
         // for a buffer that already has one. Send open-buffer explicitly here (as /query does)
@@ -1581,19 +1396,20 @@ final class BufferListViewController: UICollectionViewController {
         // re-hydrates — no longer true, and it was the premise the read/write split overturned.
         // `open-buffer` is a WRITE: it now announces to every other device the user owns, it's
         // refused outright for a paused account, and the chat screen's own hydrate would fetch
-        // the same backlog a second time. Gated on the explicit Friends-chip flag, not a
+        // the same backlog a second time. Gated on the explicit Friends-row flag, not a
         // presence proxy: presence is styling every DM row carries, not a fact about where
         // the buffer came from.
-        if row.isFriendChip, state.buffers[row.buffer.key.id] == nil {
+        if row.isFriend, state.buffers[row.buffer.key.id] == nil {
             viewModel.openBuffer(row.buffer.key)
         }
         onSelect?(row.buffer)
     }
 
-    /// Trailing swipe on a roster row leaves/closes the buffer. Grid chips get nothing — the
-    /// shortcut isn't the buffer's home, so leaving from it would be a surprise.
+    /// Trailing swipe on a network's row leaves/closes the buffer. Friends and Favorites get
+    /// nothing: closing a favorite also unfavorites it, and a full swipe fires the action
+    /// outright — too easy a way to drop a friend. Their long-press menu has Close.
     private func trailingSwipe(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard sectionID(at: indexPath)?.layout == .list, let buffer = row(at: indexPath)?.buffer
+        guard sectionID(at: indexPath)?.reorderable == false, let buffer = row(at: indexPath)?.buffer
         else { return nil }
         // The server log and the system buffer can't be closed.
         guard buffer.kind != .server, buffer.kind != .system else { return nil }
@@ -1619,7 +1435,7 @@ final class BufferListViewController: UICollectionViewController {
 
     /// Long-press to pin. The Favorites section is only as real as the way to fill it, and
     /// a section with no path into it would just be a permanently empty box. Available on the
-    /// roster rows and on the chips alike, so a favorite is also how you *un*favorite.
+    /// network rows and on Friends and Favorites alike, so a favorite is also how you *un*favorite.
     override func collectionView(
         _ collectionView: UICollectionView,
         contextMenuConfigurationForItemAt indexPath: IndexPath,
@@ -1647,7 +1463,7 @@ final class BufferListViewController: UICollectionViewController {
             ? UIImage(systemName: isDm ? "person.badge.minus" : "star.slash")
             : UIImage(systemName: isDm ? "person.badge.plus" : "star")
         // ⚠⚠ Close belongs on THIS menu, not only on the roster row's swipe. A favorited
-        // buffer has no roster row any more — its chip is where it lives — so without this
+        // buffer has no network row any more — its Favorites row is where it lives — so without this
         // there is no way to leave a favorited channel short of unfavoriting it first, and
         // the buffers people favorite are exactly the ones they keep. (Favorited DMs had
         // this hole already, having been lifted out since Friends landed.) The web reaches
@@ -1720,17 +1536,19 @@ extension BufferListViewController {
 
 // MARK: - Reordering favorites (#53)
 
-/// Dragging a Favorites or Friends chip into a new position.
+/// Dragging a Favorites or Friends row into a new position.
 ///
 /// The order is the SERVER's one global favorites list (lurker#721), shared with the web
 /// client — a drop maps through `FavoriteOrder` onto the stored global order and sends the
 /// full permuted bufferId list; the `favorites-changed` echo is what makes it stick on every
 /// device.
 ///
-/// Confined to the chip's OWN section in both directions — the two grids are kind-filtered
-/// views of one list (a channel isn't a person), Recent is MRU-ordered, and a chip dropped
-/// anywhere foreign would snap back on the next rebuild, which is a worse answer than not
-/// accepting the drop.
+/// Confined to the row's OWN group in both directions — the two are kind-filtered views of
+/// one list (a channel isn't a person), and a row dropped anywhere foreign would snap back on
+/// the next rebuild, which is a worse answer than not accepting the drop.
+///
+/// Each group opens with its header item, so a row's index among the group's `rows` is its
+/// item index less `Section.firstRowItem`.
 extension BufferListViewController: UICollectionViewDragDelegate, UICollectionViewDropDelegate {
 
     func collectionView(
@@ -1753,23 +1571,22 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         dragSessionIsRestrictedToDraggingApplication session: UIDragSession
     ) -> Bool { true }
 
-    /// The same shape for the lift and for the landing. UIKit asks separately: this method is
+    /// The same preview for the lift and for the landing. UIKit asks separately: this method is
     /// scoped to "the item being lifted from, or cancelling back to, the collection view", and
-    /// the *drop* animation reads `dropPreviewParametersForItemAt` below — so implementing only
-    /// this one made a chip lift with rounded corners and land square, which is the artifact
-    /// `BufferChipCell.dragPreviewParameters` exists to prevent.
+    /// the *drop* animation reads `dropPreviewParametersForItemAt` below — implementing only this
+    /// one lifts a row on its raised fill and lands it on the system default.
     func collectionView(
         _ collectionView: UICollectionView,
         dragPreviewParametersForItemAt indexPath: IndexPath
     ) -> UIDragPreviewParameters? {
-        (collectionView.cellForItem(at: indexPath) as? BufferChipCell)?.dragPreviewParameters
+        (collectionView.cellForItem(at: indexPath) as? BufferRowCell)?.dragPreviewParameters
     }
 
     func collectionView(
         _ collectionView: UICollectionView,
         dropPreviewParametersForItemAt indexPath: IndexPath
     ) -> UIDragPreviewParameters? {
-        (collectionView.cellForItem(at: indexPath) as? BufferChipCell)?.dragPreviewParameters
+        (collectionView.cellForItem(at: indexPath) as? BufferRowCell)?.dragPreviewParameters
     }
 
     func collectionView(
@@ -1779,7 +1596,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
     ) -> UICollectionViewDropProposal {
         // `hasActiveDrag`, not `session.localDragSession != nil`. The latter says only that the
         // drag began somewhere in this *app* — and this screen carries a search field, which is
-        // a real in-app drag source for selected text. Dragging that over the grid passed the
+        // a real in-app drag source for selected text. Dragging that over the list passed the
         // old check, so the layout opened an insertion gap for a drop that `performDropWith`
         // then silently refused (a foreign item has no `sourceIndexPath`).
         guard collectionView.hasActiveDrag else {
@@ -1794,27 +1611,31 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
             return UICollectionViewDropProposal(operation: .cancel)
         }
         guard sectionID(at: destinationIndexPath)?.reorderable == true else {
-            // Over Recent or a roster row. `.forbidden` is the one that draws the
-            // no-drop badge; `.cancel` is silent, which left the chip looking droppable
+            // Over a network's group. `.forbidden` is the one that draws the
+            // no-drop badge; `.cancel` is silent, which left the row looking droppable
             // everywhere right up until it flew home. The rule is only discoverable if the
             // gesture says so while it's being made.
             return UICollectionViewDropProposal(operation: .forbidden)
         }
-        // TWO sections reorder now (Favorites and Friends), but a chip belongs to exactly
+        // TWO sections reorder now (Favorites and Friends), but a row belongs to exactly
         // one — a channel isn't a person. A cross-section hover must say `.forbidden` HERE,
         // while the gesture is being made: `performDropWith` would refuse it anyway (the
         // key resolves against the destination's rows and misses), but only after the
         // layout opened an insertion gap and the UI said yes. Section identity, stashed
-        // when the chip lifted, not key membership: this runs per touch-move, and
+        // when the row lifted, not key membership: this runs per touch-move, and
         // sections are frozen for the drag's duration (rebuild defers), so the index
         // stays true — O(1) beats a per-event row scan and can't be fooled by a key that
         // ever appeared in two sections.
         if destinationIndexPath.section != dragSourceSection {
             return UICollectionViewDropProposal(operation: .forbidden)
         }
-        // Deliberately not checking the drop *index*: a drop past the last chip is a real
-        // gesture ("put it at the end") and UIKit can report it as an index one beyond the
-        // last row. `performDropWith` clamps it.
+        // Above the header would put a row outside its group.
+        if destinationIndexPath.item < Section.firstRowItem {
+            return UICollectionViewDropProposal(operation: .forbidden)
+        }
+        // Deliberately not checking the drop index's far end: a drop past the last row is a
+        // real gesture ("put it at the end") and UIKit can report it as an index one beyond
+        // the last row. `performDropWith` clamps it.
         return UICollectionViewDropProposal(operation: .move, intent: .insertAtDestinationIndexPath)
     }
 
@@ -1830,7 +1651,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         let rows = sections[sectionIndex].rows
         let visible = rows.map(\.buffer.key.id)
 
-        // Resolved by KEY, not by `item.sourceIndexPath`. That index was captured when the chip
+        // Resolved by KEY, not by `item.sourceIndexPath`. That index was captured when the row
         // was lifted, and `sections` can be rebuilt under a live drag — `rebuild()` now defers
         // while one is up, but the index would still be a fact about a model that may since
         // have been replaced, and this write goes to the only copy of the pin list there is.
@@ -1838,15 +1659,14 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         guard let key = item.dragItem.localObject as? String,
               let from = visible.firstIndex(of: key)
         else { return }
-        // A drop past the last chip reads as "put it at the end", so it's clamped to the last
+        // A drop past the last row reads as "put it at the end", so it's clamped to the last
         // row rather than refused — the row count doesn't change during a reorder, so the last
-        // valid index is always `count - 1`.
-        let source = IndexPath(item: from, section: proposed.section)
-        let destination = IndexPath(item: min(proposed.item, rows.count - 1), section: proposed.section)
+        // valid index is always `count - 1`. Both are ROW indices; the header is item 0.
+        let to = min(max(proposed.item - Section.firstRowItem, 0), rows.count - 1)
 
-        // The grid shows a kind-filtered SUBSET of the server's one global favorites list
-        // (this section's kinds only, and a favorite whose network is still connecting has
-        // a slot and no chip) — so the move is mapped onto the stored order rather than
+        // The group shows a kind-filtered SUBSET of the server's one global favorites list
+        // (this group's kinds only, and a favorite whose network is still connecting has
+        // a slot and no row) — so the move is mapped onto the stored order rather than
         // applied by index. `FavoriteOrder` owns that, and answers the stored list
         // unchanged for anything it can't interpret. The FULL permuted list goes to the
         // server (a subset would float to the front and demote everything unmentioned —
@@ -1854,7 +1674,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // rebuild, and the in-place move below keeps the drop animation honest meanwhile.
         let entries = state.favorites
         let stored = entries.map(\.key.id)
-        let reordered = FavoriteOrder.moved(stored, visible: visible, from: source.item, to: destination.item)
+        let reordered = FavoriteOrder.moved(stored, visible: visible, from: from, to: to)
         guard reordered != stored else { return }
         let idByKey = Dictionary(entries.map { ($0.key.id, $0.bufferId) }, uniquingKeysWith: { a, _ in a })
         let reorderedIds = reordered.compactMap { idByKey[$0] }
@@ -1867,30 +1687,31 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
 
         // The model moves with the view rather than being rebuilt: the echo would reach the
         // same answer, but a full rebuild mid-drop drops the drag animation on the floor. A
-        // move inside one section can't change any other — Recent excludes favorites by
-        // membership, not by order — so the two are equivalent here.
-        sections[sectionIndex].rows.insert(
-            sections[sectionIndex].rows.remove(at: source.item), at: destination.item
-        )
-        rowsByID = Dictionary(
-            sections.flatMap { section in
-                section.rows.map { (ItemID(section: section.id, key: $0.buffer.key.id), $0) }
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
+        // move inside one group can't change any other, so the two are equivalent here.
+        //
+        // Re-made through `Section.init` rather than moved in place, so the guides follow:
+        // the row that lands last becomes the `└─`, and the one that was last goes back to `├─`.
+        var moved = rows
+        moved.insert(moved.remove(at: from), at: to)
+        let section = sections[sectionIndex]
+        sections[sectionIndex] = Section(id: section.id, header: section.header, rows: moved)
+        indexEntries()
         // Through the data source, not `collectionView.moveItem`: it owns the item order now,
         // and a view moved behind its back is a view the next snapshot would move back.
         var snapshot = dataSource.snapshot()
-        let moved = sections[sectionIndex].items
-        snapshot.deleteItems(moved)
-        snapshot.appendItems(moved, toSection: sectionID)
+        let items = sections[sectionIndex].items
+        snapshot.deleteItems(items)
+        snapshot.appendItems(items, toSection: sectionID)
+        snapshot.reconfigureItems(Array(items.dropFirst(Section.firstRowItem)))
         dataSource.apply(snapshot, animatingDifferences: false)
-        coordinator.drop(item.dragItem, toItemAt: destination)
+        coordinator.drop(
+            item.dragItem, toItemAt: IndexPath(item: to + Section.firstRowItem, section: proposed.section)
+        )
     }
 
     /// Runs on a completed drop *and* on a cancelled one, which is what makes it the right
     /// place to release a rebuild `rebuild()` deferred — a drag abandoned over the roster would
-    /// otherwise leave the list frozen on whatever it held when the chip was lifted.
+    /// otherwise leave the list frozen on whatever it held when the row was lifted.
     func collectionView(_ collectionView: UICollectionView, dragSessionDidEnd session: UIDragSession) {
         // Cleared FIRST: the deferred rebuild below is exactly the path that rebuilds
         // `sections`, after which a stashed section index would be a fact about a
@@ -1900,14 +1721,26 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         rebuild()
     }
 
-    /// Whether this index path is a chip in a section that can be reordered, and still
-    /// addresses a row at all.
-    /// The row at an index path, by identity.
+    /// The buffer row at an index path, by identity — nil for a header or the pinned break.
     ///
     /// Every delegate callback goes through this rather than indexing `sections`: UIKit hands
     /// back positions, and a position is the one thing about this list that isn't stable.
     private func row(at indexPath: IndexPath) -> Row? {
-        dataSource.itemIdentifier(for: indexPath).flatMap { rowsByID[$0] }
+        guard let id = dataSource.itemIdentifier(for: indexPath),
+              case let .buffer(row)? = entriesByID[id]
+        else { return nil }
+        return row
+    }
+
+    /// What a tap on this index path opens: a buffer row's buffer, or a network header's
+    /// server log. Nil for everything that leads nowhere.
+    private func target(at indexPath: IndexPath) -> Row? {
+        guard let id = dataSource.itemIdentifier(for: indexPath) else { return nil }
+        switch entriesByID[id] {
+        case let .buffer(row)?: return row
+        case let .header(header)?: return header.log
+        case .pinBreak?, nil: return nil
+        }
     }
 
     /// What kind of section an index path lands in, by identity.
@@ -1915,6 +1748,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         dataSource.sectionIdentifier(for: indexPath.section)
     }
 
+    /// Whether this index path is a row in a section that can be reordered.
     private func reorderable(_ indexPath: IndexPath) -> Bool {
         sectionID(at: indexPath)?.reorderable == true && row(at: indexPath) != nil
     }

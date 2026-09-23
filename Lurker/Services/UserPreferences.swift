@@ -22,7 +22,8 @@ extension Notification.Name {
 enum UserPreferences {
     fileprivate enum Key {
         static let lastServerURL = "lastServerURL"
-        static let recentBufferKeys = "recentBufferKeys"
+        /// The buffer list's Recent section, removed. Kept only so the stored list is deleted.
+        static let retiredRecentBufferKeys = "recentBufferKeys"
         static let favoriteBufferKeys = "favoriteBufferKeys"
         static let migratedFavoritesToServer = "migratedFavoritesToServer"
         static let lastBufferTarget = "lastBufferTarget"
@@ -44,6 +45,9 @@ enum UserPreferences {
             // the opposite of what this one means when it hasn't been set.
             Key.composerAutocapitalization: true,
         ])
+        // The Recent section is gone, and so is every reader of the list it kept. Removing a
+        // key that isn't there is a no-op, so this costs nothing once it has run.
+        defaults.removeObject(forKey: Key.retiredRecentBufferKeys)
         return defaults
     }()
 }
@@ -82,39 +86,15 @@ extension UserDefaults {
         NotificationCenter.default.post(name: .composerKeyboardPreferencesDidChange, object: nil)
     }
 
-    // MARK: - Quick switcher
-
-    /// `BufferKey.id`s in most-recently-visited order, newest first.
-    ///
-    /// Stored rather than derived because recency is about what *you* did, which no server
-    /// state records — a buffer's last message tells you the room was busy, not that you
-    /// were in it. Kept as keys, not buffers, so a buffer that's since been closed simply
-    /// fails to resolve and drops out of the list on its own.
-    var recentBufferKeys: [String] {
-        stringArray(forKey: UserPreferences.Key.recentBufferKeys) ?? []
-    }
-
-    /// Move a buffer to the front of the recency order.
-    ///
-    /// Unbounded: this is a list of buffer keys, a few dozen at most even for a heavy user,
-    /// and truncating it would silently forget a buffer you'd visited. The *display* caps
-    /// how many are shown; the record doesn't need to.
-    func recordRecentBuffer(_ key: String) {
-        var keys = recentBufferKeys
-        keys.removeAll { $0 == key }
-        keys.insert(key, at: 0)
-        set(keys, forKey: UserPreferences.Key.recentBufferKeys)
-    }
-
     // MARK: - State restoration
 
     /// The buffer that was on screen when the app was last used, so a relaunch lands where
     /// you left off instead of on the system buffer every time (#49).
     ///
-    /// Stored as its parts rather than as a `BufferKey.id` like the lists above, because
-    /// `id` lower-cases the target and this one is *reconstructed* into a buffer at launch
-    /// — before any frame has arrived to correct the case. The lists only ever look keys up
-    /// in state, so lossy is fine there and isn't here.
+    /// Stored as its parts rather than as a `BufferKey.id` like the legacy favorites list,
+    /// because `id` lower-cases the target and this one is *reconstructed* into a buffer at
+    /// launch — before any frame has arrived to correct the case. A list that only ever looks
+    /// keys up in state can be lossy; this can't.
     ///
     /// A nil `networkId` is the system buffer, and is stored by *absence* — `object(forKey:)`
     /// returning nil is the only way UserDefaults can say "no integer here", since a missing
@@ -136,9 +116,8 @@ extension UserDefaults {
     }
 
     /// Forgotten on sign-out. Restoration is the one preference here that *synthesizes* a
-    /// buffer rather than looking one up, so a stale entry doesn't quietly fall out the way
-    /// a stale recent does — signing in as somebody else would land them in a channel from
-    /// the previous account.
+    /// buffer rather than looking one up, so a stale entry doesn't quietly fail to resolve —
+    /// signing in as somebody else would land them in a channel from the previous account.
     func forgetLastBuffer() {
         removeObject(forKey: UserPreferences.Key.lastBufferTarget)
         removeObject(forKey: UserPreferences.Key.lastBufferNetworkId)
@@ -177,10 +156,10 @@ extension UserDefaults {
 
     /// Follow a buffer rename through every preference that stores its key. Favorites no
     /// longer live here (server-side, keyed by buffer id — renames are free), so only the
-    /// recents list and the last-buffer record need chasing.
+    /// last-buffer record and the not-yet-migrated legacy favorites need chasing.
     ///
-    /// Substitution IN PLACE: a renamed recent keeps its recency. On a merge the new key
-    /// may already be present; the first occurrence keeps its position and the later
+    /// Substitution IN PLACE: a renamed legacy favorite keeps its position. On a merge the new
+    /// key may already be present; the first occurrence keeps its position and the later
     /// duplicate is dropped.
     ///
     /// A casing-only rename leaves the list alone — its keys are lowercased ids, so
@@ -188,8 +167,6 @@ extension UserDefaults {
     /// the one store that keeps the display casing (it *synthesizes* a buffer at launch).
     func rewriteBuffer(from: BufferKey, to: BufferKey) {
         if from.id != to.id {
-            let recents = Self.substitute(from.id, with: to.id, in: recentBufferKeys)
-            set(recents, forKey: UserPreferences.Key.recentBufferKeys)
             // The legacy favorites list still follows renames UNTIL the one-shot
             // migration consumes it: connected to a pre-favorites server, renames
             // can accumulate for weeks, and a stale name pushed up later resolves

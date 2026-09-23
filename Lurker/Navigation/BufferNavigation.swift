@@ -149,8 +149,8 @@ extension UINavigationController {
     /// through your own history one conversation at a time. Exactly one chat screen exists,
     /// and the list is under it.
     ///
-    /// The existing list is reused when there is one, so its scroll position and Recent
-    /// ordering survive being navigated over.
+    /// The existing list is reused when there is one, so its scroll position survives being
+    /// navigated over.
     func showBuffer(
         _ buffer: Buffer,
         viewModel: ChatViewModel,
