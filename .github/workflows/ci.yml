@@ -19,7 +19,8 @@ jobs:
   build:
     name: Build
     # NOT macos-latest: that lags a major Xcode behind. GitHub now names macOS images
-    # by their Xcode major (one per image); `xcode-27` is still a public preview, so it
+    # by their Xcode major, one per image (github.blog/changelog/2026-09-10-xcode-27-
+    # runner-image-now-runs-on-macos-27). `xcode-27` is still a public preview, so it
     # may queue longer than the stable images.
     runs-on: xcode-27
     # The default is 360 minutes, and macOS minutes are the expensive ones.
@@ -83,7 +84,7 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        # Pin to Xcode 27 so `swift` matches the toolchain the app is developed on.
+        # Pin to Xcode 27, the major the app is developed on (the image may trail by a minor).
         # Pinned to a SHA because it's a third-party action: v1.7.0.
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
         with:
