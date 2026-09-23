@@ -42,7 +42,8 @@ import UIKit
 ///    `searchResultsController`. How the buffer list uses it: the field sits in that screen's
 ///    bottom bar and these results slide up over the list as soon as you type. The iOS 26
 ///    arrangement, and the reachable one — the field is under your thumb rather than at the top
-///    of a screen you'd have to stretch for.
+///    of a screen you'd have to stretch for. Side by side the conversation column hosts it
+///    instead, at the trailing edge of its bar, with the results over the conversation.
 ///  - `.standalone` — it owns a field of its own, in its own bottom bar, for when search is
 ///    *presented* rather than lived in: "Search This Conversation", which opens pre-scoped.
 ///
@@ -389,4 +390,43 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     }
 
     private static let debounceMilliseconds = 350
+
+    /// A search field whose results are this screen — for a host that owns the field: the
+    /// buffer list on its own, or the conversation column side by side.
+    ///
+    /// Configured here so the two hosts can't drift apart on the details below, and so this
+    /// screen is the field's delegate as well as its updater: the one callback it needs is
+    /// about these results, not about whichever screen happens to carry the field.
+    func makeHostedSearchController() -> UISearchController {
+        let controller = UISearchController(searchResultsController: self)
+        controller.searchResultsUpdater = self
+        controller.delegate = self
+        // Show the results the moment search is activated, not once there's text in the field.
+        //
+        // UIKit's default is `automaticallyShowsSearchResultsController`, which presents the
+        // results controller "based on the contents of its text property" — so an empty field
+        // presents nothing at all, and tapping search just raised the keyboard and slid the
+        // host up behind it. That default is right for a results controller that would be blank
+        // until you type; this one opens on your recent highlights, so there is something to
+        // show from the first tap. Setting this flips `automaticallyShowsSearchResultsController`
+        // to false.
+        controller.showsSearchResultsController = true
+        controller.searchBar.placeholder = "Search messages"
+        // The filter grammar is typed, not tapped: autocapitalization turns `from:` into
+        // `From:` and autocorrect rewrites nicks and channel names into English words.
+        controller.searchBar.autocapitalizationType = .none
+        controller.searchBar.autocorrectionType = .no
+        controller.searchBar.spellCheckingType = .no
+        return controller
+    }
+}
+
+extension MessageSearchViewController: UISearchControllerDelegate {
+
+    func willPresentSearchController(_ searchController: UISearchController) {
+        // Before the results appear, so they never show an answer to a question the field
+        // isn't asking — this screen is reused across searches and can still be holding the
+        // last one.
+        syncToField(searchController.searchBar.text ?? "")
+    }
 }

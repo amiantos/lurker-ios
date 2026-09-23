@@ -112,6 +112,16 @@ final class BufferSplitViewController: UISplitViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         list?.marksOpenBuffer = !isCollapsed
+        currentChat?.isBesideList = !isCollapsed
+    }
+
+    /// A conversation screen that already knows which bar it's getting. Every screen built for
+    /// the conversation column comes from here: a new one lays out its bar at load, before the
+    /// next layout pass would tell it (`viewDidLayoutSubviews`).
+    private func makeChat(_ buffer: Buffer, jumpTo messageId: Int? = nil) -> ChatViewController {
+        let chat = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
+        chat.isBesideList = !isCollapsed
+        return chat
     }
 
     /// The column rule, re-asserted before every layout as well as on trait changes. The trait
@@ -191,7 +201,7 @@ final class BufferSplitViewController: UISplitViewController {
             return
         }
         selection = buffer.key
-        let chat = ChatViewController(viewModel: viewModel, buffer: buffer, jumpTo: messageId)
+        let chat = makeChat(buffer, jumpTo: messageId)
         // Set, never pushed. One conversation exists at a time — `/msg` from a channel or a
         // notification tapped mid-read must not leave a stack of live subscriptions behind a
         // back button that walks you through your own history.
@@ -238,7 +248,7 @@ final class BufferSplitViewController: UISplitViewController {
     /// somewhere to show it.
     private func restColumn() {
         chatNav.setViewControllers(
-            isCollapsed ? [] : [ChatViewController(viewModel: viewModel, buffer: .system)],
+            isCollapsed ? [] : [makeChat(.system)],
             animated: false
         )
     }
@@ -324,9 +334,7 @@ extension BufferSplitViewController: UISplitViewControllerDelegate {
             listNav.setViewControllers([list], animated: false)
             chatNav.setViewControllers([chat], animated: false)
         } else if chatNav.viewControllers.isEmpty {
-            chatNav.setViewControllers(
-                [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-            )
+            chatNav.setViewControllers([makeChat(.system)], animated: false)
         }
     }
 

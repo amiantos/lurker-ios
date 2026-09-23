@@ -199,6 +199,17 @@ extension UINavigationController {
         setViewControllers([list, chat], animated: animated)
     }
 
+    /// Point a hosted search field's results at the conversations they came from, closing the
+    /// search with `close` once a row is picked. For a field that lives on a screen rather than
+    /// in a presented sheet — the buffer list's, or the conversation column's side by side.
+    func wireSearchResults(
+        _ results: MessageSearchViewController,
+        viewModel: ChatViewModel,
+        close: @escaping () -> Void
+    ) {
+        wireJump(results, viewModel: viewModel, nav: self, close: close)
+    }
+
     /// The list on its own — where the app lands when there's nothing to restore into.
     func showBufferList(viewModel: ChatViewModel, animated: Bool) {
         let list = (viewControllers.first as? BufferListViewController) ?? makeBufferList(viewModel: viewModel)
@@ -217,7 +228,7 @@ extension UINavigationController {
         // this is the one place that knows both the feed and the navigation stack — and
         // because a search result and a buffer row are the same gesture arriving at the same
         // conversation by different routes.
-        wireJump(list.searchResults, viewModel: viewModel, nav: self) { [weak list] in
+        wireSearchResults(list.searchResults, viewModel: viewModel) { [weak list] in
             list?.dismissSearch()
         }
         return list
