@@ -227,7 +227,7 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // The title is "Lurker" and its subtitle is the connection's light — see `apply`.
+        // The title is "Lurker" and its subtitle is the connection's state — see `apply`.
         // Inline, not large: the bar's own row is enough to say what the screen is, and a
         // large title spends a band of the screen on it before the first buffer.
         navigationItem.apply(statusTitle)
@@ -757,8 +757,6 @@ final class BufferListViewController: UICollectionViewController {
             unread: row.displayUnread,
             highlights: row.buffer.highlights,
             presence: row.presence,
-            // The dot is a Friends chip's alone; any other DM chip shows presence in its name.
-            showsPresenceDot: row.isFriendChip,
             parted: row.parted,
             isOpen: self?.isOpen(row.buffer) == true
         )
@@ -1710,7 +1708,7 @@ final class BufferListViewController: UICollectionViewController {
 
 extension BufferListViewController {
 
-    /// Fixed except for the light: this screen is the app, not a buffer, so it always reads
+    /// Fixed except for the subtitle: this screen is the app, not a buffer, so it always reads
     /// "Lurker" and follows the socket rather than any one network.
     var statusTitle: StatusTitle {
         StatusTitle(

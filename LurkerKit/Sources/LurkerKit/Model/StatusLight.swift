@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-/// The indicator light shown under a buffer's title, mirroring the web client's
-/// `.indicator` dots (`good` / `warn` / `bad`).
+/// How a buffer's connection is doing, in the web client's three `.indicator` states (`good` /
+/// `warn` / `bad`). The title says it in words (`subtitle`); the networks screen still draws it
+/// as a dot.
 ///
 /// Three states, not two: amber is the honest default while something is still trying,
 /// and it's what the web client shows for a connecting/reconnecting network. Red is
@@ -29,10 +30,9 @@ extension StatusLight {
     /// `network` is nil for the system buffer, whose whole story is the socket — so once
     /// the socket is up, it's green.
     ///
-    /// DM buffers deliberately pass their *network's* state like a channel does. Real peer
-    /// presence ("is this nick online right now") reaches the app now — the friends list shows
-    /// it — but this dot doesn't read it yet; that's #55. It slots in as an extra inner layer
-    /// without a redesign.
+    /// DM buffers pass their *network's* state like a channel does. The peer's own presence
+    /// only means something once that's good, so `subtitle` layers it on top rather than
+    /// folding it in here.
     public static func of(
         reachable: Bool,
         connection: SocketStatus,
@@ -67,5 +67,33 @@ extension StatusLight {
         guard outer == .good else { return outer }
         guard let live else { return .warn }
         return live ? .good : .bad
+    }
+
+    /// What a title's subtitle says: "Connected", "Libera · Online", "Libera · Away".
+    ///
+    /// Words only — the coloured dot is gone, so every state has to be said. `detail` is what
+    /// the title doesn't already name (a channel's network); without one, the subtitle is about
+    /// Lurker's own connection and says "Connected".
+    ///
+    /// `peer` is a DM's other person, and once the link is good it replaces "Online": the
+    /// question on a DM is whether *they're* there, and the network being up says nothing about
+    /// that. It never overrides a light that isn't good. A peer on a network we've lost can't be
+    /// seen at all, and "Offline" there would be a claim about them we have no grounds for —
+    /// "Disconnected" is the true thing to say. `unknown` says nothing past the network name,
+    /// for the same reason (no MONITOR, or not heard from yet).
+    public func subtitle(detail: String?, peer: FriendPresence? = nil) -> String {
+        let words: String? = switch self {
+        case .good:
+            switch peer {
+            case .online: "Online"
+            case .away: "Away"
+            case .offline: "Offline"
+            case .unknown: nil
+            case nil: detail == nil ? "Connected" : "Online"
+            }
+        case .warn: "Connecting…"
+        case .bad: "Disconnected"
+        }
+        return [detail, words].compactMap { $0 }.joined(separator: " · ")
     }
 }

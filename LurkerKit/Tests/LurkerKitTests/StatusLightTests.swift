@@ -75,4 +75,33 @@ final class StatusLightTests: XCTestCase {
             )
         }
     }
+
+    // MARK: - Subtitle words
+
+    func testLurkerItselfSaysHowItsOwnConnectionIsDoing() {
+        XCTAssertEqual(StatusLight.good.subtitle(detail: nil), "Connected")
+        XCTAssertEqual(StatusLight.warn.subtitle(detail: nil), "Connecting…")
+        XCTAssertEqual(StatusLight.bad.subtitle(detail: nil), "Disconnected")
+    }
+
+    func testAChannelNamesItsNetworkAndWhetherItsUp() {
+        XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera"), "Libera · Online")
+        XCTAssertEqual(StatusLight.warn.subtitle(detail: "Libera"), "Libera · Connecting…")
+        XCTAssertEqual(StatusLight.bad.subtitle(detail: "Libera"), "Libera · Disconnected")
+    }
+
+    func testADmSaysWhetherThePersonIsThereNotWhetherTheNetworkIs() {
+        XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera", peer: .online), "Libera · Online")
+        XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera", peer: .away), "Libera · Away")
+        XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera", peer: .offline), "Libera · Offline")
+        // No MONITOR, or nothing heard yet: "Online" would be the network's word read as theirs.
+        XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera", peer: .unknown), "Libera")
+    }
+
+    func testADmOnADownedLinkSaysTheLinkNotAGuessAboutThePeer() {
+        // `presence` reads `.offline` for every peer on a network we've lost; the subtitle must
+        // not pass that on as a fact about them.
+        XCTAssertEqual(StatusLight.bad.subtitle(detail: "Libera", peer: .offline), "Libera · Disconnected")
+        XCTAssertEqual(StatusLight.warn.subtitle(detail: "Libera", peer: .away), "Libera · Connecting…")
+    }
 }

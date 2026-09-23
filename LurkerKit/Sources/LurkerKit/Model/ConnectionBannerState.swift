@@ -1,16 +1,16 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-/// The connection banner shown across the top of the chat screen — the loud, worded
-/// counterpart to the title's `StatusLight` dot. The dot is always-on ambient; this
-/// only appears when something is wrong, and says so in words a glance can read.
+/// The connection banner shown across the top of the chat screen — the loud counterpart to
+/// the title's `StatusLight` subtitle. The subtitle is always-on ambient; this only appears
+/// when something is wrong, and says so where a glance can't miss it.
 ///
-/// It keys off the same two truths the dot's outer layers do — the OS network path and the
+/// It keys off the same two truths the light's outer layers do — the OS network path and the
 /// Lurker socket — and in the same order: no path beats everything, because it's the one
 /// failure the user can act on and the socket's own state is meaningless underneath it.
 /// The exception is a server that can't take this build (#17), which outranks even that.
 /// The IRC network layer is deliberately absent: a single disconnected network is the
-/// title dot's job, not a screen-wide banner claiming the whole app is offline.
+/// subtitle's job, not a screen-wide banner claiming the whole app is offline.
 public enum ConnectionBannerState: Equatable, Sendable {
     /// Connected and reachable — the banner is gone.
     case hidden
