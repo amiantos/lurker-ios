@@ -158,6 +158,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // single left edge that makes a run of messages read as one column.
         attachments.isLayoutMarginsRelativeArrangement = true
 
+        // The column's side margins are the cell's own, not the table's — see
+        // `useOwnSideMargins` for what the inherited ones do beside the iPhone Duo's side rail.
+        MessageListRenderer.useOwnSideMargins(contentView)
+
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
         column.addArrangedSubview(attachments)

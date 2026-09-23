@@ -227,29 +227,27 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        // `largeTitle`, NOT `title` — the two are separate on iOS 26, and `title` would also
-        // render in the *small-title row*, which is exactly where the shared pill sits. The
-        // pill used to be this screen's `titleView`, and a `titleView` suppresses the inline
-        // title; now that it belongs to the bar instead, nothing does, and "Buffers" draws
-        // underneath it as soon as the large title collapses on scroll.
-        // No title on iPad: the sidebar is permanent, so a heading naming what the column
-        // obviously is spends a large-title row of a 320pt panel to say nothing. On the phone
-        // the list is a screen you navigate to and back out of, and a screen needs a name.
-        if !isSidebar { navigationItem.largeTitle = "Buffers" }
+        // The title is "Lurker" and its subtitle is the connection's light — see `apply`.
+        // Inline, not large: the bar's own row is enough to say what the screen is, and a
+        // large title spends a band of the screen on it before the first buffer.
+        navigationItem.apply(statusTitle)
         // The empty state's only button, and it has only one meaning here: this screen's
         // placeholder never asks anything else of the user.
         placeholderView.onAction = { [weak self] in self?.showAddNetwork() }
-        // `title` is what the back button would have borrowed, so name it explicitly — it
-        // still feeds the back button's long-press menu and VoiceOver.
-        navigationItem.backButtonTitle = "Buffers"
-        // …but only there. Setting `backButtonTitle` alone *promotes* the back button from
-        // iOS 26's bare chevron to a 95pt "‹ Buffers" pill, which is not what this screen
-        // looked like before and crowds the bar. `.minimal` keeps the title for the
-        // long-press menu while drawing the indicator alone — measured identical to the
-        // original: a 44pt button with no label.
+        // The back button borrows "Lurker" from the title for its long-press menu and
+        // VoiceOver, but a titled back button is iOS 26's 95pt "‹ Lurker" pill, which crowds
+        // the chat screen's bar. `.minimal` keeps the title for those while drawing the
+        // indicator alone — a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
-        navigationItem.largeTitleDisplayMode = isSidebar ? .never : .always
-        collectionView.backgroundColor = .systemGroupedBackground
+        // The message list's ground, so the list and the conversation are one theme rather
+        // than the system's cool grey beside a warm log. Set on the list configuration too —
+        // see `makeLayout`, whose own default would otherwise paint over this.
+        //
+        // In an expanded split this is moot: UIKit clears the sidebar's layer (measured,
+        // iOS 27.1 — `layer.backgroundColor` nil under this same property) and draws its glass
+        // there instead, which takes its colour from the conversation column running
+        // underneath — `Palette.bg` too, so the theme comes through either way.
+        collectionView.backgroundColor = Palette.bg
         // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
         // first thing that happens to touch it. `UICollectionViewController` installs itself
         // as the collection view's data source in `loadView`; constructing the diffable one
@@ -428,10 +426,10 @@ final class BufferListViewController: UICollectionViewController {
     /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
-        // The pill is in the bar, not the list, so it tracks connection regardless of whether
-        // the roster below is worth rebuilding — and `refresh` no-ops both when this screen
-        // isn't the one on top and when nothing the pill shows has moved.
-        navigationPill?.refresh(from: self)
+        // The title is in the bar, not the list, so it tracks connection regardless of
+        // whether the roster below is worth rebuilding. `apply` no-ops when nothing it shows
+        // has moved.
+        navigationItem.apply(statusTitle)
         // The banner is about the connection, not the roster, so its *state* is tracked on
         // every apply regardless of whether the list below is worth rebuilding.
         bannerState = ConnectionBannerState.of(reachable: state.reachable, connection: state.connection)
@@ -630,6 +628,10 @@ final class BufferListViewController: UICollectionViewController {
             switch id.layout {
             case .list:
                 var config = UICollectionLayoutListConfiguration(appearance: .insetGrouped)
+                // ⚠ Or the list section repaints the collection view in the appearance's own
+                // grouped grey, over the `Palette.bg` set in `viewDidLoad`. Measured: with only
+                // the collection view's colour set, an inset-grouped list still drew #F2F2F7.
+                config.backgroundColor = Palette.bg
                 // The list's *own* header, not a manual boundary item: the native grouped
                 // header sits tight to the first row, whereas a hand-added header stacks on
                 // top of the list's top inset and leaves an oversized gap.
@@ -663,10 +665,14 @@ final class BufferListViewController: UICollectionViewController {
                 group.interItemSpacing = .fixed(10)
                 let grid = NSCollectionLayoutSection(group: group)
                 grid.interGroupSpacing = 10
-                // 16 matches the horizontal inset the insetGrouped list draws its cards at (and
-                // the nav-bar buttons), so a chip's edge lines up with a row's edge; the extra
-                // bottom inset spaces the grid off the section under it.
-                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 16, bottom: 18, trailing: 16)
+                // Inset by the layout margins, which is what the insetGrouped list draws its
+                // cards against, so a chip's edge lines up with a row's edge by construction
+                // rather than by a matching constant. A fixed 16 matched on an iPhone but not
+                // on the iPhone Duo, whose side rail widens the margin to the safe area: the
+                // chips measured 16…366 under rows at 20…382. The extra bottom inset spaces the
+                // grid off the section under it.
+                grid.contentInsetsReference = .layoutMargins
+                grid.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 0, bottom: 18, trailing: 0)
                 // A grid has no list header of its own, so it carries a boundary one — the
                 // small gap this leaves reads fine above cards.
                 if hasTitle {
@@ -706,7 +712,7 @@ final class BufferListViewController: UICollectionViewController {
         cell.backgroundConfiguration = background
 
         var content = UIListContentConfiguration.cell()
-        // No `networkName` here, unlike the pill: every roster row already states its network
+        // No `networkName` here, unlike the chat title: every roster row already states its network
         // as its section header, so resolving a server log to its network's name would just
         // print "libera" above "libera".
         content.text = row.buffer.displayName()
@@ -860,7 +866,7 @@ final class BufferListViewController: UICollectionViewController {
     /// snapshot carries identifiers and not content.
     private var rowsByID: [ItemID: Row] = [:]
 
-    // MARK: - Which conversation is open (iPad)
+    // MARK: - Which conversation is open (side by side)
 
     /// The buffer showing in the split's conversation column, or nil.
     ///
@@ -878,8 +884,13 @@ final class BufferListViewController: UICollectionViewController {
     /// Whether this list is beside a conversation rather than under one.
     ///
     /// Pushed in by `BufferSplitViewController` rather than read from `isCollapsed`: the moment
-    /// it matters is a resize into or out of Slide Over, which is exactly when that property
-    /// still answers for the layout being left. False on the phone, which has no split.
+    /// it matters is a resize into or out of Slide Over, or an iPhone Duo opening or closing,
+    /// which is exactly when that property still answers for the layout being left. False
+    /// whenever the split is collapsed — on every iPhone but an opened Duo, all the time.
+    ///
+    /// It's also what decides what this screen *is*: a sidebar beside the conversation, or a
+    /// screen you navigate to and back out of. On a Duo that changes under a live list, so
+    /// everything that depends on it is re-applied here rather than decided once at load.
     var marksOpenBuffer = false {
         didSet {
             guard marksOpenBuffer != oldValue else { return }
@@ -887,6 +898,9 @@ final class BufferListViewController: UICollectionViewController {
             // The banner yields to the conversation column's whenever there is one, so this
             // flag flipping is exactly when that answer changes.
             refreshBanner()
+            applySearchPlacement()
+            // Recent comes and goes with the sidebar — see `buildSections`.
+            if isOnScreen { rebuild() }
         }
     }
 
@@ -969,7 +983,7 @@ final class BufferListViewController: UICollectionViewController {
         let controller = UISearchController(searchResultsController: searchResults)
         controller.searchResultsUpdater = searchResults
         // The delegate is *this* screen, not the results: presenting search changes what this
-        // screen looks like (the pill goes), and the search controller belongs to it. What the
+        // screen looks like, and the search controller belongs to it. What the
         // results need from those callbacks, they're asked for directly — see the extension.
         controller.delegate = self
         // Show the results the moment search is activated, not once there's text in the field.
@@ -1008,30 +1022,43 @@ final class BufferListViewController: UICollectionViewController {
     /// the push into a chat screen, whose bottom is a composer) still holds and is still
     /// handled — see `viewWillAppear`.
     ///
-    /// ⚠ Not a style choice on iPad — an integrated field does not fit. The list is a ~320pt
-    /// sidebar whose bar already carries the status pill, and UIKit resolves an overfull bar
-    /// by silently DROPPING trailing items: measured, `.integrated` cost the join "+" outright.
-    /// `.stacked` is where iPad search goes anyway, and all four controls fit.
+    /// ⚠ Not a style choice in a sidebar — an integrated field does not fit. Beside a
+    /// conversation the list is a ~320pt column whose bar already carries the title, and UIKit
+    /// resolves an overfull bar by silently DROPPING trailing items: measured on iPad,
+    /// `.integrated` cost the join "+" outright. `.stacked` fits all four controls.
     private func installSearch() {
         navigationItem.searchController = searchController
-        guard usesBottomSearchBar else {
-            navigationItem.preferredSearchBarPlacement = .stacked
-            return
-        }
-        navigationItem.preferredSearchBarPlacement = .integrated
-        toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+        applySearchPlacement()
     }
 
-    /// Whether this list is the iPad's permanent sidebar rather than a screen you navigate to.
-    ///
-    /// Idiom, not `marksOpenBuffer`: this decides what the list is *built* from, in
-    /// `viewDidLoad`, long before there is a window to ask whether the split is collapsed.
-    private var isSidebar: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    /// Put the field where the current layout wants it. Re-run whenever the split expands or
+    /// collapses, since on an iPhone Duo that happens to a list that's already on screen.
+    private func applySearchPlacement() {
+        if usesBottomSearchBar {
+            navigationItem.preferredSearchBarPlacement = .integrated
+            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+        } else {
+            navigationItem.preferredSearchBarPlacement = .stacked
+            toolbarItems = nil
+        }
+        // The toolbar is the navigation controller's, and `viewWillAppear`/`Disappear` raise
+        // and lower it on navigation — a layout change isn't a navigation, so do it here, but
+        // only while this list is what that controller is showing. Collapsed with a chat on
+        // top, the composer owns the bottom edge and the toolbar stays down.
+        guard isOnScreen, navigationController?.topViewController === self else { return }
+        navigationController?.setToolbarHidden(!usesBottomSearchBar, animated: false)
+    }
 
     /// Whether the search field is riding a bottom toolbar this screen has to raise and lower.
-    /// False on iPad, where it is stacked under the title and there is no toolbar at all —
-    /// asking for one would raise an empty bar across the foot of the sidebar.
-    private var usesBottomSearchBar: Bool { !isSidebar }
+    ///
+    /// Only on an iPhone, and only while this list is its own screen. The idiom is right here
+    /// where it's wrong for layout: folding an `.integrated` field into the toolbar is a
+    /// behaviour UIKit has only on iPhone, and on iPad the same placement lands in the nav bar
+    /// and costs the "+" (above). Beside a conversation it's stacked under the title, with no
+    /// toolbar at all — asking for one would raise an empty bar across the foot of the column.
+    private var usesBottomSearchBar: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone && !marksOpenBuffer
+    }
 
     /// Take the search UI down — what a result tap calls once it's decided where to go. Not a
     /// dismiss: the results are presented *by* the search controller, so the thing to undo is
@@ -1065,9 +1092,18 @@ final class BufferListViewController: UICollectionViewController {
             guard let self else { return }
             showUploads(viewModel: viewModel)
         }
+        // The Lurker buffer — the app's own log and command console. It has no row in the list,
+        // and this is its door now that the title isn't a button. Set apart at the top because
+        // it's a buffer you open, not a view over all of them.
+        let lurker = UIAction(title: "Lurker", image: UIImage(systemName: "sparkles")) { [weak self] _ in
+            self?.openSystemBuffer()
+        }
         let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
-            menu: UIMenu(children: [highlights, bookmarks, uploads])
+            menu: UIMenu(children: [
+                UIMenu(options: .displayInline, children: [lurker]),
+                highlights, bookmarks, uploads,
+            ])
         )
         item.accessibilityLabel = "More"
         return item
@@ -1260,10 +1296,10 @@ final class BufferListViewController: UICollectionViewController {
         // Recent stays last of the grids, and has no web counterpart: it's the iOS answer to
         // having no sidebar, so it sits below the two curated sections rather than pushing
         // them down with buffers you merely passed through.
-        // ⚠ Phone only, for the reason the comment above gives: Recent is "the iOS answer to
-        // having no sidebar", and iPad has the sidebar — every chip in it is already a row
-        // further down the same permanently-visible column.
-        if !recents.isEmpty, !isSidebar {
+        // ⚠ Not beside a conversation, for the reason the comment above gives: Recent is "the
+        // iOS answer to having no sidebar", and a sidebar is what this list then is — every chip
+        // in it would already be a row further down the same permanently-visible column.
+        if !recents.isEmpty, !marksOpenBuffer {
             sections.append(Section(id: .recent, title: "Recent", rows: recents))
         }
 
@@ -1670,28 +1706,18 @@ final class BufferListViewController: UICollectionViewController {
     }
 }
 
-// MARK: - The shared title pill
+// MARK: - Title
 
-/// The same pill the chat screen wears, in the same centre spot — literally the same view,
-/// owned by `NavigationPill`. The one control that means "Lurker, and how it's doing" is in
-/// one place on both screens. It stands in for the Lurker row this list used to carry, moving
-/// that status off a row (which read oddly above the grids) and into the bar.
-extension BufferListViewController: PillPresenting {
+extension BufferListViewController {
 
     /// Fixed except for the light: this screen is the app, not a buffer, so it always reads
     /// "Lurker" and follows the socket rather than any one network.
-    var pillContent: PillContent {
-        PillContent(
+    var statusTitle: StatusTitle {
+        StatusTitle(
             title: Buffer.system.displayName(),
             status: StatusLight.of(reachable: state.reachable, connection: state.connection, network: nil),
-            hint: "Opens the Lurker buffer"
+            detail: nil
         )
-    }
-
-    /// Opens the system buffer rather than a buffer-info sheet, which is what the chat screen's
-    /// tap does — this screen *is* the app, so there's no one buffer to describe.
-    func pillTapped() {
-        openSystemBuffer()
     }
 }
 
@@ -1899,14 +1925,9 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
 
 // MARK: - Search presentation
 
-/// Search presents *over* this screen without changing the navigation stack, so everything the
-/// bar is wearing stays put underneath it — including the pill, which belongs to the stack
-/// rather than to any one screen.
-///
-/// The delegate lives here rather than on the results screen because these callbacks are about
-/// what *this* screen does while it's covered. What the results need from them, they're asked
-/// for directly: a plain method call reads better than forwarding a protocol, and it keeps the
-/// results screen from having to know that a pill exists.
+/// The delegate lives here rather than on the results screen because the search controller
+/// belongs to this screen. What the results need from its callbacks, they're asked for
+/// directly: a plain method call reads better than forwarding a protocol.
 extension BufferListViewController: UISearchControllerDelegate {
 
     func willPresentSearchController(_ searchController: UISearchController) {
@@ -1914,17 +1935,5 @@ extension BufferListViewController: UISearchControllerDelegate {
         // isn't asking — the results screen is reused across searches and can still be holding
         // the last one.
         searchResults.syncToField(searchController.searchBar.text ?? "")
-        // "Lurker" floating over a search field belongs to neither: the pill names this screen,
-        // and this screen is no longer the one you're looking at.
-        navigationPill?.isSuppressed = true
-    }
-
-    func willDismissSearchController(_ searchController: UISearchController) {
-        // On `willDismiss`, so the pill fades back in alongside the results leaving rather than
-        // popping in after them. Note this also runs when a tapped result has *already*
-        // navigated — the stack is on the chat screen by then, and the pill correctly returns
-        // wearing that buffer's name, because suppression only ever hid what the stack asked
-        // for rather than overwriting it.
-        navigationPill?.isSuppressed = false
     }
 }

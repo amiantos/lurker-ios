@@ -763,7 +763,7 @@ public final class ChatViewModel {
     ///
     /// Nothing on success, on purpose. These answer `{ok:true}` the moment the server has told
     /// its connection manager, and the transition arrives separately as `state` events: the
-    /// pill light and the buffer list's section header move on their own, and the server
+    /// title's light and the buffer list's section header move on their own, and the server
     /// buffer narrates "Connecting to …" and "Disconnected" itself. A receipt here would be the
     /// app's own word for something the server hasn't done yet — the reason the networks
     /// screen applies nothing optimistically, and the silence the web's `/quit` keeps.

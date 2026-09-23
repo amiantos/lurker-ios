@@ -91,7 +91,7 @@ class HistoryFeedViewController: UITableViewController {
         /// target. Server logs address themselves as `:server:<host>`, which is a routing
         /// sentinel and not something to print; every other surface in the app names a
         /// buffer through that helper, so this does too rather than growing a second
-        /// answer that can drift from the title pill's.
+        /// answer that can drift from the chat title's.
         let displayTarget: String
         let dayLabel: String
         let items: [HighlightItem]

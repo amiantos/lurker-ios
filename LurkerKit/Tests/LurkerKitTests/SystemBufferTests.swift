@@ -303,7 +303,7 @@ final class SystemBufferTests: XCTestCase {
 
     func testAServerLogPrefersItsNetworksName() {
         // Two copies of this lived in two view controllers and disagreed: the switcher
-        // said "Server" while the pill it opened said "libera".
+        // said "Server" while the title it opened said "libera".
         let log = Buffer(networkId: 1, target: ":server:libera", kind: .server)
         XCTAssertEqual(log.displayName(networkName: "libera"), "libera")
         XCTAssertEqual(log.displayName(), "Server", "…and falls back when the roster hasn't landed")

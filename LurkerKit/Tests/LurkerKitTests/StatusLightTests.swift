@@ -4,7 +4,7 @@
 import XCTest
 @testable import LurkerKit
 
-/// The indicator light in the title pill. Three states, and which one wins when several
+/// The indicator light under a buffer's title. Three states, and which one wins when several
 /// layers are unhappy at once.
 final class StatusLightTests: XCTestCase {
 

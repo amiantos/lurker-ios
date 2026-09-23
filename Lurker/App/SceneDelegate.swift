@@ -14,10 +14,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // user lands straight on their buffers.
     private let viewModel = ChatViewModel()
     private var cancellables = Set<AnyCancellable>()
-    /// The navigation controller the buffer list lives in: the whole stack on the phone, the
-    /// split's primary column on iPad. `showBuffer` forwards to the split from either.
+    /// The navigation controller the buffer list lives in: the split's primary column, which
+    /// is the whole stack while it's collapsed. `showBuffer` forwards to the split from it.
     private weak var navigation: UINavigationController?
-    /// The iPad root. Nil on the phone, and while signed out.
+    /// The signed-in root. Nil while signed out.
     private weak var split: BufferSplitViewController?
     /// Owned here, not by the view model, so LurkerKit stays off the `Network` framework.
     /// This is the same shape as `enterForeground`/`enterBackground`: the app observes the
@@ -287,40 +287,23 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private enum Root { case none, main, login }
     private var shownRoot: Root = .none
 
-    /// The app proper: side-by-side columns on iPad, a stack on the phone.
+    /// The app proper: the buffer list and the conversation, side by side wherever there's room
+    /// for both and one stack wherever there isn't.
     ///
-    /// iPad only rather than a split view everywhere that collapses at compact width, because
-    /// a split expands at *any* regular width — including a Pro Max in landscape.
+    /// A split view on every device, which UIKit collapses into the phone's stack at compact
+    /// width — so an iPhone Duo can open from one into the other without the app swapping its
+    /// root, and the conversation you were in rides across the fold. `BufferSplitViewController`
+    /// keeps a Pro Max in landscape collapsed: it only expands at regular × regular.
     private func showMain(animated: Bool) {
+        // A remembered system buffer is restored like any other. That's safe only because the
+        // screen the conversation column merely rests on no longer records itself as the last
+        // buffer (`ChatViewController.isResting`) — so one stored here was opened on purpose.
         let restored = launchBuffer()
-        if UIDevice.current.userInterfaceIdiom == .pad {
-            // ⚠ Not `Buffer.system` — the app-wide Lurker log, not a network's `.server`
-            // buffer, which this codebase keeps sharply distinct. The conversation column
-            // *rests* on it whenever nothing is picked, and that resting screen records itself
-            // as the last buffer exactly like a screen you chose, so restoring it turns
-            // "nothing selected" into "the system buffer is selected". Identical side by side;
-            // not identical once the window narrows and one column has to win.
-            let restored = restored.flatMap { $0.kind == .system ? nil : $0 }
-            let split = BufferSplitViewController(viewModel: viewModel)
-            self.split = split
-            navigation = split.primaryNavigation
-            if let restored { split.showBuffer(restored, animated: false) }
-            setRoot(split, as: .main, animated: animated)
-        } else {
-            // Pilled, so the status pill belongs to the stack rather than to either screen —
-            // see NavigationPill. Its `viewDidLoad` installs the pill, which the calls below
-            // trigger.
-            let nav = PilledNavigationController()
-            // The buffer list wears a large title; the chat screen opts out, so it's unaffected.
-            nav.navigationBar.prefersLargeTitles = true
-            navigation = nav
-            if let restored {
-                nav.showBuffer(restored, viewModel: viewModel, animated: false)
-            } else {
-                nav.showBufferList(viewModel: viewModel, animated: false)
-            }
-            setRoot(nav, as: .main, animated: animated)
-        }
+        let split = BufferSplitViewController(viewModel: viewModel)
+        self.split = split
+        navigation = split.primaryNavigation
+        if let restored { split.showBuffer(restored, animated: false) }
+        setRoot(split, as: .main, animated: animated)
     }
 
     private func showLogin(animated: Bool) {
@@ -333,7 +316,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         dismissPresented()
         navigation = nil
         split = nil
-        let nav = PilledNavigationController()
+        let nav = UINavigationController()
         nav.setViewControllers([LoginViewController(viewModel: viewModel)], animated: false)
         setRoot(nav, as: .login, animated: animated)
     }

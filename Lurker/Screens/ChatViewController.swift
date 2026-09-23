@@ -24,7 +24,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private let tableView = UITableView()
     /// The floating "your connection is unhappy" capsule at the top — offline/connecting/
-    /// reconnecting in words, the loud counterpart to the title pill's dot (#19).
+    /// reconnecting in words, the loud counterpart to the subtitle's light (#19).
     private let connectionBanner = ConnectionBanner()
     /// The empty/loading placeholder drawn behind an empty message list — the difference
     /// between "still fetching" and "genuinely nothing here", which a blank list conflates.
@@ -68,11 +68,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
     /// only decides whether the breathing gap applies (see `keyboardWillChange`).
     private var keyboardOverlap: CGFloat = 0
-
-    /// The pill's light. Stored, unlike its title, because the state it comes from arrives by
-    /// subscription and isn't kept — `updateTitle` is the one place it's recomputed. Amber
-    /// until the first state lands: this screen is built before there's anything to ask.
-    private var pillStatus: StatusLight = .warn
 
     private var messages: [Message] = [] // filtered to what this buffer renders; drives anchoring + mark-read
     private var rows: [MessageRow] = [] // messages + dividers; what the table renders
@@ -303,13 +298,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        // Explicitly never, not `.automatic`: automatic *inherits* from the screen below,
-        // which is the buffer list and its large title — leaving this screen a tall empty
-        // band under a pill that is already the title.
-        navigationItem.largeTitleDisplayMode = .never
         // No leading item: the navigation controller's own back button goes there, and the
         // buffer list it returns to is this screen's parent rather than a sheet it summons.
-        navigationItem.rightBarButtonItem = overflowItem()
+        //
+        // Info next to the menu rather than inside it: the sheet holds the member list and
+        // this buffer's settings, and it used to be one tap on the title — burying it a level
+        // down would have made the most-used sheet on this screen the slowest to reach. First element is the trailing-most, so the menu keeps its corner.
+        navigationItem.rightBarButtonItems = [overflowItem(), infoItem()]
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -417,8 +412,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // every position; the notifications below only add the breathing gap.
         composerBottom = composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
         NSLayoutConstraint.activate([
-            // Full height, under everything. The conversation scrolls beneath the floating
-            // title pill at the top and the floating composer at the bottom, and off into
+            // Full height, under everything. The conversation scrolls beneath the glass
+            // navigation bar at the top and the floating composer at the bottom, and off into
             // both safe areas — `updateBottomInset` reserves the composer's height as inset
             // so the newest message still clears it.
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
@@ -427,12 +422,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
             // Centered just below the nav bar — the safe-area top sits right under it, so
-            // the capsule drops into the gap between the title pill and the conversation.
+            // the capsule drops into the gap between the bar and the conversation.
             //
-            // ⚠ The safe area horizontally too, matching the title pill and the buffer list's
-            // own banner. In a split view this view is the full width of the window with the
-            // sidebar tiled over its leading edge, so centring on `view` would put the capsule
-            // ~165pt left of the column, half under the list. Same guide, same reason.
+            // ⚠ The safe area horizontally too, matching the buffer list's own banner. In a
+            // split view this view is the full width of the window with the sidebar tiled over
+            // its leading edge, so centring on `view` would put the capsule ~165pt left of the
+            // column, half under the list. Every floating control below uses the same guide for
+            // the same reason — and the iPhone Duo's side rail is another inset like it.
             connectionBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             connectionBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
             connectionBanner.leadingAnchor.constraint(
@@ -449,32 +445,50 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // Above the composer so it clears the newest message's landing zone, on the
             // trailing edge where Messages and Slack put theirs. Anchored to the composer,
             // so the keyboard carries both up together.
-            jumpButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            //
+            // ⚠ To the composer's MARGINS, not the view's edge: that's what lines it up over
+            // the send button, which sits inside them. The margins include the safe area, so
+            // they move in wherever the screen's edge isn't usable — the iPhone Duo's side rail,
+            // a notched phone in landscape — and the view's edge doesn't. Pinned to the view,
+            // the button sat under the Duo's rail, off the end of the composer.
+            jumpButton.trailingAnchor.constraint(equalTo: composer.layoutMarginsGuide.trailingAnchor),
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
             // Up at the top, where it's pointing — the connection banner's slot, which the two
             // take turns in (see `updateFloatingPills`). Down at the bottom, up at the top: each
             // control sits on the edge it takes you to, and neither covers the newest message.
-            unreadBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            unreadBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             unreadBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
-            unreadBanner.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            unreadBanner.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            unreadBanner.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            unreadBanner.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
 
             // The suggestion pills: centered over the field for tap reach (the jump pill
             // owns the trailing edge), riding the composer for the same
             // keyboard-carries-both reason. The edge insets only bite on a title long
             // enough to need truncating.
-            suggestions.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            suggestions.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            suggestions.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            suggestions.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            suggestions.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            suggestions.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
             suggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
 
             // Centered just above the composer, riding it up with the keyboard — the same
             // slot the suggestion pills use, which is fine because an upload and mid-token
             // completion never run at once.
-            uploadStatus.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            uploadStatus.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 16),
-            uploadStatus.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -16),
+            uploadStatus.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            uploadStatus.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            uploadStatus.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
             uploadStatus.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
@@ -495,7 +509,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func subscribeToState() {
         cancellables.removeAll()
         // Re-render when this buffer's messages or the error change — a frame for some
-        // other channel shouldn't reload this screen. The title pill's light also depends
+        // other channel shouldn't reload this screen. The title's light also depends
         // on the socket, the network path, and this buffer's network, so those count too.
         //
         // `buffers[key]` is in here for hydration, not for rendering: a shell arriving for
@@ -605,13 +619,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // marking read is what destroys the record of where the reader left off, so it can't
         // run before that record has been taken. The next `apply` picks it up.
         if dividerAfterId != nil { viewModel.markRead(buffer.key) }
-        // …and it's now the most recent, which is what the list promotes. Recorded on
-        // appear rather than on the pick, so the launch buffer counts too and a buffer
-        // reached any other way can't slip past the bookkeeping.
-        UserPreferences.standard.recordRecentBuffer(buffer.key.id)
-        // …and it's where a relaunch should land (#49). Same moment, same reason: whatever
-        // route brought you here, this is the buffer you were last looking at.
-        UserPreferences.standard.recordLastBuffer(buffer.key)
+        // …and it's now the buffer you're reading — see `recordVisit`.
+        if !isResting { recordVisit() }
         // An error that landed before we had a window — or while a sheet was covering us —
         // has nothing else coming to re-trigger it.
         surface(viewModel.state.error)
@@ -638,47 +647,74 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.restore(text)
     }
 
-    /// Backing out to the list means the *list* is where you were, not this buffer. Without
-    /// this the restore target could only ever be a chat screen: leave a conversation on
-    /// purpose, quit, and the next launch shoves you straight back into it, which is the one
-    /// move a home screen is supposed to make unnecessary.
-    ///
-    /// Gated on the list being what we're uncovering — the stack is already updated by the
-    /// time this runs — so a buffer *swap* (`/msg`, a notification tap, a highlight) doesn't
-    /// trip it, and a cancelled interactive pop re-records on the `viewDidAppear` that follows.
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         // Leaving with a half-written draft shouldn't leave the channel thinking you're still
-        // mid-sentence for the next 30 seconds. Unconditional — unlike the restore-target
-        // bookkeeping below, this applies however you left, including a buffer swap.
+        // mid-sentence for the next 30 seconds. Unconditional: this applies however you left,
+        // including a buffer swap.
         endTyping()
-        guard isMovingFromParent, navigationController?.topViewController is BufferListViewController else {
-            return
-        }
-        // ⚠ iPad backs out through `viewDidDisappear` instead — see below.
-        guard !(splitViewController is BufferSplitViewController) else { return }
-        UserPreferences.standard.forgetLastBuffer()
     }
 
-    /// The split's back-out bookkeeping, which cannot be done on the way out.
+    /// The split this screen was shown in, kept past the moment it leaves: by
+    /// `viewDidDisappear` it has no parent, so `splitViewController` is already nil — which
+    /// is what silently disabled the back-out below until it was measured.
+    private weak var owningSplit: BufferSplitViewController?
+
+    /// Record this buffer as the one you're reading: the most recent, which is what the list
+    /// promotes, and where a relaunch should land (#49).
     ///
-    /// Collapsed — Slide Over, or a narrow Stage Manager window — the columns are a single
-    /// stack and Back pops this screen off it, which no `showBufferList` hears about. Left
-    /// unsaid, the split goes on believing this buffer is open: it would collapse straight
-    /// back into the conversation you just left, and mark its row on expanding.
+    /// Done on appear rather than on the pick, so the launch buffer counts too and a buffer
+    /// reached any other way can't slip past the bookkeeping. The one pick that *doesn't*
+    /// reappear is choosing the system buffer while the column is already resting on it —
+    /// `BufferSplitViewController.showBuffer` calls this itself for that one.
     ///
-    /// ⚠ Not `viewWillDisappear`, where the phone does this, because from inside that method a
-    /// COLLAPSE is indistinguishable from a back-out: UIKit moves this screen out of the
-    /// conversation column and into the primary's stack, and while it does, the list is on top
-    /// and this screen is moving from its parent — the phone's exact test, passed by a window
-    /// resize. By `viewDidDisappear` a migration has already handed this screen its new
-    /// navigation controller, so `navigationController == nil` means it really left. It also
-    /// never runs for a swipe-back released below threshold, which `viewWillDisappear` does.
+    /// Never for the screen the column merely *rests* on (see `isResting`): side by side that
+    /// one appears whenever nothing is picked, and recording it would promote a buffer nobody
+    /// opened — and make it the relaunch target, which a later launch at compact width then
+    /// opens instead of the list.
+    func recordVisit() {
+        UserPreferences.standard.recordRecentBuffer(buffer.key.id)
+        UserPreferences.standard.recordLastBuffer(buffer.key)
+    }
+
+    /// Whether this is the system buffer the conversation column shows when nothing is picked,
+    /// rather than a buffer anyone opened. Opening it on purpose makes it the selection, which
+    /// is what tells the two apart.
+    private var isResting: Bool {
+        buffer.kind == .system && owningSplit?.selection?.id != buffer.key.id
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if let split = splitViewController as? BufferSplitViewController { owningSplit = split }
+    }
+
+    /// Backing out to the list means the *list* is where you were, not this buffer. Without
+    /// this the restore target could only ever be a chat screen: leave a conversation on
+    /// purpose, quit, and the next launch shoves you straight back into it, which is the one
+    /// move a home screen is supposed to make unnecessary. And the split has to hear it too, or
+    /// it goes on believing this buffer is open: it would put it back on the next collapse and
+    /// mark its row on the next expand.
+    ///
+    /// ⚠ Not `viewWillDisappear`: from inside that a collapse or expand — this screen being
+    /// moved between the split's two navigation controllers — looks like leaving, and it runs
+    /// for a swipe-back released below threshold. By `viewDidDisappear` a move has already
+    /// handed this screen its new navigation controller, so `navigationController == nil`
+    /// means it really is gone.
+    ///
+    /// Gone isn't enough on its own, though: a buffer *swap* (`/msg`, a notification tap, a
+    /// highlight) removes this screen too. The split's selection tells them apart — a swap has
+    /// already moved it to the new buffer, while a back-out leaves it on this one, and a
+    /// `showBufferList` (this buffer vanished) has already cleared it.
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        guard let split = splitViewController as? BufferSplitViewController,
-              navigationController == nil
-        else { return }
+        // A collapse or expand moves this screen between the two navigation controllers in
+        // two steps, and between them it has no parent while the selection still names it —
+        // this method's exact test for a back-out. Measured not to land there, but nothing
+        // promises the ordering, so the split says when it's the one doing the moving.
+        guard navigationController == nil, let split = owningSplit, !split.isRearranging else { return }
+        let selected = split.selection
+        guard selected == nil || selected?.id == buffer.key.id else { return }
         UserPreferences.standard.forgetLastBuffer()
         split.clearSelection()
     }
@@ -712,15 +748,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         nickHighlighter = NickHighlighter(nicks: names)
     }
 
-    /// What the pill calls this buffer. The system buffer's connection state used to be
-    /// spelled out here as the title text ("Connecting…"); it's the pill's light now.
+    /// What the title calls this buffer.
     private var displayName: String {
         buffer.displayName(networkName: buffer.networkId.flatMap { networks[$0]?.name })
     }
 
     /// What the empty field says: the network's name — the transport, the way iMessage
     /// captions its field "iMessage" or "Text Message" rather than the recipient, who is
-    /// already named by the title pill. Re-read on every `apply`, because a network the
+    /// already named by the title. Re-read on every `apply`, because a network the
     /// snapshot materialized has no name until the REST roster lands (#136) — and until it
     /// does, the fallback below is what shows, rather than a placeholder posing as a name.
     /// The system buffer is the app's own command console, so it invites one.
@@ -770,9 +805,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if let id = buffer.bufferId, let newKey = state.keysById[id],
                 let moved = state.buffers[newKey]
             {
+                let previous = buffer.key
                 buffer = moved
                 sawBufferRow = true
                 subscribeToState()
+                // The split names its selection by key too, and everything it decides from
+                // here compares against it — the back-out check below, which conversation a
+                // collapse carries onto the stack, which row is marked. Left on the old key,
+                // folding a Duo after a rename would drop the conversation you're reading.
+                let split = (splitViewController as? BufferSplitViewController) ?? owningSplit
+                split?.followRename(from: previous, to: moved.key)
                 return false
             }
             // Two ways to know the buffer isn't coming:
@@ -816,14 +858,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // (This is what `showMemberList`'s "nothing replaces this screen" reasoning
             // assumed couldn't happen; it can now.) Same guard SceneDelegate uses.
             navigationController?.dismiss(animated: false)
-            // iPad: nothing to pop *to* — the list is beside this column, not under it. Back
-            // to the list means clearing the selection, which drops the column to the system
-            // buffer and un-marks the row that just vanished.
-            if let split = splitViewController as? BufferSplitViewController {
-                split.showBufferList()
-            } else {
-                navigationController?.popToRootViewController(animated: true)
-            }
+            // The split handles both layouts: collapsed it pops to the list, side by side it
+            // clears the selection, which drops the column to the system buffer and un-marks
+            // the row that just vanished.
+            (splitViewController as? BufferSplitViewController)?.showBufferList()
             return true
         }
         sawBufferRow = true
@@ -1563,8 +1601,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
+    /// The title, and the light in the subtitle under it.
+    ///
+    /// Runs on every apply, which is also what keeps it right across a rename (`buffer` is
+    /// swapped under it) and when a network's name arrives after the network did (#136).
     private func updateTitle(_ state: ChatState) {
-        pillStatus = buffer.kind == .dcc
+        let status = buffer.kind == .dcc
             // A DCC chat's light is its own session, never the network's (lurker#270) — see
             // `ofDccChat`.
             ? StatusLight.ofDccChat(
@@ -1579,7 +1621,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 // presence is 1.1 (see StatusLight.of).
                 network: buffer.networkId.flatMap { state.networks[$0]?.state }
             )
-        navigationPill?.refresh(from: self)
+        navigationItem.apply(StatusTitle(title: displayName, status: status, detail: titleDetail))
+    }
+
+    /// What the subtitle names beside the light: the network a conversation is on. Nothing for
+    /// a server buffer, whose title already is the network, or for the system buffer, which has
+    /// none. A DCC chat's light is its own session rather than the network (lurker#270), so it
+    /// says that instead.
+    private var titleDetail: String? {
+        switch buffer.kind {
+        case .channel, .dm: buffer.networkId.flatMap { networks[$0]?.name }
+        case .dcc: "DCC chat"
+        case .server, .system: nil
+        }
     }
 
     /// The channel-mode glyph for each current member, keyed by lowercased nick.
@@ -2422,7 +2476,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// window rather than `self`, so it finds the CURRENT buffer even when the originating VC
     /// is offscreen. Nil when the user has backed out to the list and no buffer is open.
     ///
-    /// ⚠ The window's root is a split view on iPad, so the navigation-controller cast fails
+    /// ⚠ The window's root is a split view, so the navigation-controller cast fails
     /// for every window — silently: an upload's link stops reaching the composer that asked
     /// for it and lands on the clipboard behind an alert instead.
     static func activeChat() -> ChatViewController? {
@@ -2633,7 +2687,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
 
-    /// What the pill opens: this buffer's own info, not a picker for a different one.
+    /// What the info button opens: this buffer's own info, not a picker for a different one.
     /// Medium-height first, like the nick list — it's a glance about the conversation
     /// behind it, so it leaves that conversation on screen.
     private func showBufferInfo() {
@@ -2669,6 +2723,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - Actions
 
+    /// This buffer's info sheet: its members, its settings, and searching just this buffer.
+    private func infoItem() -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "info.circle"),
+            primaryAction: UIAction { [weak self] _ in self?.showBufferInfo() }
+        )
+        item.accessibilityLabel = "Info"
+        item.accessibilityHint = "Shows this buffer's info and settings"
+        return item
+    }
+
     /// The views menu, opposite the back button: the surfaces you *look at*, as against the
     /// buffer you're in. Search, Highlights, Bookmarks and Uploads — the set the desktop client
     /// keeps in its bottom toolbar (#49), now complete.
@@ -2677,7 +2742,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// where the things that outlast the buffer you happen to be reading belong.
     ///
     /// **Members is deliberately not here.** It describes *this channel*, which is what the
-    /// buffer-info sheet behind the title pill is for — and that sheet already lists it. A
+    /// buffer-info sheet behind the info button is for — and that sheet already lists it. A
     /// second door to the same room, one that had to be conditioned on `buffer.kind` because
     /// a DM has nobody to list, only made this menu's contents depend on which buffer you
     /// happened to open. Everything left is app-scoped and present on every buffer, so the
@@ -2687,7 +2752,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func overflowItem() -> UIBarButtonItem {
         let actions: [UIMenuElement] = [
             // Unscoped, like everything else in this menu. Searching *this* buffer is a fact
-            // about this buffer, so it lives in the buffer-info sheet behind the title pill,
+            // about this buffer, so it lives in the buffer-info sheet behind the info button,
             // where the per-buffer things are — see `BufferInfoViewController`.
             UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
                 guard let self else { return }
@@ -3228,21 +3293,3 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
 }
-
-// MARK: - The shared title pill
-
-extension ChatViewController: PillPresenting {
-
-    /// The title is computed rather than stored so it is right from the moment this screen
-    /// exists: the pill is asked for its content as the push *begins*, which is before any
-    /// state has arrived, and a stored title would leave the pill briefly blank and then
-    /// cross-fade the buffer's name in on top of a transition that was already running.
-    var pillContent: PillContent {
-        PillContent(title: displayName, status: pillStatus, hint: "Shows this buffer's info and settings")
-    }
-
-    func pillTapped() {
-        showBufferInfo()
-    }
-}
-

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /// The connection banner shown across the top of the chat screen — the loud, worded
-/// counterpart to the title pill's `StatusLight` dot. The dot is always-on ambient; this
+/// counterpart to the title's `StatusLight` dot. The dot is always-on ambient; this
 /// only appears when something is wrong, and says so in words a glance can read.
 ///
 /// It keys off the same two truths the dot's outer layers do — the OS network path and the
