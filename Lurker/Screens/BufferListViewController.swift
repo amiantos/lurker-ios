@@ -102,7 +102,7 @@ final class BufferListViewController: UICollectionViewController {
         /// row can carry a synthesized buffer whose `joined` is a default, not a statement.
         var parted: Bool = false
         /// `├─` or `└─`, set once the group's rows are known — see `Section.init`.
-        var guide: TreeGuide = .tee
+        var guide: TreeGuideView.Shape = .tee
 
         /// What the unread pill counts.
         ///
@@ -250,7 +250,7 @@ final class BufferListViewController: UICollectionViewController {
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        // The real layout needs `self` to read `sections`, which isn't available until after
+        // The real layout needs `self` for its swipe actions, which isn't available until after
         // `super.init`; it's swapped in from `viewDidLoad`.
         super.init(collectionViewLayout: UICollectionViewFlowLayout())
     }
@@ -281,12 +281,10 @@ final class BufferListViewController: UICollectionViewController {
         // there instead, which takes its colour from the conversation column running
         // underneath — `Palette.bg` too, so the theme comes through either way.
         collectionView.backgroundColor = Palette.bg
-        // ⚠ Created BEFORE the layout, and explicitly rather than as a side effect of the
-        // first thing that happens to touch it. `UICollectionViewController` installs itself
-        // as the collection view's data source in `loadView`; constructing the diffable one
-        // is what replaces it, and the layout's section provider asks the data source what a
-        // section is — so a lazy first touch from inside that provider would be answering a
-        // question about a data source that doesn't exist yet.
+        // ⚠ Created explicitly, before anything can ask the collection view for its contents,
+        // rather than as a side effect of the first thing that happens to touch it.
+        // `UICollectionViewController` installs itself as the collection view's data source in
+        // `loadView`; constructing the diffable one is what replaces it.
         _ = dataSource
         collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
@@ -535,12 +533,15 @@ final class BufferListViewController: UICollectionViewController {
 
         let previous = entriesByID
         sections = buildSections(state)
-        indexEntries()
+        let entries = sections.map(\.entries)
+        indexEntries(entries)
         updatePlaceholder()
 
         var snapshot = NSDiffableDataSourceSnapshot<SectionID, ItemID>()
         snapshot.appendSections(sections.map(\.id))
-        for section in sections { snapshot.appendItems(section.items, toSection: section.id) }
+        for (section, items) in zip(sections, entries) {
+            snapshot.appendItems(items.map(\.0), toSection: section.id)
+        }
         // Identity alone can't see an item whose *contents* moved — an unread count, a peer's
         // presence, a network going offline — because those don't change the item's
         // identifier. Naming them keeps the cheap path cheap: everything else in the snapshot
@@ -640,9 +641,9 @@ final class BufferListViewController: UICollectionViewController {
         guard let self else { return }
         let font = listFont(italic: false)
         cell.configure(
-            // `networkName` for a server log that isn't a header (an unrostered network's):
-            // without it `displayName` falls back to the bare "Server".
-            name: row.buffer.displayName(networkName: row.networkName),
+            // No server log reaches a row — it's its network's header — so there's no network
+            // name for `displayName` to fall back on.
+            name: row.buffer.displayName(),
             // An offline person's name is italic (#167).
             font: row.presence?.italicizesName == true ? listFont(italic: true) : font,
             hintFont: font,
@@ -757,10 +758,10 @@ final class BufferListViewController: UICollectionViewController {
     /// snapshot carries identifiers and not content.
     private var entriesByID: [ItemID: Entry] = [:]
 
-    /// Rebuild `entriesByID` from `sections`.
-    private func indexEntries() {
+    /// Rebuild `entriesByID` from every section's entries, built once by the caller.
+    private func indexEntries(_ entries: [[(ItemID, Entry)]]) {
         entriesByID = Dictionary(
-            sections.flatMap(\.entries),
+            entries.joined(),
             // `ItemID` is section-qualified and `Section.init` de-duplicates its rows, so a
             // collision here is impossible rather than merely unlikely — keep the first and
             // move on rather than trapping on it in front of a user.
@@ -1185,14 +1186,16 @@ final class BufferListViewController: UICollectionViewController {
                 networkId: network.id,
                 networkHasOpenBuffers: networksInUse.contains(network.id)
             )
-            guard let section = networkSection(.network(network.id), network, buffers, state) else { continue }
+            guard let section = networkSection(.network(network.id), network.id, network, buffers, state)
+            else { continue }
             sections.append(section)
         }
         // Buffers whose network isn't in the roster yet (snapshot race). Sorted, because a
         // dictionary's order isn't stable from one rebuild to the next.
         for networkId in byNetwork.keys.sorted() where !seen.contains(networkId) {
-            guard let section = networkSection(.unrostered(networkId), nil, byNetwork[networkId] ?? [], state)
-            else { continue }
+            guard let section = networkSection(
+                .unrostered(networkId), networkId, nil, byNetwork[networkId] ?? [], state
+            ) else { continue }
             sections.append(section)
         }
 
@@ -1338,15 +1341,17 @@ final class BufferListViewController: UICollectionViewController {
     /// grouped list has no separator inside a section. A dashed break inside the group says the
     /// same thing without a second header, which is how the web draws it.
     ///
-    /// `network` is nil for buffers whose network hasn't arrived in the roster yet.
+    /// `network` is nil for buffers whose network hasn't arrived in the roster yet. Its pins
+    /// are read by id regardless: they ride the snapshot, not the roster, and a group drawn
+    /// unpinned during the race would reshuffle the moment the roster landed.
     private func networkSection(
-        _ id: SectionID, _ network: Network?, _ buffers: [Buffer], _ state: ChatState
+        _ id: SectionID, _ networkId: Int, _ network: Network?, _ buffers: [Buffer], _ state: ChatState
     ) -> Section? {
         guard !buffers.isEmpty else { return nil }
         let log = buffers.first { $0.kind == .server }
         let split = BufferOrder.split(
             buffers.filter { $0.kind != .server },
-            pinned: network.flatMap { state.pinned[$0.id] } ?? []
+            pinned: state.pinned[networkId] ?? []
         )
         var header = Header(
             // NOT the literal "network" an unrostered group once said — that was #136's
@@ -1672,17 +1677,22 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // server (a subset would float to the front and demote everything unmentioned —
         // the other section included); the favorites-changed echo is the authoritative
         // rebuild, and the in-place move below keeps the drop animation honest meanwhile.
-        let entries = state.favorites
-        let stored = entries.map(\.key.id)
+        //
+        // ⚠ The base is the order ON SCREEN — the store's with any unechoed drop applied — not
+        // the store's alone. A second drag made before the first one's echo, putting the rows
+        // back where the store still has them, diffed against the store as "no change": it
+        // sent nothing, snapped back, and the first drop's echo then saved the order the user
+        // had just undone.
+        let stored = orderedFavorites(state).map(\.key.id)
         let reordered = FavoriteOrder.moved(stored, visible: visible, from: from, to: to)
         guard reordered != stored else { return }
-        let idByKey = Dictionary(entries.map { ($0.key.id, $0.bufferId) }, uniquingKeysWith: { a, _ in a })
+        let idByKey = Dictionary(state.favorites.map { ($0.key.id, $0.bufferId) }, uniquingKeysWith: { a, _ in a })
         let reorderedIds = reordered.compactMap { idByKey[$0] }
         viewModel.reorderFavorites(bufferIds: reorderedIds)
         // Shadow the new order until the echo folds — the deferred rebuild released at
         // drag end would otherwise restore the store's pre-drop order (a visible snap
         // home, and a corrupt base for a quick second drag). See orderedFavorites(_:).
-        favoritesAtDrop = entries
+        favoritesAtDrop = state.favorites
         optimisticFavoriteOrder = reorderedIds
 
         // The model moves with the view rather than being rebuilt: the echo would reach the
@@ -1695,7 +1705,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         moved.insert(moved.remove(at: from), at: to)
         let section = sections[sectionIndex]
         sections[sectionIndex] = Section(id: section.id, header: section.header, rows: moved)
-        indexEntries()
+        indexEntries(sections.map(\.entries))
         // Through the data source, not `collectionView.moveItem`: it owns the item order now,
         // and a view moved behind its back is a view the next snapshot would move back.
         var snapshot = dataSource.snapshot()

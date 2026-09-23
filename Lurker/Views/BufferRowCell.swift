@@ -12,12 +12,6 @@ import UIKit
 /// message list's own ground. No cards: the guides say which rows belong together, which is
 /// the job the inset-grouped cards and the chip grids did before at several times the height.
 
-/// Where a row sits under its header: `├─` when more rows follow it, `└─` for the last.
-enum TreeGuide: Equatable {
-    case tee
-    case elbow
-}
-
 /// One set of measurements for every cell, so a header's text, the tree's spine and a row's
 /// name line up by construction rather than by matching constants in three places.
 ///
@@ -52,22 +46,20 @@ extension UIColor {
     /// sliding over its swipe actions shows whatever is behind it. Side by side, UIKit clears the
     /// sidebar's layer and draws its glass there (measured on iOS 27.1), and an opaque cell would
     /// print a strip of `Palette.bg` across it, so there the cells are clear.
-    static var rosterGround: UIColor {
-        UIColor { traits in
-            traits.splitViewControllerLayoutEnvironment == .expanded
-                ? .clear : Palette.bg.resolvedColor(with: traits)
-        }
+    ///
+    /// A row being swiped is opaque in the sidebar too — see `BufferRowCell.updateConfiguration`.
+    static let rosterGround = UIColor { traits in
+        traits.splitViewControllerLayoutEnvironment == .expanded
+            ? .clear : Palette.bg.resolvedColor(with: traits)
     }
 
     /// A pressed row, and the open one: the web's `bg_soft`. Over the sidebar's glass the same
     /// step is a translucent wash of the foreground, because `bg_soft` is darker than dark glass
     /// and would read as a hole rather than a lift.
-    static var rosterRaised: UIColor {
-        UIColor { traits in
-            traits.splitViewControllerLayoutEnvironment == .expanded
-                ? Palette.fg.resolvedColor(with: traits).withAlphaComponent(0.07)
-                : Palette.bgSoft.resolvedColor(with: traits)
-        }
+    static let rosterRaised = UIColor { traits in
+        traits.splitViewControllerLayoutEnvironment == .expanded
+            ? Palette.fg.resolvedColor(with: traits).withAlphaComponent(0.07)
+            : Palette.bgSoft.resolvedColor(with: traits)
     }
 
     /// The tree guides and the rule between groups. Derived from `fgMuted` rather than the web's
@@ -78,7 +70,8 @@ extension UIColor {
 
 // MARK: - Guide
 
-/// The `├─` or `└─` beside a row, or the bare `│` through the pinned break.
+/// The `├─` beside a row with more below it, the `└─` beside the last, or the bare `│` through
+/// the pinned break.
 ///
 /// Built from plain views rather than drawn, so the guide colour follows the appearance
 /// without a trait handler: a view's dynamic `backgroundColor` re-resolves on its own.
@@ -116,6 +109,22 @@ final class TreeGuideView: UIView {
         arm.isHidden = shape == .spine
         arm.frame = CGRect(x: 0, y: middle, width: RosterMetrics.arm, height: 1)
     }
+}
+
+// MARK: - Unread
+
+/// What a count says, shared by a row and a network header so the same state reads the same in
+/// both: the accent for unread, `bad` when it holds a highlight, nil when nothing is waiting.
+/// `unread` is already the displayed count — a muted buffer's is its highlights alone.
+private func unreadColor(unread: Int, highlights: Int) -> UIColor? {
+    guard unread > 0 else { return nil }
+    return highlights > 0 ? Palette.bad : Palette.accent
+}
+
+/// The same, read aloud: appended to an accessibility label, or empty.
+private func unreadSummary(unread: Int, highlights: Int) -> String {
+    guard unread > 0 else { return "" }
+    return highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread"
 }
 
 // MARK: - Row
@@ -240,13 +249,13 @@ final class BufferRowCell: UICollectionViewListCell {
         presence: FriendPresence?,
         parted: Bool,
         isOpen: Bool,
-        guide shape: TreeGuide
+        guide shape: TreeGuideView.Shape
     ) {
         self.isOpen = isOpen
         edge.isHidden = !isOpen
-        guide.shape = shape == .tee ? .tee : .elbow
+        guide.shape = shape
 
-        let signal: UIColor? = highlights > 0 && unread > 0 ? Palette.bad : (unread > 0 ? Palette.accent : nil)
+        let signal = unreadColor(unread: unread, highlights: highlights)
         nameLabel.text = name
         nameLabel.font = font
         // Away or offline mutes the name even with something waiting, as the web's `peer-away`
@@ -268,16 +277,20 @@ final class BufferRowCell: UICollectionViewListCell {
         var summary = networkName.map { "\(name), \($0)" } ?? name
         if parted { summary += ", not joined" }
         if let presence, presence.dimsName { summary += ", \(presence.accessibilityLabel)" }
-        if unread > 0 { summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread" }
+        summary += unreadSummary(unread: unread, highlights: highlights)
         accessibilityLabel = summary
         setNeedsUpdateConfiguration()
     }
 
     /// The ground is named every time and nothing else is left to the list cell's defaults,
     /// whose highlight would paint the system grey over the theme. The press shows on `band`.
+    ///
+    /// ⚠ Opaque while swiped, even in the sidebar where the ground is otherwise clear: a row
+    /// sliding over its Leave/Close action shows whatever is behind it, and behind a clear row
+    /// is the red action, through the text.
     override func updateConfiguration(using state: UICellConfigurationState) {
         var background = UIBackgroundConfiguration.clear()
-        background.backgroundColor = .rosterGround
+        background.backgroundColor = state.isSwiped ? Palette.bg : .rosterGround
         backgroundConfiguration = background
         band.backgroundColor = isOpen || state.isHighlighted || state.isSelected ? .rosterRaised : .clear
     }
@@ -425,12 +438,12 @@ final class RosterHeaderCell: UICollectionViewListCell {
         stateLabel.isHidden = state == nil
         countLabel.text = unread > 0 ? "\(unread)" : nil
         countLabel.font = font
-        countLabel.textColor = highlights > 0 ? Palette.bad : Palette.accent
+        countLabel.textColor = unreadColor(unread: unread, highlights: highlights)
         countLabel.isHidden = unread == 0
 
         var summary = title
         if let state { summary += ", \(state)" }
-        if unread > 0 { summary += highlights > 0 ? ", \(unread) unread, mentioned" : ", \(unread) unread" }
+        summary += unreadSummary(unread: unread, highlights: highlights)
         accessibilityLabel = summary
         accessibilityTraits = opensLog ? [.header, .button] : .header
         accessibilityHint = opensLog ? "Opens the server log" : nil
@@ -472,7 +485,9 @@ final class PinBreakCell: UICollectionViewListCell {
                 constant: RosterMetrics.inset + RosterMetrics.spine
             ),
             spine.widthAnchor.constraint(equalToConstant: 1),
-            contentView.heightAnchor.constraint(equalToConstant: RosterMetrics.pinBreak),
+            // Preferred, like the rows' height: a required equality would fight whatever the
+            // list cell's own sizing asks for.
+            BufferRowCell.preferred(contentView.heightAnchor.constraint(equalToConstant: RosterMetrics.pinBreak)),
         ])
         // A layer's colour is a CGColor, which doesn't follow the appearance on its own.
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (cell: Self, _) in
@@ -494,8 +509,13 @@ final class PinBreakCell: UICollectionViewListCell {
         let path = UIBezierPath()
         path.move(to: CGPoint(x: start, y: middle))
         path.addLine(to: CGPoint(x: max(start, end), y: middle))
+        // A standalone layer animates every property change by default, so without this the
+        // rule would trail the cell through a rotation, a split resize or a theme change.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         dashes.path = path.cgPath
         dashes.strokeColor = UIColor.rosterGuide.resolvedColor(with: traitCollection).cgColor
+        CATransaction.commit()
     }
 
     override func updateConfiguration(using state: UICellConfigurationState) {

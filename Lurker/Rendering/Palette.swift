@@ -99,7 +99,7 @@ enum Palette {
     /// is how the web draws it too.
     nonisolated static let memberOwner = dynamicHex(dark: "#ed6c89", light: "#e14775")
     nonisolated static let memberAdmin = dynamicHex(dark: "#fc9867", light: "#e16032")
-    nonisolated static let memberOp = dynamicHex(dark: "#a99dec", light: "#7058be")
+    nonisolated static let memberOp = accent
     nonisolated static let memberHalfop = dynamicHex(dark: "#78dce8", light: "#1c8ca8")
     nonisolated static let memberVoice = dynamicHex(dark: "#b3db82", light: "#269d69")
 
