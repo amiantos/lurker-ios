@@ -216,8 +216,25 @@ public enum PreviewText {
                 // whole match ate the `)` and left `look at this (` (#126). The span stops at
                 // anything paired, so such a URL is not hideable and never reaches this line —
                 // but only while both sides ask the same function.
+                //
+                // ⚠ …short of any of that punctuation which is `.ink`: a painted run of dots is
+                // part of the picture, not the sentence's full stop — the web's
+                // `withoutAbsorbedPunctuation` leaves a decorated segment alone for the same
+                // reason. Read off the live string, which is safe here: the deletions so far all
+                // sit at higher offsets than this match's absorbed tail.
+                if let delimiters = match.delimiters {
+                    attributed.deleteCharacters(in: delimiters)
+                    continue
+                }
+                let absorbed = absorbing(match.range, in: source)
+                var end = NSMaxRange(match.range)
+                while end < NSMaxRange(absorbed),
+                    attributed.attribute(.ink, at: end, effectiveRange: nil) == nil
+                {
+                    end += 1
+                }
                 attributed.deleteCharacters(
-                    in: match.delimiters ?? absorbing(match.range, in: source))
+                    in: NSRange(location: match.range.location, length: end - match.range.location))
                 continue
             }
             guard let delimiters = match.delimiters, !inSpoiler else { continue }

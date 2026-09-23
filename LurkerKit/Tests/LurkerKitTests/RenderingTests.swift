@@ -114,6 +114,23 @@ final class RenderingTests: XCTestCase {
         XCTAssertFalse(IRCFormatting.parse("\u{03}01x")[0].hidesText)
     }
 
+    /// The reverse swap, with strings standing in for colours. An unset or unpaintable side is
+    /// the theme's own; a spoiler is not swapped.
+    func testPaintSwapsUnderReverse() {
+        func paint(_ raw: String, fg: String?, bg: String?) -> [String?] {
+            let pair = IRCFormatting.parse(raw)[0].paint(fg: fg, bg: bg, text: "text", canvas: "canvas")
+            return [pair.ink, pair.fill]
+        }
+        XCTAssertEqual(paint("x", fg: nil, bg: nil), ["text", nil])
+        XCTAssertEqual(paint("\u{03}04,08x", fg: "red", bg: "yellow"), ["red", "yellow"])
+        XCTAssertEqual(paint("\u{16}x", fg: nil, bg: nil), ["canvas", "text"])
+        XCTAssertEqual(paint("\u{16}\u{03}04,08x", fg: "red", bg: "yellow"), ["yellow", "red"])
+        XCTAssertEqual(paint("\u{16}\u{03}04x", fg: "red", bg: nil), ["canvas", "red"])
+        // 99 is a slot the caller can't paint, so it resolves to nil and swaps as unset.
+        XCTAssertEqual(paint("\u{16}\u{03}99,08x", fg: nil, bg: "yellow"), ["yellow", "text"])
+        XCTAssertEqual(paint("\u{16}\u{03}01,01x", fg: "black", bg: "black"), ["black", "black"])
+    }
+
     func testPlainTextIsASingleRun() {
         let runs = IRCFormatting.parse("hello world")
         XCTAssertEqual(runs, [FormattingRun(

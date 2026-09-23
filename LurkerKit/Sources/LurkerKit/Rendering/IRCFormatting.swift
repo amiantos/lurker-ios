@@ -38,6 +38,22 @@ public struct FormattingRun: Equatable, Sendable {
         if case .slot(let index) = fg { return index <= 15 }
         return true
     }
+
+    /// What the run is drawn in: its text colour and its fill, given `fg`/`bg` already resolved
+    /// by the caller (nil for a slot it can't paint) and the colours plain text gets — generic
+    /// so the rule is decided, and tested, here rather than in the renderer.
+    ///
+    /// Reverse (`\x16`) swaps the pair. A side the run leaves unset, or names with a slot that
+    /// can't be painted, is the theme's own — so reversed plain text reads as the theme inverted
+    /// rather than as nothing. `text` is whatever the run would otherwise be drawn in, which is
+    /// how a reversed `/me` comes out as a block of the nick's colour. An equal pair is a spoiler,
+    /// and reverse changes nothing about it.
+    public func paint<Color>(
+        fg: Color?, bg: Color?, text: Color, canvas: Color
+    ) -> (ink: Color, fill: Color?) {
+        guard reverse, !hidesText else { return (fg ?? text, bg) }
+        return (bg ?? canvas, fg ?? text)
+    }
 }
 
 /// Byte-level mIRC control-code parser, mirroring the web client's `parseIrcFormatting`.
@@ -226,11 +242,12 @@ public enum IRCFormatting {
     /// there.
     private static func readHex(_ scalars: [Unicode.Scalar], from start: Int) -> UInt32? {
         guard start + 6 <= scalars.count else { return nil }
-        let digits = scalars[start..<start + 6]
-        guard digits.allSatisfy(isHex) else { return nil }
-        var hex = ""
-        hex.unicodeScalars.append(contentsOf: digits)
-        return UInt32(hex, radix: 16)
+        var value: UInt32 = 0
+        for scalar in scalars[start..<start + 6] {
+            guard isHex(scalar), let digit = Character(scalar).hexDigitValue else { return nil }
+            value = value << 4 | UInt32(digit)
+        }
+        return value
     }
 
     private static func isDigit(_ s: Unicode.Scalar) -> Bool { s.value >= 0x30 && s.value <= 0x39 }

@@ -313,6 +313,23 @@ struct PreviewAbsorptionTests {
         #expect(bare.string == " ", "a lone inked space is still a body")
     }
 
+    @Test("painted punctuation after a hidden address is not absorbed into it")
+    func inkedPunctuationIsNotAbsorbed() {
+        // The web's `withoutAbsorbedPunctuation` leaves a decorated segment alone: a reversed or
+        // coloured row of dots beside the picture is art, not the sentence's full stop.
+        let a = "https://e.test/a.png"
+        let out = NSMutableAttributedString(string: a)
+        out.append(NSAttributedString(string: "...", attributes: [.ink: true]))
+        PreviewText.stripHiddenUrls(from: out, hidden: [a], spoilered: [])
+        #expect(out.string == "...")
+
+        // Plain punctuation is still absorbed, up to the first painted character.
+        let mixed = NSMutableAttributedString(string: "\(a).!")
+        mixed.append(NSAttributedString(string: "..", attributes: [.ink: true]))
+        PreviewText.stripHiddenUrls(from: mixed, hidden: [a], spoilered: [])
+        #expect(mixed.string == "..")
+    }
+
     /// The body a reader is left with, after `hidden`'s addresses are taken out.
     private func stripped(_ body: String, hiding hidden: Set<String>) -> String {
         let out = NSMutableAttributedString(

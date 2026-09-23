@@ -655,21 +655,15 @@ enum MessageRenderer {
         for run in IRCFormatting.parse(message.text ?? "") {
             let explicitFg = run.fg.flatMap(ircColor)
             let explicitBg = run.bg.flatMap(ircColor)
-            let isSpoiler = run.hidesText
+            // `explicitFg != nil` as well, so the reveal's unwrap below can't trip on a palette
+            // shorter than the sixteen slots `hidesText` assumes.
+            let isSpoiler = run.hidesText && explicitFg != nil
             // Always set an explicit color: unlike a label, a UITextView's attributed runs
             // without a foreground color fall back to a static black, not the dynamic
-            // `.label`, so uncolored text would be unreadable in dark mode.
-            var foreground = explicitFg ?? fallback
-            var background = explicitBg
-            // Reverse (\x16) swaps the pair. A side the run leaves unset, or names with a slot
-            // the palette can't paint, is the theme's own — so reversed plain text reads as the
-            // theme inverted rather than as nothing. The foreground side is whatever the text
-            // would otherwise be drawn in, which is how a reversed `/me` comes out as a block of
-            // the nick's colour. An equal pair is a spoiler, and reverse changes nothing about it.
-            if run.reverse, !isSpoiler {
-                foreground = explicitBg ?? Palette.bg
-                background = explicitFg ?? fallback
-            }
+            // `.label`, so uncolored text would be unreadable in dark mode. Reverse is resolved
+            // here too — see `paint`.
+            let (foreground, background) = run.paint(
+                fg: explicitFg, bg: explicitBg, text: fallback, canvas: Palette.bg)
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font(base, bold: run.bold, italic: run.italic),
                 .foregroundColor: foreground,
@@ -953,12 +947,7 @@ enum MessageRenderer {
             guard index >= 0, index < mircColors.count else { return nil }
             return mircColors[index]
         case .rgb(let value):
-            return UIColor(
-                red: CGFloat((value >> 16) & 0xFF) / 255,
-                green: CGFloat((value >> 8) & 0xFF) / 255,
-                blue: CGFloat(value & 0xFF) / 255,
-                alpha: 1
-            )
+            return UIColor(rgb: value)
         }
     }
 
@@ -996,6 +985,11 @@ extension UIColor {
         var string = hex
         if string.hasPrefix("#") { string.removeFirst() }
         guard string.count == 6, let value = UInt32(string, radix: 16) else { return nil }
+        self.init(rgb: value)
+    }
+
+    /// `0xRRGGBB` → color.
+    nonisolated convenience init(rgb value: UInt32) {
         self.init(
             red: CGFloat((value >> 16) & 0xFF) / 255,
             green: CGFloat((value >> 8) & 0xFF) / 255,
