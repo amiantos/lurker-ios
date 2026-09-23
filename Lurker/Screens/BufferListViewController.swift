@@ -334,15 +334,11 @@ final class BufferListViewController: UICollectionViewController {
         // the push into a chat screen — whose bottom is a composer — so it has to leave and
         // come back on every navigation, which is a lot of movement to buy two buttons.
         //
-        // Never replaced by `apply`: it runs on every unread-count change, and swapping a bar
+        // Never touched by `apply`: it runs on every unread-count change, and swapping a bar
         // button item out closes any menu it happens to be showing. Only a layout change
         // touches the bar — see `applyBarLayout`.
-        //
-        // First element is the *trailing-most*, so this reads "+ then …" left to right —
-        // the views menu sits in the same corner it occupies on the chat screen, so the one
-        // button that means the same thing on both screens is in the same place on both.
-        navigationItem.rightBarButtonItems = [viewsItem(), joinItem]
         applyBarLayout()
+        registerForVerticalBarChanges { list in list.applyBarLayout() }
 
         // Every row and header is set in a font built from this screen's traits (`listFont`),
         // which a text-size change doesn't reach on its own. `rebuild`'s diff can't
@@ -848,7 +844,7 @@ final class BufferListViewController: UICollectionViewController {
     /// one-item menu, which is a menu standing in for the screen it was named after. Sign-out
     /// moved inside, where it sits behind a confirmation rather than one slipped thumb away.
     ///
-    /// Only on its own screen. Side by side it moves into the "…" menu — see `applyBarLayout`.
+    /// Folded into the "…" menu side by side — see `applyBarLayout`.
     private lazy var settingsItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "gearshape"),
@@ -858,20 +854,50 @@ final class BufferListViewController: UICollectionViewController {
         return item
     }()
 
-    /// Fit the bar to what this screen currently is: a screen of its own, or a sidebar.
+    /// Fit the bar to what this screen currently is: a screen of its own or a sidebar, and a
+    /// bar across the top or a rail down the side.
     ///
     /// Side by side the sidebar is kept to the title, "+" and "…". The views (Highlights,
     /// Bookmarks, Uploads) and search are the conversation column's there, where the bar has
     /// room to show them as buttons rather than menu rows, and a copy here would be the same
     /// button twice on one screen. Settings folds into the "…" menu, which is left holding the
-    /// app-wide entries — see `viewsItem`.
+    /// app-wide entries — see `viewsMenuElements`.
     ///
     /// On its own screen this is the phone's list: the cog, the views menu and the search field,
     /// because nothing else on screen carries them.
+    ///
+    /// In an iPhone Duo's vertical rail there's height to spare, so the "…" opens out: every
+    /// entry it would have held is a button of its own, in either layout.
     private func applyBarLayout() {
-        navigationItem.leftBarButtonItem = marksOpenBuffer ? nil : settingsItem
+        let layout = BarLayout(sidebar: marksOpenBuffer, rail: traitCollection.hasVerticalBar)
         applySearchPlacement()
+        // Replaced only when the layout moves — replacing an item closes a menu it's showing.
+        guard layout != barLayout else { return }
+        barLayout = layout
+        navigationItem.leftBarButtonItem = layout.sidebar ? nil : settingsItem
+        // A sidebar's title reads from the leading edge, like a Duo rail's and like Mail's
+        // mailbox column — centred over a narrow column it floats between the edge and the
+        // buttons. `.browser` is the style that leads the title; the list is a root, so the
+        // back-button behaviour that style also changes never comes up. On its own screen it
+        // keeps the phone's centred title.
+        navigationItem.style = layout.sidebar ? .browser : .navigator
+        // First element is the *trailing-most*, so this reads "+ then …" left to right — the
+        // views menu sits in the same corner it occupies on the chat screen, so the one button
+        // that means the same thing on both screens is in the same place on both. Opened out,
+        // the Lurker buffer keeps that corner.
+        let views: [UIBarButtonItem] = !layout.rail ? [viewsItem]
+            : layout.sidebar ? [lurkerItem, settingsItem]
+            : [lurkerItem, uploadsItem, bookmarksItem, highlightsItem]
+        navigationItem.rightBarButtonItems = views + [joinItem]
     }
+
+    private struct BarLayout: Equatable {
+        var sidebar: Bool
+        var rail: Bool
+    }
+
+    /// What the bar was last laid out for.
+    private var barLayout: BarLayout?
 
     /// Presented as a sheet, like every other secondary surface off this screen (buffer info,
     /// members, highlights) — Settings is somewhere you visit and leave, not somewhere the
@@ -983,11 +1009,10 @@ final class BufferListViewController: UICollectionViewController {
     /// having left the sidebar to keep it to "+" and "…".
     ///
     /// **Deferred**, so which of the two it offers is decided when it opens rather than
-    /// whenever the item was built — an iPhone Duo opens and closes under a live list, and this
-    /// item is never replaced (replacing a bar item closes a menu it's showing).
+    /// whenever the item was built — an iPhone Duo opens and closes under a live list.
     ///
     /// Members is deliberately absent: it describes a channel, and there isn't one here.
-    private func viewsItem() -> UIBarButtonItem {
+    private lazy var viewsItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "ellipsis"),
             menu: UIMenu(children: [
@@ -998,41 +1023,67 @@ final class BufferListViewController: UICollectionViewController {
         )
         item.accessibilityLabel = "More"
         return item
-    }
+    }()
 
     private func viewsMenuElements() -> [UIMenuElement] {
-        // The Lurker buffer — the app's own log and command console. It has no row in the list,
-        // and this is its door now that the title isn't a button. Set apart at the top because
-        // it's a buffer you open, not a view over all of them.
-        let lurker = UIAction(title: "Lurker", image: UIImage(systemName: "sparkles")) { [weak self] _ in
-            self?.openSystemBuffer()
-        }
-        let head = UIMenu(options: .displayInline, children: [lurker])
+        // Set apart at the top because it's a buffer you open, not a view over all of them.
+        let head = UIMenu(options: .displayInline, children: [
+            UIAction(title: "Lurker", image: Self.lurkerSymbol) { [weak self] _ in self?.openSystemBuffer() },
+        ])
         guard !marksOpenBuffer else {
-            let settings = UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) {
-                [weak self] _ in
+            return [head, UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
                 self?.showSettings()
-            }
-            return [head, settings]
+            }]
         }
-        let highlights = UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
-            guard let self else { return }
-            showHighlights(viewModel: viewModel)
-        }
-        let bookmarks = UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
-            guard let self else { return }
-            showBookmarks(viewModel: viewModel)
-        }
-        // ⚠ No `onInsert`. There is no composer mounted behind this screen, so an "Add to
-        // Message" offered from here would land nowhere and report nothing. Copy Link and Share
-        // are the answers from the list, and both are in the same menu on the tile.
-        let uploads = UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) {
-            [weak self] _ in
-            guard let self else { return }
-            showUploads(viewModel: viewModel)
-        }
-        return [head, highlights, bookmarks, uploads]
+        return [
+            head,
+            UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+                self?.openHighlights()
+            },
+            UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+                self?.openBookmarks()
+            },
+            UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
+                self?.openUploads()
+            },
+        ]
     }
+
+    /// The Lurker buffer — the app's own log and command console. It has no row in the list,
+    /// and the "…" menu (or its button, opened out) is its door now that the title isn't a
+    /// button. An info symbol: it's where the app says what it's doing — the connection,
+    /// errors, command output.
+    private static let lurkerSymbol = UIImage(systemName: "info.circle")
+
+    // The "…" menu's entries opened out, for a vertical rail (`applyBarLayout`).
+
+    private lazy var lurkerItem = barItem("Lurker", image: Self.lurkerSymbol) { $0.openSystemBuffer() }
+    private lazy var highlightsItem = barItem("Highlights", symbol: "at") { $0.openHighlights() }
+    private lazy var bookmarksItem = barItem("Bookmarks", symbol: "bookmark") { $0.openBookmarks() }
+    private lazy var uploadsItem = barItem("Uploads", symbol: "photo.on.rectangle") { $0.openUploads() }
+
+    private func barItem(
+        _ title: String, symbol: String? = nil, image: UIImage? = nil,
+        action: @escaping (BufferListViewController) -> Void
+    ) -> UIBarButtonItem {
+        let item = UIBarButtonItem(
+            image: image ?? symbol.flatMap { UIImage(systemName: $0) },
+            primaryAction: UIAction(title: title) { [weak self] _ in
+                guard let self else { return }
+                action(self)
+            }
+        )
+        item.accessibilityLabel = title
+        return item
+    }
+
+    private func openHighlights() { showHighlights(viewModel: viewModel) }
+    private func openBookmarks() { showBookmarks(viewModel: viewModel) }
+
+    /// ⚠ No `onInsert`. There is no composer mounted behind this screen, so an "Add to Message"
+    /// offered from here would land nowhere and report nothing. Copy Link and Share are the
+    /// answers from the list, and both are in the same menu on the tile.
+    private func openUploads() { showUploads(viewModel: viewModel) }
 
     // MARK: - Joining
 

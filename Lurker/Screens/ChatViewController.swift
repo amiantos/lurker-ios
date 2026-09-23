@@ -305,6 +305,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // of it, which an iPhone Duo changes under a live conversation — so they're set per
         // layout rather than once. See `applyBarLayout`.
         applyBarLayout()
+        registerForVerticalBarChanges { chat in chat.applyBarLayout() }
 
         tableView.dataSource = self
         tableView.delegate = self
@@ -2763,7 +2764,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The layout the bar was last fitted to, so re-asserting the same one doesn't replace the
     /// items — which would close a menu one of them is showing.
-    private var barLayoutBesideList: Bool?
+    private var barLayout: BarLayout?
+
+    private struct BarLayout: Equatable {
+        var besideList: Bool
+        var rail: Bool
+    }
 
     /// Fit the bar to the layout.
     ///
@@ -2778,14 +2784,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// layout (`BufferListViewController.applyBarLayout`), so nothing appears twice on screen.
     /// Where the bar runs short UIKit folds the leading-most of these into an overflow menu of
     /// its own — measured on an iPad mini in portrait, all four fit until the field opens.
+    ///
+    /// **In a vertical rail** (an iPhone Duo) the menu opens out on top of the list too: the
+    /// rail runs the height of the display, with room for every entry as a button. Search is a
+    /// button there, opening the same sheet the menu row does.
     private func applyBarLayout() {
-        let beside = isBesideList
-        guard beside != barLayoutBesideList else { return }
-        barLayoutBesideList = beside
-        // First element is the trailing-most. Info sits nearest the field and the edge on both,
-        // since it's the one item that's about THIS buffer rather than a view over all of them.
-        navigationItem.rightBarButtonItems = beside
-            ? [infoItem, uploadsItem, bookmarksItem, highlightsItem]
+        let layout = BarLayout(besideList: isBesideList, rail: traitCollection.hasVerticalBar)
+        guard layout != barLayout else { return }
+        barLayout = layout
+        // First element is the trailing-most. Info sits nearest the field and the edge on all
+        // three, since it's the one item that's about THIS buffer rather than a view over all.
+        let views = [uploadsItem, bookmarksItem, highlightsItem]
+        navigationItem.rightBarButtonItems = layout.besideList ? [infoItem] + views
+            : layout.rail ? [infoItem] + views + [searchItem]
             : [overflowItem, infoItem]
         applyColumnSearch()
     }
@@ -2802,6 +2813,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
         item.accessibilityLabel = "Info"
         item.accessibilityHint = "Shows this buffer's info and settings"
+        return item
+    }()
+
+    /// Search as a button — on top of the list in a vertical rail, where there's no field.
+    private lazy var searchItem: UIBarButtonItem = {
+        let item = UIBarButtonItem(
+            image: UIImage(systemName: "magnifyingglass"),
+            primaryAction: UIAction(title: "Search") { [weak self] _ in
+                guard let self else { return }
+                showSearch(viewModel: viewModel)
+            }
+        )
+        item.accessibilityLabel = "Search"
         return item
     }()
 
