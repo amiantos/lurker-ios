@@ -351,7 +351,7 @@ extension MessageListRenderer {
     /// flush against the rail's buttons, and every centred marker 10pt off centre. The content
     /// view is already inset by the safe area, so 20 from its edges is 20 clear of whatever's
     /// there — measured the same as the inherited value on an iPhone and beside an iPad's
-    /// sidebar, where nothing was swallowed.
+    /// sidebar (then a glass panel over this view's leading edge), where nothing was swallowed.
     static func useOwnSideMargins(_ contentView: UIView) {
         contentView.preservesSuperviewLayoutMargins = false
         contentView.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 0, leading: 20, bottom: 0, trailing: 20)

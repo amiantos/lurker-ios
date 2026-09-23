@@ -9,7 +9,7 @@ import UIKit
 ///
 /// The list is a tree, drawn the way the web sidebar draws it: an uppercase header per group
 /// and a `├─`/`└─` guide beside every row under it, in the log's monospaced face, on the
-/// message list's own ground. No cards: the guides say which rows belong together, which is
+/// system's own ground. No cards: the guides say which rows belong together, which is
 /// the job the inset-grouped cards and the chip grids did before at several times the height.
 
 /// One set of measurements for every cell, so a header's text, the tree's spine and a row's
@@ -53,9 +53,7 @@ extension UIColor {
 
     /// A pressed row, and the open one: a translucent wash of the foreground, so it's a step off
     /// the ground in either style.
-    static let rosterRaised = UIColor { traits in
-        Palette.fg.resolvedColor(with: traits).withAlphaComponent(0.07)
-    }
+    static let rosterRaised = Palette.translucent(Palette.fg, alpha: 0.07)
 
     /// The tree guides and the rule between groups. Derived from `fgMuted` rather than the web's
     /// `border`: a wash of the muted text reads on the ground in either style.
@@ -291,12 +289,12 @@ final class BufferRowCell: UICollectionViewListCell {
         band.backgroundColor = isOpen || state.isHighlighted || state.isSelected ? .rosterRaised : .clear
     }
 
-    /// A row lifted for reordering: a filled preview, so the text doesn't float on nothing over
-    /// whatever it's dragged across.
+    /// A row lifted for reordering: on the list's own ground, so the text doesn't float on
+    /// nothing over whatever it's dragged across, and it lands as the row it becomes.
     var dragPreviewParameters: UIDragPreviewParameters {
         let parameters = UIDragPreviewParameters()
         parameters.visiblePath = UIBezierPath(rect: bounds)
-        parameters.backgroundColor = Palette.bgSoft
+        parameters.backgroundColor = .rosterGround
         return parameters
     }
 }

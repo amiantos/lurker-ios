@@ -38,10 +38,6 @@ enum Palette {
     /// `look.color.fg_muted` — timestamps, system events, secondary labels on `bg`.
     nonisolated static let fgMuted = dynamicHex(dark: "#939293", light: "#706b6e")
 
-    /// `look.color.bg_soft` — a raised step off `bg`: the buffer list's pressed and open rows,
-    /// which is the web sidebar's use of it too.
-    nonisolated static let bgSoft = dynamicHex(dark: "#2c2a2e", light: "#ede7e5")
-
     /// `look.color.accent` — the web's unread colour (`--buffer-unread` is `var(--accent)`) and
     /// its open-row edge, both of which the buffer list now draws. Not the app's tint: buttons
     /// and links stay the system's, and this is Lurker's signal for "something is waiting".
