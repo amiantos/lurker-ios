@@ -6,8 +6,8 @@ import UIKit
 
 /// How a peer's presence looks and reads, in one place.
 ///
-/// Lifted out of `BufferChipCell`, where it was private, when the profile screen (#12) became
-/// a second reader of the same fact. Keeping the list's styling and the profile's words here
+/// Lifted out of the buffer list's old chip cell, where it was private, when the profile screen
+/// (#12) became a second reader of the same fact. Keeping the list's styling and the profile's words here
 /// is what stops "online" from being one thing in a DM row and another on that person's profile.
 extension FriendPresence {
 

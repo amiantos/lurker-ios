@@ -672,8 +672,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// is what silently disabled the back-out below until it was measured.
     private weak var owningSplit: BufferSplitViewController?
 
-    /// Record this buffer as the one you're reading: the most recent, which is what the list
-    /// promotes, and where a relaunch should land (#49).
+    /// Record this buffer as the one you're reading: where a relaunch should land (#49).
     ///
     /// Done on appear rather than on the pick, so the launch buffer counts too and a buffer
     /// reached any other way can't slip past the bookkeeping. The one pick that *doesn't*
@@ -681,11 +680,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `BufferSplitViewController.showBuffer` calls this itself for that one.
     ///
     /// Never for the screen the column merely *rests* on (see `isResting`): side by side that
-    /// one appears whenever nothing is picked, and recording it would promote a buffer nobody
-    /// opened — and make it the relaunch target, which a later launch at compact width then
-    /// opens instead of the list.
+    /// one appears whenever nothing is picked, and recording it would make a buffer nobody
+    /// opened the relaunch target, which a later launch at compact width then opens instead of
+    /// the list.
     func recordVisit() {
-        UserPreferences.standard.recordRecentBuffer(buffer.key.id)
         UserPreferences.standard.recordLastBuffer(buffer.key)
     }
 
