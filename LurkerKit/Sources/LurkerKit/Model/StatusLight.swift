@@ -71,16 +71,17 @@ extension StatusLight {
 
     /// What a title's subtitle says: "Connected", "Libera · Online", "Libera · Away".
     ///
-    /// Words only — the coloured dot is gone, so every state has to be said. `detail` is what
-    /// the title doesn't already name (a channel's network); without one, the subtitle is about
-    /// Lurker's own connection and says "Connected".
+    /// Words only — there's no coloured dot beside them. `detail` is what the title doesn't
+    /// already name (a channel's network); without one, the subtitle is about Lurker's own
+    /// connection and says "Connected".
     ///
     /// `peer` is a DM's other person, and once the link is good it replaces "Online": the
     /// question on a DM is whether *they're* there, and the network being up says nothing about
     /// that. It never overrides a light that isn't good. A peer on a network we've lost can't be
     /// seen at all, and "Offline" there would be a claim about them we have no grounds for —
     /// "Disconnected" is the true thing to say. `unknown` says nothing past the network name,
-    /// for the same reason (no MONITOR, or not heard from yet).
+    /// for the same reason (no MONITOR, or not heard from yet) — and with no name to say
+    /// either, falls back to "Connected" rather than leaving the subtitle blank.
     public func subtitle(detail: String?, peer: FriendPresence? = nil) -> String {
         let words: String? = switch self {
         case .good:
@@ -88,7 +89,7 @@ extension StatusLight {
             case .online: "Online"
             case .away: "Away"
             case .offline: "Offline"
-            case .unknown: nil
+            case .unknown: detail == nil ? "Connected" : nil
             case nil: detail == nil ? "Connected" : "Online"
             }
         case .warn: "Connecting…"

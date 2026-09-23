@@ -108,13 +108,12 @@ final class BufferListViewController: UICollectionViewController {
         /// confuse this chip with the one beside it", and it's nil far more often.
         var networkHint: String?
         /// The peer's presence, set on every DM row and chip: it mutes an away or offline name
-        /// (#167), and on a Friends chip it also colours the dot. Nil for anything that isn't a
-        /// DM. Equatable so a presence change reconfigures the one cell.
+        /// (#167). Nil for anything that isn't a DM. Equatable so a presence change reconfigures the one cell.
         var presence: FriendPresence?
         /// A Friends chip — the one row kind whose buffer may be SYNTHESIZED (a
         /// favorite the store hasn't materialized), so a tap must open-buffer first.
-        /// An explicit flag, not "has presence": the moment any other chip kind grows
-        /// a presence dot, a proxy would quietly start firing a WRITE on its taps.
+        /// An explicit flag, not "has presence": presence is styling every DM row carries,
+        /// not a fact about where the buffer came from, and this gates a WRITE.
         var isFriendChip: Bool = false
         /// Whether an ignore rule mutes this buffer's plain-unread signal (lurker #359).
         /// Carried on the row — and therefore compared by `Equatable` — so muting or unmuting
@@ -342,9 +341,9 @@ final class BufferListViewController: UICollectionViewController {
                     // exactly the account the empty state was written for.
                     && $0.backlogComplete == $1.backlogComplete
                     // The Friends/Favorites sections render off these two: the favorites
-                    // list and the per-nick presence the dots read. A friend coming online
-                    // is a presence change with no buffer change, so without these the
-                    // chip's dot never moves.
+                    // list and the per-nick presence DM names are styled by. A friend going
+                    // away is a presence change with no buffer change, so without these the
+                    // name never dims.
                     && $0.favorites == $1.favorites
                     && $0.peerPresence == $1.peerPresence
                     // Muting is an ignore rule (lurker #359), so a mute set on another device
@@ -521,8 +520,8 @@ final class BufferListViewController: UICollectionViewController {
         var snapshot = NSDiffableDataSourceSnapshot<SectionID, ItemID>()
         snapshot.appendSections(sections.map(\.id))
         for section in sections { snapshot.appendItems(section.items, toSection: section.id) }
-        // Identity alone can't see a row whose *contents* moved — an unread count, a friend's
-        // presence dot — because those don't change the item's identifier. Naming them keeps
+        // Identity alone can't see a row whose *contents* moved — an unread count, a peer's
+        // presence — because those don't change the item's identifier. Naming them keeps
         // the cheap path cheap: everything else in the snapshot is left exactly as it is.
         let restyled = snapshot.itemIdentifiers.filter { id in
             guard let was = previous[id], let now = rowsByID[id] else { return false }
@@ -1583,8 +1582,8 @@ final class BufferListViewController: UICollectionViewController {
         // `open-buffer` is a WRITE: it now announces to every other device the user owns, it's
         // refused outright for a paused account, and the chat screen's own hydrate would fetch
         // the same backlog a second time. Gated on the explicit Friends-chip flag, not a
-        // presence proxy — the moment any other chip kind grows a presence dot, a proxy
-        // would quietly start firing this write on its taps.
+        // presence proxy: presence is styling every DM row carries, not a fact about where
+        // the buffer came from.
         if row.isFriendChip, state.buffers[row.buffer.key.id] == nil {
             viewModel.openBuffer(row.buffer.key)
         }
@@ -1635,8 +1634,8 @@ final class BufferListViewController: UICollectionViewController {
         // the favorites-changed echo rebuilds this screen (favoriting also drops any pin
         // the web client held on the buffer: one placement per buffer).
         let isDm = buffer.kind == .dm
-        // A `=nick` DCC chat is neither: the server refuses to favorite one (a Friend gets a
-        // presence dot, and a DCC peer has no presence — the socket is the whole story), so the
+        // A `=nick` DCC chat is neither: the server refuses to favorite one (a Friend is a person
+        // whose presence is tracked, and a DCC peer has none — the socket is the whole story), so the
         // item would be a tap that does nothing (lurker#270).
         let favoritable = buffer.kind != .dcc
         let target = buffer.target

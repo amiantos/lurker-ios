@@ -606,13 +606,21 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // A DCC chat's session opens and ends with nothing else changing — the
                     // light and the field both read it (lurker#270).
                     && old.dccChatSession(bufferKey) == new.dccChatSession(bufferKey)
-                    // A DM's subtitle says whether the peer is there, and that turns over
-                    // with nothing else changing — the same trap as typing.
-                    && Self.titlePeer(for: old, buffer: thisBuffer)
-                        == Self.titlePeer(for: new, buffer: thisBuffer)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
+            .store(in: &cancellables)
+        // A DM's subtitle says whether the peer is there, and that turns over with nothing
+        // else changing — the trap typing fell into. It moves the title and nothing else, so
+        // it gets its own subscription rather than a place in the gate above: letting it
+        // through there would run a full `apply` (filtering, consolidation, a reload) to
+        // change one line of the nav bar.
+        viewModel.statePublisher
+            .removeDuplicates { old, new in
+                Self.titlePeer(for: old, buffer: thisBuffer) == Self.titlePeer(for: new, buffer: thisBuffer)
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in self?.updateTitle(state) }
             .store(in: &cancellables)
     }
 
@@ -1608,7 +1616,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The title, and the status in the subtitle under it.
     ///
     /// Runs on every apply, which is also what keeps it right across a rename (`buffer` is
-    /// swapped under it) and when a network's name arrives after the network did (#136).
+    /// swapped under it) and when a network's name arrives after the network did (#136) — and
+    /// on its own when a DM peer's presence moves (see `subscribeToState`).
     private func updateTitle(_ state: ChatState) {
         let status = buffer.kind == .dcc
             // A DCC chat's light is its own session, never the network's (lurker#270) — see

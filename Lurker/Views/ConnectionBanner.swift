@@ -6,7 +6,7 @@ import UIKit
 
 /// The loud counterpart to the title's status subtitle: a floating glass capsule that drops
 /// down from under the nav bar to say, in words, when the connection is unhappy — "No
-/// internet connection", "Connecting…", "Reconnecting…". The dot is always-on ambient and
+/// internet connection", "Connecting…", "Reconnecting…". The subtitle is always-on ambient and
 /// easy to miss; this appears only when something is wrong, and a chat app that hides its
 /// connection state is worse than one missing features (#19).
 ///

@@ -96,6 +96,8 @@ final class StatusLightTests: XCTestCase {
         XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera", peer: .offline), "Libera · Offline")
         // No MONITOR, or nothing heard yet: "Online" would be the network's word read as theirs.
         XCTAssertEqual(StatusLight.good.subtitle(detail: "Libera", peer: .unknown), "Libera")
+        // A network whose name hasn't arrived: never a blank subtitle.
+        XCTAssertEqual(StatusLight.good.subtitle(detail: nil, peer: .unknown), "Connected")
     }
 
     func testADmOnADownedLinkSaysTheLinkNotAGuessAboutThePeer() {
