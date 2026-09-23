@@ -134,9 +134,10 @@ final class BufferListViewController: UICollectionViewController {
     /// the log, as the web's header does — and `log` carries that buffer's row.
     private struct Header: Equatable {
         let title: String
-        /// The network's state as a dot. Nil for Friends and Favorites.
+        /// The network's state as a dot, under this app's own connection. Nil for Friends and
+        /// Favorites.
         var light: StatusLight?
-        /// The same state in words, only when it isn't connected.
+        /// The network's state in words, only when the network itself isn't connected.
         var state: String?
         var log: Row?
         /// Every header but the first draws the rule between it and the group above.
@@ -188,7 +189,6 @@ final class BufferListViewController: UICollectionViewController {
             self.pinnedCount = pinned.count
         }
 
-        var reorderable: Bool { id.reorderable }
         var hasPinBreak: Bool { pinnedCount > 0 && pinnedCount < rows.count }
 
         var headerItem: ItemID {
@@ -1242,10 +1242,10 @@ final class BufferListViewController: UICollectionViewController {
         entries.compactMap { entry -> Row? in
             let buffer = state.buffer(for: entry.key)
             guard buffer.kind != .system, buffer.kind != .server else { return nil }
+            // No presence: this is the channel slice, and only a DM has a peer.
             return Row(
                 buffer: buffer,
                 networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
-                presence: Self.peerPresence(buffer, state),
                 muted: Self.isMuted(buffer, state),
                 parted: state.isParted(buffer.key)
             )
@@ -1359,12 +1359,20 @@ final class BufferListViewController: UICollectionViewController {
             title: network?.displayName ?? Network.unnamedDisplayName,
             log: log.map { rosterRow($0, state) }
         )
-        switch network?.state {
-        case .connected: header.light = .good
-        case .connecting: (header.light, header.state) = (.warn, "connecting…")
-        case .reconnecting: (header.light, header.state) = (.warn, "reconnecting…")
-        case .disconnected: (header.light, header.state) = (.bad, "offline")
-        case nil: break
+        if let network {
+            // Layered outside-in like every other status light: while this app's own socket is
+            // down, a network's last-known state is stale, and a green dot would be a claim we
+            // can't make.
+            header.light = StatusLight.of(
+                reachable: state.reachable, connection: state.connection, network: network.state
+            )
+            // In words only when it's the NETWORK that isn't connected — `NetworkCopy`'s words,
+            // lowercased for a header that's otherwise uppercase. When Lurker's own connection
+            // is the problem, the banner already says so once for every network.
+            let appUp = StatusLight.of(
+                reachable: state.reachable, connection: state.connection, network: nil
+            ) == .good
+            if appUp, network.state != .connected { header.state = network.state.label.lowercased() }
         }
         return Section(
             id: id,
