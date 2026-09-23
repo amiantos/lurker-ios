@@ -166,7 +166,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     // MARK: - Filters
 
-    /// The filter menu, at the top — Done is down beside the search field.
+    /// The filter menu, opposite Done.
     ///
     /// A menu rather than a row of chips, which is what the web client uses. Five kinds plus a
     /// starred toggle is more than fits across a phone without wrapping to a second row, and the
@@ -237,14 +237,10 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     /// Own the search field, in the bottom bar — the same arrangement message search uses, and
     /// for the same reason: on a phone that is where a thumb already is.
     ///
-    /// Done rides beside it, trailing, rather than up in the navigation bar: the bottom is where
-    /// the hand already is, and it's the arrangement Apple's own sheets with a bottom search
-    /// field use.
-    ///
-    /// Only where the field actually goes to the bottom — UIKit folds an integrated field into
-    /// the toolbar on iPhone alone. On iPad it lands at the top-right of the navigation bar, so
-    /// Done goes up there, to its right, and there's no toolbar: it would be a bar holding nothing,
-    /// or Done stranded on its own under the grid.
+    /// Only on iPhone, though — UIKit folds an integrated field into the toolbar there alone.
+    /// On iPad it lands at the top-right of the navigation bar, and there's no toolbar: it would
+    /// be a bar holding nothing. Done stays top-right either way, and on iPad keeps the edge,
+    /// to the right of the field.
     private func installSearchBar() {
         let controller = UISearchController(searchResultsController: nil)
         controller.searchResultsUpdater = self
@@ -262,7 +258,8 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
         if searchesFromToolbar {
-            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem, done]
+            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+            navigationItem.rightBarButtonItem = done
         } else {
             // Pinned rather than a right item: UIKit lays an integrated field trailing-most,
             // after the right items, and the pinned group is the one slot that goes past it.
@@ -270,7 +267,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         }
     }
 
-    /// Whether the search field (and Done) are in a bottom toolbar — see `installSearchBar`.
+    /// Whether the search field is in a bottom toolbar — see `installSearchBar`.
     private var searchesFromToolbar: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
     /// Fires for activation and dismissal as well as for edits, so unchanged text is dropped —
