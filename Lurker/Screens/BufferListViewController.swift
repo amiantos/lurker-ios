@@ -275,15 +275,11 @@ final class BufferListViewController: UICollectionViewController {
         // the chat screen's bar. `.minimal` keeps the title for those while drawing the
         // indicator alone — a 44pt button with no label.
         navigationItem.backButtonDisplayMode = .minimal
-        // The message list's ground, so the list and the conversation are one theme rather
-        // than the system's cool grey beside a warm log. Set on the list configuration too —
-        // see `makeLayout`, whose own default would otherwise paint over this.
-        //
-        // In an expanded split this is moot: UIKit clears the sidebar's layer (measured,
-        // iOS 27.1 — `layer.backgroundColor` nil under this same property) and draws its glass
-        // there instead, which takes its colour from the conversation column running
-        // underneath — `Palette.bg` too, so the theme comes through either way.
-        collectionView.backgroundColor = Palette.bg
+        // The system's own ground rather than the message list's. Set on the list configuration
+        // too — see `makeLayout`, whose own default would otherwise paint over this. It holds
+        // in an expanded split as well, because the split opts out of the sidebar's glass — see
+        // `primaryBackgroundStyle` in `BufferSplitViewController`.
+        collectionView.backgroundColor = .rosterGround
         // ⚠ Created explicitly, before anything can ask the collection view for its contents,
         // rather than as a side effect of the first thing that happens to touch it.
         // `UICollectionViewController` installs itself as the collection view's data source in
@@ -620,8 +616,8 @@ final class BufferListViewController: UICollectionViewController {
             var config = UICollectionLayoutListConfiguration(appearance: .plain)
             config.showsSeparators = false
             // ⚠ Or the list section repaints the collection view in the appearance's own
-            // background, over the `Palette.bg` set in `viewDidLoad`.
-            config.backgroundColor = Palette.bg
+            // background, over the ground set in `viewDidLoad`.
+            config.backgroundColor = .rosterGround
             // The header is an item, not a supplementary view: a network's header is a buffer
             // you can open, and an item is what can be tapped, marked open, and reconfigured
             // when its network's state changes.

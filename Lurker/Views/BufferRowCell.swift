@@ -45,31 +45,20 @@ enum RosterMetrics {
 }
 
 extension UIColor {
-    /// What a roster cell stands on.
-    ///
-    /// Collapsed, the list paints `Palette.bg` and so does every cell — opaque, because a row
-    /// sliding over its swipe actions shows whatever is behind it. Side by side, UIKit clears the
-    /// sidebar's layer and draws its glass there (measured on iOS 27.1), and an opaque cell would
-    /// print a strip of `Palette.bg` across it, so there the cells are clear.
-    ///
-    /// A row being swiped is opaque in the sidebar too — see `BufferRowCell.updateConfiguration`.
-    static let rosterGround = UIColor { traits in
-        traits.splitViewControllerLayoutEnvironment == .expanded
-            ? .clear : Palette.bg.resolvedColor(with: traits)
-    }
+    /// What the buffer list and every roster cell stand on: the system's plain-list background,
+    /// not the message list's. The list paints it and so does each cell — opaque, because a row
+    /// sliding over its swipe actions shows whatever is behind it. It holds in a split's sidebar
+    /// too, which opts out of UIKit's glass — see `BufferSplitViewController`.
+    static let rosterGround = UIColor.systemBackground
 
-    /// A pressed row, and the open one: the web's `bg_soft`. Over the sidebar's glass the same
-    /// step is a translucent wash of the foreground, because `bg_soft` is darker than dark glass
-    /// and would read as a hole rather than a lift.
+    /// A pressed row, and the open one: a translucent wash of the foreground, so it's a step off
+    /// the ground in either style.
     static let rosterRaised = UIColor { traits in
-        traits.splitViewControllerLayoutEnvironment == .expanded
-            ? Palette.fg.resolvedColor(with: traits).withAlphaComponent(0.07)
-            : Palette.bgSoft.resolvedColor(with: traits)
+        Palette.fg.resolvedColor(with: traits).withAlphaComponent(0.07)
     }
 
     /// The tree guides and the rule between groups. Derived from `fgMuted` rather than the web's
-    /// `border`, which disappears on the sidebar's glass; a wash of the muted text reads on the
-    /// message list's ground and on glass alike.
+    /// `border`: a wash of the muted text reads on the ground in either style.
     static let rosterGuide = Palette.translucent(Palette.fgMuted, alpha: 0.4)
 }
 
@@ -293,18 +282,17 @@ final class BufferRowCell: UICollectionViewListCell {
     /// The ground is named every time and nothing else is left to the list cell's defaults,
     /// whose highlight would paint the system grey over the theme. The press shows on `band`.
     ///
-    /// ⚠ Opaque while swiped, even in the sidebar where the ground is otherwise clear: a row
-    /// sliding over its Leave/Close action shows whatever is behind it, and behind a clear row
-    /// is the red action, through the text.
+    /// ⚠ Opaque, swiped or not: a row sliding over its Leave/Close action shows whatever is
+    /// behind it, and behind a clear row is the red action, through the text.
     override func updateConfiguration(using state: UICellConfigurationState) {
         var background = UIBackgroundConfiguration.clear()
-        background.backgroundColor = state.isSwiped ? Palette.bg : .rosterGround
+        background.backgroundColor = .rosterGround
         backgroundConfiguration = background
         band.backgroundColor = isOpen || state.isHighlighted || state.isSelected ? .rosterRaised : .clear
     }
 
-    /// A row lifted for reordering: the raised fill, so the text doesn't float on nothing over
-    /// the sidebar's glass.
+    /// A row lifted for reordering: a filled preview, so the text doesn't float on nothing over
+    /// whatever it's dragged across.
     var dragPreviewParameters: UIDragPreviewParameters {
         let parameters = UIDragPreviewParameters()
         parameters.visiblePath = UIBezierPath(rect: bounds)
