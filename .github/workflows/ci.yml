@@ -18,9 +18,11 @@ concurrency:
 jobs:
   build:
     name: Build
-    # NOT macos-latest: that still aliases to macOS 15, whose DEFAULT Xcode is 16.4 —
-    # which cannot build an iOS 26 deployment target. macos-26 ships Xcode 26.x.
-    runs-on: macos-26
+    # NOT macos-latest: that lags a major Xcode behind. GitHub now names macOS images
+    # by their Xcode major, one per image (github.blog/changelog/2026-09-10-xcode-27-
+    # runner-image-now-runs-on-macos-27). `xcode-27` is still a public preview, so it
+    # may queue longer than the stable images.
+    runs-on: xcode-27
     # The default is 360 minutes, and macOS minutes are the expensive ones.
     timeout-minutes: 20
 
@@ -32,12 +34,12 @@ jobs:
 
       - name: Select Xcode
         # The image's DEFAULT Xcode is changed by GitHub without warning, so pin it.
-        # `^26.0` floats within Xcode 26: it survives the image dropping a specific
-        # patch release, but will never silently fall back to Xcode 16.
+        # `^27.0` floats within Xcode 27: it survives the image dropping a specific
+        # patch release, but will never silently fall back to an older major.
         # Pinned to a SHA because it's a third-party action: v1.7.0.
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
         with:
-          xcode-version: '^26.0'
+          xcode-version: '^27.0'
 
       # Cheap, and it makes the two most likely CI-only failures legible instead of
       # cryptic: the wrong Xcode got selected, or the shared scheme went missing.
@@ -72,7 +74,7 @@ jobs:
     name: Test (LurkerKit)
     # The model/client/store live in a plain Swift package, so the tricky store/parser
     # core is tested on the host with `swift test` — no simulator, no app build.
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 20
 
     steps:
@@ -82,11 +84,11 @@ jobs:
           persist-credentials: false
 
       - name: Select Xcode
-        # Pin to Xcode 26 so `swift` is the Swift 6.2 toolchain the package expects.
+        # Pin to Xcode 27, the major the app is developed on (the image may trail by a minor).
         # Pinned to a SHA because it's a third-party action: v1.7.0.
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90
         with:
-          xcode-version: '^26.0'
+          xcode-version: '^27.0'
 
       - name: Run LurkerKit tests
         run: swift test --package-path LurkerKit
