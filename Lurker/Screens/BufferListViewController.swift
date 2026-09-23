@@ -870,11 +870,12 @@ final class BufferListViewController: UICollectionViewController {
     /// entry it would have held is a button of its own, in either layout.
     private func applyBarLayout() {
         let layout = BarLayout(sidebar: marksOpenBuffer, rail: traitCollection.hasVerticalBar)
-        applySearchPlacement()
-        // Replaced only when the layout moves — replacing an item closes a menu it's showing.
+        // Replaced only when the layout moves — replacing an item closes a menu it's showing,
+        // and re-placing the search field under a live one can collapse it.
         guard layout != barLayout else { return }
+        let sidebarChanged = layout.sidebar != barLayout?.sidebar
         barLayout = layout
-        navigationItem.leftBarButtonItem = layout.sidebar ? nil : settingsItem
+        if sidebarChanged { applySearchPlacement() }
         // A sidebar's title reads from the leading edge, like a Duo rail's and like Mail's
         // mailbox column — centred over a narrow column it floats between the edge and the
         // buttons. `.browser` is the style that leads the title; the list is a root, so the
@@ -888,7 +889,12 @@ final class BufferListViewController: UICollectionViewController {
         let views: [UIBarButtonItem] = !layout.rail ? [viewsItem]
             : layout.sidebar ? [lurkerItem, settingsItem]
             : [lurkerItem, uploadsItem, bookmarksItem, highlightsItem]
+        // The cog changes sides when a rail's sidebar becomes a rail's stack or back, and an
+        // item mustn't sit in both groups at once — so it leaves the left before the right is
+        // set, and returns to the left only after.
+        navigationItem.leftBarButtonItem = nil
         navigationItem.rightBarButtonItems = views + [joinItem]
+        if !layout.sidebar { navigationItem.leftBarButtonItem = settingsItem }
     }
 
     private struct BarLayout: Equatable {
@@ -1028,7 +1034,7 @@ final class BufferListViewController: UICollectionViewController {
     private func viewsMenuElements() -> [UIMenuElement] {
         // Set apart at the top because it's a buffer you open, not a view over all of them.
         let head = UIMenu(options: .displayInline, children: [
-            UIAction(title: "Lurker", image: Self.lurkerSymbol) { [weak self] _ in self?.openSystemBuffer() },
+            AppView.lurker.action { [weak self] in self?.openSystemBuffer() },
         ])
         guard !marksOpenBuffer else {
             return [head, UIAction(title: "Settings", image: UIImage(systemName: "gearshape")) { [weak self] _ in
@@ -1037,45 +1043,19 @@ final class BufferListViewController: UICollectionViewController {
         }
         return [
             head,
-            UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
-                self?.openHighlights()
-            },
-            UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
-                self?.openBookmarks()
-            },
-            UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
-                self?.openUploads()
-            },
+            AppView.highlights.action { [weak self] in self?.openHighlights() },
+            AppView.bookmarks.action { [weak self] in self?.openBookmarks() },
+            AppView.uploads.action { [weak self] in self?.openUploads() },
         ]
     }
 
-    /// The Lurker buffer — the app's own log and command console. It has no row in the list,
-    /// and the "…" menu (or its button, opened out) is its door now that the title isn't a
-    /// button. An info symbol: it's where the app says what it's doing — the connection,
-    /// errors, command output.
-    private static let lurkerSymbol = UIImage(systemName: "info.circle")
+    // The "…" menu's entries opened out, for a vertical rail (`applyBarLayout`). The Lurker
+    // buffer has no row in the list; the menu, or this button, is its door.
 
-    // The "…" menu's entries opened out, for a vertical rail (`applyBarLayout`).
-
-    private lazy var lurkerItem = barItem("Lurker", image: Self.lurkerSymbol) { $0.openSystemBuffer() }
-    private lazy var highlightsItem = barItem("Highlights", symbol: "at") { $0.openHighlights() }
-    private lazy var bookmarksItem = barItem("Bookmarks", symbol: "bookmark") { $0.openBookmarks() }
-    private lazy var uploadsItem = barItem("Uploads", symbol: "photo.on.rectangle") { $0.openUploads() }
-
-    private func barItem(
-        _ title: String, symbol: String? = nil, image: UIImage? = nil,
-        action: @escaping (BufferListViewController) -> Void
-    ) -> UIBarButtonItem {
-        let item = UIBarButtonItem(
-            image: image ?? symbol.flatMap { UIImage(systemName: $0) },
-            primaryAction: UIAction(title: title) { [weak self] _ in
-                guard let self else { return }
-                action(self)
-            }
-        )
-        item.accessibilityLabel = title
-        return item
-    }
+    private lazy var lurkerItem = AppView.lurker.barItem { [weak self] in self?.openSystemBuffer() }
+    private lazy var highlightsItem = AppView.highlights.barItem { [weak self] in self?.openHighlights() }
+    private lazy var bookmarksItem = AppView.bookmarks.barItem { [weak self] in self?.openBookmarks() }
+    private lazy var uploadsItem = AppView.uploads.barItem { [weak self] in self?.openUploads() }
 
     private func openHighlights() { showHighlights(viewModel: viewModel) }
     private func openBookmarks() { showBookmarks(viewModel: viewModel) }

@@ -4,6 +4,49 @@
 import LurkerKit
 import UIKit
 
+/// The app's views — what the "…" menus list and, where a bar has room, what its buttons open.
+/// One title and one symbol each, so a menu row and a bar button for the same view can't drift
+/// apart between the two screens that carry them.
+enum AppView {
+    case search, highlights, bookmarks, uploads
+    /// The Lurker buffer: the app's own log and command console. An info symbol — it's where the
+    /// app says what it's doing (the connection, errors, command output).
+    case lurker
+
+    var title: String {
+        switch self {
+        case .search: "Search"
+        case .highlights: "Highlights"
+        case .bookmarks: "Bookmarks"
+        case .uploads: "Uploads"
+        case .lurker: "Lurker"
+        }
+    }
+
+    var image: UIImage? {
+        switch self {
+        case .search: UIImage(systemName: "magnifyingglass")
+        case .highlights: UIImage(systemName: "at")
+        case .bookmarks: UIImage(systemName: "bookmark")
+        case .uploads: UIImage(systemName: "photo.on.rectangle")
+        case .lurker: UIImage(systemName: "info.circle")
+        }
+    }
+
+    /// Its menu row.
+    func action(_ handler: @escaping () -> Void) -> UIAction {
+        UIAction(title: title, image: image) { _ in handler() }
+    }
+
+    /// Its bar button: the symbol alone, with the title as the VoiceOver label and as the row
+    /// UIKit shows if it folds the button into an overflow menu.
+    func barItem(_ handler: @escaping () -> Void) -> UIBarButtonItem {
+        let item = UIBarButtonItem(image: image, primaryAction: action(handler))
+        item.accessibilityLabel = title
+        return item
+    }
+}
+
 extension UIViewController {
 
     /// The recent-highlights list. App-scoped, not buffer-scoped — highlights span every
@@ -96,10 +139,15 @@ extension UIViewController {
 /// because "go to this message" has to mean exactly one thing however you got to the row.
 /// `close` is what differs and all that differs: a presented sheet dismisses, while the buffer
 /// list's search results are dismissed by deactivating the search field that put them there.
+///
+/// `closesFirst` takes the feed down before navigating rather than after — for a feed presented
+/// by the very screen the jump replaces (the conversation column's search), which must not be
+/// torn out of the window while it's still presenting.
 private func wireJump(
     _ feed: HistoryFeedViewController,
     viewModel: ChatViewModel,
     nav: UINavigationController?,
+    closesFirst: Bool = false,
     close: @escaping () -> Void
 ) {
     feed.onSelect = { [weak nav, weak feed] item in
@@ -123,6 +171,7 @@ private func wireJump(
             feed?.reportClosedBuffer(item, viewModel: viewModel)
             return
         }
+        if closesFirst { close() }
         // Jump to the line (#42) — even when it's the buffer already on screen, since the
         // point is to move to that message. The new screen fetches an `around` slice
         // centered on it.
@@ -130,7 +179,7 @@ private func wireJump(
             state.buffer(for: item.bufferKey), viewModel: viewModel,
             jumpTo: item.message.id, animated: false
         )
-        close()
+        if !closesFirst { close() }
     }
 }
 
@@ -202,12 +251,14 @@ extension UINavigationController {
     /// Point a hosted search field's results at the conversations they came from, closing the
     /// search with `close` once a row is picked. For a field that lives on a screen rather than
     /// in a presented sheet — the buffer list's, or the conversation column's side by side.
+    /// `closesFirst` for a field on the screen the jump replaces — see `wireJump`.
     func wireSearchResults(
         _ results: MessageSearchViewController,
         viewModel: ChatViewModel,
+        closesFirst: Bool = false,
         close: @escaping () -> Void
     ) {
-        wireJump(results, viewModel: viewModel, nav: self, close: close)
+        wireJump(results, viewModel: viewModel, nav: self, closesFirst: closesFirst, close: close)
     }
 
     /// The list on its own — where the app lands when there's nothing to restore into.

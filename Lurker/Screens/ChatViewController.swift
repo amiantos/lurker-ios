@@ -2809,60 +2809,31 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private lazy var infoItem: UIBarButtonItem = {
         let item = UIBarButtonItem(
             image: UIImage(systemName: "info.circle"),
-            primaryAction: UIAction { [weak self] _ in self?.showBufferInfo() }
+            primaryAction: UIAction { [weak self] _ in self?.afterColumnSearch { $0.showBufferInfo() } }
         )
         item.accessibilityLabel = "Info"
         item.accessibilityHint = "Shows this buffer's info and settings"
         return item
     }()
 
+    // The views as buttons, beside the list or in a vertical rail (`applyBarLayout`). Each ends a
+    // column search first — see `afterColumnSearch`.
+
     /// Search as a button — on top of the list in a vertical rail, where there's no field.
-    private lazy var searchItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "magnifyingglass"),
-            primaryAction: UIAction(title: "Search") { [weak self] _ in
-                guard let self else { return }
-                showSearch(viewModel: viewModel)
-            }
-        )
-        item.accessibilityLabel = "Search"
-        return item
-    }()
-
-    private lazy var highlightsItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "at"),
-            primaryAction: UIAction(title: "Highlights") { [weak self] _ in
-                guard let self else { return }
-                showHighlights(viewModel: viewModel)
-            }
-        )
-        item.accessibilityLabel = "Highlights"
-        return item
-    }()
-
-    private lazy var bookmarksItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "bookmark"),
-            primaryAction: UIAction(title: "Bookmarks") { [weak self] _ in
-                guard let self else { return }
-                showBookmarks(viewModel: viewModel)
-            }
-        )
-        item.accessibilityLabel = "Bookmarks"
-        return item
-    }()
-
+    private lazy var searchItem = AppView.search.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showSearch(viewModel: $0.viewModel) }
+    }
+    private lazy var highlightsItem = AppView.highlights.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showHighlights(viewModel: $0.viewModel) }
+    }
+    private lazy var bookmarksItem = AppView.bookmarks.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showBookmarks(viewModel: $0.viewModel) }
+    }
     /// A file picked in the browser goes into THIS composer, as from the menu — see
     /// `overflowItem`.
-    private lazy var uploadsItem: UIBarButtonItem = {
-        let item = UIBarButtonItem(
-            image: UIImage(systemName: "photo.on.rectangle"),
-            primaryAction: UIAction(title: "Uploads") { [weak self] _ in self?.showUploadsHere() }
-        )
-        item.accessibilityLabel = "Uploads"
-        return item
-    }()
+    private lazy var uploadsItem = AppView.uploads.barItem { [weak self] in
+        self?.afterColumnSearch { $0.showUploadsHere() }
+    }
 
     private func showUploadsHere() {
         showUploads(viewModel: viewModel) { [weak self] url in
@@ -2875,20 +2846,59 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Point the column search's results at the navigation controller this screen is in now.
     /// Re-wired rather than wired once: collapsing and expanding moves this screen between the
     /// split's two navigation controllers, and a jump has to go through the current one.
+    ///
+    /// Closes first: a jump replaces this screen, which is what presents the results.
     private func wireColumnSearch() {
         guard isBesideList, let navigationController else { return }
-        navigationController.wireSearchResults(columnSearchResults, viewModel: viewModel) { [weak self] in
-            self?.columnSearch.isActive = false
+        navigationController.wireSearchResults(columnSearchResults, viewModel: viewModel, closesFirst: true) {
+            [weak self] in
+            self?.endColumnSearch()
         }
     }
 
-    /// The results for the column's own search field. Built on first use: most chat screens
-    /// are never beside a list, and a Duo's are only some of the time.
+    /// The results for the column's own search field, and the field. Built with the first
+    /// beside-the-list layout — on iPad, every conversation — because the field has to be in the
+    /// bar to be tapped. Neither loads anything until search is opened: the results fetch from
+    /// their `viewDidLoad`.
     private lazy var columnSearchResults = MessageSearchViewController(
         viewModel: viewModel, presentation: .resultsController
     )
 
     private lazy var columnSearch = columnSearchResults.makeHostedSearchController()
+
+    /// Take the column search down at once, without its animation. Returns whether there was one
+    /// up.
+    ///
+    /// For whatever is about to replace this screen, or present over it. With this screen
+    /// defining the presentation context, an open search is presented BY it: a sheet asked for
+    /// meanwhile is refused as "already presenting", and swapping the screen out tears the
+    /// search from the window mid-presentation. Unanimated so the dismissal can't still be
+    /// running when that happens.
+    @discardableResult
+    func endColumnSearch() -> Bool {
+        guard let search = navigationItem.searchController, search.isActive else { return false }
+        UIView.performWithoutAnimation { search.isActive = false }
+        return true
+    }
+
+    /// Run `action` once the column search is out of the way, so this screen can present again.
+    ///
+    /// ⚠ After the dismissal's transition completes, not a turn later: measured on iPad, a
+    /// Highlights sheet asked for on the next runloop turn was still refused — unanimated or not,
+    /// the dismissal hadn't finished.
+    private func afterColumnSearch(_ action: @escaping (ChatViewController) -> Void) {
+        let search = navigationItem.searchController
+        guard endColumnSearch() else { return action(self) }
+        let run = { [weak self] in
+            guard let self else { return }
+            action(self)
+        }
+        if let coordinator = search?.transitionCoordinator {
+            coordinator.animate(alongsideTransition: nil) { _ in run() }
+        } else {
+            DispatchQueue.main.async(execute: run)
+        }
+    }
 
     /// Carry the search field while beside the list; drop it on top of one.
     ///
@@ -2949,15 +2959,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // Unscoped, like everything else in this menu. Searching *this* buffer is a fact
             // about this buffer, so it lives in the buffer-info sheet behind the info button,
             // where the per-buffer things are — see `BufferInfoViewController`.
-            UIAction(title: "Search", image: UIImage(systemName: "magnifyingglass")) { [weak self] _ in
+            AppView.search.action { [weak self] in
                 guard let self else { return }
                 showSearch(viewModel: viewModel)
             },
-            UIAction(title: "Highlights", image: UIImage(systemName: "at")) { [weak self] _ in
+            AppView.highlights.action { [weak self] in
                 guard let self else { return }
                 showHighlights(viewModel: viewModel)
             },
-            UIAction(title: "Bookmarks", image: UIImage(systemName: "bookmark")) { [weak self] _ in
+            AppView.bookmarks.action { [weak self] in
                 guard let self else { return }
                 showBookmarks(viewModel: viewModel)
             },
@@ -2965,9 +2975,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // browser goes into THIS composer. That's the whole reason the screen is worth
             // having on a phone, and it's why the closure is passed from here and not from the
             // buffer list, which has no composer to insert into.
-            UIAction(title: "Uploads", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
-                self?.showUploadsHere()
-            },
+            AppView.uploads.action { [weak self] in self?.showUploadsHere() },
         ]
         // Built once, not deferred: nothing in here varies at all now, let alone per press.
         // (The deferral this used to need was for Join, whose networks come and go; that's

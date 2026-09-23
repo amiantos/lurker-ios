@@ -50,6 +50,9 @@ final class BufferSplitViewController: UISplitViewController {
     /// there — so asking the split to dismiss never reaches one the conversation column put up.
     /// Both columns have to be asked.
     func dismissPresented() {
+        // The conversation presents its own column search (it defines the presentation context),
+        // which neither navigation controller would find.
+        currentChat?.endColumnSearch()
         for nav in [listNav, chatNav] where nav.presentedViewController != nil {
             nav.dismiss(animated: false)
         }
@@ -59,7 +62,8 @@ final class BufferSplitViewController: UISplitViewController {
     /// The sheet on screen, whichever column put it up: `dismissPresented`'s counterpart, for
     /// showing something over it rather than taking it down.
     var topPresented: UIViewController? {
-        let presenters: [UIViewController] = [listNav, chatNav, self]
+        // The conversation too: an open column search is presented by it — see `dismissPresented`.
+        let presenters: [UIViewController] = [listNav, chatNav] + [currentChat].compactMap { $0 } + [self]
         return presenters.lazy.compactMap(\.presentedViewController).first
     }
 
@@ -102,9 +106,7 @@ final class BufferSplitViewController: UISplitViewController {
         // jump to `showBuffer` — the funnel that forwards back here once these navs are
         // columns. So the list knows nothing about splits.
         listNav.showBufferList(viewModel: viewModel, animated: false)
-        chatNav.setViewControllers(
-            [ChatViewController(viewModel: viewModel, buffer: .system)], animated: false
-        )
+        chatNav.setViewControllers([makeChat(.system)], animated: false)
         setViewController(listNav, for: .primary)
         setViewController(chatNav, for: .secondary)
     }
@@ -210,6 +212,8 @@ final class BufferSplitViewController: UISplitViewController {
         }
         selection = buffer.key
         let chat = makeChat(buffer, jumpTo: messageId)
+        // The screen going out may be presenting its column search — see `endColumnSearch`.
+        (chatNav.viewControllers.last as? ChatViewController)?.endColumnSearch()
         // Set, never pushed. One conversation exists at a time — `/msg` from a channel or a
         // notification tapped mid-read must not leave a stack of live subscriptions behind a
         // back button that walks you through your own history.
@@ -255,6 +259,7 @@ final class BufferSplitViewController: UISplitViewController {
     /// nobody can see it. `splitViewControllerDidExpand` builds the resting screen when there's
     /// somewhere to show it.
     private func restColumn() {
+        (chatNav.viewControllers.last as? ChatViewController)?.endColumnSearch()
         chatNav.setViewControllers(
             isCollapsed ? [] : [makeChat(.system)],
             animated: false
