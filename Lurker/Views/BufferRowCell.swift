@@ -37,6 +37,11 @@ enum RosterMetrics {
     /// The open row's accent edge.
     static let edge: CGFloat = 2
     static let pinBreak: CGFloat = 10
+    /// A network header's status dot.
+    static let dot: CGFloat = 7
+    /// `inset` to a dotted header's content: the dot centred on the spine, so the tree reads as
+    /// hanging from it. The spine is a 1pt line, so its centre is half a point in.
+    static let dotLead: CGFloat = spine + 0.5 - dot / 2
 }
 
 extension UIColor {
@@ -324,6 +329,7 @@ final class RosterHeaderCell: UICollectionViewListCell {
     private let stateLabel = UILabel()
     private let countLabel = UILabel()
     private var rowTop: NSLayoutConstraint!
+    private var stackLead: NSLayoutConstraint!
     private var isOpen = false
     private var opensLog = false
 
@@ -342,7 +348,7 @@ final class RosterHeaderCell: UICollectionViewListCell {
         edge.translatesAutoresizingMaskIntoConstraints = false
         row.addSubview(edge)
 
-        dot.layer.cornerRadius = 3.5
+        dot.layer.cornerRadius = RosterMetrics.dot / 2
         dot.translatesAutoresizingMaskIntoConstraints = false
         stateLabel.textColor = Palette.fgMuted
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -367,6 +373,7 @@ final class RosterHeaderCell: UICollectionViewListCell {
 
         let safe = contentView.safeAreaLayoutGuide
         rowTop = row.topAnchor.constraint(equalTo: contentView.topAnchor)
+        stackLead = stack.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: RosterMetrics.inset)
         NSLayoutConstraint.activate([
             rule.topAnchor.constraint(equalTo: contentView.topAnchor),
             rule.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -388,9 +395,9 @@ final class RosterHeaderCell: UICollectionViewListCell {
             edge.leadingAnchor.constraint(equalTo: row.leadingAnchor),
             edge.widthAnchor.constraint(equalToConstant: RosterMetrics.edge),
 
-            dot.widthAnchor.constraint(equalToConstant: 7),
-            dot.heightAnchor.constraint(equalToConstant: 7),
-            stack.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: RosterMetrics.inset),
+            dot.widthAnchor.constraint(equalToConstant: RosterMetrics.dot),
+            dot.heightAnchor.constraint(equalToConstant: RosterMetrics.dot),
+            stackLead,
             stack.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -RosterMetrics.inset),
             stack.centerYAnchor.constraint(equalTo: row.centerYAnchor),
             stack.topAnchor.constraint(greaterThanOrEqualTo: row.topAnchor, constant: 6),
@@ -432,6 +439,8 @@ final class RosterHeaderCell: UICollectionViewListCell {
             .kern: font.pointSize * 0.04,
         ])
         dot.isHidden = light == nil
+        // A dot sits on the spine below it; a header without one starts at the inset.
+        stackLead.constant = RosterMetrics.inset + (light == nil ? 0 : RosterMetrics.dotLead)
         dot.backgroundColor = light.map { Palette.color(for: $0) }
         stateLabel.text = state
         stateLabel.font = font
