@@ -205,7 +205,7 @@ final class UserProfileViewController: UITableViewController {
         if let name = whois.server {
             add("Server", whois.serverInfo.map { "\(name) (\($0))" } ?? name)
         }
-        add("Idle", whois.idleSeconds.flatMap(Self.duration))
+        add("Idle", whois.idleSeconds.flatMap { Self.duration($0) })
         add("Signed on", whois.signedOn.map(Self.dateTime.string(from:)))
         return rows
     }

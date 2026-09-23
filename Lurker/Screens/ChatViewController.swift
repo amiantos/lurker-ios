@@ -2543,7 +2543,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 // built: it is refreshed on every reconnect (#149).
                 let prepared = try await VideoCompressor.prepare(
                     source: picked.url, maxBytes: viewModel.uploadCapBytes
-                ) { fraction in
+                ) { [weak self] fraction in
                     Task { @MainActor [weak self] in
                         // Same staleness gate as the upload legs: a tick landing after this
                         // file is done would stamp its position over the next one's readout.
@@ -2582,14 +2582,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             filename: filename,
             mime: mime,
             progressToken: token,
-            onProgress: { fraction in
+            onProgress: { [weak self] fraction in
                 Task { @MainActor [weak self] in
                     guard progress.isCurrent else { return }
                     progress.value.apply(deviceFraction: fraction)
                     self?.uploadStatus.update(UploadStatusView.Phase(progress.value), in: batch)
                 }
             },
-            onServerProgress: { frame in
+            onServerProgress: { [weak self] frame in
                 Task { @MainActor [weak self] in
                     guard progress.isCurrent else { return }
                     progress.value.apply(server: frame)

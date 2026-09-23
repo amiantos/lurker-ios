@@ -271,7 +271,7 @@ public struct CommandSpec: Equatable, Sendable {
         skipFlags(&slot, before: typing)
         if slot < form.count { return form[slot].kind }
         if let last = form.last, last.rest { return last.kind }
-        return .none
+        return nil
     }
 
     /// The usage line shown by `/commands`, e.g. `/msg <nick> [message]` — one per form, joined.
