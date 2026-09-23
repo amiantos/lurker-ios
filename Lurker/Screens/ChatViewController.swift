@@ -805,9 +805,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if let id = buffer.bufferId, let newKey = state.keysById[id],
                 let moved = state.buffers[newKey]
             {
+                let previous = buffer.key
                 buffer = moved
                 sawBufferRow = true
                 subscribeToState()
+                // The split names its selection by key too, and everything it decides from
+                // here compares against it — the back-out check below, which conversation a
+                // collapse carries onto the stack, which row is marked. Left on the old key,
+                // folding a Duo after a rename would drop the conversation you're reading.
+                let split = (splitViewController as? BufferSplitViewController) ?? owningSplit
+                split?.followRename(from: previous, to: moved.key)
                 return false
             }
             // Two ways to know the buffer isn't coming:

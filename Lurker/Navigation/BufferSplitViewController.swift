@@ -194,6 +194,16 @@ final class BufferSplitViewController: UISplitViewController {
         list?.markSelection(buffer.key)
     }
 
+    /// The selected buffer was renamed under its reader: keep naming it. A rename keeps the
+    /// buffer and changes its key, and the chat screen follows it (see its
+    /// `handleBufferDisappeared`) — this is the split following along, so its key comparisons
+    /// go on matching the screen that's actually open. A no-op for any other buffer.
+    func followRename(from old: BufferKey, to new: BufferKey) {
+        guard selection?.id == old.id else { return }
+        selection = new
+        list?.markSelection(new)
+    }
+
     /// The conversation on screen, whichever column holds it. Side by side that's never nil,
     /// since the column rests on the system buffer — which is the right answer: that screen
     /// has a composer, and is what a finished upload should insert into. Collapsed on the
