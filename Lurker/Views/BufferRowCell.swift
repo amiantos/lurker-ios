@@ -119,11 +119,14 @@ final class TreeGuideView: UIView {
 // MARK: - Unread
 
 /// What a count says, shared by a row and a network header so the same state reads the same in
-/// both: the accent for unread, `bad` when it holds a highlight, nil when nothing is waiting.
+/// both, nil when nothing is waiting. The web's two defaults: `look.color.buffer.unread` is the
+/// accent, and `look.color.buffer.highlight` is `warn` — gold, not the `bad` red, which in this
+/// list already means a network that's offline.
+///
 /// `unread` is already the displayed count — a muted buffer's is its highlights alone.
 private func unreadColor(unread: Int, highlights: Int) -> UIColor? {
     guard unread > 0 else { return nil }
-    return highlights > 0 ? Palette.bad : Palette.accent
+    return highlights > 0 ? Palette.warn : Palette.accent
 }
 
 /// The same, read aloud: appended to an accessibility label, or empty.
@@ -137,7 +140,7 @@ private func unreadSummary(unread: Int, highlights: Int) -> String {
 /// One buffer: its name, an optional network hint, and its unread count, beside a tree guide.
 ///
 /// Unread is colour, the web's rule: the name turns the accent and the count is plain text in
-/// the same colour; a highlight makes both `bad`. There is no pill — a capsule is a card in
+/// the same colour; a highlight makes both gold. There is no pill — a capsule is a card in
 /// miniature, and this list has none.
 final class BufferRowCell: UICollectionViewListCell {
     private let guide = TreeGuideView()
@@ -445,14 +448,17 @@ final class RosterHeaderCell: UICollectionViewListCell {
         stateLabel.text = state
         stateLabel.font = font
         stateLabel.isHidden = state == nil
+        // The state word replaces the count rather than sitting beside it: "offline 3" reads as
+        // one phrase, and the log's unread isn't what matters about a network that's down. The
+        // word stays even though the dot says the same — the dot is colour alone.
         countLabel.text = unread > 0 ? "\(unread)" : nil
         countLabel.font = font
         countLabel.textColor = unreadColor(unread: unread, highlights: highlights)
-        countLabel.isHidden = unread == 0
+        countLabel.isHidden = unread == 0 || state != nil
 
+        // Read aloud only what's shown: the state, or else the count.
         var summary = title
-        if let state { summary += ", \(state)" }
-        summary += unreadSummary(unread: unread, highlights: highlights)
+        if let state { summary += ", \(state)" } else { summary += unreadSummary(unread: unread, highlights: highlights) }
         accessibilityLabel = summary
         accessibilityTraits = opensLog ? [.header, .button] : .header
         accessibilityHint = opensLog ? "Opens the server log" : nil
