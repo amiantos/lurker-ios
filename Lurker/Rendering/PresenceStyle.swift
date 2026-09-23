@@ -7,25 +7,9 @@ import UIKit
 /// How a peer's presence looks and reads, in one place.
 ///
 /// Lifted out of `BufferChipCell`, where it was private, when the profile screen (#12) became
-/// a second reader of the same fact. The two take different halves — the chip wants a colour,
-/// the profile says it in words — and keeping both here is what stops "online" from being one
-/// thing in a friend row and another on that friend's profile.
+/// a second reader of the same fact. Keeping the list's styling and the profile's words here
+/// is what stops "online" from being one thing in a DM row and another on that person's profile.
 extension FriendPresence {
-
-    /// The dot's fill.
-    ///
-    /// Present/away take the theme's own signal colours, the same two the connection banner and
-    /// the title-bar status light use, so "online" is one colour across the whole app and both
-    /// clients. Absent/unknown stay on the system greys: they aren't signals, they're the lack
-    /// of one, and the palette has no token for that.
-    var dotColor: UIColor {
-        switch self {
-        case .online: return Palette.good
-        case .away: return Palette.warn
-        case .offline: return .tertiaryLabel
-        case .unknown: return .quaternaryLabel
-        }
-    }
 
     /// Whether a DM's name steps down to the secondary colour: away or offline, the two the web
     /// mutes (`BufferList.vue`'s `peer-away` and `peer-offline`). Online and unknown stay as they

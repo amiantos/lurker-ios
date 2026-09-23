@@ -24,7 +24,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private let tableView = UITableView()
     /// The floating "your connection is unhappy" capsule at the top — offline/connecting/
-    /// reconnecting in words, the loud counterpart to the subtitle's light (#19).
+    /// reconnecting in words, the loud counterpart to the subtitle (#19).
     private let connectionBanner = ConnectionBanner()
     /// The empty/loading placeholder drawn behind an empty message list — the difference
     /// between "still fetching" and "genuinely nothing here", which a blank list conflates.
@@ -509,7 +509,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func subscribeToState() {
         cancellables.removeAll()
         // Re-render when this buffer's messages or the error change — a frame for some
-        // other channel shouldn't reload this screen. The title's light also depends
+        // other channel shouldn't reload this screen. The title's status also depends
         // on the socket, the network path, and this buffer's network, so those count too.
         //
         // `buffers[key]` is in here for hydration, not for rendering: a shell arriving for
@@ -609,6 +609,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
+            .store(in: &cancellables)
+        // A DM's subtitle says whether the peer is there, and that turns over with nothing
+        // else changing — the trap typing fell into. It moves the title and nothing else, so
+        // it gets its own subscription rather than a place in the gate above: letting it
+        // through there would run a full `apply` (filtering, consolidation, a reload) to
+        // change one line of the nav bar.
+        viewModel.statePublisher
+            .removeDuplicates { old, new in
+                Self.titlePeer(for: old, buffer: thisBuffer) == Self.titlePeer(for: new, buffer: thisBuffer)
+            }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in self?.updateTitle(state) }
             .store(in: &cancellables)
     }
 
@@ -1036,7 +1048,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the most recent speaker, and a leaver stops being offered.
         updateSuggestions()
         surface(state.error)
-        // Connection trouble spelled out (#19) — the loud counterpart to the title dot —
+        // Connection trouble spelled out (#19) — the loud counterpart to the subtitle —
         // and, behind an empty list, whether we're still loading or genuinely have nothing.
         connectionBanner.update(ConnectionBannerState.of(reachable: state.reachable, connection: state.connection))
         // New traffic arrived while we're on screen → keep it marked read.
@@ -1601,10 +1613,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// The title, and the light in the subtitle under it.
+    /// The title, and the status in the subtitle under it.
     ///
     /// Runs on every apply, which is also what keeps it right across a rename (`buffer` is
-    /// swapped under it) and when a network's name arrives after the network did (#136).
+    /// swapped under it) and when a network's name arrives after the network did (#136) — and
+    /// on its own when a DM peer's presence moves (see `subscribeToState`).
     private func updateTitle(_ state: ChatState) {
         let status = buffer.kind == .dcc
             // A DCC chat's light is its own session, never the network's (lurker#270) — see
@@ -1617,14 +1630,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             : StatusLight.of(
                 reachable: state.reachable,
                 connection: state.connection,
-                // A DM's light tracks its network, exactly like a channel's: real peer
-                // presence is 1.1 (see StatusLight.of).
                 network: buffer.networkId.flatMap { state.networks[$0]?.state }
             )
-        navigationItem.apply(StatusTitle(title: displayName, status: status, detail: titleDetail))
+        navigationItem.apply(StatusTitle(
+            title: displayName, status: status, detail: titleDetail,
+            peer: Self.titlePeer(for: state, buffer: buffer)
+        ))
     }
 
-    /// What the subtitle names beside the light: the network a conversation is on. Nothing for
+    /// A DM's peer presence for the subtitle (#55): whether the person is there, which the
+    /// network's own state can't say. `rowPresence`, the buffer list's reading, so the title
+    /// and the DM's row never disagree — and it waits out a reconnect the same way.
+    private static func titlePeer(for state: ChatState, buffer: Buffer) -> FriendPresence? {
+        guard buffer.kind == .dm, let networkId = buffer.networkId else { return nil }
+        return state.rowPresence(networkId: networkId, nick: buffer.target)
+    }
+
+    /// What the subtitle names beside the status: the network a conversation is on. Nothing for
     /// a server buffer, whose title already is the network, or for the system buffer, which has
     /// none. A DCC chat's light is its own session rather than the network (lurker#270), so it
     /// says that instead.

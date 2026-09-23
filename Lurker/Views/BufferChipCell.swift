@@ -147,9 +147,6 @@ final class BufferChipCell: UICollectionViewCell {
     private let nameLabel = UILabel()
     private let networkHintLabel = UILabel()
     private let badgeContainer = UIView()
-    /// A small presence dot, shown only on friend chips (nil presence hides it and collapses
-    /// its slot, so ordinary Favorites/Recent chips are unchanged).
-    private let presenceDot = UIView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -159,15 +156,6 @@ final class BufferChipCell: UICollectionViewCell {
         card.layer.cornerCurve = .continuous
         card.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(card)
-
-        presenceDot.translatesAutoresizingMaskIntoConstraints = false
-        presenceDot.layer.cornerRadius = 5
-        presenceDot.setContentHuggingPriority(.required, for: .horizontal)
-        presenceDot.setContentCompressionResistancePriority(.required, for: .horizontal)
-        NSLayoutConstraint.activate([
-            presenceDot.widthAnchor.constraint(equalToConstant: 10),
-            presenceDot.heightAnchor.constraint(equalToConstant: 10),
-        ])
 
         // Body weight, not semibold. A chip is already lifted out of the roster onto its own
         // card — the card IS the emphasis — so bolding the name inside it says the same thing
@@ -231,10 +219,7 @@ final class BufferChipCell: UICollectionViewCell {
         badgeContainer.setContentHuggingPriority(.required, for: .horizontal)
         badgeContainer.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        // The presence dot shares the trailing slot with the unread pill (only one shows at a
-        // time), so it sits where the count would — a friend's status and their unread badge
-        // occupy the same corner rather than the dot crowding the name on the left.
-        let row = UIStackView(arrangedSubviews: [textStack, badgeContainer, presenceDot])
+        let row = UIStackView(arrangedSubviews: [textStack, badgeContainer])
         row.axis = .horizontal
         row.spacing = 8
         row.alignment = .center
@@ -297,10 +282,7 @@ final class BufferChipCell: UICollectionViewCell {
 
     /// `presence` is the peer's status, set for every DM chip and nil for anything else. An away
     /// or offline peer mutes the name and an offline one italicizes it (#167), the web's rule
-    /// for DM rows. `showsPresenceDot` is the Friends chip's: only there does the same status
-    /// also draw the dot. The dot color reads "is this friend reachable right now": green
-    /// online, orange away, muted grey offline/unknown — deliberately understated for offline
-    /// (the common case) rather than the web's red, which reads as an alert on iOS.
+    /// for DM rows — Friends chips included, which no longer draw a dot of their own.
     ///
     /// `nameFont` comes from the list, built from its own traits: a cell's traits aren't settled
     /// while it's being configured, and an offline peer's italic has to be a font rather than a
@@ -322,7 +304,6 @@ final class BufferChipCell: UICollectionViewCell {
         unread: Int,
         highlights: Int,
         presence: FriendPresence? = nil,
-        showsPresenceDot: Bool = false,
         parted: Bool = false,
         isOpen: Bool = false
     ) {
@@ -352,12 +333,8 @@ final class BufferChipCell: UICollectionViewCell {
                 pill.bottomAnchor.constraint(equalTo: badgeContainer.bottomAnchor),
             ])
             badgeContainer.isHidden = false
-            // The unread count takes the trailing slot; the dot yields to it.
-            presenceDot.isHidden = true
         } else {
             badgeContainer.isHidden = true
-            presenceDot.isHidden = !showsPresenceDot || presence == nil
-            if showsPresenceDot, let presence { presenceDot.backgroundColor = presence.dotColor }
         }
 
         // The FULL network name, on every chip, hint or no hint: the hint is a visual
@@ -365,9 +342,8 @@ final class BufferChipCell: UICollectionViewCell {
         // screen-reader user can't answer by glancing at the chip beside it.
         var summary = networkName.map { "\(name), \($0)" } ?? name
         if parted { summary += ", not joined" }
-        // Said aloud only where it's shown: every state on a Friends chip, which has the dot, and
-        // elsewhere just the away or offline that a muted name stands for.
-        if let presence, showsPresenceDot || presence.dimsName {
+        // Said aloud only where it's shown: the away or offline that a muted name stands for.
+        if let presence, presence.dimsName {
             summary += ", \(presence.accessibilityLabel)"
         }
         if unread > 0 {

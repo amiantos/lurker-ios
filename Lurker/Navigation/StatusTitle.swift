@@ -4,7 +4,7 @@
 import LurkerKit
 import UIKit
 
-/// What a screen's title reads: its name, and a subtitle carrying the status light.
+/// What a screen's title reads: its name, and a subtitle saying how it's doing in words.
 ///
 /// This replaces the floating title pill. The pill was a view added to `UINavigationBar` by
 /// hand and positioned by our own constraints, so it only landed in the right place while the
@@ -14,26 +14,14 @@ import UIKit
 struct StatusTitle: Equatable {
     var title: String
     var status: StatusLight
-    /// What the light is about when the title doesn't already say — a channel's network. Nil
-    /// when the title *is* the thing (a server buffer, Lurker itself), and the subtitle then
-    /// says how it's doing in words instead.
+    /// What the status is about when the title doesn't already say — a channel's network. Nil
+    /// when the title *is* the thing (a server buffer, Lurker itself).
     var detail: String?
+    /// A DM's other person, whose presence the subtitle reports in place of the network's.
+    var peer: FriendPresence? = nil
 
-    /// "● Libera", "● Libera · Connecting…", "● Connected".
-    ///
-    /// Words appear whenever the light isn't green, so the state never rests on colour alone.
-    /// Green says nothing extra next to a detail — "connected" on every channel you open is
-    /// noise — but a subtitle needs *something* to say, so with no detail it names the state.
-    var subtitle: AttributedString {
-        let words: String? = switch status {
-        case .good: detail == nil ? "Connected" : nil
-        case .warn: "Connecting…"
-        case .bad: "Not connected"
-        }
-        var light = AttributedString("● ")
-        light.uiKit.foregroundColor = Palette.color(for: status)
-        return light + AttributedString([detail, words].compactMap { $0 }.joined(separator: " · "))
-    }
+    /// "Connected", "Libera · Online", "Libera · Away" — see `StatusLight.subtitle`.
+    var subtitle: String { status.subtitle(detail: detail, peer: peer) }
 }
 
 extension UINavigationItem {
@@ -46,6 +34,6 @@ extension UINavigationItem {
     func apply(_ status: StatusTitle) {
         if title != status.title { title = status.title }
         let subtitle = status.subtitle
-        if attributedSubtitle != subtitle { attributedSubtitle = subtitle }
+        if self.subtitle != subtitle { self.subtitle = subtitle }
     }
 }
