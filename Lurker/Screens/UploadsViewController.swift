@@ -105,10 +105,6 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         title = "Uploads"
         view.backgroundColor = .systemBackground
         navigationItem.largeTitleDisplayMode = .always
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            systemItem: .done,
-            primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
-        )
         navigationItem.leftBarButtonItem = filterItem
 
         collectionView.backgroundColor = .clear
@@ -154,7 +150,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         // The toolbar holding the search field belongs to the navigation controller, not to this
         // screen, so it has to be asked for on the way in — and put back on the way out, since
         // the sheet may show other screens that have no business with a bottom bar.
-        navigationController?.setToolbarHidden(false, animated: animated)
+        if searchesFromToolbar { navigationController?.setToolbarHidden(false, animated: animated) }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -170,7 +166,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     // MARK: - Filters
 
-    /// The filter menu, opposite Done.
+    /// The filter menu, at the top — Done is down beside the search field.
     ///
     /// A menu rather than a row of chips, which is what the web client uses. Five kinds plus a
     /// starred toggle is more than fits across a phone without wrapping to a second row, and the
@@ -240,6 +236,15 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
 
     /// Own the search field, in the bottom bar — the same arrangement message search uses, and
     /// for the same reason: on a phone that is where a thumb already is.
+    ///
+    /// Done rides beside it, trailing, rather than up in the navigation bar: the bottom is where
+    /// the hand already is, and it's the arrangement Apple's own sheets with a bottom search
+    /// field use.
+    ///
+    /// Only where the field actually goes to the bottom — UIKit folds an integrated field into
+    /// the toolbar on iPhone alone. On iPad it lands at the top-right of the navigation bar, so
+    /// Done goes up there, to its right, and there's no toolbar: it would be a bar holding nothing,
+    /// or Done stranded on its own under the grid.
     private func installSearchBar() {
         let controller = UISearchController(searchResultsController: nil)
         controller.searchResultsUpdater = self
@@ -252,8 +257,21 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         controller.searchBar.spellCheckingType = .no
         navigationItem.searchController = controller
         navigationItem.preferredSearchBarPlacement = .integrated
-        toolbarItems = [navigationItem.searchBarPlacementBarButtonItem]
+        let done = UIBarButtonItem(
+            systemItem: .done,
+            primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
+        )
+        if searchesFromToolbar {
+            toolbarItems = [navigationItem.searchBarPlacementBarButtonItem, done]
+        } else {
+            // Pinned rather than a right item: UIKit lays an integrated field trailing-most,
+            // after the right items, and the pinned group is the one slot that goes past it.
+            navigationItem.pinnedTrailingGroup = UIBarButtonItemGroup(barButtonItems: [done], representativeItem: nil)
+        }
     }
+
+    /// Whether the search field (and Done) are in a bottom toolbar — see `installSearchBar`.
+    private var searchesFromToolbar: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
     /// Fires for activation and dismissal as well as for edits, so unchanged text is dropped —
     /// otherwise merely focusing the field would re-run the search already on screen and scroll
