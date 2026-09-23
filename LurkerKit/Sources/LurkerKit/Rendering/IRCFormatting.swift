@@ -35,7 +35,7 @@ public struct FormattingRun: Equatable, Sendable {
     /// reveals nothing, and a URL anywhere in it silently losing its preview.
     public var hidesText: Bool {
         guard let fg, fg == bg else { return false }
-        if case .slot(let index) = fg { return index <= 15 }
+        if case .slot(let index) = fg { return (0...15).contains(index) }
         return true
     }
 

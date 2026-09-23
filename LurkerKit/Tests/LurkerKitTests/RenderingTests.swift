@@ -112,6 +112,11 @@ final class RenderingTests: XCTestCase {
         XCTAssertFalse(IRCFormatting.parse("\u{03}99,99x")[0].hidesText)
         XCTAssertFalse(IRCFormatting.parse("\u{04}aabbcc,aabbcd x")[0].hidesText)
         XCTAssertFalse(IRCFormatting.parse("\u{03}01x")[0].hidesText)
+        // The parser never yields a negative slot, but `IRCColor` is public and none is paintable.
+        XCTAssertFalse(FormattingRun(
+            text: "x", bold: false, italic: false, underline: false, strike: false,
+            reverse: false, fg: .slot(-1), bg: .slot(-1)
+        ).hidesText)
     }
 
     /// The reverse swap, with strings standing in for colours. An unset or unpaintable side is
