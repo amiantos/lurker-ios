@@ -48,6 +48,11 @@ public struct Network: Equatable, Sendable {
     /// Absent reads as "not blocked": an older server has no allowlist to be excluded from,
     /// and a network the roster hasn't described yet has nothing to say about it.
     public var blocked: Bool
+    /// Whether a reaction — or a reply's tag — can go out on this network as the server last
+    /// said (`canReact` on the snapshot, then `react-support`). **Read through
+    /// `ChatState.canReact(networkId:)`**, which also requires the network to be connected: the
+    /// flag describes the last registration, and a dropped link carries nothing.
+    public var canReact: Bool
 
     public init(
         id: Int,
@@ -56,7 +61,8 @@ public struct Network: Equatable, Sendable {
         state: ConnectionState = .disconnected,
         nick: String = "",
         away: AwayState? = nil,
-        blocked: Bool = false
+        blocked: Bool = false,
+        canReact: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -65,6 +71,7 @@ public struct Network: Equatable, Sendable {
         self.nick = nick
         self.away = away
         self.blocked = blocked
+        self.canReact = canReact
     }
 
     /// Take the roster's word for the REST-only fields — `name`, `position`, `blocked` — and

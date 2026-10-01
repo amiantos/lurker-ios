@@ -40,7 +40,7 @@ class HistoryFeedViewController: UITableViewController {
     private var sectionOffsets: [Int] = []
 
     /// The next-page cursor from the last response; nil once the server has no more.
-    private var nextBefore: Int?
+    private var nextCursor: FeedCursor?
     private var reachedEnd = false
     private var isLoading = false
     /// Bumped by every `reload()`. A page carries the generation it was requested under, and
@@ -110,9 +110,9 @@ class HistoryFeedViewController: UITableViewController {
     /// What this feed is called, in the nav bar.
     var feedTitle: String { "" }
 
-    /// One page, newest-first. `before` is the previous page's `nextBefore`, nil for the first.
+    /// One page, newest-first. `before` is the previous page's `next`, nil for the first.
     /// Nil return means the fetch failed (a 401 has already bounced the session).
-    func fetchPage(before: Int?) async -> HighlightsPage? { nil }
+    func fetchPage(before: FeedCursor?) async -> HighlightsPage? { nil }
 
     /// The three placeholder states, in this feed's own words.
     var loadingModel: StateView.Model { StateView.Model(title: "Loading…", isLoading: true) }
@@ -235,7 +235,7 @@ class HistoryFeedViewController: UITableViewController {
 
     /// Fetch the next older page, if there is one and we're not already fetching.
     private func loadMore() {
-        guard !isLoading, !reachedEnd, let cursor = nextBefore else { return }
+        guard !isLoading, !reachedEnd, let cursor = nextCursor else { return }
         let generation = loadGeneration
         isLoading = true
         // Re-checked once the task actually starts, not only when its answer arrives.
@@ -273,7 +273,7 @@ class HistoryFeedViewController: UITableViewController {
             return
         }
         items = visible(page.items)
-        nextBefore = page.nextBefore
+        nextCursor = page.next
         reachedEnd = !page.hasMore
         rebuildSections()
         tableView.reloadData()
@@ -301,7 +301,7 @@ class HistoryFeedViewController: UITableViewController {
     @MainActor
     private func settle(gainedRows: Bool) {
         if gainedRows { fruitlessHops = 0 }
-        let stalled = !gainedRows && !reachedEnd && nextBefore != nil
+        let stalled = !gainedRows && !reachedEnd && nextCursor != nil
         if stalled, fruitlessHops < Self.maxFruitlessHops {
             fruitlessHops += 1
             // Only claim to be loading when there's nothing to look at. Topping up beneath a
@@ -369,7 +369,7 @@ class HistoryFeedViewController: UITableViewController {
         // the next `willDisplay` (or the retry below) fetch past it.
         let fresh = visible(page.items)
         guard !fresh.isEmpty else {
-            nextBefore = page.nextBefore
+            nextCursor = page.next
             reachedEnd = !page.hasMore
             // Same boundary: an empty page onto an empty list is the genuine end of the feed —
             // or, if a cursor is still live, a page that filtered to nothing and has to be
@@ -378,7 +378,7 @@ class HistoryFeedViewController: UITableViewController {
             return
         }
         items.append(contentsOf: fresh)
-        nextBefore = page.nextBefore
+        nextCursor = page.next
         reachedEnd = !page.hasMore
         rebuildSections()
         // Channel+day runs mean an appended page can extend the last section *or* open new
@@ -523,8 +523,13 @@ class HistoryFeedViewController: UITableViewController {
             ? MessageRenderer.caption(item.message, networkName: section.networkName)
             : nil
         let time = item.message.date.map { MessageRenderer.compactHeaderTime($0) }
+        // A reaction to one of your lines (iOS #183): the reactor heads the row, as the speaker
+        // does a highlight, and the body says what they reacted and to which line — the web's
+        // `bob | 👍 on "…"`.
+        let body = item.reaction.map { Self.reactionBody($0, traits: traitCollection) }
+            ?? MessageRenderer.renderCompactBody(item.message, traits: traitCollection)
         cell.configure(
-            MessageRenderer.renderCompactBody(item.message, traits: traitCollection),
+            body,
             header: name == nil && time == nil ? nil : CompactCell.Header(
                 nick: name ?? "",
                 color: MessageRenderer.captionColor(item.message, networkName: section.networkName),
@@ -579,6 +584,26 @@ class HistoryFeedViewController: UITableViewController {
               indexPath.row < sections[indexPath.section].items.count
         else { return nil }
         return trailingSwipeActions(for: sections[indexPath.section].items[indexPath.row])
+    }
+
+    /// `👍 on "your line"`, the value in the body's ink and the rest muted, indented like a body.
+    private static func reactionBody(_ reaction: FeedReaction, traits: UITraitCollection) -> NSAttributedString {
+        let font = MessageRenderer.compactFont(compatibleWith: traits)
+        let indent = MessageRenderer.compactIndent(compatibleWith: traits)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.firstLineHeadIndent = indent
+        paragraph.headIndent = indent
+        paragraph.lineSpacing = MessageRenderer.compactLineGap
+        let text = NSMutableAttributedString(
+            string: reaction.value,
+            attributes: [.font: font, .foregroundColor: Palette.fg, .paragraphStyle: paragraph]
+        )
+        let line = reaction.lineText.map { IRCFormatting.strip($0) } ?? ""
+        text.append(NSAttributedString(
+            string: " on \u{201C}\(line)\u{201D}",
+            attributes: [.font: font, .foregroundColor: Palette.fgMuted, .paragraphStyle: paragraph]
+        ))
+        return text
     }
 
     /// The network's name for a row — the server-resolved one, falling back to the client's own

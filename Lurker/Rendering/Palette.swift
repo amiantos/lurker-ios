@@ -43,9 +43,14 @@ enum Palette {
     /// and links stay the system's, and this is Lurker's signal for "something is waiting".
     nonisolated static let accent = dynamicHex(dark: "#a99dec", light: "#7058be")
 
-    // `border` (#38353b / #e0dad9) is deliberately absent. Its role is region separators, which
-    // are native chrome here — and the buffer list's rules derive from `fgMuted` instead. A token
-    // nothing draws is a token nobody keeps in sync.
+    /// `look.color.bg_soft` — a reaction chip's fill (iOS #183), the surface the web lifts small
+    /// controls onto. Its own dark value, not one derived from `bg`, so the two clients' chips
+    /// are the same colour.
+    nonisolated static let bgSoft = dynamicHex(dark: "#2c2a2e", light: "#ede7e5")
+
+    /// `look.color.border` — a reaction chip's edge. Region separators are native chrome here and
+    /// the buffer list's rules derive from `fgMuted`, so this draws exactly one thing.
+    nonisolated static let border = dynamicHex(dark: "#38353b", light: "#e0dad9")
 
     /// One tier below `fgMuted`: text that is a *hint* rather than information — the
     /// start-of-history rule, a relay line's source tag. Present enough to read when looked for,

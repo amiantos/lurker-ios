@@ -137,8 +137,9 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// `.tooShort` is answered here, locally, and never reaches the wire — that's the point of
     /// the state. Answering it with an empty page (rather than nil) matters: nil means "we
     /// couldn't ask", which would put an error in front of someone who is simply mid-word.
-    override func fetchPage(before: Int?) async -> HighlightsPage? {
-        switch showing {
+    override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
+        let before = cursor?.beforeMessage
+        return switch showing {
         case .landing: await viewModel.fetchHighlights(before: before)
         case .tooShort: HighlightsPage(items: [], nextBefore: nil)
         case .results: await viewModel.searchMessages(query, before: before)

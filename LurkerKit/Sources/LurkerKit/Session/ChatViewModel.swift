@@ -334,6 +334,15 @@ public final class ChatViewModel {
         return page
     }
 
+    /// A page of the activity feed — highlights and reactions to your lines (iOS #183). Bookmark
+    /// flags noted the way `fetchHighlights` notes them; a reaction row carries none.
+    public func fetchActivity(cursor: FeedCursor? = nil) async -> HighlightsPage? {
+        let page = await client.fetchActivity(cursor: cursor)
+        store.noteBookmarked(
+            ids: (page?.items ?? []).filter { $0.reaction == nil && $0.message.bookmarked }.map(\.message.id))
+        return page
+    }
+
     // MARK: - Link previews
 
     /// The app-wide preview cache.
@@ -508,6 +517,19 @@ public final class ChatViewModel {
     @discardableResult
     public func setBookmark(messageId: Int, saved: Bool) -> Bool {
         client.setBookmark(messageId: messageId, saved: saved)
+    }
+
+    /// React with `value` on a line, or take ours back when it's already there (iOS #183).
+    ///
+    /// The direction comes from the store as it stands, like the web's `toggle`: a chip is drawn
+    /// from the same map, so tapping a lit one takes it back. Never optimistic — the network's
+    /// echo is what lights a reaction up (see `LurkerClient.react`). False when the value can't
+    /// go out at all or there's no socket to carry it.
+    @discardableResult
+    public func toggleReaction(messageId: Int, value: String) -> Bool {
+        guard messageId != 0, Reactions.isValidValue(value) else { return false }
+        let mine = (state.reactions[messageId] ?? []).contains { $0.isSelf && $0.value == value }
+        return client.react(messageId: messageId, value: value, remove: mine)
     }
 
     /// Upload a prepared file and return the stored object's URL for the composer to paste
@@ -750,12 +772,33 @@ public final class ChatViewModel {
                 lifecycle(.disconnect, in: key, reason: reason)
             case .reconnect:
                 lifecycle(.reconnect, in: key)
+            case .react(let value):
+                react(value, in: key)
             case .info(let text):
                 store.appendLocal(key, text: text)
             }
         }
         if wentNowhere, let lineId { refuse(lineId) }
         return outcome
+    }
+
+    /// `/react` (iOS #183): the value on the last line someone else said here. Nothing prints on
+    /// success — the chip lighting up when the network echoes it is the answer, and a refusal
+    /// is silence there too, the same as a tap on the sheet.
+    private func react(_ value: String, in key: BufferKey) {
+        let state = store.state
+        guard state.canReact(networkId: key.networkId), Reactions.isConversation(key.target) else {
+            store.appendLocal(key, text: "this network can't carry reactions right now")
+            return
+        }
+        switch Reactions.commandTarget(in: state.messages[key.id] ?? []) {
+        case .failure(let refusal):
+            store.appendLocal(key, text: refusal.text)
+        case .success(let line):
+            if !client.react(messageId: line.id, value: value, remove: false) {
+                store.appendLocal(key, text: "not connected — the reaction wasn't sent")
+            }
+        }
     }
 
     /// Run one of the REST connection verbs on `key`'s network and print its refusal, if any,
@@ -1528,7 +1571,16 @@ public final class ChatViewModel {
             // the state this frame proved, not the one before it.
             store.apply(frame)
             onFavoritesSynced?()
-        case .snapshot, .networkState:
+        case .snapshot:
+            // Lines held from before the socket opened are a resume: a reaction made or taken
+            // back on one of them while we were away reached no socket of ours, and the resume
+            // ships only new rows. Ask what stands now. A fresh connect holds nothing, and every
+            // backlog that follows carries its own. Asked before applying, so the ids are the
+            // ones that were on screen.
+            client.syncReactions(messageIds: store.state.reactionSyncIds())
+            store.apply(frame)
+            refreshRosterIfAnyNetworkIsNameless()
+        case .networkState:
             store.apply(frame)
             refreshRosterIfAnyNetworkIsNameless()
         default:

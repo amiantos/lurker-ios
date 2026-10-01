@@ -60,6 +60,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         }
     }
 
+    /// The reaction chips under a line (iOS #183), and what tapping them does. The closures
+    /// close over the row's message, so they're handed in per configure and dropped on reuse.
+    struct Reactions {
+        let groups: [ReactionGroup]
+        /// A reaction can go out on this line right now.
+        let canToggle: Bool
+        /// The line is one we could ever react to from here (not a notice, not encrypted).
+        let showsAdd: Bool
+        let onToggle: (String) -> Void
+        let onOpen: () -> Void
+    }
+
     /// A spoiler in this cell's message was tapped, by its ordinal within the message. Set per
     /// configure and cleared in `prepareForReuse`, because it closes over that message.
     var onToggleSpoiler: ((Int) -> Void)?
@@ -74,6 +86,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// the overwhelming majority of rows, which is why it's a plain stack view rather than
     /// anything lazier — an empty hidden `UIStackView` costs a pointer.
     private let attachments = MessageAttachmentsView()
+    /// The reaction chips, in a holder that indents them under the body and gives them air.
+    /// Hidden on every line nobody has reacted to, which is nearly all of them.
+    private let reactionHolder = UIView()
+    private let reactionRow = ReactionRowView()
+    private var reactionIndent: NSLayoutConstraint!
+    private var reactionBottom: NSLayoutConstraint!
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
     /// An optical correction on the bottom of a block's fill.
@@ -165,6 +183,20 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         column.addArrangedSubview(headerRow)
         column.addArrangedSubview(messageText)
         column.addArrangedSubview(attachments)
+        reactionHolder.isHidden = true
+        reactionRow.translatesAutoresizingMaskIntoConstraints = false
+        reactionHolder.addSubview(reactionRow)
+        reactionIndent = reactionRow.leadingAnchor.constraint(equalTo: reactionHolder.leadingAnchor)
+        reactionBottom = reactionRow.bottomAnchor.constraint(equalTo: reactionHolder.bottomAnchor)
+        NSLayoutConstraint.activate([
+            reactionIndent,
+            reactionBottom,
+            reactionRow.trailingAnchor.constraint(equalTo: reactionHolder.trailingAnchor),
+            // Air above as well as below: a matched line's wash ends at the cell's edge, and chips
+            // flush against it looked cut off (the web's note on its own row).
+            reactionRow.topAnchor.constraint(equalTo: reactionHolder.topAnchor, constant: 2),
+        ])
+        column.addArrangedSubview(reactionHolder)
         column.translatesAutoresizingMaskIntoConstraints = false
         fill.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(fill)
@@ -204,6 +236,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         endsBlock: Bool = false,
         highlighted: Bool = false,
         interactive: Bool = true,
+        reactions: Reactions? = nil,
         traits: UITraitCollection
     ) {
         // A results list turns this off so a tap anywhere reaches the row's own selection (the
@@ -268,12 +301,27 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         column.layoutMargins = UIEdgeInsets(
             top: (header == nil ? 0 : padding) + (startsBlock ? wash : 0), left: 0, bottom: 0, right: 0
         )
+        // The block's closing air goes under whatever is last: the chips when there are any, so
+        // a matched block's wash still ends a band's width below its last visible thing.
+        let closing = endsBlock ? wash + Self.washBottomNudge : 0
+        let showsReactions = !(reactions?.groups.isEmpty ?? true)
         messageText.textContainerInset = UIEdgeInsets(
             top: header == nil ? padding : MessageRenderer.compactHeaderGap,
             left: 0, // indentation is the paragraph style's — see `MessageRenderer.spaced`
-            bottom: padding + (endsBlock ? wash + Self.washBottomNudge : 0),
+            bottom: padding + (showsReactions ? 0 : closing),
             right: 0
         )
+        reactionHolder.isHidden = !showsReactions
+        if let reactions, showsReactions {
+            reactionIndent.constant = MessageRenderer.compactIndent(compatibleWith: traits)
+            reactionBottom.constant = -(padding + 2 + closing)
+            reactionRow.onToggle = reactions.onToggle
+            reactionRow.onOpen = reactions.onOpen
+            reactionRow.configure(
+                groups: reactions.groups, canToggle: reactions.canToggle,
+                showsAdd: reactions.showsAdd, traits: traits
+            )
+        }
         // The rest of the gap — the part that isn't inside either block's fill — is reserved by
         // the cell and excluded from it, so what separates two blocks is background.
         fillBottom.constant = endsBlock
@@ -386,6 +434,31 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.url(at: convert(point, to: messageText))
     }
 
+    func reactionChip(at point: CGPoint) -> Bool {
+        guard !reactionHolder.isHidden else { return false }
+        return reactionRow.containsChip(at: convert(point, to: reactionRow))
+    }
+
+    /// Measured at the width the table is asking about, so the chips know where they wrap.
+    ///
+    /// ⚠ The chip row's height is a function of its width, and Auto Layout hands a self-sizing
+    /// cell's subviews no width before it asks their heights — the trap `UILabel` escapes with
+    /// `preferredMaxLayoutWidth`. So lay out once at the target width, tell the row what it got,
+    /// and only then measure. Skipped on every line without chips, which is nearly all of them.
+    override func systemLayoutSizeFitting(
+        _ targetSize: CGSize,
+        withHorizontalFittingPriority horizontal: UILayoutPriority,
+        verticalFittingPriority vertical: UILayoutPriority
+    ) -> CGSize {
+        if !reactionHolder.isHidden, targetSize.width > 0 {
+            bounds.size.width = targetSize.width
+            layoutIfNeeded()
+            reactionRow.availableWidth = reactionRow.bounds.width
+        }
+        return super.systemLayoutSizeFitting(
+            targetSize, withHorizontalFittingPriority: horizontal, verticalFittingPriority: vertical)
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         // An in-flight jump flash (#42) would otherwise pulse on an unrelated line.
@@ -395,5 +468,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
         onToggleSpoiler = nil
         onOpenMedia = nil
+        reactionRow.onToggle = nil
+        reactionRow.onOpen = nil
     }
 }

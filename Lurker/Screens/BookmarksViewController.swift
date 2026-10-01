@@ -22,8 +22,8 @@ import UIKit
 final class BookmarksViewController: HistoryFeedViewController {
     override var feedTitle: String { "Bookmarks" }
 
-    override func fetchPage(before: Int?) async -> HighlightsPage? {
-        await viewModel.fetchBookmarks(before: before)
+    override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
+        await viewModel.fetchBookmarks(before: cursor?.beforeMessage)
     }
 
     override var loadingModel: StateView.Model {

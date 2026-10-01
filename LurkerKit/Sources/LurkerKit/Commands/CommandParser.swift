@@ -149,6 +149,13 @@ public enum CommandParser {
         // Messaging
         case "me":
             return argLine.isEmpty ? [] : [.action(target: target, text: chatBody(argLine))]
+        case "react":
+            let value = argLine.trimmingCharacters(in: .whitespaces)
+            guard !value.isEmpty else { return [.info("usage: /react <emoji|text> — e.g. /react 👍")] }
+            guard Reactions.isValidValue(value) else {
+                return [.info("a reaction can be at most \(Reactions.maxGraphemes) characters")]
+            }
+            return [.react(value: value)]
         case "slap":
             guard let who = rest.first else { return [.info("usage: /slap <nick>")] }
             return [.action(target: target, text: "slaps \(who) around a bit with a large trout")]
