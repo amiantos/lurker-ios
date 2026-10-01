@@ -198,7 +198,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             reactionRow.trailingAnchor.constraint(equalTo: reactionHolder.trailingAnchor),
             // Air above as well as below: a matched line's wash ends at the cell's edge, and chips
             // flush against it looked cut off (the web's note on its own row).
-            reactionRow.topAnchor.constraint(equalTo: reactionHolder.topAnchor, constant: 2),
+            reactionRow.topAnchor.constraint(equalTo: reactionHolder.topAnchor, constant: 6),
         ])
         column.addArrangedSubview(reactionHolder)
         column.translatesAutoresizingMaskIntoConstraints = false

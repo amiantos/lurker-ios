@@ -52,6 +52,10 @@ final class ReactionRowView: UIView {
     private var chips: [UIButton] = []
     private let addChip = UIButton(type: .custom)
     private static let gap: CGFloat = 4
+    /// A chip's padding around its line of text — one point more below, for the emoji that sits
+    /// low in the line. Shared by the add chip so a row of them lines up.
+    private static let chipPadTop: CGFloat = 4
+    private static let chipPadBottom: CGFloat = 5
     /// The longest value a chip spells out; past it the start shows and the sheet has the whole
     /// (#1014 on the web, halloy's rule). Cut on grapheme clusters, so an emoji is never split.
     private static let maxChipCharacters = 12
@@ -184,7 +188,8 @@ final class ReactionRowView: UIView {
         config.titleLineBreakMode = .byTruncatingTail
         // A pixel more below than above: an emoji's glyph sits low in the line, and even padding
         // left it touching the bottom edge while its top floated (the web's correction too).
-        config.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 6, bottom: 3, trailing: 6)
+        config.contentInsets = NSDirectionalEdgeInsets(
+            top: Self.chipPadTop, leading: 6, bottom: Self.chipPadBottom, trailing: 6)
         config.background.cornerRadius = 4
         config.background.strokeWidth = 1
         config.background.backgroundColor = (group.mine
@@ -208,8 +213,8 @@ final class ReactionRowView: UIView {
         config.baseForegroundColor = Palette.translucent(Palette.fgMuted, alpha: 0.55).resolvedColor(with: traits)
         // The same box as a chip, so a row of them lines up: the image is a line of text tall.
         config.contentInsets = NSDirectionalEdgeInsets(
-            top: 2 + max(0, (font.lineHeight - font.pointSize) / 2), leading: 6,
-            bottom: 3 + max(0, (font.lineHeight - font.pointSize) / 2), trailing: 6
+            top: chipPadTop + max(0, (font.lineHeight - font.pointSize) / 2), leading: 6,
+            bottom: chipPadBottom + max(0, (font.lineHeight - font.pointSize) / 2), trailing: 6
         )
         config.background.cornerRadius = 4
         config.background.strokeWidth = 1
