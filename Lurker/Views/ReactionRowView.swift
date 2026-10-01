@@ -21,6 +21,14 @@ final class ReactionRowView: UIView {
     var onToggle: ((String) -> Void)?
     /// The add chip, or a chip on a line we can't send to: open the sheet.
     var onOpen: (() -> Void)?
+    /// The chips wrapped to a different height on screen than the cell was measured with — a
+    /// width the measurement didn't predict (an inset it couldn't see yet, a resize). The table
+    /// has to be asked to measure again; invalidating this view's size alone doesn't reach it.
+    var onHeightChange: (() -> Void)?
+    /// Set by the cell while it measures, when the widths this lays out at are the measurement's.
+    var isMeasuring = false
+    /// The height last reported through `intrinsicContentSize` — what the cell was measured with.
+    private var reportedHeight: CGFloat = 0
 
     /// The width the chips wrap into. Set by the cell before it's measured (and kept current by
     /// `layoutSubviews`), because the height is a function of it and Auto Layout won't ask.
@@ -82,7 +90,8 @@ final class ReactionRowView: UIView {
     }
 
     override var intrinsicContentSize: CGSize {
-        CGSize(width: UIView.noIntrinsicMetric, height: frames(in: availableWidth).height)
+        reportedHeight = frames(in: availableWidth).height
+        return CGSize(width: UIView.noIntrinsicMetric, height: reportedHeight)
     }
 
     override func layoutSubviews() {
@@ -92,6 +101,9 @@ final class ReactionRowView: UIView {
         if bounds.width > 0 { availableWidth = bounds.width }
         let laid = frames(in: bounds.width)
         for (view, frame) in zip(visibleViews, laid.frames) { view.frame = frame }
+        if !isMeasuring, window != nil, bounds.width > 0, abs(laid.height - reportedHeight) > 0.5 {
+            onHeightChange?()
+        }
     }
 
     private var visibleViews: [UIView] { addChip.isHidden ? chips : chips + [addChip] }

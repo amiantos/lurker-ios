@@ -62,7 +62,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
     /// The reaction chips under a line (iOS #183), and what tapping them does. The closures
     /// close over the row's message, so they're handed in per configure and dropped on reuse.
-    struct Reactions {
+    ///
+    /// Not `Reactions`: that's LurkerKit's rules type, and a nested one would shadow it here.
+    struct ReactionChips {
         let groups: [ReactionGroup]
         /// A reaction can go out on this line right now.
         let canToggle: Bool
@@ -70,6 +72,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let showsAdd: Bool
         let onToggle: (String) -> Void
         let onOpen: () -> Void
+        let onHeightChange: () -> Void
     }
 
     /// A spoiler in this cell's message was tapped, by its ordinal within the message. Set per
@@ -236,7 +239,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         endsBlock: Bool = false,
         highlighted: Bool = false,
         interactive: Bool = true,
-        reactions: Reactions? = nil,
+        reactions: ReactionChips? = nil,
         traits: UITraitCollection
     ) {
         // A results list turns this off so a tap anywhere reaches the row's own selection (the
@@ -317,6 +320,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             reactionBottom.constant = -(padding + 2 + closing)
             reactionRow.onToggle = reactions.onToggle
             reactionRow.onOpen = reactions.onOpen
+            reactionRow.onHeightChange = reactions.onHeightChange
             reactionRow.configure(
                 groups: reactions.groups, canToggle: reactions.canToggle,
                 showsAdd: reactions.showsAdd, traits: traits
@@ -450,11 +454,16 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         withHorizontalFittingPriority horizontal: UILayoutPriority,
         verticalFittingPriority vertical: UILayoutPriority
     ) -> CGSize {
-        if !reactionHolder.isHidden, targetSize.width > 0 {
-            bounds.size.width = targetSize.width
-            layoutIfNeeded()
-            reactionRow.availableWidth = reactionRow.bounds.width
+        guard !reactionHolder.isHidden, targetSize.width > 0 else {
+            return super.systemLayoutSizeFitting(
+                targetSize, withHorizontalFittingPriority: horizontal, verticalFittingPriority: vertical)
         }
+        // A measuring pass lays the row out at widths of its own; that's not a mismatch to report.
+        reactionRow.isMeasuring = true
+        defer { reactionRow.isMeasuring = false }
+        bounds.size.width = targetSize.width
+        layoutIfNeeded()
+        reactionRow.availableWidth = reactionRow.bounds.width
         return super.systemLayoutSizeFitting(
             targetSize, withHorizontalFittingPriority: horizontal, verticalFittingPriority: vertical)
     }
@@ -470,5 +479,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         onOpenMedia = nil
         reactionRow.onToggle = nil
         reactionRow.onOpen = nil
+        reactionRow.onHeightChange = nil
     }
 }

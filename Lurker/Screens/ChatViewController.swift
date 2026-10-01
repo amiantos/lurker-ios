@@ -609,10 +609,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     && old.dccChatSession(bufferKey) == new.dccChatSession(bufferKey)
                     // Reactions ride beside the rows, not on them (iOS #183), so a `reaction`
                     // frame changes what's on screen with no message changing — the same trap
-                    // again. One revision for the whole map: a reaction elsewhere costs this
-                    // screen a redraw, which is rare, where comparing the map per frame would
-                    // cost every frame.
-                    && old.reactionsRevision == new.reactionsRevision
+                    // again. Compared as this buffer's revision: one integer, and a reaction in
+                    // another buffer doesn't redraw this one.
+                    && old.reactionsRevision(for: bufferKey) == new.reactionsRevision(for: bufferKey)
                     // Whether the chips can be tapped moves with the network's state (compared
                     // above) and its `react-support`, which `networks` covers too.
             }
@@ -3276,6 +3275,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
     }
 
+    /// Re-measure the visible rows' heights without reloading them — a chip row wrapped onto a
+    /// different number of lines than the cell was measured with. Coalesced to one pass a runloop.
+    private var remeasureQueued = false
+    private func remeasureRows() {
+        guard !remeasureQueued else { return }
+        remeasureQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            remeasureQueued = false
+            UIView.performWithoutAnimation { self.tableView.performBatchUpdates(nil) }
+        }
+    }
+
     /// The reaction sheet for a line (iOS #183): who reacted with what, and a way to add yours.
     private func showReactions(for message: Message) {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
@@ -3304,16 +3316,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     on: message, target: target,
                     networkCanReact: viewModel.state.canReact(networkId: networkId))
             },
-            showsAdd: { message in
-                (message.type == .message || message.type == .action) && !message.isE2E
-                    && Reactions.isConversation(target)
-            },
+            showsAdd: { message in Reactions.lineTakes(message, target: target) },
             onToggle: { [weak self] message, value in
                 guard let self else { return }
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                viewModel.toggleReaction(messageId: message.id, value: value)
+                // The chip doesn't move until the network echoes it, so the tap is acknowledged
+                // here — and a send that went nowhere says so the same way, rather than nothing.
+                if viewModel.toggleReaction(messageId: message.id, value: value) {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } else {
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
             },
-            onOpen: { [weak self] message in self?.showReactions(for: message) }
+            onOpen: { [weak self] message in self?.showReactions(for: message) },
+            onHeightChange: { [weak self] in self?.remeasureRows() }
         )
     }
 

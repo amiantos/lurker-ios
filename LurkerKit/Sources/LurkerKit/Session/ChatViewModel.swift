@@ -791,10 +791,20 @@ public final class ChatViewModel {
             store.appendLocal(key, text: "this network can't carry reactions right now")
             return
         }
+        // Parked on a jump's slice (#42), the newest lines held aren't the conversation's newest,
+        // and "the last thing someone said" would land on a line from whenever the jump went.
+        if state.buffers[key.id]?.hasMoreNewer == true {
+            store.appendLocal(key, text: "jump back to the latest messages to react with /react")
+            return
+        }
         switch Reactions.commandTarget(in: state.messages[key.id] ?? []) {
         case .failure(let refusal):
             store.appendLocal(key, text: refusal.text)
         case .success(let line):
+            if (state.reactions[line.id] ?? []).contains(where: { $0.isSelf && $0.value == value }) {
+                store.appendLocal(key, text: "you already reacted \(value) to \(line.nick ?? "that")")
+                return
+            }
             if !client.react(messageId: line.id, value: value, remove: false) {
                 store.appendLocal(key, text: "not connected — the reaction wasn't sent")
             }

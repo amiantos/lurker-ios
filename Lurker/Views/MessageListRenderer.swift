@@ -70,6 +70,8 @@ struct ReactionContext {
     let showsAdd: (Message) -> Bool
     let onToggle: (Message, String) -> Void
     let onOpen: (Message) -> Void
+    /// A chip row came out a different height than its cell was measured at.
+    let onHeightChange: () -> Void
 }
 
 /// What a row needs to draw link previews. Bundled so `MessageListContext` grows by one
@@ -266,16 +268,17 @@ struct MessageListRenderer {
     }
 
     /// The chips for a line, or nil when it has none (or the screen draws none).
-    static func reactions(for message: Message, context: MessageListContext) -> CompactCell.Reactions? {
+    static func reactions(for message: Message, context: MessageListContext) -> CompactCell.ReactionChips? {
         guard let reactions = context.reactions else { return nil }
         let groups = reactions.groups(message)
         guard !groups.isEmpty else { return nil }
-        return CompactCell.Reactions(
+        return CompactCell.ReactionChips(
             groups: groups,
             canToggle: reactions.canToggle(message),
             showsAdd: reactions.showsAdd(message),
             onToggle: { [onToggle = reactions.onToggle] value in onToggle(message, value) },
-            onOpen: { [onOpen = reactions.onOpen] in onOpen(message) }
+            onOpen: { [onOpen = reactions.onOpen] in onOpen(message) },
+            onHeightChange: reactions.onHeightChange
         )
     }
 

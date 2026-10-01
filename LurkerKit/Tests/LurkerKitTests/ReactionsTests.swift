@@ -99,12 +99,13 @@ final class ReactionsTests: XCTestCase {
         let store = LurkerStore()
         store.apply(backlog([line(1, reactions: [thumbs]), line(2)]))
         XCTAssertEqual(store.state.reactionGroups(for: 1).map(\.value), ["👍"])
-        let before = store.state.reactionsRevision
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        let before = store.state.reactionsRevision(for: key)
 
         // The same line again with nothing on it: taken back while we weren't listening.
         store.apply(backlog([line(1)]))
         XCTAssertTrue(store.state.reactionGroups(for: 1).isEmpty)
-        XCTAssertNotEqual(store.state.reactionsRevision, before)
+        XCTAssertNotEqual(store.state.reactionsRevision(for: key), before)
     }
 
     func testSilenceAboutALineIsNotARemoval() {
@@ -166,10 +167,11 @@ final class ReactionsTests: XCTestCase {
     func testAReactionWeAlreadyHoldChangesNothing() {
         let store = LurkerStore()
         store.apply(backlog([line(1, reactions: [thumbs])]))
-        let revision = store.state.reactionsRevision
+        let key = BufferKey(networkId: 1, target: "#lurker")
+        let revision = store.state.reactionsRevision(for: key)
         store.apply(change(1, "bob", "👍"))
         store.apply(change(1, "nobody", "x", remove: true))
-        XCTAssertEqual(store.state.reactionsRevision, revision, "no change, no redraw")
+        XCTAssertEqual(store.state.reactionsRevision(for: key), revision, "no change, no redraw")
     }
 
     func testSyncIsAuthoritativeForEveryIdItNames() {
@@ -206,6 +208,7 @@ final class ReactionsTests: XCTestCase {
 
     func testCanReactNeedsTheFlagAndALiveLink() {
         let store = LurkerStore()
+        store.apply(.socketOpen)
         store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
                               globalIgnores: [], maxUploadBytes: nil))
         XCTAssertFalse(store.state.canReact(networkId: 1), "false until the burst says otherwise")
@@ -220,6 +223,58 @@ final class ReactionsTests: XCTestCase {
         XCTAssertFalse(store.state.canReact(networkId: 1))
         XCTAssertFalse(store.state.canReact(networkId: nil))
         XCTAssertFalse(store.state.canReact(networkId: 99))
+    }
+
+    /// While our own socket is down, the network's last-known state says nothing: whatever we
+    /// send goes nowhere.
+    func testCanReactNeedsOurOwnSocket() {
+        let store = LurkerStore()
+        store.apply(.socketOpen)
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], canReact: true)],
+                              globalIgnores: [], maxUploadBytes: nil))
+        XCTAssertTrue(store.state.canReact(networkId: 1))
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertFalse(store.state.canReact(networkId: 1))
+    }
+
+    /// ⚠⚠ Someone who takes the nick we reacted under is not us: their reaction is theirs, and
+    /// taking theirs back must not take ours.
+    func testANickCollisionNeverFoldsIntoOurReaction() {
+        let store = LurkerStore()
+        store.apply(backlog([line(1, reactions: [MessageReaction(nick: "alice", value: "👍", isSelf: true)])]))
+        store.apply(change(1, "alice", "👍"))
+        XCTAssertEqual(store.state.reactionGroups(for: 1), [ReactionGroup(value: "👍", nicks: ["alice", "alice"], mine: true)])
+        store.apply(change(1, "alice", "👍", remove: true))
+        XCTAssertEqual(store.state.reactionGroups(for: 1), [ReactionGroup(value: "👍", nicks: ["alice"], mine: true)])
+    }
+
+    func testAReactionToALineNobodyLoadedIsDropped() {
+        let store = LurkerStore()
+        store.apply(backlog([line(1)]))
+        store.apply(change(77, "bob", "👍"))
+        XCTAssertNil(store.state.reactions[77], "its row brings its reactions when it's fetched")
+        XCTAssertEqual(store.state.reactionsRevision(for: BufferKey(networkId: 1, target: "#lurker")), 0)
+    }
+
+    func testARevisionIsPerBuffer() {
+        let store = LurkerStore()
+        store.apply(backlog([line(1)]))
+        store.apply(backlog([line(2)], target: "#other"))
+        store.apply(change(1, "bob", "👍"))
+        XCTAssertEqual(store.state.reactionsRevision(for: BufferKey(networkId: 1, target: "#lurker")), 1)
+        XCTAssertEqual(store.state.reactionsRevision(for: BufferKey(networkId: 1, target: "#other")), 0)
+    }
+
+    /// System-buffer ids are another sequence: dropping that buffer must not free network lines'.
+    func testDroppingTheSystemBufferLeavesNetworkReactionsAlone() {
+        let store = LurkerStore()
+        store.apply(backlog([line(1, reactions: [thumbs])]))
+        store.apply(.backlog(
+            buffer: Buffer(networkId: nil, target: ":system:", kind: .system, hydrated: true),
+            messages: [line(1)], hydrated: true, append: false, speakers: nil
+        ))
+        store.apply(.bufferClosed(networkId: nil, target: ":system:"))
+        XCTAssertEqual(store.state.reactionGroups(for: 1).count, 1)
     }
 
     // MARK: - Gates

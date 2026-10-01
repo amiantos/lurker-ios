@@ -114,8 +114,15 @@ public enum Reactions {
     /// of it (`reactionSendTarget`) and refuses in silence — so this is what keeps a control off a
     /// line where it could only do nothing. `networkCanReact` is `ChatState.canReact`.
     public static func canSend(on message: Message, target: String, networkCanReact: Bool) -> Bool {
-        networkCanReact
-            && message.id != 0
+        networkCanReact && lineTakes(message, target: target)
+    }
+
+    /// The line half of `canSend`: whether this line could ever take a reaction from here,
+    /// whatever the network is doing right now. False for a notice, an encrypted line, a line
+    /// with no msgid, or one outside a channel or DM — which is what says to the sheet whether
+    /// to blame the line or the network, and to the row whether to offer an add chip at all.
+    public static func lineTakes(_ message: Message, target: String) -> Bool {
+        message.id != 0
             && !(message.msgid ?? "").isEmpty
             && !message.isE2E
             && (message.type == .message || message.type == .action)

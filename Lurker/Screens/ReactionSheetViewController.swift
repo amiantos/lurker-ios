@@ -142,8 +142,8 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
 
         render(viewModel.state)
         viewModel.statePublisher
-            .removeDuplicates { [networkId] old, new in
-                old.reactionsRevision == new.reactionsRevision
+            .removeDuplicates { [networkId, key = BufferKey(networkId: networkId, target: target)] old, new in
+                old.reactionsRevision(for: key) == new.reactionsRevision(for: key)
                     && old.canReact(networkId: networkId) == new.canReact(networkId: networkId)
             }
             .receive(on: DispatchQueue.main)
@@ -181,6 +181,11 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         quickRow.isHidden = !canReact
         fieldRow.isHidden = !canReact
         offline.isHidden = canReact
+        // Blame the right thing: a notice or an encrypted line can't take one on any network, and
+        // sending someone off to look for a connection problem there would be a wild goose chase.
+        offline.text = Reactions.lineTakes(message, target: target)
+            ? "This network can't carry reactions right now."
+            : "This line can't take reactions."
         if !canReact { problem.isHidden = true; field.resignFirstResponder() }
         for view in quickRow.arrangedSubviews { view.removeFromSuperview() }
         for value in Reactions.quickPicks {
@@ -262,6 +267,7 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     private func typedChanged() {
         let value = typedValue
         let tooLong = !value.isEmpty && !Reactions.isValidValue(value)
+        problem.text = "That's longer than a reaction can be."
         problem.isHidden = !tooLong
         reactButton.isEnabled = !value.isEmpty && !tooLong
         view.setNeedsLayout()
@@ -282,8 +288,15 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     /// whenever the buttons were drawn: the network may have dropped since.
     private func choose(_ value: String) {
         guard !hasChosen, canSend(viewModel.state), Reactions.isValidValue(value) else { return }
+        guard viewModel.toggleReaction(messageId: message.id, value: value) else {
+            // Nothing went out — no socket. Say so and stay, rather than closing on a reaction
+            // that will never appear.
+            problem.text = "Not connected — try again in a moment."
+            problem.isHidden = false
+            UINotificationFeedbackGenerator().notificationOccurred(.error)
+            return
+        }
         hasChosen = true
-        viewModel.toggleReaction(messageId: message.id, value: value)
         dismiss(animated: true)
     }
 
