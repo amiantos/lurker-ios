@@ -181,13 +181,17 @@ struct DraftSync: Equatable {
     /// Take a buffer's edit to send it.
     mutating func take(_ id: String) -> Edit? { unflushed.removeValue(forKey: id) }
 
-    /// Every edit waiting to go out, the composing buffer's included — for a flush that can't
-    /// wait (the app leaving the foreground), which takes them all.
+    /// Every edit the server may not have, the composing buffer's included — for a flush that
+    /// can't wait (the app leaving the foreground, sign-out), which takes them all.
+    ///
+    /// ⚠ The ones written to a socket still connecting too: nothing says the server read them,
+    /// and suspension or sign-out ends that socket. Per buffer, the newer of the two wins.
     mutating func takeAll() -> [Edit] {
-        let edits = Array(unflushed.values)
+        let edits = unflushed.merging(awaitingSnapshot) { $0.seq >= $1.seq ? $0 : $1 }
         unflushed = [:]
+        awaitingSnapshot = [:]
         composing = nil
-        return edits
+        return Array(edits.values)
     }
 
     /// The buffers with an edit waiting, except one whose composition holds its flush.

@@ -294,6 +294,30 @@ final class DraftsTests: XCTestCase {
         XCTAssertNil(sync.local(chat.id), "nor over this device's own newer edit")
     }
 
+    func testTakingEverythingIncludesWhatTheConnectingSocketTook() {
+        // Backgrounding or signing out before the snapshot: the connecting socket's write may
+        // never have been read, so the HTTP flush has to carry it.
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "sent while connecting"), composing: false)
+        sync.sentBeforeSnapshot(sync.take(chat.id)!)
+        let other = BufferKey(networkId: 1, target: "#other")
+        sync.edit(other, ComposerDraft(body: "waiting"), composing: true)
+        let taken = sync.takeAll()
+        XCTAssertEqual(Set(taken.map(\.draft.body)), ["sent while connecting", "waiting"])
+        sync.requeueAwaitingSnapshot()
+        XCTAssertNil(sync.local(chat.id), "taken, not left behind to go out twice")
+
+        // A rename can leave one buffer in both; the newer edit is the one that goes.
+        var both = DraftSync()
+        let from = BufferKey(networkId: 1, target: "bob")
+        let to = BufferKey(networkId: 1, target: "bobby")
+        both.edit(to, ComposerDraft(body: "older"), composing: false)
+        both.sentBeforeSnapshot(both.take(to.id)!)
+        both.edit(from, ComposerDraft(body: "newer"), composing: false)
+        both.rekey(from: from, to: to)
+        XCTAssertEqual(both.takeAll().map(\.draft.body), ["newer"])
+    }
+
     func testADeletedNetworksEditsGo() {
         var sync = DraftSync()
         sync.edit(chat, ComposerDraft(body: "x"), composing: false)
