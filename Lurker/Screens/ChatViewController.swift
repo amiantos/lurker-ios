@@ -354,6 +354,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if wasNearBottom { scrollToBottom() }
         }
         composer.onDraftChange = { [weak self] draft in self?.draftChanged(draft) }
+        composer.onCancelReply = { [weak self] in self?.cancelReply() }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
             self?.uploadPastedImage(data: data, mime: mime, filename: name)
@@ -663,8 +664,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// older one would lose a message to save a message. The hold stays put in that case — it is
     /// drained on a later appear, when the field is free.
     private func restoreRefusedSend() {
-        guard composer.isEmpty, let text = viewModel.takeUnsent(buffer.key) else { return }
-        composer.restore(text)
+        guard composer.isEmpty, let line = viewModel.takeUnsent(buffer.key) else { return }
+        composer.restore(line.text)
+        // With the reply it went out as — unless another has been started here since.
+        if let reply = line.reply, pendingReply == nil { pendingReply = reply }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -946,15 +949,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // rather than the other way round. Order matters in the other direction too — the rules
         // above match the bot's real nick and its full envelope, which is what keeps an ignore on
         // the bot working and lets a highlight fire on a word inside a relayed message.
-        let updated = state.relayBots.reattributing(
-            state.ignores.visible(
-                (state.messages[buffer.key.id] ?? [])
-                    .filter { buffer.kind.renders($0.type) && $0.isRenderable },
-                networkId: buffer.networkId,
-                target: buffer.target,
-                keeping: jumpExemptId
+        // Replies (iOS #184) read last of all: a reply's quote and its stripped address are judged
+        // against the line as it now displays, a relayed one included, and the quote screens the
+        // CURRENT ignore rules, which the server only applied as they stood when it arrived.
+        let updated = Replies.presenting(
+            state.relayBots.reattributing(
+                state.ignores.visible(
+                    (state.messages[buffer.key.id] ?? [])
+                        .filter { buffer.kind.renders($0.type) && $0.isRenderable },
+                    networkId: buffer.networkId,
+                    target: buffer.target,
+                    keeping: jumpExemptId
+                ),
+                networkId: buffer.networkId
             ),
-            networkId: buffer.networkId
+            networkId: buffer.networkId,
+            target: buffer.target,
+            ignores: state.ignores,
+            relayBots: state.relayBots,
+            ownNick: buffer.networkId.flatMap { state.networks[$0]?.nick }
         )
         let oldFirstId = messages.first?.id
         let newFirstId = updated.first?.id
@@ -2206,7 +2219,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // counted on the pill.
             scrollToBottom()
         }
-        let outcome = viewModel.send(buffer.key, text: text)
+        let outcome = viewModel.send(buffer.key, text: text, reply: pendingReply)
+        // Spent if the line went out as it — a plain line or a `/me`. Any other command leaves it
+        // pending, as the web does. A refusal brings it back with the line (`restoreRefusedSend`).
+        if Replies.consumes(text) { pendingReply = nil }
         composer.clear()
         // The field is free again, so anything still waiting can come back — see
         // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
@@ -3255,10 +3271,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         MessageActions.run(
             key, on: message, scope: scope,
             context: MessageActionContext(
-                reply: { [weak self] nick in
-                    guard let self else { return }
-                    composer.address(nick, punctuation: addressPunctuation)
-                },
+                reply: { [weak self] message in self?.reply(to: message) },
                 copy: { UIPasteboard.general.string = $0 },
                 setBookmark: { [weak self] id, saved in
                     self?.viewModel.setBookmark(messageId: id, saved: saved)
@@ -3286,6 +3299,70 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             remeasureQueued = false
             UIView.performWithoutAnimation { self.tableView.performBatchUpdates(nil) }
         }
+    }
+
+    // MARK: - Replies (iOS #184)
+
+    /// The reply this buffer's composer is writing, shown above the field. The next plain line
+    /// or `/me` goes out as it. Lives with the composer whose draft it belongs to.
+    private var pendingReply: PendingReply? {
+        didSet { if oldValue != pendingReply { composer.showReply(pendingReply) } }
+    }
+
+    /// Reply on a line — the web's `onReply`. A line the server stamped gets a real reply, pending
+    /// above the composer. In a channel the composer also addresses its author, which is what a
+    /// client without replies sees (and what the quote hides for us). On your own line, or in a
+    /// DM, there's nobody to address: the tag is all it is, so it needs the network to carry one
+    /// right now — re-checked here, at the tap, because the sheet was built before it.
+    private func reply(to message: Message) {
+        guard let nick = message.nick, !nick.isEmpty else { return }
+        let target = buffer.key.target
+        let unaddressed = message.isSelf || Replies.isPrivate(target)
+        let started = Replies.replyable(message, target: target)
+            && (!unaddressed || viewModel.state.canReact(networkId: buffer.key.networkId))
+        // A pending reply to someone else goes first, with the `nick: ` its Reply put in the
+        // draft — or this one would go out still addressed to them.
+        if unaddressed, started, pendingReply?.addressed == true { cancelReply() }
+        if started {
+            // Reply again to the same author: the address in the draft is still the one the first
+            // Reply put there, so a cancel may still take it back.
+            let keepsAddress = pendingReply?.addressed == true && pendingReply?.nick == nick
+            pendingReply = Replies.pending(for: message, addressed: keepsAddress)
+        }
+        if !unaddressed {
+            let inserted = composer.address(nick, punctuation: addressPunctuation)
+            if inserted, started { pendingReply?.addressed = true }
+        } else if started {
+            composer.becomeFirstResponder()
+        }
+    }
+
+    /// The bar's × (or Escape): drop the pending reply, and take back the `nick: ` its Reply put
+    /// in the draft — only if the Reply put it there; one the user typed stays.
+    private func cancelReply() {
+        guard let reply = pendingReply else { return }
+        pendingReply = nil
+        if reply.addressed { composer.removeAddress(reply.nick, punctuation: addressPunctuation) }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard pendingReply != nil else { return super.keyCommands }
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapePressed))
+        escape.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [escape]
+    }
+
+    @objc private func escapePressed() { cancelReply() }
+
+    /// Jump to a reply's quoted line, in this buffer — a tap on the quote. Through the same jump
+    /// a highlight takes (#42): straight there when it's loaded, an `around` slice when it isn't.
+    private func jumpToMessage(_ id: Int) {
+        resetJumpState()
+        needsInitialScroll = true
+        pendingJumpId = id
+        jumpExemptId = id
+        requestAroundIfNeeded(viewModel.state)
+        landInitialIfNeeded()
     }
 
     /// The reaction sheet for a line (iOS #183): who reacted with what, and a way to add yours.
@@ -3362,6 +3439,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             onOpenMedia: { [weak self] previews, at in
                 self?.openMediaViewer(previews, at: at)
             },
+            onJumpToReply: { [weak self] quote in self?.jumpToMessage(quote.id) },
             reactions: reactionContext,
             previews: previewContext
         )

@@ -66,8 +66,9 @@ public struct MessageAction: Equatable, Sendable {
 /// here rather than in the screen: a second message-list style gets the same menu, with the same
 /// behaviour, by supplying its own context — neither style owns the actions.
 public struct MessageActionContext {
-    /// Address this nick in the composer — the reply gesture. Only called with a non-empty nick.
-    public let reply: (String) -> Void
+    /// Reply to this line (iOS #184): the screen starts a pending reply when the line can carry
+    /// one, and addresses its author in a channel. Only called for a line `build` offered Reply on.
+    public let reply: (Message) -> Void
     /// Put this text on the pasteboard. The message's *raw* text, not the rendered form.
     public let copy: (String) -> Void
     /// Set this message id's saved state. The DIRECTION is passed, not a toggle: it comes
@@ -81,7 +82,7 @@ public struct MessageActionContext {
     public let react: (Message) -> Void
 
     public init(
-        reply: @escaping (String) -> Void,
+        reply: @escaping (Message) -> Void,
         copy: @escaping (String) -> Void,
         setBookmark: @escaping (Int, Bool) -> Void,
         showProfile: @escaping (String) -> Void,
@@ -143,13 +144,27 @@ public enum MessageActions {
     public static func build(for message: Message, scope: MessageActionScope) -> [MessageAction] {
         var actions: [MessageAction] = []
 
-        // Reply addresses someone, so it stays speech-only: narration names its actor inside the
-        // sentence rather than speaking. Replying to yourself is meaningless, and a line with no
-        // nick has nobody to address.
-        if message.type.isSpeech, let nick = message.nick, !nick.isEmpty, !message.isSelf {
-            actions.append(
-                MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
-            )
+        // Reply stays speech-only: narration names its actor inside the sentence rather than
+        // speaking, and a line with no nick has nobody to answer.
+        //
+        // To someone else in a channel it always does something — at the least it addresses them,
+        // and the address is what a line without its reply tag still says. On your own line ("to
+        // clarify what I said above", lurker#997) or in a DM (lurker#1015) there's no address, so
+        // the reply TAG is all it is, and it's offered only where one would go out: a line the
+        // server stamped, on a network that takes the tags right now. The web's rule.
+        if message.type.isSpeech, let nick = message.nick, !nick.isEmpty {
+            let unaddressed = message.isSelf || Replies.isPrivate(scope.target)
+            if !unaddressed {
+                actions.append(
+                    MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
+                )
+            } else if scope.canReact, Replies.replyable(message, target: scope.target) {
+                actions.append(MessageAction(
+                    key: .reply,
+                    title: message.isSelf ? "Reply to yourself" : "Reply to \(nick)",
+                    symbol: "arrowshape.turn.up.left"
+                ))
+            }
         }
 
         // React (iOS #183): a reaction names the line's msgid, so it needs a line the server
@@ -303,8 +318,7 @@ public enum MessageActions {
         guard build(for: message, scope: scope).contains(where: { $0.key == key }) else { return }
         switch key {
         case .reply:
-            guard let nick = message.nick, !nick.isEmpty else { return }
-            context.reply(nick)
+            context.reply(message)
         case .react:
             context.react(message)
         case .copy:

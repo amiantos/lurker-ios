@@ -83,6 +83,19 @@ public struct Message: Equatable, Sendable {
     /// `bookmarked`, it's the wire seed: the store's side map is what also reflects a
     /// `reaction` frame since, and the row is authoritative for itself only when it arrives.
     public let reactions: [MessageReaction]?
+    /// Set when this line is an IRCv3 reply (`+reply` / `+draft/reply`, iOS #184): the msgid it
+    /// answers and that line as the server found it, or a nil `parent` when it found none. Show
+    /// it through `Replies.shown`, which also screens ignores and unwraps relay bots.
+    public let replyTo: ReplyContext?
+    /// A reply to one of your lines, from someone else — stamped by the server at insert, and a
+    /// highlight: it arrives with `matched` set. ⚠ Tint and count from this, never from
+    /// `replyTo.parent.isSelf`: the parent can be gone or stored after the reply, and the stamp is
+    /// what the server's counts and feeds read.
+    public let replyToSelf: Bool
+    /// The reply's quote as it should SHOW — set by `showingReply`, the one producer, from
+    /// `Replies.shown`: nil on a reply means "original message unavailable" (gone, never held, or
+    /// from someone ignored since). Meaningless on a line that isn't a reply.
+    public private(set) var replyQuote: ReplyQuote?
     /// The relay bot this line actually came from, once it has been re-attributed (#277) — the
     /// only real IRC entity on the row, since `nick` now names someone with no presence here.
     ///
@@ -118,7 +131,9 @@ public struct Message: Equatable, Sendable {
         bookmarked: Bool = false,
         msgid: String? = nil,
         isE2E: Bool = false,
-        reactions: [MessageReaction]? = nil
+        reactions: [MessageReaction]? = nil,
+        replyTo: ReplyContext? = nil,
+        replyToSelf: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -142,6 +157,8 @@ public struct Message: Equatable, Sendable {
         self.msgid = msgid
         self.isE2E = isE2E
         self.reactions = reactions
+        self.replyTo = replyTo
+        self.replyToSelf = replyToSelf
     }
 
     /// This line with its highlight taken off — what a `NOHIGHLIGHT` ignore rule leaves behind
@@ -175,6 +192,17 @@ public struct Message: Equatable, Sendable {
         copy.text = relayedText
         copy.relayBot = bot
         copy.relaySource = source
+        return copy
+    }
+
+    /// This reply as it reads (iOS #184): its quote, and its text without the address the quote
+    /// makes redundant. A display transform like `relayed`, applied at render time — the stored
+    /// row keeps its text, so ignoring the author later brings the address back with the quote's
+    /// loss, and a cancelled ignore restores both.
+    public func showingReply(quote: ReplyQuote?, text shownText: String?) -> Message {
+        var copy = self
+        copy.replyQuote = quote
+        copy.text = shownText
         return copy
     }
 

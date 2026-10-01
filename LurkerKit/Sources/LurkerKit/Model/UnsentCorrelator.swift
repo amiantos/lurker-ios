@@ -25,6 +25,9 @@ struct UnsentCorrelator {
     struct Origin: Equatable {
         let key: BufferKey
         let line: String
+        /// The reply the line went out as (iOS #184), given back with it — a refused reply that
+        /// came home as a plain line would go out the second time looking like one it wasn't.
+        var reply: PendingReply? = nil
     }
 
     private var inFlight: [String: Origin] = [:]
@@ -41,10 +44,10 @@ struct UnsentCorrelator {
     ///
     /// A counter rather than a UUID — it only has to be unique within a socket's lifetime, and a
     /// readable id is worth something in a frame log.
-    mutating func track(_ key: BufferKey, line: String) -> String {
+    mutating func track(_ key: BufferKey, line: String, reply: PendingReply? = nil) -> String {
         seq += 1
         let id = "ios-\(seq)"
-        inFlight[id] = Origin(key: key, line: line)
+        inFlight[id] = Origin(key: key, line: line, reply: reply)
         return id
     }
 
@@ -77,7 +80,7 @@ struct UnsentCorrelator {
     mutating func rekey(from: BufferKey, to: BufferKey) {
         let moving = inFlight.filter { $0.value.key == from }
         for (id, origin) in moving {
-            inFlight[id] = Origin(key: to, line: origin.line)
+            inFlight[id] = Origin(key: to, line: origin.line, reply: origin.reply)
         }
     }
 

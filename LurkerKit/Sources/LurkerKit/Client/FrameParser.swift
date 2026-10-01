@@ -1050,7 +1050,28 @@ enum FrameParser {
             msgid: event.stringOrNull("msgid"),
             isE2E: event.bool("e2e"),
             // Absent means none stand — the server omits the field rather than sending `[]`.
-            reactions: (event["reactions"] as? [[String: Any]]).map(parseReactions)
+            reactions: (event["reactions"] as? [[String: Any]]).map(parseReactions),
+            replyTo: parseReplyContext(event["replyTo"]),
+            replyToSelf: event.bool("replyToSelf")
+        )
+    }
+
+    /// A row's `replyTo`: `{ msgid, parent }`, `parent` null when the server found no line. With
+    /// no msgid it names nothing; a parent with no id has nowhere to jump and reads as unavailable.
+    static func parseReplyContext(_ raw: Any?) -> ReplyContext? {
+        guard let obj = raw as? [String: Any], let msgid = obj.stringOrNull("msgid") else { return nil }
+        return ReplyContext(msgid: msgid, parent: parseReplyParent(obj["parent"]))
+    }
+
+    static func parseReplyParent(_ raw: Any?) -> ReplyParent? {
+        guard let parent = raw as? [String: Any], let id = parent.intOrNull("id"), id != 0 else { return nil }
+        return ReplyParent(
+            id: id,
+            nick: parent.string("nick"),
+            type: EventType.from(parent.stringOrNull("type")),
+            text: parent.string("text"),
+            userhost: parent.stringOrNull("userhost"),
+            isSelf: parent.bool("self")
         )
     }
 

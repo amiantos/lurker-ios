@@ -526,8 +526,18 @@ class HistoryFeedViewController: UITableViewController {
         // A reaction to one of your lines (iOS #183): the reactor heads the row, as the speaker
         // does a highlight, and the body says what they reacted and to which line — the web's
         // `bob | 👍 on "…"`.
+        // A reply reads as it does in its buffer (lurker#998): its quote above, its address gone.
+        // Static here — the row's tap jumps to the reply, where the quote is live again.
+        let state = viewModel.state
+        let shown = item.reaction == nil
+            ? Replies.presenting(
+                [item.message], networkId: item.networkId, target: item.target,
+                ignores: state.ignores, relayBots: state.relayBots,
+                ownNick: item.networkId.flatMap { state.networks[$0]?.nick }
+            ).first ?? item.message
+            : item.message
         let body = item.reaction.map { Self.reactionBody($0, traits: traitCollection) }
-            ?? MessageRenderer.renderCompactBody(item.message, traits: traitCollection)
+            ?? MessageRenderer.renderCompactBody(shown, traits: traitCollection)
         cell.configure(
             body,
             header: name == nil && time == nil ? nil : CompactCell.Header(
@@ -538,6 +548,8 @@ class HistoryFeedViewController: UITableViewController {
             startsBlock: true,
             endsBlock: true,
             interactive: false,
+            reply: shown.replyTo == nil ? nil : CompactCell.ReplyLine(quote: shown.replyQuote, onJump: nil),
+            indentsBody: shown.type != .action,
             traits: traitCollection
         )
         // Tapping jumps, so the row has to acknowledge the touch. `CompactCell` defaults to no

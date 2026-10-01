@@ -194,7 +194,7 @@ final class MessageActionsTests: XCTestCase {
 
     func testReplyHandsBackTheNick() {
         var replied: [String] = []
-        run(.reply, on: msg(), context: context(reply: { replied.append($0) }))
+        run(.reply, on: msg(), context: context(reply: { replied.append($0.nick ?? "") }))
         XCTAssertEqual(replied, ["alice"])
     }
 
@@ -359,7 +359,7 @@ final class MessageActionsTests: XCTestCase {
     }
 
     private func context(
-        reply: @escaping (String) -> Void = { nick in XCTFail("unexpected reply: \(nick)") },
+        reply: @escaping (Message) -> Void = { line in XCTFail("unexpected reply: \(line.id)") },
         copy: @escaping (String) -> Void = { text in XCTFail("unexpected copy: \(text)") },
         setBookmark: @escaping (Int, Bool) -> Void = { id, saved in
             XCTFail("unexpected bookmark: \(id) saved=\(saved)")

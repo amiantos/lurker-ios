@@ -607,7 +607,7 @@ public final class ChatViewModel {
     ///
     /// Read-and-clear: once it is in a composer, the composer owns it. The caller decides whether
     /// there is room for it — this does not know what is already typed.
-    public func takeUnsent(_ key: BufferKey) -> String? { store.takeUnsent(key) }
+    public func takeUnsent(_ key: BufferKey) -> UnsentLine? { store.takeUnsentLine(key) }
 
     /// Hand a line back to the buffer it was typed in, and nudge whatever screen is showing it.
     ///
@@ -615,15 +615,20 @@ public final class ChatViewModel {
     /// saying no, and the socket refusing to carry the verb at all — cannot drift apart.
     private func refuse(_ clientId: String) {
         guard let origin = unsent.resolve(clientId: clientId, ok: false) else { return }
-        store.holdUnsent(origin.key, text: origin.line)
+        store.holdUnsent(origin.key, text: origin.line, reply: origin.reply)
         onSendRefused?(origin.key)
     }
 
     /// Handle a line of composer input from `key`'s buffer: a plain message goes to the
     /// current target; a slash command is parsed (`CommandParser`) and its effects carried
     /// out. Returns the UI follow-up, if any.
+    ///
+    /// `reply` is the composer's pending reply (iOS #184). A plain line or a `/me` goes out as it
+    /// (`Replies.consumes`); any other command leaves it unused, and the caller keeps it pending.
+    /// A refusal gives it back with the line.
     @discardableResult
-    public func send(_ key: BufferKey, text: String) -> SendOutcome {
+    public func send(_ key: BufferKey, text: String, reply: PendingReply? = nil) -> SendOutcome {
+        let reply = Replies.consumes(text) ? reply : nil
         // The ignore rules go in because two commands read them: `/ignore` prints the listing
         // and `/unignore <n>` resolves a number against it. Handed to the parser rather than
         // fetched by it, so the whole command vocabulary stays pure and testable — this is the
@@ -650,9 +655,10 @@ public final class ChatViewModel {
             // can ever come back for it. Without this the line vanished exactly as it did before
             // #128, in the window the ConnectionBanner is pointing at. The ack path covers a live
             // socket the cell refuses on; this covers not reaching the cell.
-            let id = unsent.track(key, line: text)
+            let id = unsent.track(key, line: text, reply: reply)
             if !client.sendMessage(
-                networkId: key.networkId, target: key.target, text: body, clientId: id)
+                networkId: key.networkId, target: key.target, text: body, clientId: id,
+                replyTo: reply?.messageId)
             {
                 refuse(id)
             }
@@ -663,14 +669,16 @@ public final class ChatViewModel {
             store.appendLocal(key, text: "Not a command — type /commands to see what you can run here.")
             return .none
         case .command(let effects):
-            return run(effects, in: key, line: text)
+            return run(effects, in: key, line: text, reply: reply)
         }
     }
 
     /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
     /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network; `away`/
     /// `back` are user-scoped and carry none; `info` prints a local line.
-    private func run(_ effects: [CommandEffect], in key: BufferKey, line: String) -> SendOutcome {
+    private func run(
+        _ effects: [CommandEffect], in key: BufferKey, line: String, reply: PendingReply? = nil
+    ) -> SendOutcome {
         let networkId = key.networkId
         var outcome: SendOutcome = .none
         // One correlator for the whole line, minted on first use so a command that puts nothing
@@ -678,7 +686,7 @@ public final class ChatViewModel {
         var lineId: String?
         func correlator() -> String {
             if let lineId { return lineId }
-            let id = unsent.track(key, line: line)
+            let id = unsent.track(key, line: line, reply: reply)
             lineId = id
             return id
         }
@@ -693,8 +701,10 @@ public final class ChatViewModel {
                     networkId: networkId, target: target, text: text, clientId: correlator())
                     || wentNowhere
             case .action(let target, let text):
+                // A `/me` can be the reply — `reply` is nil for every other command (see `send`).
                 wentNowhere = !client.sendAction(
-                    networkId: networkId, target: target, text: text, clientId: correlator())
+                    networkId: networkId, target: target, text: text, clientId: correlator(),
+                    replyTo: target == key.target ? reply?.messageId : nil)
                     || wentNowhere
             case .notice(let target, let text):
                 wentNowhere = !client.sendNotice(

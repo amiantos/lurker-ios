@@ -232,14 +232,31 @@ public enum NickCompletion {
     /// The punctuation run may not contain a character that could *continue* a nick, or
     /// `bob_: hi` would read as addressing bob — and `bob_` is every ghost's nick.
     public static func isAddressed(_ draft: String, to nick: String, punctuation: String) -> Bool {
-        guard !nick.isEmpty else { return false }
+        addressLength(draft, to: nick, punctuation: punctuation) != nil
+    }
+
+    /// `draft` with the address `isAddressed` recognizes taken off its front — what cancelling a
+    /// pending reply undoes (iOS #184), the web's `stripAddress`. One pattern for both, so what
+    /// counts as an address and what a cancel takes back can't drift apart. Anything else in the
+    /// draft stays; a draft that doesn't open with the address comes back as it was.
+    public static func removingAddress(_ draft: String, to nick: String, punctuation: String) -> String {
+        guard let length = addressLength(draft, to: nick, punctuation: punctuation) else { return draft }
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: draft.unicodeScalars.dropFirst(length))
+        return String(scalars)
+    }
+
+    /// How many scalars the address at the head of `draft` spans — nick, mark, and the one
+    /// whitespace after it — or nil when it doesn't open with one.
+    private static func addressLength(_ draft: String, to nick: String, punctuation: String) -> Int? {
+        guard !nick.isEmpty else { return nil }
         let text = Array(draft.unicodeScalars)
         let name = Array(nick.unicodeScalars)
-        guard text.count > name.count else { return false }
+        guard text.count > name.count else { return nil }
         // ASCII folding, the same rule the rest of the client uses for IRC targets: a nick's
         // case-insensitivity is the protocol's, not the locale's.
         for (index, scalar) in name.enumerated() where asciiLower(text[index]) != asciiLower(scalar) {
-            return false
+            return nil
         }
         let rest = text[name.count...]
 
@@ -247,7 +264,7 @@ public enum NickCompletion {
         let mark = Array(punctuation.unicodeScalars)
         if !mark.isEmpty, rest.count > mark.count, Array(rest.prefix(mark.count)) == mark,
            isWhitespace(rest[rest.startIndex + mark.count]) {
-            return true
+            return name.count + mark.count + 1
         }
 
         // Else a run of punctuation, then whitespace. Greedy with no backtracking is exact
@@ -256,8 +273,9 @@ public enum NickCompletion {
         while index < rest.endIndex, isMarkScalar(rest[index]) { index += 1 }
         let ranAtLeastOne = index > rest.startIndex
         // A bare `nick ` is an address only under the empty setting (see the doc comment).
-        guard ranAtLeastOne || mark.isEmpty else { return false }
-        return index < rest.endIndex && isWhitespace(rest[index])
+        guard ranAtLeastOne || mark.isEmpty else { return nil }
+        guard index < rest.endIndex, isWhitespace(rest[index]) else { return nil }
+        return index + 1
     }
 
     /// A scalar that cannot continue a nick, which is what "punctuation after the nick" has to
