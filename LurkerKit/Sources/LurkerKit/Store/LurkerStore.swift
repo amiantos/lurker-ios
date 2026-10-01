@@ -20,6 +20,12 @@ public enum SocketStatus: Equatable, Sendable {
     }
 }
 
+/// A line the server refused, waiting for its composer — with the reply it went out as, if any.
+public struct UnsentLine: Equatable, Sendable {
+    public let text: String
+    public let reply: PendingReply?
+}
+
 /// Immutable snapshot of everything the chat UI renders. The map keys are `BufferKey.id`.
 public struct ChatState: Sendable {
     public var connection: SocketStatus = .connecting
@@ -293,7 +299,7 @@ public struct ChatState: Sendable {
     /// The web hits this too and documents it on `restoreFailedSend`.
     ///
     /// Drained by `takeUnsent(_:)` when that buffer next has a composer to put it in.
-    public var unsent: [String: [String]] = [:]
+    public var unsent: [String: [UnsentLine]] = [:]
 
     public init() {}
 
@@ -854,9 +860,9 @@ final class LurkerStore {
     ///
     /// Oldest first, so lines come back in the order they were written. Unbounded because every
     /// entry costs a deliberate send, so the user is the limit.
-    func holdUnsent(_ key: BufferKey, text: String) {
+    func holdUnsent(_ key: BufferKey, text: String, reply: PendingReply? = nil) {
         guard !text.isEmpty else { return }
-        subject.value.unsent[key.id, default: []].append(text)
+        subject.value.unsent[key.id, default: []].append(UnsentLine(text: text, reply: reply))
     }
 
     /// Take back the oldest line held for `key`, if any.
@@ -864,12 +870,15 @@ final class LurkerStore {
     /// Read-and-clear because it is a handoff, not a mirror: once the text is in a composer the
     /// composer owns it, and leaving a copy here would re-fill the field every time the buffer
     /// was reopened.
-    func takeUnsent(_ key: BufferKey) -> String? {
+    func takeUnsentLine(_ key: BufferKey) -> UnsentLine? {
         guard var queue = subject.value.unsent[key.id], !queue.isEmpty else { return nil }
-        let text = queue.removeFirst()
+        let line = queue.removeFirst()
         subject.value.unsent[key.id] = queue.isEmpty ? nil : queue
-        return text
+        return line
     }
+
+    /// `takeUnsentLine`'s text alone.
+    func takeUnsent(_ key: BufferKey) -> String? { takeUnsentLine(key)?.text }
 
     /// Append a client-authored info line to a buffer — the app answering the user in
     /// place, the web client's `localInfo`. Ephemeral by construction: id 0 never

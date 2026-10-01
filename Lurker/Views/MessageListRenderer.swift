@@ -49,6 +49,8 @@ struct MessageListContext {
     /// Present a message's pictures full-screen. Nil on screens with nothing to present from —
     /// the highlights feed and the layout probes — where a tap falls back to opening the address.
     var onOpenMedia: (([LinkPreview], Int) -> Void)?
+    /// Jump to a reply's quoted line (iOS #184). Nil where the quote isn't live.
+    var onJumpToReply: ((ReplyQuote) -> Void)?
     /// What a line's reaction chips need (iOS #183), or nil on screens that don't draw them.
     var reactions: ReactionContext?
     /// Link previews, or nil on the screens that don't show them.
@@ -146,6 +148,7 @@ struct MessageListRenderer {
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched,
                 reactions: Self.reactions(for: message, context: context),
+                reply: replyLine(for: message, position: position, at: index, context: context),
                 traits: context.traits
             )
             attach(plan, to: cell, context: context)
@@ -165,6 +168,10 @@ struct MessageListRenderer {
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched,
                 reactions: Self.reactions(for: message, context: context),
+                reply: replyLine(for: message, position: nil, at: index, context: context),
+                // A header-less narration line (a `/me`) starts flush with the nicks, so its
+                // quote does too.
+                indentsBody: false,
                 traits: context.traits
             )
             attach(plan, to: cell, context: context)
@@ -265,6 +272,19 @@ struct MessageListRenderer {
         let hidden =
             media.isEmpty ? [] : PreviewHiding.hideableUrls(in: message.text, candidates: media)
         return PreviewPlan(hidden: hidden, resolved: resolved)
+    }
+
+    /// A reply's quote line, or nil when the row isn't a reply — or is the next chunk of one
+    /// already quoted in the same author run (`Replies.continues`).
+    private func replyLine(
+        for message: Message, position: RunPosition?, at index: Int, context: MessageListContext
+    ) -> CompactCell.ReplyLine? {
+        guard message.replyTo != nil else { return nil }
+        if position?.isFirst != true,
+           Replies.continues(message, after: previousMessage(before: index, context: context)) {
+            return nil
+        }
+        return CompactCell.ReplyLine(quote: message.replyQuote, onJump: context.onJumpToReply)
     }
 
     /// The chips for a line, or nil when it has none (or the screen draws none).

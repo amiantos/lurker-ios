@@ -678,18 +678,24 @@ final class LurkerClient {
     /// back, message gone. `FrameParser`, `ServerFrame` and `LurkerStore` all handled
     /// `send-result` correctly the whole time; nothing ever asked for one (#128).
     private func verb(
-        _ type: String, networkId: Int, target: String, text: String, clientId: String?
+        _ type: String, networkId: Int, target: String, text: String, clientId: String?,
+        replyTo: Int? = nil
     ) -> [String: Any] {
         var out: [String: Any] = [
             "type": type, "networkId": networkId, "target": target, "text": text,
         ]
         // Omitted rather than sent as null when absent: the server tests presence.
         if let clientId { out["clientId"] = clientId }
+        // The stored line this answers (iOS #184). The server resolves its msgid in the same
+        // buffer and sends a plain line when it can't make a reply.
+        if let replyTo { out["replyTo"] = replyTo }
         return out
     }
 
     @discardableResult
-    func sendMessage(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+    func sendMessage(
+        networkId: Int?, target: String, text: String, clientId: String? = nil, replyTo: Int? = nil
+    ) -> Bool {
         guard let networkId else { return false }
         // The one write the user made deliberately, and the one with no resend behind it —
         // so a socket-level failure to deliver it is worth telling them about. A `send`
@@ -697,17 +703,19 @@ final class LurkerClient {
         // this only covers never getting it onto the wire. The server splits on newlines and
         // byte-length, so the whole (possibly multi-line) body goes as one `send`.
         return send(
-            verb("send", networkId: networkId, target: target, text: text, clientId: clientId),
+            verb("send", networkId: networkId, target: target, text: text, clientId: clientId, replyTo: replyTo),
             surfacesFailure: true)
     }
 
     /// CTCP ACTION — `/me` and `/slap`. Surfaces a socket-level failure like `send`: it's a
     /// deliberate line the user typed, with nothing behind it to retry.
     @discardableResult
-    func sendAction(networkId: Int?, target: String, text: String, clientId: String? = nil) -> Bool {
+    func sendAction(
+        networkId: Int?, target: String, text: String, clientId: String? = nil, replyTo: Int? = nil
+    ) -> Bool {
         guard let networkId else { return false }
         return send(
-            verb("action", networkId: networkId, target: target, text: text, clientId: clientId),
+            verb("action", networkId: networkId, target: target, text: text, clientId: clientId, replyTo: replyTo),
             surfacesFailure: true)
     }
 

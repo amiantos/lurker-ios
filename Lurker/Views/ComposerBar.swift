@@ -59,6 +59,8 @@ final class ComposerBar: UIView {
     /// programmatic changes (`clear()` after a send, a completion insert), because those are
     /// changes to what the user is composing too. Drives the outgoing typing signal (#61).
     var onDraftChange: ((String) -> Void)?
+    /// The pending-reply bar's ×.
+    var onCancelReply: (() -> Void)?
 
     /// The draft as of the last `onDraftChange`, so a re-measure that changes no text doesn't
     /// masquerade as an edit. See `textViewDidChange`.
@@ -91,6 +93,14 @@ final class ComposerBar: UIView {
     private let placeholderLabel = UILabel()
     private let attachButton = UIButton(type: .system)
     private let sendButton = UIButton(type: .system)
+    /// The pending reply (iOS #184), as a strip above the field: "Replying to alice  ×". The
+    /// web keeps it in its status bar; iOS has none, and this is where Messages, Discord and
+    /// Telegram all put it — attached to the thing it changes.
+    private let replyBar = UIVisualEffectView()
+    private let replyLabel = UILabel()
+    private let replyCancel = UIButton(type: .system)
+    private var containerBelowReply: NSLayoutConstraint!
+    private var containerAtTop: NSLayoutConstraint!
 
     /// How tall the text may grow before it scrolls internally instead. Five lines is the
     /// Messages ceiling too — past that you're writing a paragraph, and the conversation
@@ -184,6 +194,25 @@ final class ComposerBar: UIView {
         configureRoundGlass(sendGlass, button: sendButton, symbol: "arrow.up")
         sendButton.addAction(UIAction { [weak self] _ in self?.fire() }, for: .touchUpInside)
 
+        replyBar.effect = Self.glass()
+        replyBar.cornerConfiguration = .corners(radius: .fixed(22))
+        replyBar.translatesAutoresizingMaskIntoConstraints = false
+        replyBar.isHidden = true
+        replyLabel.font = .preferredFont(forTextStyle: .footnote)
+        replyLabel.adjustsFontForContentSizeCategory = true
+        replyLabel.lineBreakMode = .byTruncatingTail
+        replyLabel.translatesAutoresizingMaskIntoConstraints = false
+        replyCancel.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
+        replyCancel.tintColor = .secondaryLabel
+        replyCancel.accessibilityLabel = "Cancel reply"
+        replyCancel.translatesAutoresizingMaskIntoConstraints = false
+        replyCancel.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
+        replyCancel.setContentHuggingPriority(.required, for: .horizontal)
+        replyCancel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        replyBar.contentView.addSubview(replyLabel)
+        replyBar.contentView.addSubview(replyCancel)
+        addSubview(replyBar)
+
         fieldGlass.contentView.addSubview(textView)
         fieldGlass.contentView.addSubview(placeholderLabel)
         container.contentView.addSubview(attachGlass)
@@ -218,8 +247,23 @@ final class ComposerBar: UIView {
                 equalTo: textView.topAnchor, constant: Self.textInset.top
             ),
 
-            container.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+
+            replyBar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            replyBar.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            replyBar.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+            replyLabel.leadingAnchor.constraint(equalTo: replyBar.contentView.leadingAnchor, constant: 14),
+            replyLabel.centerYAnchor.constraint(equalTo: replyBar.contentView.centerYAnchor),
+            replyLabel.topAnchor.constraint(greaterThanOrEqualTo: replyBar.contentView.topAnchor, constant: 7),
+            replyLabel.bottomAnchor.constraint(lessThanOrEqualTo: replyBar.contentView.bottomAnchor, constant: -7),
+            replyCancel.leadingAnchor.constraint(equalTo: replyLabel.trailingAnchor, constant: 4),
+            replyCancel.trailingAnchor.constraint(equalTo: replyBar.contentView.trailingAnchor),
+            // The only way to cancel by touch, so a full 44pt target — and inside the bar, which
+            // sets the bar's height: a target that hung outside it would never be hit.
+            replyCancel.topAnchor.constraint(equalTo: replyBar.contentView.topAnchor),
+            replyCancel.bottomAnchor.constraint(equalTo: replyBar.contentView.bottomAnchor),
+            replyCancel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            replyCancel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             container.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
 
@@ -235,6 +279,10 @@ final class ComposerBar: UIView {
             sendGlass.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             sendGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
         ] + pillSizeConstraints)
+
+        containerAtTop = container.topAnchor.constraint(equalTo: topAnchor, constant: 6)
+        containerBelowReply = container.topAnchor.constraint(equalTo: replyBar.bottomAnchor, constant: 6)
+        containerAtTop.isActive = true
 
         fieldAfterAttach = fieldGlass.leadingAnchor.constraint(
             equalTo: attachGlass.trailingAnchor, constant: Self.gap
@@ -280,6 +328,35 @@ final class ComposerBar: UIView {
         // A keyboard is configured when it comes up, so a field that's focused right now is
         // already showing one built from the old value. This re-asks for it.
         if textView.isFirstResponder { textView.reloadInputViews() }
+    }
+
+    /// Show the pending reply above the field, or take the strip away (nil). The bar grows or
+    /// shrinks the composer, so the owner hears about it the way it hears about a taller field.
+    func showReply(_ reply: PendingReply?) {
+        let wasShowing = !replyBar.isHidden
+        if let reply {
+            let text = NSMutableAttributedString(
+                string: "Replying to ",
+                attributes: [.foregroundColor: UIColor.secondaryLabel]
+            )
+            let name = reply.isSelf ? "yourself" : reply.nick
+            let footnote = UIFont.preferredFont(forTextStyle: .footnote)
+            text.append(NSAttributedString(string: name, attributes: [
+                .foregroundColor: UIColor.label, .font: footnote.bold,
+            ]))
+            let excerpt = Replies.excerpt(reply.text)
+            if !excerpt.isEmpty {
+                text.append(NSAttributedString(
+                    string: ": " + excerpt, attributes: [.foregroundColor: UIColor.secondaryLabel]
+                ))
+            }
+            replyLabel.attributedText = text
+            replyLabel.accessibilityLabel = "Replying to \(name)" + (excerpt.isEmpty ? "" : ": \(excerpt)")
+        }
+        replyBar.isHidden = reply == nil
+        containerAtTop.isActive = reply == nil
+        containerBelowReply.isActive = reply != nil
+        if wasShowing != (reply != nil) { onHeightChange?() }
     }
 
     /// Clears the field after a send the owner accepted, and collapses it back to one line.
@@ -371,18 +448,34 @@ final class ComposerBar: UIView {
     /// already-addressed test is `NickCompletion.isAddressed`, not a `hasPrefix` on the form we
     /// are about to write: a draft can carry an older setting's mark, or the web's, and drafts
     /// sync — `hasPrefix` would stack a second address onto `bob: sure`.
-    func address(_ nick: String, punctuation: String) {
-        guard !nick.isEmpty else { return }
+    ///
+    /// Returns whether it put the address there — a pending reply's cancel takes back only an
+    /// address its Reply inserted (iOS #184).
+    @discardableResult
+    func address(_ nick: String, punctuation: String) -> Bool {
+        guard !nick.isEmpty else { return false }
         let current = textView.text ?? ""
-        let next = NickCompletion.isAddressed(current, to: nick, punctuation: punctuation)
-            ? current
-            : "\(nick)\(punctuation) " + current
+        let already = NickCompletion.isAddressed(current, to: nick, punctuation: punctuation)
+        let next = already ? current : "\(nick)\(punctuation) " + current
         // Caret at the end, not after the prefix: `replaceToken` puts it where it spliced, which
         // for a prepend is in front of the existing draft.
         textView.text = next
         textView.selectedRange = NSRange(location: (next as NSString).length, length: 0)
         textViewDidChange(textView)
         becomeFirstResponder()
+        return !already
+    }
+
+    /// Take back the `nick: ` a Reply put at the head of the draft — a cancelled reply's half of
+    /// `address`. Anything else in the field stays, and a draft that no longer opens with it is
+    /// left alone: the user has rewritten it, and it's theirs now.
+    func removeAddress(_ nick: String, punctuation: String) {
+        let current = textView.text ?? ""
+        let next = NickCompletion.removingAddress(current, to: nick, punctuation: punctuation)
+        guard next != current else { return }
+        textView.text = next
+        textView.selectedRange = NSRange(location: (next as NSString).length, length: 0)
+        textViewDidChange(textView)
     }
 
     /// Drop `text` in at the caret — how a finished upload's URL lands in the field (#14). A

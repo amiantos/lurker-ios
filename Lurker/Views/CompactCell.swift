@@ -75,6 +75,13 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let onHeightChange: () -> Void
     }
 
+    /// An IRCv3 reply's quote line (iOS #184): the line it answers, or nil for "unavailable", and
+    /// where a tap on it goes — nil out of the buffer (a results row's tap is the row's own).
+    struct ReplyLine {
+        let quote: ReplyQuote?
+        let onJump: ((ReplyQuote) -> Void)?
+    }
+
     /// A spoiler in this cell's message was tapped, by its ordinal within the message. Set per
     /// configure and cleared in `prepareForReuse`, because it closes over that message.
     var onToggleSpoiler: ((Int) -> Void)?
@@ -84,6 +91,13 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
     private let messageText = MessageTextView()
+    /// A reply's quote, as the body's first line — part of the message, so a reply doesn't break
+    /// its author's run. Faded as a whole (the web's opacity 0.45), so the quoted nick keeps its
+    /// colour under the fade. Hidden on everything that isn't a reply.
+    private let replyHolder = UIView()
+    private let replyLabel = UILabel()
+    private var replyTop: NSLayoutConstraint!
+    private var onJumpToReply: (() -> Void)?
     /// Inline media / preview cards under the body (off by default; see
     /// `chat.inline_media.enabled` and `chat.link_previews.enabled`). Hidden and empty for
     /// the overwhelming majority of rows, which is why it's a plain stack view rather than
@@ -183,7 +197,24 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // `useOwnSideMargins` for what the inherited ones do beside the iPhone Duo's side rail.
         MessageListRenderer.useOwnSideMargins(contentView)
 
+        replyLabel.numberOfLines = 1
+        replyLabel.lineBreakMode = .byTruncatingTail
+        replyLabel.alpha = 0.45
+        replyLabel.translatesAutoresizingMaskIntoConstraints = false
+        replyLabel.isUserInteractionEnabled = true
+        replyLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(replyTapped)))
+        replyHolder.isHidden = true
+        replyHolder.addSubview(replyLabel)
+        replyTop = replyLabel.topAnchor.constraint(equalTo: replyHolder.topAnchor)
+        NSLayoutConstraint.activate([
+            replyTop,
+            replyLabel.bottomAnchor.constraint(equalTo: replyHolder.bottomAnchor),
+            replyLabel.leadingAnchor.constraint(equalTo: replyHolder.leadingAnchor),
+            replyLabel.trailingAnchor.constraint(equalTo: replyHolder.trailingAnchor),
+        ])
+
         column.addArrangedSubview(headerRow)
+        column.addArrangedSubview(replyHolder)
         column.addArrangedSubview(messageText)
         column.addArrangedSubview(attachments)
         reactionHolder.isHidden = true
@@ -241,6 +272,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         highlighted: Bool = false,
         interactive: Bool = true,
         reactions: ReactionChips? = nil,
+        reply: ReplyLine? = nil,
+        indentsBody: Bool = true,
         traits: UITraitCollection
     ) {
         // A results list turns this off so a tap anywhere reaches the row's own selection (the
@@ -309,8 +342,31 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // a matched block's wash still ends a band's width below its last visible thing.
         let closing = endsBlock ? wash + Self.washBottomNudge : 0
         let showsReactions = !(reactions?.groups.isEmpty ?? true)
+        // A quote takes the gap above the body, and the body follows it a line-gap down — the
+        // distance between two lines of one message, which is what the two are.
+        let topGap = header == nil ? padding : MessageRenderer.compactHeaderGap
+        replyHolder.isHidden = reply == nil
+        onJumpToReply = nil
+        if let reply {
+            replyTop.constant = topGap
+            replyLabel.attributedText = MessageRenderer.renderReplyQuote(
+                reply.quote,
+                indent: indentsBody ? MessageRenderer.compactIndent(compatibleWith: traits) : 0,
+                traits: traits
+            )
+            replyLabel.accessibilityLabel = MessageRenderer.spokenReplyQuote(reply.quote)
+            if let quote = reply.quote, let jump = reply.onJump {
+                onJumpToReply = { jump(quote) }
+                replyLabel.accessibilityTraits = .button
+                replyLabel.accessibilityHint = "Jumps to that message."
+            } else {
+                replyLabel.accessibilityTraits = .staticText
+                replyLabel.accessibilityHint = nil
+            }
+            replyLabel.isUserInteractionEnabled = interactive && onJumpToReply != nil
+        }
         messageText.textContainerInset = UIEdgeInsets(
-            top: header == nil ? padding : MessageRenderer.compactHeaderGap,
+            top: reply != nil ? MessageRenderer.compactLineGap : topGap,
             left: 0, // indentation is the paragraph style's — see `MessageRenderer.spaced`
             bottom: padding + (showsReactions ? 0 : closing),
             right: 0
@@ -439,6 +495,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.url(at: convert(point, to: messageText))
     }
 
+    @objc private func replyTapped() { onJumpToReply?() }
+
     func reactionChip(at point: CGPoint) -> Bool {
         guard !reactionHolder.isHidden, reactionHolder.bounds.contains(convert(point, to: reactionHolder))
         else { return false }
@@ -482,5 +540,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         reactionRow.onToggle = nil
         reactionRow.onOpen = nil
         reactionRow.onHeightChange = nil
+        onJumpToReply = nil
     }
 }
