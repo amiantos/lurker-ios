@@ -16,7 +16,9 @@ enum AppView {
     var title: String {
         switch self {
         case .search: "Search"
-        case .highlights: "Highlights"
+        // "Activity" since reactions to your lines joined highlights there (iOS #183), the
+        // web's name for the same feed. The case keeps its old name, as the web's code does.
+        case .highlights: "Activity"
         case .bookmarks: "Bookmarks"
         case .uploads: "Uploads"
         case .lurker: "Lurker"

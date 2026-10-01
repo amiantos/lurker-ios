@@ -71,6 +71,18 @@ public struct Message: Equatable, Sendable {
     /// actually loads. The Bookmarks feed itself is the other source: its rows carry no flag
     /// (they're all saved) and seed the set through `noteBookmarked(ids:)`.
     public let bookmarked: Bool
+    /// The server's IRCv3 message id, when the network supplied one (`message-tags`; our own
+    /// lines learn theirs from `echo-message`). What a reaction or a reply names — a line
+    /// without one can't be reacted or replied to. Nil on untagged networks.
+    public let msgid: String?
+    /// An end-to-end encrypted line (RPE2E). Reactions and reply tags are cleartext, so the
+    /// server sends none on one, and this client doesn't offer to.
+    public let isE2E: Bool
+    /// The reactions standing on this line *as of the moment the server sent it* — nil when
+    /// none. **Don't render from this — ask `ChatState.reactionGroups(for:)`.** Like
+    /// `bookmarked`, it's the wire seed: the store's side map is what also reflects a
+    /// `reaction` frame since, and the row is authoritative for itself only when it arrives.
+    public let reactions: [MessageReaction]?
     /// The relay bot this line actually came from, once it has been re-attributed (#277) — the
     /// only real IRC entity on the row, since `nick` now names someone with no presence here.
     ///
@@ -103,7 +115,10 @@ public struct Message: Equatable, Sendable {
         newHost: String? = nil,
         userhost: String? = nil,
         account: String? = nil,
-        bookmarked: Bool = false
+        bookmarked: Bool = false,
+        msgid: String? = nil,
+        isE2E: Bool = false,
+        reactions: [MessageReaction]? = nil
     ) {
         self.id = id
         self.type = type
@@ -124,6 +139,9 @@ public struct Message: Equatable, Sendable {
         self.userhost = userhost
         self.account = account
         self.bookmarked = bookmarked
+        self.msgid = msgid
+        self.isE2E = isE2E
+        self.reactions = reactions
     }
 
     /// This line with its highlight taken off — what a `NOHIGHLIGHT` ignore rule leaves behind

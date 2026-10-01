@@ -100,6 +100,24 @@ public struct ChatState: Sendable {
     /// joins through networks, which they have none of) — so nothing ever puts one in here,
     /// and `MessageActions` never asks about one.
     public var bookmarkedIds: Set<Int> = []
+    /// The IRCv3 reactions standing on each line we've seen, by message id (iOS #183). **Read
+    /// through `reactionGroups(for:)`.**
+    ///
+    /// Beside the message rows rather than on them for the reason `bookmarkedIds` is: rows are
+    /// never patched in place, and a side map survives slices being swapped wholesale. Fed the
+    /// same two ways — each row that arrives is authoritative for itself (no `reactions` = none
+    /// stand on it now), and a live `reaction` frame adds or removes one. A cache of what this
+    /// session has SEEN; an id with no entry has no reactions as far as any loaded line goes.
+    ///
+    /// Network lines only. System-buffer rows have an id sequence of their own that overlaps
+    /// this one, so they never touch it. And only lines a buffer HOLDS: a `reaction` frame for a
+    /// line nobody loaded is dropped — the row brings its reactions with it when it's fetched —
+    /// so the map is bounded by what's loaded, and `dropBuffer` can free a buffer's share.
+    public var reactions: [Int: [MessageReaction]] = [:]
+    /// Bumped per buffer (`BufferKey.id`) whenever the reactions on its lines change. A chat
+    /// screen compares its own buffer's entry — one integer — so a reaction elsewhere doesn't
+    /// redraw it, and the gate that runs on every frame stays cheap.
+    public internal(set) var reactionsRevisions: [String: Int] = [:]
     /// Peer presence keyed `networkId → lowercased nick → state`. Mirrors the server's
     /// MONITOR-fed presence: seeded from each network snapshot's `peerPresence` blob and
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
@@ -297,6 +315,13 @@ public struct ChatState: Sendable {
     /// (`buffer-closed`), and reconciling a burst that no longer lists it (`pruneToBurst`).
     mutating func dropBuffer(_ key: String) {
         if let id = buffers[key]?.bufferId, keysById[id] == key { keysById[id] = nil }
+        // The reactions on its lines go with them: a reopen's rows carry their own again. Network
+        // buffers only — system-buffer ids are another sequence, and would free network lines'.
+        // ⚠ Asked before the row goes, which is what says which kind this is.
+        if buffers[key]?.networkId != nil {
+            for message in messages[key] ?? [] { reactions.removeValue(forKey: message.id) }
+        }
+        reactionsRevisions[key] = nil
         buffers[key] = nil
         messages[key] = nil
         members[key] = nil
@@ -368,6 +393,9 @@ public struct ChatState: Sendable {
         // Same class as the in-flight page flags `ChatViewModel` rekeys for the same reason.
         unsent[to] = unsent[from]
         unsent[from] = nil
+        // Moved with its lines, so a renamed DM's chips still redraw when a reaction lands.
+        reactionsRevisions[to] = reactionsRevisions[from]
+        reactionsRevisions[from] = nil
         if burstSeen.remove(from) != nil { burstSeen.insert(to) }
         if let id = renamed.bufferId { keysById[id] = to }
     }
@@ -560,6 +588,41 @@ public struct ChatState: Sendable {
     /// unsaved rather than unknown.
     public func isBookmarked(_ messageId: Int) -> Bool { bookmarkedIds.contains(messageId) }
 
+    /// The chips for one line: its reactions grouped by value, first-reacted first. Empty for a
+    /// line with none, or one this session hasn't loaded.
+    public func reactionsRevision(for key: BufferKey) -> Int { reactionsRevisions[key.id] ?? 0 }
+
+    public func reactionGroups(for messageId: Int) -> [ReactionGroup] {
+        guard messageId != 0, let list = reactions[messageId], !list.isEmpty else { return [] }
+        return Reactions.groups(list)
+    }
+
+    /// Whether a reaction — or a reply's tags — can go out on this network right now: it's
+    /// connected and its last registration said yes (§5.1). The server's own gate needs a reply
+    /// tag allowed too, so this is also the nearest signal for "a reply will carry its tag".
+    ///
+    /// ⚠ Our own socket first, like `presence`: while it's down `network.state` is whatever the
+    /// last snapshot said, and nothing we send goes anywhere.
+    public func canReact(networkId: Int?) -> Bool {
+        guard reachable, connection == .connected, let networkId, let network = networks[networkId]
+        else { return false }
+        return network.state == .connected && network.canReact
+    }
+
+    /// The newest lines of every loaded network buffer, for a `sync-reactions` after a resume:
+    /// a `reaction` frame only reaches a connected socket and the resume ships only new rows, so
+    /// a react or unreact on a loaded line while we were away would otherwise never land. The
+    /// newest `Reactions.syncPerBuffer` of each — where reactions land — within the server's cap.
+    public func reactionSyncIds() -> [Int] {
+        var ids: [Int] = []
+        for (key, buffer) in buffers where buffer.networkId != nil {
+            let lines = messages[key] ?? []
+            ids.append(contentsOf: lines.reversed().lazy.map(\.id).filter { $0 != 0 }.prefix(Reactions.syncPerBuffer))
+            if ids.count >= Reactions.syncMaxIds { break }
+        }
+        return Array(ids.prefix(Reactions.syncMaxIds))
+    }
+
     /// Membership in the favorites list, fold-consistent with every other key comparison
     /// (`BufferKey.id` lowercases both sides). The one owner of the predicate — screens
     /// must not hand-roll `favorites.contains { ... lowercased() ... }` copies that a
@@ -591,6 +654,69 @@ public struct ChatState: Sendable {
             } else {
                 bookmarkedIds.remove(message.id)
             }
+        }
+    }
+
+    /// Reconcile `reactions` against a page of rows — the same contract as `noteBookmarks`: each
+    /// row says what stands on it, in both directions, and silence about an id is not a removal.
+    mutating func noteReactions(in messages: [Message], networkId: Int?, key: String) {
+        guard networkId != nil else { return }
+        var changed = false
+        for message in messages where message.id != 0 {
+            let list = message.reactions ?? []
+            if list.isEmpty {
+                if reactions.removeValue(forKey: message.id) != nil { changed = true }
+            } else if reactions[message.id] != list {
+                reactions[message.id] = list
+                changed = true
+            }
+        }
+        if changed { reactionsRevisions[key, default: 0] &+= 1 }
+    }
+
+    /// One live `reaction` frame, for a line its buffer holds (see `reactions`).
+    mutating func applyReaction(_ change: ReactionChange) {
+        let key = BufferKey(networkId: change.networkId, target: change.target).id
+        guard messages[key]?.contains(where: { $0.id == change.messageId }) == true else { return }
+        let current = reactions[change.messageId] ?? []
+        // ⚠⚠ Ours is matched by `isSelf`, never by nick, and nobody else's ever matches ours: we
+        // may have reacted under an older nick (so a nick match would leave ours standing
+        // forever — the server's rule too), and someone may since have taken that nick (so a
+        // nick match would fold their reaction into ours, and their unreact would take ours).
+        let same = { (r: MessageReaction) in
+            guard r.value == change.value, r.isSelf == change.isSelf else { return false }
+            return change.isSelf || r.nick.lowercased() == change.nick.lowercased()
+        }
+        var next = current
+        if change.remove {
+            next = current.filter { !same($0) }
+        } else if !current.contains(where: same) {
+            // Appended, so a group keeps its place and a new value goes last.
+            next = current + [MessageReaction(nick: change.nick, value: change.value, isSelf: change.isSelf)]
+        }
+        guard next != current else { return }
+        reactions[change.messageId] = next.isEmpty ? nil : next
+        reactionsRevisions[key, default: 0] &+= 1
+    }
+
+    /// The answer to `sync-reactions`: authoritative for every id it names that a buffer still
+    /// holds (a buffer closed while the question was out has nothing to show them on).
+    mutating func applyReactionsSync(messageIds: [Int], found: [Int: [MessageReaction]]) {
+        var asked = Set(messageIds.filter { $0 != 0 })
+        guard !asked.isEmpty else { return }
+        for (key, buffer) in buffers where buffer.networkId != nil {
+            var changed = false
+            for message in messages[key] ?? [] where asked.remove(message.id) != nil {
+                let list = found[message.id] ?? []
+                if list.isEmpty {
+                    if reactions.removeValue(forKey: message.id) != nil { changed = true }
+                } else if reactions[message.id] != list {
+                    reactions[message.id] = list
+                    changed = true
+                }
+            }
+            if changed { reactionsRevisions[key, default: 0] &+= 1 }
+            if asked.isEmpty { break }
         }
     }
 
@@ -933,6 +1059,11 @@ final class LurkerStore {
             if var existing = next.networks[networkId] {
                 existing.state = connection
                 if let nick { existing.nick = nick }
+                // A link that drops comes back through a fresh registration, and until its burst
+                // ends the server can't say what it allows (it re-announces `react-support`
+                // then). Holding the old answer would offer React on the strength of the last
+                // connection's CLIENTTAGDENY.
+                if connection != .connected { existing.canReact = false }
                 next.networks[networkId] = existing
             } else {
                 next.networks[networkId] = Network(
@@ -957,6 +1088,19 @@ final class LurkerStore {
         case .favoritesChanged(let favorites):
             var next = state
             next.favorites = favorites
+            return next
+        case .reaction(let change):
+            var next = state
+            next.applyReaction(change)
+            return next
+        case .reactionsSync(let messageIds, let found):
+            var next = state
+            next.applyReactionsSync(messageIds: messageIds, found: found)
+            return next
+        case .reactSupport(let networkId, let canReact):
+            // Never materializes a network: it describes one the snapshot already named.
+            var next = state
+            next.networks[networkId]?.canReact = canReact
             return next
         case .bookmarkUpdated(let messageId, let saved):
             var next = state
@@ -1369,6 +1513,7 @@ final class LurkerStore {
                 // to disappear here. Keeping the old value would leave a stale "away" divider
                 // in every buffer with no event able to retract it.
                 existing.away = snapshot.away
+                existing.canReact = snapshot.canReact
                 next.networks[snapshot.id] = existing
             } else {
                 // ⚠⚠ No name, rather than a placeholder that reads like one (#136). The
@@ -1381,7 +1526,7 @@ final class LurkerStore {
                 // for a nil name and re-reads the roster.
                 next.networks[snapshot.id] = Network(
                     id: snapshot.id, name: nil, state: snapshot.state, nick: snapshot.nick,
-                    away: snapshot.away
+                    away: snapshot.away, canReact: snapshot.canReact
                 )
             }
             for channel in snapshot.channels {
@@ -1422,6 +1567,7 @@ final class LurkerStore {
     ) -> ChatState {
         var next = state
         next.noteBookmarks(in: messages, networkId: frameBuffer.networkId)
+        next.noteReactions(in: messages, networkId: frameBuffer.networkId, key: frameBuffer.key.id)
         let key = frameBuffer.key.id
         next.seedSpeakers(speakers, forKey: key)
         // The server named this buffer, so it survives the burst's closing prune. Recorded
@@ -1763,6 +1909,7 @@ final class LurkerStore {
     ) -> ChatState {
         var next = state
         next.noteBookmarks(in: events, networkId: networkId)
+        next.noteReactions(in: events, networkId: networkId, key: BufferKey(networkId: networkId, target: target).id)
         let key = BufferKey(networkId: networkId, target: target).id
         next.seedSpeakers(speakers, forKey: key)
         let existing = next.messages[key] ?? []

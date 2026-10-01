@@ -7,6 +7,8 @@ import Foundation
 /// beside it is only how the action presents itself.
 public enum MessageActionKey: String, Sendable {
     case reply
+    /// Open the reaction sheet on the line (iOS #183).
+    case react
     case copy
     case bookmark
     /// Open the profile of the person the line is *from* (#12) — which on a re-attributed
@@ -30,10 +32,16 @@ public struct MessageActionScope: Equatable, Sendable {
     public let networkId: Int?
     /// Whether this line is currently saved, from `ChatState.isBookmarked(_:)`.
     public let isBookmarked: Bool
+    /// The buffer's target — whether it's a conversation a tag can ride to (`Reactions.isConversation`).
+    public let target: String
+    /// `ChatState.canReact(networkId:)` at the press: the network is up and takes the tags.
+    public let canReact: Bool
 
-    public init(networkId: Int?, isBookmarked: Bool) {
+    public init(networkId: Int?, isBookmarked: Bool, target: String = "", canReact: Bool = false) {
         self.networkId = networkId
         self.isBookmarked = isBookmarked
+        self.target = target
+        self.canReact = canReact
     }
 }
 
@@ -69,17 +77,21 @@ public struct MessageActionContext {
     /// Open a profile for this nick. Only called with a nick that has an IRC presence — see
     /// `profileSubject`.
     public let showProfile: (String) -> Void
+    /// Open the reaction sheet for this line.
+    public let react: (Message) -> Void
 
     public init(
         reply: @escaping (String) -> Void,
         copy: @escaping (String) -> Void,
         setBookmark: @escaping (Int, Bool) -> Void,
-        showProfile: @escaping (String) -> Void
+        showProfile: @escaping (String) -> Void,
+        react: @escaping (Message) -> Void = { _ in }
     ) {
         self.reply = reply
         self.copy = copy
         self.setBookmark = setBookmark
         self.showProfile = showProfile
+        self.react = react
     }
 }
 
@@ -138,6 +150,15 @@ public enum MessageActions {
             actions.append(
                 MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
             )
+        }
+
+        // React (iOS #183): a reaction names the line's msgid, so it needs a line the server
+        // stamped, in a conversation, not encrypted, on a network that takes the tags right now.
+        // Not a notice — the server refuses those (`reactionSendTarget`). It re-checks all of it
+        // and refuses in silence, which is exactly why the row isn't offered where it could only
+        // do nothing.
+        if Reactions.canSend(on: message, target: scope.target, networkCanReact: scope.canReact) {
+            actions.append(MessageAction(key: .react, title: "React", symbol: "face.smiling"))
         }
 
         // Copy wants lines whose `text` IS their content. That's everything that isn't activity
@@ -260,7 +281,7 @@ public enum MessageActions {
         case .openLink: context.open(url)
         case .copyLink: context.copy(url)
         case .shareLink: context.share(url)
-        case .reply, .copy, .bookmark, .profile: break
+        case .reply, .react, .copy, .bookmark, .profile: break
         }
     }
 
@@ -284,6 +305,8 @@ public enum MessageActions {
         case .reply:
             guard let nick = message.nick, !nick.isEmpty else { return }
             context.reply(nick)
+        case .react:
+            context.react(message)
         case .copy:
             // The raw text, not the rendered attributed string: what gets pasted should be what
             // was typed — mIRC color codes and all — not this client's rendering of it.

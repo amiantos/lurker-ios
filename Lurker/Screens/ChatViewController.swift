@@ -607,6 +607,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // A DCC chat's session opens and ends with nothing else changing — the
                     // light and the field both read it (lurker#270).
                     && old.dccChatSession(bufferKey) == new.dccChatSession(bufferKey)
+                    // Reactions ride beside the rows, not on them (iOS #183), so a `reaction`
+                    // frame changes what's on screen with no message changing — the same trap
+                    // again. Compared as this buffer's revision: one integer, and a reaction in
+                    // another buffer doesn't redraw this one.
+                    && old.reactionsRevision(for: bufferKey) == new.reactionsRevision(for: bufferKey)
+                    // Whether the chips can be tapped moves with the network's state (compared
+                    // above) and its `react-support`, which `networks` covers too.
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -3170,15 +3177,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // a URL in one of those is still a URL you can act on. Gating this on a message first made
         // long press do nothing at all there, while a plain tap opened the link.
         let cell = tableView.cellForRow(at: indexPath) as? MessageBodyHosting
-        let url = cell.flatMap { $0.linkURL(at: recognizer.location(in: $0)) }
         let message = rows[indexPath.row].message
+        // A press on a reaction chip is about the reactions: show who gave what, which is the
+        // one thing a tap on a chip can't (it toggles yours).
+        if let cell, let message, cell.reactionChip(at: recognizer.location(in: cell)) {
+            composer.resignFirstResponder()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            showReactions(for: message)
+            return
+        }
+        let url = cell.flatMap { $0.linkURL(at: recognizer.location(in: $0)) }
 
         // The scope is read here, at press time, so the sheet's Save/Remove label reflects the
         // store as of the press rather than whenever the row was last drawn. It's then carried
         // to `runMessageAction` rather than re-read there — see that method.
         let scope = MessageActionScope(
             networkId: buffer.key.networkId,
-            isBookmarked: message.map { viewModel.isBookmarked($0.id) } ?? false
+            isBookmarked: message.map { viewModel.isBookmarked($0.id) } ?? false,
+            target: buffer.key.target,
+            canReact: viewModel.state.canReact(networkId: buffer.key.networkId)
         )
         let subject = url.map(MessageActionsViewController.Subject.link)
             ?? message.map { .message($0, scope: scope) }
@@ -3252,8 +3269,66 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // screen to refuse a second presentation.
                     guard let self, let networkId = buffer.networkId else { return }
                     showProfile(networkId: networkId, nick: nick)
-                }
+                },
+                react: { [weak self] message in self?.showReactions(for: message) }
             )
+        )
+    }
+
+    /// Re-measure the visible rows' heights without reloading them — a chip row wrapped onto a
+    /// different number of lines than the cell was measured with. Coalesced to one pass a runloop.
+    private var remeasureQueued = false
+    private func remeasureRows() {
+        guard !remeasureQueued else { return }
+        remeasureQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            remeasureQueued = false
+            UIView.performWithoutAnimation { self.tableView.performBatchUpdates(nil) }
+        }
+    }
+
+    /// The reaction sheet for a line (iOS #183): who reacted with what, and a way to add yours.
+    private func showReactions(for message: Message) {
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        present(
+            ReactionSheetViewController(
+                viewModel: viewModel, message: message,
+                networkId: buffer.key.networkId, target: buffer.key.target
+            ),
+            animated: true
+        )
+    }
+
+    /// What the rows need to draw reaction chips. Read from the store at draw time — the
+    /// screen's dedupe lets a reaction through on `reactionsRevision`, so this is current.
+    private var reactionContext: ReactionContext {
+        let networkId = buffer.key.networkId
+        let target = buffer.key.target
+        return ReactionContext(
+            groups: { [weak self] message in
+                guard let self, Reactions.canCarry(message, networkId: networkId) else { return [] }
+                return viewModel.state.reactionGroups(for: message.id)
+            },
+            canToggle: { [weak self] message in
+                guard let self else { return false }
+                return Reactions.canSend(
+                    on: message, target: target,
+                    networkCanReact: viewModel.state.canReact(networkId: networkId))
+            },
+            showsAdd: { message in Reactions.lineTakes(message, target: target) },
+            onToggle: { [weak self] message, value in
+                guard let self else { return }
+                // The chip doesn't move until the network echoes it, so the tap is acknowledged
+                // here — and a send that went nowhere says so the same way, rather than nothing.
+                if viewModel.toggleReaction(messageId: message.id, value: value) {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                } else {
+                    UINotificationFeedbackGenerator().notificationOccurred(.error)
+                }
+            },
+            onOpen: { [weak self] message in self?.showReactions(for: message) },
+            onHeightChange: { [weak self] in self?.remeasureRows() }
         )
     }
 
@@ -3287,6 +3362,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             onOpenMedia: { [weak self] previews, at in
                 self?.openMediaViewer(previews, at: at)
             },
+            reactions: reactionContext,
             previews: previewContext
         )
     }

@@ -720,6 +720,26 @@ final class LurkerClient {
             surfacesFailure: true)
     }
 
+    /// Add (or, with `remove`, take back) our IRCv3 reaction on a stored line (iOS #183).
+    ///
+    /// ⚠⚠ Never rendered optimistically, by design: nothing is echoed to this call, the network's
+    /// own echo arrives as a `reaction` frame, and a refusal is silence. A chip that lit up here
+    /// and then never got its echo would be a reaction nobody else can see.
+    @discardableResult
+    func react(messageId: Int, value: String, remove: Bool) -> Bool {
+        send(
+            ["type": "react", "messageId": messageId, "value": value, "remove": remove],
+            surfacesFailure: true)
+    }
+
+    /// Ask what reactions stand now on lines we already hold — after a resume, when changes made
+    /// while we were away reached no socket of ours. Answered to this socket as `reactions-sync`.
+    @discardableResult
+    func syncReactions(messageIds: [Int]) -> Bool {
+        guard !messageIds.isEmpty else { return false }
+        return send(["type": "sync-reactions", "messageIds": messageIds])
+    }
+
     /// A raw IRC line — the escape hatch behind `/nick`, `/mode`, `/kick`, `/whois`, the
     /// service messages, the server queries, and every unrecognized command.
     ///
@@ -1278,6 +1298,39 @@ final class LurkerClient {
             }
             guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
             return FrameParser.parseHighlights(text)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Fetch a page of the activity feed (`GET /api/activity`, iOS #183): highlights plus other
+    /// people's reactions to your lines. `cursor` is the previous page's `next`, nil for the first.
+    ///
+    /// ⚠ A self-hosted server older than the feed answers 404; that falls back to the plain
+    /// highlights read, which is everything such a server has to give.
+    func fetchActivity(cursor: FeedCursor? = nil, limit: Int = 50) async -> HighlightsPage? {
+        guard let token, var components = URLComponents(string: baseURL + "/api/activity") else { return nil }
+        var query = [URLQueryItem(name: "limit", value: String(limit))]
+        if let before = cursor?.beforeMessage {
+            query.append(URLQueryItem(name: "beforeMessage", value: String(before)))
+        }
+        if let before = cursor?.beforeReaction {
+            query.append(URLQueryItem(name: "beforeReaction", value: String(before)))
+        }
+        components.queryItems = query
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                reportUnauthorized(sentWith: token)
+                return nil
+            }
+            if code == 404 { return await fetchHighlights(before: cursor?.beforeMessage, limit: limit) }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
+            return FrameParser.parseActivity(text)
         } catch {
             return nil
         }

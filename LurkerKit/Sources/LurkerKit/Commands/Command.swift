@@ -125,6 +125,10 @@ public enum CommandEffect: Equatable, Sendable {
     case dccChat(nick: String, passive: Bool)
     /// End a DCC chat with `nick`, cancel our offer to them, or decline theirs — `/dcc close chat`.
     case dccCloseChat(nick: String)
+    /// React to the last line someone else said in the issuing buffer — `/react` (iOS #183).
+    /// The parser has already checked the value; which line it lands on is the executor's
+    /// question, since only the store knows what was said last.
+    case react(value: String)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -302,6 +306,8 @@ public enum CommandRegistry {
                     args: [ArgSpec("nick", .nick), ArgSpec("message", .text, optional: true, rest: true)]),
         CommandSpec(["notice"], .messaging, "Send a NOTICE",
                     args: [ArgSpec("target", .nick), ArgSpec("message", .text, rest: true)]),
+        CommandSpec(["react"], .messaging, "React to the last line someone else said",
+                    args: [ArgSpec("emoji or text", .text, rest: true)]),
         CommandSpec(["slap"], .messaging, "Slap someone with a large trout",
                     args: [ArgSpec("nick", .nick)]),
         CommandSpec(["ctcp"], .messaging, "Send a CTCP request",

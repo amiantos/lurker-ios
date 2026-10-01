@@ -11,6 +11,8 @@ import UIKit
 /// its body sits inside the row.
 protocol MessageBodyHosting: UITableViewCell {
     func linkURL(at point: CGPoint) -> URL?
+    /// Whether the point lands on a reaction chip — a long press there is about the reactions.
+    func reactionChip(at point: CGPoint) -> Bool
 }
 
 /// Everything a row needs that comes from the screen rather than from the row itself.
@@ -47,12 +49,29 @@ struct MessageListContext {
     /// Present a message's pictures full-screen. Nil on screens with nothing to present from —
     /// the highlights feed and the layout probes — where a tap falls back to opening the address.
     var onOpenMedia: (([LinkPreview], Int) -> Void)?
+    /// What a line's reaction chips need (iOS #183), or nil on screens that don't draw them.
+    var reactions: ReactionContext?
     /// Link previews, or nil on the screens that don't show them.
     ///
     /// Optional rather than always-present because the highlights feed and the throwaway
     /// layout probes build a context without a view model, and previews are decoration those
     /// two have no business fetching.
     let previews: PreviewContext?
+}
+
+/// What a row needs to draw reaction chips: the groups standing on a line, whether a reaction
+/// can go out on it now, and where a tap goes. Resolvers rather than values, so a reload reads
+/// the store once per drawn row and not per loaded one.
+struct ReactionContext {
+    let groups: (Message) -> [ReactionGroup]
+    let canToggle: (Message) -> Bool
+    /// Whether the line could ever take a reaction from here — a notice or an encrypted line
+    /// shows its chips but offers no add chip.
+    let showsAdd: (Message) -> Bool
+    let onToggle: (Message, String) -> Void
+    let onOpen: (Message) -> Void
+    /// A chip row came out a different height than its cell was measured at.
+    let onHeightChange: () -> Void
 }
 
 /// What a row needs to draw link previews. Bundled so `MessageListContext` grows by one
@@ -126,6 +145,7 @@ struct MessageListRenderer {
                 startsBlock: blockHeader != nil,
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched,
+                reactions: Self.reactions(for: message, context: context),
                 traits: context.traits
             )
             attach(plan, to: cell, context: context)
@@ -144,6 +164,7 @@ struct MessageListRenderer {
                 header: nil, startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched,
+                reactions: Self.reactions(for: message, context: context),
                 traits: context.traits
             )
             attach(plan, to: cell, context: context)
@@ -244,6 +265,21 @@ struct MessageListRenderer {
         let hidden =
             media.isEmpty ? [] : PreviewHiding.hideableUrls(in: message.text, candidates: media)
         return PreviewPlan(hidden: hidden, resolved: resolved)
+    }
+
+    /// The chips for a line, or nil when it has none (or the screen draws none).
+    static func reactions(for message: Message, context: MessageListContext) -> CompactCell.ReactionChips? {
+        guard let reactions = context.reactions else { return nil }
+        let groups = reactions.groups(message)
+        guard !groups.isEmpty else { return nil }
+        return CompactCell.ReactionChips(
+            groups: groups,
+            canToggle: reactions.canToggle(message),
+            showsAdd: reactions.showsAdd(message),
+            onToggle: { [onToggle = reactions.onToggle] value in onToggle(message, value) },
+            onOpen: { [onOpen = reactions.onOpen] in onOpen(message) },
+            onHeightChange: reactions.onHeightChange
+        )
     }
 
     private func attach(

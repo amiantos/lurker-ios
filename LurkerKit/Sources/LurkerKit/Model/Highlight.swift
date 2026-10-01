@@ -21,12 +21,22 @@ public struct HighlightItem: Equatable, Sendable {
     /// The network's display name, resolved server-side so the list can name it without
     /// waiting on the client's own roster to have loaded.
     public let networkName: String?
+    /// Set on an activity-feed row that is someone's reaction to one of your lines (iOS #183),
+    /// nil on every highlight, bookmark and search hit. On such a row `message` is the reaction
+    /// as a line — the reactor's nick and host, the value as its text, the reaction's time —
+    /// because that is what an ignore rule judges and what the header names; its `id` is still
+    /// your line's, the jump target.
+    public let reaction: FeedReaction?
 
-    public init(message: Message, networkId: Int?, target: String, networkName: String?) {
+    public init(
+        message: Message, networkId: Int?, target: String, networkName: String?,
+        reaction: FeedReaction? = nil
+    ) {
         self.message = message
         self.networkId = networkId
         self.target = target
         self.networkName = networkName
+        self.reaction = reaction
     }
 
     /// The buffer this match belongs to, for jumping back to the conversation.
@@ -38,14 +48,50 @@ public struct HighlightItem: Equatable, Sendable {
 /// rows than the limit). Mirrors the server's `{ items, nextBefore }` response.
 public struct HighlightsPage: Equatable, Sendable {
     public let items: [HighlightItem]
-    public let nextBefore: Int?
+    /// Where the next older page starts, or nil at the end.
+    public let next: FeedCursor?
 
     public init(items: [HighlightItem], nextBefore: Int?) {
         self.items = items
-        self.nextBefore = nextBefore
+        self.next = nextBefore.map { FeedCursor(beforeMessage: $0) }
     }
 
+    public init(items: [HighlightItem], next: FeedCursor?) {
+        self.items = items
+        self.next = next
+    }
+
+    /// The message-id cursor the single-source feeds page on.
+    public var nextBefore: Int? { next?.beforeMessage }
+
     /// Whether another (older) page exists. The server signals the end by dropping
-    /// `nextBefore` (null) once a page doesn't fill the limit.
-    public var hasMore: Bool { nextBefore != nil }
+    /// `nextBefore` / `next` (null) once a page doesn't fill the limit.
+    public var hasMore: Bool { next != nil }
+}
+
+/// Where a feed's next older page starts. Highlights, bookmarks and search page on one message
+/// id; the activity feed merges two sources and keeps a cursor for each (`GET /api/activity`) —
+/// either may be absent while that side has given nothing yet. Passed back to the server as-is.
+public struct FeedCursor: Equatable, Sendable {
+    public let beforeMessage: Int?
+    public let beforeReaction: Int?
+
+    public init(beforeMessage: Int? = nil, beforeReaction: Int? = nil) {
+        self.beforeMessage = beforeMessage
+        self.beforeReaction = beforeReaction
+    }
+}
+
+/// A reaction-to-you row's own facts (iOS #183).
+public struct FeedReaction: Equatable, Sendable {
+    public let reactionId: Int
+    public let value: String
+    /// The text of your line it was given on.
+    public let lineText: String?
+
+    public init(reactionId: Int, value: String, lineText: String?) {
+        self.reactionId = reactionId
+        self.value = value
+        self.lineText = lineText
+    }
 }

@@ -75,6 +75,35 @@ enum FrameParser {
             return messageId == 0
                 ? .ignored
                 : .bookmarkUpdated(messageId: messageId, saved: obj.bool("saved"))
+        case "reaction":
+            // Its own frame rather than an `irc` row (wsHub): no decoration, no unread bump, and
+            // it never reopens a closed buffer. A frame that can't name its line, its network or
+            // its value addresses nothing.
+            let messageId = obj.int("messageId")
+            let value = obj.string("value")
+            guard messageId != 0, let networkId = obj.intOrNull("networkId"), !value.isEmpty
+            else { return .ignored }
+            return .reaction(ReactionChange(
+                networkId: networkId,
+                target: obj.string("target"),
+                messageId: messageId,
+                nick: obj.string("nick"),
+                value: value,
+                isSelf: obj.bool("self"),
+                remove: obj.bool("remove"),
+                toSelf: obj.bool("toSelf")
+            ))
+        case "reactions-sync":
+            // ⚠ Only ids the frame NAMES are authoritative, so a frame without a readable list
+            // says nothing — not "every line has none".
+            guard let ids = obj["messageIds"] as? [Int] else { return .ignored }
+            var reactions: [Int: [MessageReaction]] = [:]
+            for (key, value) in (obj["reactions"] as? [String: Any]) ?? [:] {
+                guard let id = Int(key), let list = value as? [[String: Any]] else { continue }
+                let parsed = parseReactions(list)
+                if !parsed.isEmpty { reactions[id] = parsed }
+            }
+            return .reactionsSync(messageIds: ids, reactions: reactions)
         case "upload-progress":
             // Same trust posture as its siblings. A frame with no token can't be matched to
             // the upload it describes, and an unrecognized phase is a server saying something
@@ -330,6 +359,37 @@ enum FrameParser {
         )
     }
 
+    /// Parse REST `GET /api/activity` (iOS #183): highlights and other people's reactions to
+    /// your lines, newest first, with a cursor per source in `next` (null at the end).
+    ///
+    /// A highlight row is a feed row like any other. A reaction row is reshaped into one: its
+    /// `message` is the reaction as a line (reactor, value, reaction time) carrying your line's
+    /// id, and `reaction` keeps the value and your line's text for the row to draw.
+    static func parseActivity(_ body: String) -> HighlightsPage {
+        guard let obj = object(from: body) else { return HighlightsPage(items: [], next: nil) }
+        let items: [HighlightItem] = obj.objects("items").compactMap { item in
+            guard item.string("kind") == "reaction" else { return parseFeedItem(item) }
+            let value = item.string("value")
+            let reactionId = item.int("reactionId")
+            guard !value.isEmpty, reactionId != 0 else { return nil }
+            let time = item.stringOrNull("time")
+            return HighlightItem(
+                message: Message(
+                    id: item.int("id"), type: .message, nick: item.stringOrNull("nick"), text: value,
+                    time: time, date: ISOTime.parse(time), userhost: item.stringOrNull("userhost")
+                ),
+                networkId: item.intOrNull("networkId"),
+                target: item.string("target"),
+                networkName: item.stringOrNull("networkName"),
+                reaction: FeedReaction(reactionId: reactionId, value: value, lineText: item.stringOrNull("text"))
+            )
+        }
+        let next = (obj["next"] as? [String: Any]).map {
+            FeedCursor(beforeMessage: $0.intOrNull("beforeMessage"), beforeReaction: $0.intOrNull("beforeReaction"))
+        }
+        return HighlightsPage(items: items, next: next)
+    }
+
     /// Parse REST `GET /api/uploads` into a page of history rows (#138).
     ///
     /// ⚠ No `nextBefore` in this envelope, unlike the three message feeds — the caller pages on
@@ -395,7 +455,8 @@ enum FrameParser {
                 away: parseAwayState(network["away"]),
                 pinned: (network["pinned"] as? [String]) ?? [],
                 dccChats: nonEmptyStrings(network["dccChats"]),
-                dccChatOffers: nonEmptyStrings(network["dccChatOffers"])
+                dccChatOffers: nonEmptyStrings(network["dccChatOffers"]),
+                canReact: network.bool("canReact")
             )
         }
         return .snapshot(
@@ -771,6 +832,11 @@ enum FrameParser {
         default:
             break
         }
+        // `react-support` is network-scoped state on a `:server:<id>` carrier, like those above.
+        if obj.string("type") == "react-support" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            return .reactSupport(networkId: networkId, canReact: obj.bool("canReact"))
+        }
         // `own-nick` is network-scoped state too, and carries no target at all — the visible
         // line is the ordinary `nick` event fanned out per channel, which arrives separately.
         // Below the target guard it would be dropped, leaving `Network.nick` pinned to whatever
@@ -980,7 +1046,21 @@ enum FrameParser {
             // Absent means unsaved — the server omits the field rather than sending false,
             // since nearly every row in every backlog is unsaved. See Message.bookmarked
             // for why the store's id set, not this, is what the UI reads.
-            bookmarked: event.bool("bookmarked")
+            bookmarked: event.bool("bookmarked"),
+            msgid: event.stringOrNull("msgid"),
+            isE2E: event.bool("e2e"),
+            // Absent means none stand — the server omits the field rather than sending `[]`.
+            reactions: (event["reactions"] as? [[String: Any]]).map(parseReactions)
         )
+    }
+
+    /// A row's `reactions`, oldest first. An entry with no value or no nick is nothing to show.
+    private static func parseReactions(_ list: [[String: Any]]) -> [MessageReaction] {
+        list.compactMap { entry in
+            let nick = entry.string("nick")
+            let value = entry.string("value")
+            guard !nick.isEmpty, !value.isEmpty else { return nil }
+            return MessageReaction(nick: nick, value: value, isSelf: entry.bool("self"))
+        }
     }
 }

@@ -176,6 +176,19 @@ enum ServerFrame: Equatable, Sendable {
     /// it just means that line isn't loaded here.
     case bookmarkUpdated(messageId: Int, saved: Bool)
 
+    /// WS `reaction`: an IRCv3 reaction was added or (with `remove`) taken back on a stored
+    /// line, by anyone, ours included — the network's echo is the only thing that ever lights a
+    /// reaction up here (iOS #183). Patches a line we may not hold; never reopens a buffer.
+    case reaction(ReactionChange)
+
+    /// WS `reactions-sync`: the answer to `sync-reactions`. Every id in `messageIds` is
+    /// authoritative — one absent from `reactions` has none standing now.
+    case reactionsSync(messageIds: [Int], reactions: [Int: [MessageReaction]])
+
+    /// Live `react-support` (§7.2): whether reactions can go out on this network changed — the
+    /// burst ended (CLIENTTAGDENY rides a 005 after the snapshot), or a later 005 moved it.
+    case reactSupport(networkId: Int, canReact: Bool)
+
     /// WS `upload-progress`: how far along the server is with an upload *this* device is
     /// running (#47), correlated by the `progressToken` we put in the multipart body.
     ///
@@ -410,6 +423,9 @@ struct NetworkSnapshot: Equatable, Sendable {
     var dccChats: [String] = []
     /// Peers whose DCC chat offer to us still awaits an answer.
     var dccChatOffers: [String] = []
+    /// Whether reactions (and reply tags) can be sent on this network (§5.1). False until the
+    /// registration burst ends, then kept current by `react-support`.
+    var canReact = false
 }
 
 struct ChannelSnapshot: Equatable, Sendable {
