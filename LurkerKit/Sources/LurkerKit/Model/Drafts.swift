@@ -124,6 +124,9 @@ struct DraftSync: Equatable {
         /// When it was made, in edit order. A write that failed late must not put an edit back
         /// over a newer one that already went out (`restore`).
         let seq: Int
+
+        /// The same edit, for the buffer under its new name.
+        func renamed(to key: BufferKey) -> Edit { Edit(key: key, draft: draft, seq: seq) }
     }
 
     /// By `BufferKey.id`. An entry stays until a send for it reached a socket — or, with none,
@@ -143,11 +146,19 @@ struct DraftSync: Equatable {
     private var latest: [String: Int] = [:]
     private var nextSeq = 0
 
-    /// Whether a server write for this buffer must be dropped.
-    func isProtected(_ id: String) -> Bool { unflushed[id] != nil || composing == id }
+    /// Whether a server write for this buffer must be dropped: an edit waiting, a composition,
+    /// or a write still on its way out.
+    ///
+    /// ⚠ In flight counts. Until the socket reports the write sent, the server can't have read
+    /// it — so any snapshot or `draft-updated` arriving meanwhile was built before it, and the
+    /// server will end up holding ours. Folding theirs would repaint the field with text the
+    /// server no longer has, and nothing would ever come back to correct it.
+    func isProtected(_ id: String) -> Bool {
+        unflushed[id] != nil || inFlight[id] != nil || composing == id
+    }
 
     var protectedIds: Set<String> {
-        var ids = Set(unflushed.keys)
+        var ids = Set(unflushed.keys).union(inFlight.keys)
         if let composing { ids.insert(composing) }
         return ids
     }
@@ -268,27 +279,33 @@ struct DraftSync: Equatable {
     /// Follow a rename. On a merge the renamed buffer is the one that survives (lurker
     /// `renameBuffer.ts`), and the server keeps its draft — adopting the absorbed one's only when
     /// it has none. So an edit here moves over whatever the absorbed buffer had waiting.
+    ///
+    /// ⚠ Decided once, across all three maps — the buffer's edit is one thing wherever it sits. A
+    /// source with an edit anywhere replaces the destination's in all of them; per map, an
+    /// absorbed edit waiting beside a surviving one in flight would be left to win a `takeAll`.
     mutating func rekey(from: BufferKey, to: BufferKey) {
         guard from.id != to.id else {
             // Same storage key, new display name: the flush has to name the buffer as it is now.
-            if let edit = unflushed[from.id] { unflushed[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq) }
-            if let edit = awaitingSnapshot[from.id] {
-                awaitingSnapshot[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq)
-            }
-            if let edit = inFlight[from.id] { inFlight[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq) }
+            unflushed[to.id] = unflushed[from.id]?.renamed(to: to)
+            awaitingSnapshot[to.id] = awaitingSnapshot[from.id]?.renamed(to: to)
+            inFlight[to.id] = inFlight[from.id]?.renamed(to: to)
             return
         }
         if composing == from.id { composing = to.id }
-        if let seq = latest.removeValue(forKey: from.id) { latest[to.id] = seq }
-        if let moving = awaitingSnapshot.removeValue(forKey: from.id) {
-            awaitingSnapshot[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
-        }
-        if let moving = inFlight.removeValue(forKey: from.id) {
-            inFlight[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
-        }
-        if let moving = unflushed.removeValue(forKey: from.id) {
-            unflushed[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
-        }
+        let fromLatest = latest.removeValue(forKey: from.id)
+        let moving = (
+            unflushed: unflushed.removeValue(forKey: from.id),
+            awaiting: awaitingSnapshot.removeValue(forKey: from.id),
+            inFlight: inFlight.removeValue(forKey: from.id)
+        )
+        // Nothing of the source's pending: the absorbed buffer's edit, if any, is adopted, as the
+        // server adopts its draft when the survivor has none. And its `latest` stays, or a failed
+        // write of it could no longer be put back.
+        guard moving.unflushed != nil || moving.awaiting != nil || moving.inFlight != nil else { return }
+        unflushed[to.id] = moving.unflushed?.renamed(to: to)
+        awaitingSnapshot[to.id] = moving.awaiting?.renamed(to: to)
+        inFlight[to.id] = moving.inFlight?.renamed(to: to)
+        latest[to.id] = fromLatest
     }
 
     mutating func reset() { self = DraftSync() }

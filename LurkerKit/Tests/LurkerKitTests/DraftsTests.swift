@@ -352,6 +352,50 @@ final class DraftsTests: XCTestCase {
         XCTAssertTrue(sync.takeAll().isEmpty)
     }
 
+    func testAWriteOnItsWayOutOutranksTheServer() {
+        // Anything the server sends before our write leaves was built before it read it.
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "x"), composing: false)
+        let edit = sync.take(chat.id)!
+        sync.sending(edit)
+        XCTAssertTrue(sync.isProtected(chat.id))
+        XCTAssertTrue(sync.protectedIds.contains(chat.id))
+        sync.completed(seq: edit.seq, ok: true)
+        XCTAssertFalse(sync.isProtected(chat.id))
+    }
+
+    func testAMergeDecidesOnceAcrossEveryMap() {
+        // ⚠⚠ The survivor's edit is in flight, the absorbed one's waits: resolved per map, both
+        // stayed, and the absorbed one could win a takeAll.
+        let from = BufferKey(networkId: 1, target: "bob")
+        let to = BufferKey(networkId: 1, target: "bobby")
+        var sync = DraftSync()
+        sync.edit(from, ComposerDraft(body: "survivor"), composing: false)
+        sync.sending(sync.take(from.id)!)
+        sync.edit(to, ComposerDraft(body: "absorbed"), composing: false)
+        sync.rekey(from: from, to: to)
+        XCTAssertNil(sync.local(to.id), "the absorbed edit is gone")
+        XCTAssertEqual(sync.takeAll().map(\.draft.body), ["survivor"])
+    }
+
+    func testAnAdoptedEditCanStillBePutBack() {
+        // The source has nothing pending: the absorbed buffer's in-flight edit stays, and its
+        // failure still restores — the source's stale `latest` must not replace its own.
+        let from = BufferKey(networkId: 1, target: "bob")
+        let to = BufferKey(networkId: 1, target: "bobby")
+        var sync = DraftSync()
+        sync.edit(to, ComposerDraft(body: "absorbed"), composing: false)
+        let absorbed = sync.take(to.id)!
+        sync.sending(absorbed)
+        sync.edit(from, ComposerDraft(body: "sent long ago"), composing: false)
+        let old = sync.take(from.id)!
+        sync.sending(old)
+        sync.completed(seq: old.seq, ok: true)
+        sync.rekey(from: from, to: to)
+        sync.completed(seq: absorbed.seq, ok: false)
+        XCTAssertEqual(sync.local(to.id)?.body, "absorbed")
+    }
+
     func testADeletedNetworksEditsGo() {
         var sync = DraftSync()
         sync.edit(chat, ComposerDraft(body: "x"), composing: false)
