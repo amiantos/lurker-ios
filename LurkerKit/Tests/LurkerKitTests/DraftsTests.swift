@@ -318,6 +318,40 @@ final class DraftsTests: XCTestCase {
         XCTAssertEqual(both.takeAll().map(\.draft.body), ["newer"])
     }
 
+    func testAWriteStillInFlightIsCarriedByTheBackgroundFlush() {
+        // ⚠⚠ Queued on the socket, not yet out: suspension or sign-out's close() can cancel it,
+        // so the HTTP flush has to carry it.
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "on the wire"), composing: false)
+        let edit = sync.take(chat.id)!
+        sync.sending(edit)
+        XCTAssertEqual(sync.takeAll().map(\.draft.body), ["on the wire"])
+        sync.completed(seq: edit.seq, ok: false)
+        XCTAssertNil(sync.local(chat.id), "the flush took it; a late failure finds nothing to put back")
+    }
+
+    func testAFailedWriteComesBackUnderTheBuffersNewName() {
+        var sync = DraftSync()
+        let from = BufferKey(networkId: 1, target: "bob")
+        let to = BufferKey(networkId: 1, target: "bobby")
+        sync.edit(from, ComposerDraft(body: "x"), composing: false)
+        let edit = sync.take(from.id)!
+        sync.sending(edit)
+        sync.rekey(from: from, to: to)
+        sync.completed(seq: edit.seq, ok: false)
+        XCTAssertEqual(sync.take(to.id)?.key, to)
+        XCTAssertNil(sync.local(from.id))
+    }
+
+    func testACompletedWriteIsDone() {
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "x"), composing: false)
+        let edit = sync.take(chat.id)!
+        sync.sending(edit)
+        sync.completed(seq: edit.seq, ok: true)
+        XCTAssertTrue(sync.takeAll().isEmpty)
+    }
+
     func testADeletedNetworksEditsGo() {
         var sync = DraftSync()
         sync.edit(chat, ComposerDraft(body: "x"), composing: false)

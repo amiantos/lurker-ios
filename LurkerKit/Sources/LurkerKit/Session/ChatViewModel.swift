@@ -624,6 +624,13 @@ public final class ChatViewModel {
     private var draftSync = DraftSync()
     /// The debounced flush per buffer (`BufferKey.id`): each edit re-arms its buffer's.
     private var draftFlushes: [String: Task<Void, Never>] = [:]
+    /// The socket (`LurkerClient.socketGeneration`) whose `draft-snapshot` arrived last. A write
+    /// to any other — one still connecting, or a forced reconnect's replacement, which swaps the
+    /// socket with no close in between — is one that socket's snapshot can't have seen.
+    ///
+    /// ⚠ Not `snapshotSinceOpen`: that turns on at frame 1, and the server built frame 2 in the
+    /// same turn, before reading anything we send — so a write between the two is still unseen.
+    private var draftSnapshotSocket: Int?
 
     /// The draft `key`'s composer should show: this device's unflushed edit, else the server's.
     public func draft(for key: BufferKey) -> ComposerDraft? {
@@ -677,21 +684,27 @@ public final class ChatViewModel {
         store.setDraft(edit.key, edit.draft)
         let sent = client.saveDraft(
             networkId: networkId, target: edit.key.target, draft: edit.draft,
-            // The socket died under it. Waits for the reconnect's snapshot — unless a newer edit
-            // has gone out since, which `restore` won't put this one back over.
-            onFailure: { [weak self] in Task { @MainActor in self?.draftSync.restore(edit) } }
+            // Settled when the write completes. A failure (the socket died under it) waits for
+            // the reconnect's snapshot — unless a newer edit has gone out since.
+            onComplete: { [weak self] ok in
+                Task { @MainActor in self?.draftSync.completed(seq: edit.seq, ok: ok) }
+            }
         )
         // ⚠ No socket, so it waits — protected from the next snapshot, which would otherwise put
         // the server's older copy back over it, and sent once that snapshot gives it a socket.
-        if !sent {
+        guard sent else {
             draftSync.restore(edit)
-        } else if !(store.state.connection == .connected && store.state.snapshotSinceOpen) {
-            // ⚠⚠ A socket still connecting takes the write, but the server builds its
-            // `draft-snapshot` before it reads it — so that snapshot holds the OLDER draft, and
-            // folding it would repaint the composer with it. Never echoed back to us either.
+            return false
+        }
+        // Recorded before the completion can run: that hops to the main actor, which this holds.
+        draftSync.sending(edit)
+        if draftSnapshotSocket != client.socketGeneration {
+            // ⚠⚠ The server builds this socket's `draft-snapshot` before it reads this write, so
+            // that snapshot holds the OLDER draft, and folding it would repaint the composer with
+            // it. Never echoed back to us either.
             draftSync.sentBeforeSnapshot(edit)
         }
-        return sent
+        return true
     }
 
     /// Everything waiting, now. `sendDraft` puts back whatever found no socket.
@@ -1739,6 +1752,7 @@ public final class ChatViewModel {
             // The server's drafts, except where this device has written something it hasn't
             // heard yet — newer by definition. That includes what went to this socket before the
             // snapshot was built. Then all of it goes out on this one.
+            draftSnapshotSocket = client.socketGeneration
             draftSync.requeueAwaitingSnapshot()
             store.seedDrafts(entries, keeping: draftSync.protectedIds)
             flushAllDrafts()

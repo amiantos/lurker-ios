@@ -133,6 +133,10 @@ struct DraftSync: Equatable {
     /// before it read them, so it says nothing about them. The snapshot keeps them and they go
     /// out again behind it.
     private(set) var awaitingSnapshot: [String: Edit] = [:]
+    /// Edits handed to a socket whose write hasn't completed. Until it does, nothing says it got
+    /// out: a background or sign-out flush in that window has to carry them, and a rename has to
+    /// move them, or a failure would restore one under a name that's gone.
+    private(set) var inFlight: [String: Edit] = [:]
     /// The buffer whose composer is IME-composing, or nil.
     private(set) var composing: String?
     /// Each buffer's newest edit, by `seq`.
@@ -187,11 +191,28 @@ struct DraftSync: Equatable {
     /// ⚠ The ones written to a socket still connecting too: nothing says the server read them,
     /// and suspension or sign-out ends that socket. Per buffer, the newer of the two wins.
     mutating func takeAll() -> [Edit] {
-        let edits = unflushed.merging(awaitingSnapshot) { $0.seq >= $1.seq ? $0 : $1 }
+        let newer: (Edit, Edit) -> Edit = { $0.seq >= $1.seq ? $0 : $1 }
+        let edits = unflushed.merging(awaitingSnapshot, uniquingKeysWith: newer)
+            .merging(inFlight, uniquingKeysWith: newer)
         unflushed = [:]
         awaitingSnapshot = [:]
+        inFlight = [:]
         composing = nil
         return Array(edits.values)
+    }
+
+    /// An edit was handed to a socket.
+    mutating func sending(_ edit: Edit) {
+        inFlight[edit.key.id] = edit
+    }
+
+    /// The socket's answer for the write of edit `seq`. A failure puts it back to wait for the
+    /// next snapshot, under whatever the buffer is called now — unless something newer exists.
+    /// Nothing to find means a background or sign-out flush already took it.
+    mutating func completed(seq: Int, ok: Bool) {
+        guard let (id, edit) = inFlight.first(where: { $0.value.seq == seq }) else { return }
+        inFlight[id] = nil
+        if !ok { restore(edit) }
     }
 
     /// The buffers with an edit waiting, except one whose composition holds its flush.
@@ -232,13 +253,14 @@ struct DraftSync: Equatable {
     mutating func drop(_ id: String) {
         unflushed[id] = nil
         awaitingSnapshot[id] = nil
+        inFlight[id] = nil
         latest[id] = nil
         if composing == id { composing = nil }
     }
 
     /// Every edit for a network that's gone.
     mutating func dropNetworks(keeping ids: Set<Int>) {
-        let doomed = Set(unflushed.values.map(\.key) + awaitingSnapshot.values.map(\.key))
+        let doomed = Set(unflushed.values.map(\.key) + awaitingSnapshot.values.map(\.key) + inFlight.values.map(\.key))
             .filter { $0.networkId.map { !ids.contains($0) } ?? false }
         for key in doomed { drop(key.id) }
     }
@@ -253,12 +275,16 @@ struct DraftSync: Equatable {
             if let edit = awaitingSnapshot[from.id] {
                 awaitingSnapshot[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq)
             }
+            if let edit = inFlight[from.id] { inFlight[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq) }
             return
         }
         if composing == from.id { composing = to.id }
         if let seq = latest.removeValue(forKey: from.id) { latest[to.id] = seq }
         if let moving = awaitingSnapshot.removeValue(forKey: from.id) {
             awaitingSnapshot[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
+        }
+        if let moving = inFlight.removeValue(forKey: from.id) {
+            inFlight[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
         }
         if let moving = unflushed.removeValue(forKey: from.id) {
             unflushed[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)

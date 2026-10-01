@@ -22,6 +22,10 @@ final class LurkerClient {
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
+    /// Which socket this is, counting from the first — so a caller can tie something it learned
+    /// from a frame to the socket that sent it. Bumped the moment a socket is made, before it
+    /// opens, because writes start going to it then.
+    private(set) var socketGeneration = 0
     /// Reset per socket; gates the "socket really opened" signal to the first frame that
     /// actually arrives, rather than optimistically on `resume()`.
     private var hasEmittedOpen = false
@@ -555,6 +559,7 @@ final class LurkerClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: request)
         socket = task
+        socketGeneration &+= 1
         task.resume()
         listen(on: task)
     }
@@ -1206,14 +1211,15 @@ final class LurkerClient {
     /// reply as it was, which is for clients that don't know about replies. This one does, so
     /// its silence would keep a reply the user cancelled.
     ///
-    /// Returns false when there was no socket to write to; `onFailure` fires (off the main
-    /// thread) when there was one and the write failed on it.
+    /// Returns false when there was no socket to write to. When there was one, `onComplete`
+    /// says (off the main thread) whether the write made it out.
     @discardableResult
     func saveDraft(
-        networkId: Int, target: String, draft: ComposerDraft, onFailure: (@Sendable () -> Void)? = nil
+        networkId: Int, target: String, draft: ComposerDraft,
+        onComplete: (@Sendable (_ ok: Bool) -> Void)? = nil
     ) -> Bool {
         guard !draft.isEmpty else {
-            return send(["type": "draft-clear", "networkId": networkId, "target": target], onFailure: onFailure)
+            return send(["type": "draft-clear", "networkId": networkId, "target": target], onComplete: onComplete)
         }
         return send([
             "type": "draft-set",
@@ -1221,7 +1227,7 @@ final class LurkerClient {
             "target": target,
             "body": draft.body,
             "reply": Self.draftReplyRef(draft.reply),
-        ], onFailure: onFailure)
+        ], onComplete: onComplete)
     }
 
     /// Save drafts over HTTP (`POST /api/drafts/flush`) — the way out when the socket is gone and
@@ -1474,7 +1480,7 @@ final class LurkerClient {
         _ verb: [String: Any],
         surfacesFailure: Bool = false,
         onFlush: (@Sendable () -> Void)? = nil,
-        onFailure: (@Sendable () -> Void)? = nil
+        onComplete: (@Sendable (_ ok: Bool) -> Void)? = nil
     ) -> Bool {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
@@ -1485,7 +1491,7 @@ final class LurkerClient {
         }
         socket.send(.string(text)) { [weak self] error in
             defer { onFlush?() }
-            if error != nil { onFailure?() }
+            onComplete?(error == nil)
             guard let error, surfacesFailure else { return }
             // Capture the reason (a String) before hopping — Error isn't Sendable, but its
             // localized description is, and it's what makes an offline/TLS failure legible.
