@@ -1263,6 +1263,9 @@ final class LurkerStore {
             var next = state
             let fromKey = BufferKey(networkId: networkId, target: from).id
             let toKey = BufferKey(networkId: networkId, target: to).id
+            // Taken before the absorbed row is dropped below, which takes its draft with it: the
+            // server adopts that draft when the survivor has none (`renameBuffer.ts`).
+            let absorbedDraft = merged && toKey != fromKey ? next.drafts[toKey] : nil
             if next.buffers[fromKey] != nil {
                 // `toKey != fromKey` is belt-and-braces: the server never merges a
                 // casing-only rename, but if a malformed frame said so, dropping
@@ -1300,6 +1303,7 @@ final class LurkerStore {
             if toKey != fromKey, let draft = next.drafts.removeValue(forKey: fromKey) {
                 next.drafts[toKey] = draft
             }
+            if next.drafts[toKey] == nil { next.drafts[toKey] = absorbedDraft }
             // The favorites list carries target strings too, and the server only
             // republishes favorites-changed after MERGES — a plain nick-follow
             // rename would otherwise leave the entry pointing at the dead name

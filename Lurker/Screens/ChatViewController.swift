@@ -703,7 +703,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // including a buffer swap.
         endTyping()
         // …and what was typed goes to the server now, not half a second after you've gone.
-        viewModel.flushDraft(buffer.key)
+        //
+        // ⚠ Not mid-composition: flushing would close the marker on a word the IME still holds.
+        // The field leaving the window resigns it, UIKit commits the marked text, and that edit
+        // arrives the ordinary way — with `onEndEditing` behind it to flush what was committed.
+        if !composer.isComposing { viewModel.flushDraft(buffer.key) }
     }
 
     /// The split this screen was shown in, kept past the moment it leaves: by

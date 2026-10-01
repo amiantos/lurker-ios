@@ -185,6 +185,19 @@ final class DraftsTests: XCTestCase {
         XCTAssertEqual(state.drafts[absorbed.id]?.body, "survivor's")
     }
 
+    func testAMergeAdoptsTheAbsorbedDraftWhenTheSurvivorHasNone() {
+        var state = ChatState()
+        let survivor = BufferKey(networkId: 1, target: "bob")
+        let absorbed = BufferKey(networkId: 1, target: "bobby")
+        state.buffers[survivor.id] = Buffer(networkId: 1, target: "bob", kind: .dm)
+        state.buffers[absorbed.id] = Buffer(networkId: 1, target: "bobby", kind: .dm)
+        state.drafts[absorbed.id] = ComposerDraft(body: "absorbed")
+        state = LurkerStore.reduce(state, .bufferRenamed(
+            networkId: 1, from: "bob", to: "bobby", bufferId: 5, merged: true, mergedFromBufferId: 6
+        ))
+        XCTAssertEqual(state.drafts[absorbed.id]?.body, "absorbed")
+    }
+
     // MARK: - DraftSync
 
     func testAnEditIsProtectedUntilItIsTaken() {
