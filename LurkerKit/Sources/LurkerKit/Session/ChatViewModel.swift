@@ -1444,9 +1444,20 @@ public final class ChatViewModel {
         // same reason. This is exactly the moment a socket is likeliest to be dead without
         // anyone knowing: it takes the write, the write fails after we're suspended, and the
         // draft reaches nobody. The background assertion is held until the server answers.
-        client.setPresence(false)
+        //
+        // ⚠ `onFlush` waits for BOTH: it ends the app's background assertion, and the presence
+        // frame is what turns push back on — suspended with it still queued, the server stays
+        // quiet until it reaps the socket.
         Task { [weak self] in
-            if let self, await client.flushDrafts(edits.map { ($0.key, $0.draft) }) {
+            guard let self else {
+                onFlush?()
+                return
+            }
+            async let saved = client.flushDrafts(edits.map { ($0.key, $0.draft) })
+            await withCheckedContinuation { (sent: CheckedContinuation<Void, Never>) in
+                self.client.setPresence(false) { sent.resume() }
+            }
+            if await saved {
                 for edit in edits { draftSync.settle(edit) }
             }
             onFlush?()
@@ -1722,8 +1733,13 @@ public final class ChatViewModel {
             unsent.rekey(from: fromKey, to: toKey)
             // …and so was a draft edit still waiting to go out. Its flush has to name the buffer
             // as it's called now.
+            // Read before the store applies the frame: whether the survivor already has a draft
+            // the server holds, which the merge keeps over anything the absorbed buffer had.
             let draftWasDue = draftFlushes.removeValue(forKey: fromKey.id).map { $0.cancel() } != nil
-            draftSync.rekey(from: fromKey, to: toKey)
+            let survivorHasDraft = store.state.drafts[fromKey.id] != nil
+            if draftSync.rekey(from: fromKey, to: toKey, survivorHasDraft: survivorHasDraft) {
+                draftFlushes.removeValue(forKey: toKey.id)?.cancel()
+            }
             if draftWasDue { scheduleDraftFlush(toKey) }
             let fromMark = lastMarked.removeValue(forKey: fromKey.id)
             if let fromMark {

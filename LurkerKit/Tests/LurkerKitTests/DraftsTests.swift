@@ -391,6 +391,33 @@ final class DraftsTests: XCTestCase {
         XCTAssertEqual(sync.takeAll().map(\.draft.body), ["survivor"])
     }
 
+    func testAnAbsorbedEditNeverOverwritesTheSurvivorsSavedDraft() {
+        // ⚠⚠ The survivor's draft was flushed (nothing pending here), the absorbed buffer's edit
+        // waits. Kept, it would go out under the survivor's name over the draft the merge kept.
+        let from = BufferKey(networkId: 1, target: "bob")
+        let to = BufferKey(networkId: 1, target: "bobby")
+        var sync = DraftSync()
+        sync.edit(to, ComposerDraft(body: "absorbed"), composing: false)
+        XCTAssertTrue(sync.rekey(from: from, to: to, survivorHasDraft: true), "its flush is cancelled")
+        XCTAssertNil(sync.local(to.id))
+        XCTAssertTrue(sync.takeAll().isEmpty)
+        // With no draft anywhere on the survivor's side, it's adopted.
+        var adopt = DraftSync()
+        adopt.edit(to, ComposerDraft(body: "absorbed"), composing: false)
+        XCTAssertFalse(adopt.rekey(from: from, to: to, survivorHasDraft: false))
+        XCTAssertEqual(adopt.local(to.id)?.body, "absorbed")
+    }
+
+    func testAMergeDropsTheAbsorbedEditInTheViewModelToo() {
+        let model = viewModel()
+        model.handle(.draftUpdated(entry(BufferKey(networkId: 1, target: "bob"), body: "survivor's, saved")))
+        let to = BufferKey(networkId: 1, target: "bobby")
+        model.editDraft(to, ComposerDraft(body: "absorbed"))
+        model.handle(.bufferRenamed(networkId: 1, from: "bob", to: "bobby", bufferId: 5, merged: true, mergedFromBufferId: 6))
+        XCTAssertFalse(model.isDraftProtected(to))
+        XCTAssertEqual(model.draft(for: to)?.body, "survivor's, saved")
+    }
+
     func testAnAdoptedEditCanStillBePutBack() {
         // The source has nothing pending: the absorbed buffer's in-flight edit stays, and its
         // failure still restores — the source's stale `latest` must not replace its own.
