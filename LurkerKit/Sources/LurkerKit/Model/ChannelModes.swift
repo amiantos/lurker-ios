@@ -123,6 +123,20 @@ public struct ChannelModeState: Equatable, Sendable {
     }
 }
 
+extension ChannelModeState {
+    /// "Set by alice · 1 Sep 2026 at 10:00" — whatever of the two the server said, or nil.
+    public var topicSetterLine: String? {
+        let nick = topicSetBy.map(ChannelModeForm.setterNick)
+        let when = topicSetAt?.formatted(date: .abbreviated, time: .shortened)
+        switch (nick, when) {
+        case let (nick?, when?): return "Set by \(nick) · \(when)"
+        case let (nick?, nil): return "Set by \(nick)"
+        case let (nil, when?): return "Set \(when)"
+        case (nil, nil): return nil
+        }
+    }
+}
+
 /// One entry of a list mode — a ban, exception, invite exception or quiet.
 public struct ModeListEntry: Equatable, Sendable {
     public let mask: String
@@ -180,6 +194,12 @@ public enum ChannelModeForm {
     ]
 
     public static func name(of letter: String) -> String? { names[letter] }
+
+    /// The nick out of a setter as the server names one: a 333 or a list entry often carries the
+    /// full `nick!user@host`, which is noise on a phone-width line.
+    public static func setterNick(_ setter: String) -> String {
+        String(setter.split(separator: "!", maxSplits: 1, omittingEmptySubsequences: false).first ?? Substring(setter))
+    }
 
     /// The fetchable lists this network has, in display order.
     public static func lists(in spec: ModeSpec) -> [(letter: String, name: String)] {

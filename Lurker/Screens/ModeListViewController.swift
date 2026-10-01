@@ -1,0 +1,291 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+import Combine
+import LurkerKit
+import UIKit
+
+/// One of a channel's list modes — bans, exceptions, invite exceptions or quiets (#187) —
+/// fetched from the IRC server when the screen opens, with who set each entry and when. An op
+/// can add an entry with + and remove one with a swipe.
+///
+/// ⚠⚠ Fetched ONCE, then kept current by patching it from live `MODE ±letter` rows — another
+/// op's ban or our own. Never refetched after an add or a remove: a fetch on the wire claims a
+/// 482 aimed at the MODE just sent (`server/services/modeList.ts`), and the list would read
+/// "Only channel operators can see this list" because a ban was refused. Pull to refresh is the
+/// user's own ask, and a reconnect refetches, since the gap arrives as backlog, not live rows.
+final class ModeListViewController: UITableViewController {
+    private let viewModel: ChatViewModel
+    private let key: BufferKey
+    private let letter: String
+    private var cancellables = Set<AnyCancellable>()
+
+    private enum Status: Equatable {
+        case loading
+        case ready([ModeListEntry])
+        case failed(String)
+    }
+
+    private var status = Status.loading
+    /// Mode rows seen since the latest fetch went out; they patch what it brought back.
+    private var rowsSinceFetch: [Message] = []
+    /// The latest fetch. A refresh while one is out starts a newer one, which owns the screen.
+    private var fetch = 0
+
+    /// The refusal of the last add or remove: the verb's own, or the channel's error rows (482,
+    /// 478 for a full list …) inside the window after it.
+    private var actionError: String?
+    private var errorsSeen: [(text: String, at: Date)] = []
+    private var armed: (from: Int, at: Date)?
+    private static let errorWindow: TimeInterval = 10
+    /// One change at a time: a double tap must not send the ban twice.
+    private var busy = false
+
+    private var shown: [ModeListEntry] = []
+    private var canEdit = false
+
+    /// Everything the screen draws, as last drawn. Compared before redrawing because a busy
+    /// channel's state moves on every message, and a reload mid-swipe snaps the Remove button
+    /// shut under the user's thumb.
+    private struct Drawn: Equatable {
+        let status: Status
+        let shown: [ModeListEntry]
+        let canEdit: Bool
+        let busy: Bool
+        let footer: String?
+    }
+
+    private var drawn: Drawn?
+
+    init(viewModel: ChatViewModel, key: BufferKey, letter: String, name: String) {
+        self.viewModel = viewModel
+        self.key = key
+        self.letter = letter
+        super.init(style: .insetGrouped)
+        title = name
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "entry")
+        refreshControl = UIRefreshControl()
+        refreshControl?.addAction(UIAction { [weak self] _ in self?.load() }, for: .valueChanged)
+
+        viewModel.statePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.render() }
+            .store(in: &cancellables)
+        viewModel.channelEvents
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] event in self?.receive(event) }
+            .store(in: &cancellables)
+        load()
+    }
+
+    private lazy var addButton = UIBarButtonItem(
+        systemItem: .add, primaryAction: UIAction { [weak self] _ in self?.promptForEntry() }
+    )
+
+    private func receive(_ event: ChatViewModel.ChannelEvent) {
+        switch event {
+        case .socketOpened:
+            load()
+        case .line(let lineKey, let message):
+            guard lineKey.id == key.id else { return }
+            switch message.type {
+            case .mode: rowsSinceFetch.append(message)
+            case .error: errorsSeen.append((message.text ?? "", Date()))
+            default: return
+            }
+            render()
+        }
+    }
+
+    private func load() {
+        fetch += 1
+        let mine = fetch
+        status = .loading
+        rowsSinceFetch = []
+        render()
+        Task { [weak self, viewModel, key, letter] in
+            let result = await viewModel.fetchModeList(key, letter: letter)
+            guard let self, mine == fetch else { return }
+            refreshControl?.endRefreshing()
+            switch result {
+            case .entries(let entries): status = .ready(entries)
+            case .failed(let message): status = .failed(message)
+            }
+            render()
+        }
+    }
+
+    // MARK: - Changes
+
+    private func promptForEntry() {
+        let alert = UIAlertController(title: "Add to \(title ?? "List")", message: nil, preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = "nick!user@host"
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+            field.spellCheckingType = .no
+            field.keyboardType = .asciiCapable
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Add", style: .default) { [weak self, weak alert] _ in
+            let mask = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !mask.isEmpty else { return }
+            self?.change("+", mask)
+        })
+        present(alert, animated: true)
+    }
+
+    /// Send one `±letter mask`. The entry appears or goes when the channel's MODE line comes
+    /// back — nothing is applied here.
+    private func change(_ sign: Character, _ mask: String) {
+        guard !busy else { return }
+        // One IRC parameter: the server refuses a mask with a space in it, so say so here.
+        if mask.contains(where: \.isWhitespace) {
+            actionError = "A mask can't contain spaces."
+            render()
+            return
+        }
+        busy = true
+        actionError = nil
+        armed = (errorsSeen.count, Date())
+        render()
+        Task { [weak self, viewModel, key, letter] in
+            let failure = await viewModel.setChannelModes(
+                key, changes: [OutgoingModeChange(sign: sign, letter: letter, param: mask)]
+            )
+            guard let self else { return }
+            busy = false
+            actionError = failure
+            render()
+        }
+    }
+
+    private var serverErrors: [String] {
+        guard let armed, armed.from <= errorsSeen.count else { return [] }
+        return errorsSeen[armed.from...]
+            .filter { $0.at.timeIntervalSince(armed.at) < Self.errorWindow }
+            .map(\.text)
+    }
+
+    // MARK: - Render
+
+    private func render() {
+        guard isViewLoaded else { return }
+        let next: [ModeListEntry]
+        switch status {
+        case .ready(let entries): next = ChannelModeForm.patch(entries, with: rowsSinceFetch, letter: letter)
+        case .loading, .failed: next = []
+        }
+        let errors = [actionError].compactMap { $0 } + serverErrors
+        let drawing = Drawn(
+            status: status, shown: next, canEdit: viewModel.state.channelAccess(key).canEditModes,
+            busy: busy, footer: errors.isEmpty ? nil : errors.joined(separator: "\n")
+        )
+        guard drawing != drawn else { return }
+        drawn = drawing
+        shown = drawing.shown
+        canEdit = drawing.canEdit
+        navigationItem.rightBarButtonItem = canEdit ? addButton : nil
+        addButton.isEnabled = !busy
+        tableView.backgroundView = backgroundLabel()
+        tableView.reloadData()
+    }
+
+    /// Loading, the fetch's refusal, or an empty list — said in place of rows.
+    private func backgroundLabel() -> UIView? {
+        let text: String
+        switch status {
+        case .loading:
+            guard refreshControl?.isRefreshing != true else { return nil }
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.startAnimating()
+            return spinner
+        case .failed(let message): text = message
+        case .ready: guard shown.isEmpty else { return nil }; text = "Nothing here."
+        }
+        let label = UILabel()
+        label.text = text
+        label.textColor = .secondaryLabel
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        return label
+    }
+
+    override func numberOfSections(in tableView: UITableView) -> Int { 1 }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { shown.count }
+
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        drawn?.footer
+    }
+
+    override func tableView(_ tableView: UITableView, willDisplayFooterView view: UIView, forSection section: Int) {
+        // The footer only ever carries a refusal.
+        (view as? UITableViewHeaderFooterView)?.textLabel?.textColor = .systemRed
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "entry", for: indexPath)
+        let entry = shown[indexPath.row]
+        var config = UIListContentConfiguration.subtitleCell()
+        config.text = entry.mask
+        config.textProperties.font = .monospacedSystemFont(
+            ofSize: UIFont.preferredFont(forTextStyle: .body).pointSize, weight: .regular
+        )
+        config.textProperties.numberOfLines = 0
+        config.secondaryText = Self.meta(entry)
+        config.secondaryTextProperties.color = .secondaryLabel
+        cell.contentConfiguration = config
+        cell.selectionStyle = .none
+        return cell
+    }
+
+    /// "by alice · 1 Sep 2026 at 10:00", from what the server knew.
+    private static func meta(_ entry: ModeListEntry) -> String? {
+        let parts = [
+            entry.setBy.map { "by \(ChannelModeForm.setterNick($0))" },
+            entry.setAt?.formatted(date: .abbreviated, time: .shortened),
+        ].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    override func tableView(
+        _ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath
+    ) -> UISwipeActionsConfiguration? {
+        guard canEdit, shown.indices.contains(indexPath.row) else { return nil }
+        let entry = shown[indexPath.row]
+        let remove = UIContextualAction(style: .destructive, title: "Remove") { [weak self] _, _, done in
+            // Not deleted from the table here: the entry goes when the channel's -letter comes back.
+            self?.change("-", entry.mask)
+            done(false)
+        }
+        let configuration = UISwipeActionsConfiguration(actions: [remove])
+        configuration.performsFirstActionWithFullSwipe = false
+        return configuration
+    }
+
+    override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard shown.indices.contains(indexPath.row) else { return nil }
+        let entry = shown[indexPath.row]
+        return UIContextMenuConfiguration(actionProvider: { [weak self] _ in
+            var actions: [UIMenuElement] = [
+                UIAction(title: "Copy Mask", image: UIImage(systemName: "doc.on.doc")) { _ in
+                    UIPasteboard.general.string = entry.mask
+                },
+            ]
+            if self?.canEdit == true {
+                actions.append(UIAction(title: "Remove", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
+                    self?.change("-", entry.mask)
+                })
+            }
+            return UIMenu(children: actions)
+        })
+    }
+}

@@ -126,6 +126,30 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertEqual(config?.channelKeys.count, 1)
     }
 
+    // MARK: - Live lines
+
+    /// The settings screens patch lists and read refusals off these — including for a detached
+    /// buffer, which holds live lines out of its log. So they come off the frame, not the store.
+    func testLiveLinesAndSocketOpensReachChannelEvents() {
+        let model = ChatViewModel(
+            sessions: SessionStore(service: "chat.lurker.tests.channelmodes"),
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.channelmodes")!)
+        )
+        var seen: [String] = []
+        let sink = model.channelEvents.sink { event in
+            switch event {
+            case .line(let key, let message): seen.append("\(key.id) \(message.type.rawValue)")
+            case .socketOpened: seen.append("open")
+            }
+        }
+        defer { sink.cancel() }
+        model.handle(.live(networkId: 1, target: "#C", message: Message(
+            id: 7, type: .mode, nick: "op", text: "+b x", modes: [ModeChange(mode: "+b", param: "x", kind: .list)]
+        )))
+        model.handle(.socketOpen)
+        XCTAssertEqual(seen, ["1::#c mode", "open"])
+    }
+
     // MARK: - Store
 
     private func storeWithChannel(modes: String = "nt", selfModes: [String] = ["o"]) -> LurkerStore {
