@@ -246,6 +246,38 @@ public enum NickCompletion {
         return String(scalars)
     }
 
+    /// A reply's text without the `nick: ` it opens with (iOS #184) — the web's
+    /// `stripReplyAddress`. Stricter than `isAddressed` in one way and looser in another, both the
+    /// web's: the nick must be followed by at least one punctuation mark (so a reply to `will`
+    /// saying "will you come?" keeps its first word, whatever the setting), and every space after
+    /// it goes. Never strips to nothing. Same scalar walk as `isAddressed`, so what the composer
+    /// writes and what the timeline hides are one definition.
+    public static func removingReplyAddress(_ text: String, to nick: String) -> String {
+        guard !nick.isEmpty else { return text }
+        let scalars = Array(text.unicodeScalars)
+        let name = Array(nick.unicodeScalars)
+        guard scalars.count > name.count else { return text }
+        for (index, scalar) in name.enumerated() where asciiLower(scalars[index]) != asciiLower(scalar) {
+            return text
+        }
+        var index = name.count
+        while index < scalars.count, isMarkScalar(scalars[index]) { index += 1 }
+        guard index > name.count, index < scalars.count, isWhitespace(scalars[index]) else { return text }
+        while index < scalars.count, isWhitespace(scalars[index]) { index += 1 }
+        guard index < scalars.count else { return text }
+        var out = String.UnicodeScalarView()
+        out.append(contentsOf: scalars[index...])
+        return String(out)
+    }
+
+    /// Whether two nicks are the same person's, folded the way IRC folds them — ASCII only, as
+    /// the rest of the client compares nicks and targets.
+    public static func sameNick(_ a: String, _ b: String) -> Bool {
+        let left = Array(a.unicodeScalars), right = Array(b.unicodeScalars)
+        guard left.count == right.count else { return false }
+        return zip(left, right).allSatisfy { asciiLower($0) == asciiLower($1) }
+    }
+
     /// How many scalars the address at the head of `draft` spans — nick, mark, and the one
     /// whitespace after it — or nil when it doesn't open with one.
     private static func addressLength(_ draft: String, to nick: String, punctuation: String) -> Int? {

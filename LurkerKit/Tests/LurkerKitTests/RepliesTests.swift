@@ -216,3 +216,30 @@ final class RemovingAddressTests: XCTestCase {
         XCTAssertTrue(NickCompletion.isAddressed("alice hi", to: "alice", punctuation: ""))
     }
 }
+
+final class ReplyReviewTests: XCTestCase {
+    /// Copy pastes what was SENT, a reply's address included — the row only hides it.
+    func testCopyKeepsTheAddressTheQuoteHides() {
+        let parent = ReplyParent(id: 7, nick: "alice", type: .message, text: "q")
+        let reply = Message(id: 2, type: .message, nick: "bob", text: "alice: try 1.2.3", msgid: "m",
+                            replyTo: ReplyContext(msgid: "p", parent: parent))
+        let shown = Replies.presenting([reply], networkId: 1, target: "#c", ignores: .empty, relayBots: .empty, ownNick: nil)[0]
+        XCTAssertEqual(shown.text, "try 1.2.3")
+        var copied: String?
+        MessageActions.run(.copy, on: shown, scope: MessageActionScope(networkId: 1, isBookmarked: false),
+                           context: MessageActionContext(reply: { _ in }, copy: { copied = $0 }, setBookmark: { _, _ in }, showProfile: { _ in }))
+        XCTAssertEqual(copied, "alice: try 1.2.3")
+        XCTAssertEqual(reply.copyText, "alice: try 1.2.3", "a line never presented copies its own text")
+    }
+
+    func testNicksFoldAsciiOnly() {
+        XCTAssertTrue(NickCompletion.sameNick("Alice", "aLICE"))
+        XCTAssertFalse(NickCompletion.sameNick("alice", "alice_"))
+        XCTAssertFalse(NickCompletion.sameNick("Émile", "émile"), "IRC folds ASCII, not Unicode")
+    }
+
+    func testStripAddressTakesEverySpaceAfterTheMark() {
+        XCTAssertEqual(Replies.stripAddress("alice:   yes", nick: "alice"), "yes")
+        XCTAssertEqual(Replies.stripAddress("alice yes", nick: "alice"), "alice yes", "a mark is required")
+    }
+}

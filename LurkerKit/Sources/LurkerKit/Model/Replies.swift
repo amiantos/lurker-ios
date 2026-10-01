@@ -115,25 +115,17 @@ public enum Replies {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// A character that cannot continue a nick — not a letter or digit (Unicode), not whitespace,
-    /// not one of the RFC 2812 nick specials. The web's `NOT_NICK_CHAR`, and the same set
-    /// `NickCompletion.isAddressed` reads.
-    private static let notNickChar = #"[^\p{L}\p{N}\s_\[\]\\`^{|}\-]"#
-
     /// A reply's text without the `nick: ` it opens with when it names the author it answers —
     /// how halloy, goguma and our own composer send one, so a client without replies still sees
     /// who it's for. The quote above already names them. Only a nick followed by punctuation
     /// counts: a reply to `will` saying "will you come?" keeps its first word. Never strips to
     /// nothing.
+    ///
+    /// The scalar walk is `NickCompletion`'s, so what Reply writes, what Cancel takes back and
+    /// what this hides agree on what a nick and a mark are — and it costs no regex per reply on a
+    /// list that's re-presented on every frame.
     public static func stripAddress(_ text: String, nick: String) -> String {
-        guard !nick.isEmpty,
-              let regex = try? NSRegularExpression(
-                pattern: "^" + NSRegularExpression.escapedPattern(for: nick) + notNickChar + #"+\s+"#,
-                options: [.caseInsensitive])
-        else { return text }
-        let range = NSRange(text.startIndex..., in: text)
-        let stripped = regex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
-        return stripped.isEmpty ? text : stripped
+        NickCompletion.removingReplyAddress(text, to: nick)
     }
 
     /// How a reply reads — its quote, and its own text — the ONE rule, so a reply reads the same
@@ -173,7 +165,7 @@ public enum Replies {
             type: parent.type,
             text: unwrapped.text ?? parent.text,
             isSelf: relayed
-                ? (ownNick.map { $0.lowercased() == (unwrapped.nick ?? "").lowercased() } ?? false)
+                ? (ownNick.map { NickCompletion.sameNick($0, unwrapped.nick ?? "") } ?? false)
                 : parent.isSelf,
             relayBot: unwrapped.relayBot,
             relaySource: unwrapped.relaySource
@@ -213,7 +205,7 @@ public enum Replies {
             && previous.type == line.type
             && previous.isSelf == line.isSelf
             && previous.relaySource == line.relaySource
-            && (previous.nick ?? "").lowercased() == (line.nick ?? "").lowercased()
+            && NickCompletion.sameNick(previous.nick ?? "", line.nick ?? "")
     }
 
     /// The pending reply a Reply on `message` starts, drawn from the line as it's SHOWN — a relayed

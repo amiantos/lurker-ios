@@ -181,7 +181,7 @@ public enum MessageActions {
         // you see from structured fields and keeps only a fragment in `text` (a part reason, a
         // topic), so "Copy Text" on `alice left (brb)` would put `brb` on the pasteboard. Better
         // to offer nothing than to copy something other than the line you pressed.
-        if !message.type.isActivity, let text = message.text, !text.isEmpty {
+        if !message.type.isActivity, let text = message.copyText, !text.isEmpty {
             actions.append(MessageAction(key: .copy, title: "Copy Text", symbol: "doc.on.doc"))
         }
 
@@ -324,7 +324,9 @@ public enum MessageActions {
         case .copy:
             // The raw text, not the rendered attributed string: what gets pasted should be what
             // was typed — mIRC color codes and all — not this client's rendering of it.
-            guard let text = message.text, !text.isEmpty else { return }
+            // `copyText`: a reply's row shows its text without the `alice: ` the quote makes
+            // redundant, but the line that was sent had it.
+            guard let text = message.copyText, !text.isEmpty else { return }
             context.copy(text)
         case .bookmark:
             // The direction comes from `scope`, which is also what titled the row — so a

@@ -88,14 +88,21 @@ public struct Message: Equatable, Sendable {
     /// it through `Replies.shown`, which also screens ignores and unwraps relay bots.
     public let replyTo: ReplyContext?
     /// A reply to one of your lines, from someone else — stamped by the server at insert, and a
-    /// highlight: it arrives with `matched` set. ⚠ Tint and count from this, never from
-    /// `replyTo.parent.isSelf`: the parent can be gone or stored after the reply, and the stamp is
-    /// what the server's counts and feeds read.
+    /// highlight. ⚠ Never derive that from `replyTo.parent.isSelf`: the parent can be gone or
+    /// stored after the reply, and the stamp is what the server's counts and feeds read.
+    ///
+    /// Not read to draw the tint, on purpose: the server sends `matched` with the stamp, and this
+    /// client tints from `matched` — it doesn't re-evaluate highlight rules live, which is the
+    /// only way the web's tint could lose a reply and why the web ORs this in. Kept so the row
+    /// says what it is, and for the day this client does evaluate rules itself.
     public let replyToSelf: Bool
     /// The reply's quote as it should SHOW — set by `showingReply`, the one producer, from
     /// `Replies.shown`: nil on a reply means "original message unavailable" (gone, never held, or
     /// from someone ignored since). Meaningless on a line that isn't a reply.
     public private(set) var replyQuote: ReplyQuote?
+    /// What `text` was before `showingReply` took the address off it — nil when nothing was
+    /// taken. Read through `copyText`.
+    public private(set) var unstrippedText: String?
     /// The relay bot this line actually came from, once it has been re-attributed (#277) — the
     /// only real IRC entity on the row, since `nick` now names someone with no presence here.
     ///
@@ -202,9 +209,13 @@ public struct Message: Equatable, Sendable {
     public func showingReply(quote: ReplyQuote?, text shownText: String?) -> Message {
         var copy = self
         copy.replyQuote = quote
+        if shownText != text { copy.unstrippedText = text }
         copy.text = shownText
         return copy
     }
+
+    /// The text as it was sent — what Copy puts on the pasteboard, a reply's address included.
+    public var copyText: String? { unstrippedText ?? text }
 
     /// The `user@host` half of `userhost` (which arrives as the full `nick!user@host`), or nil
     /// when either piece is missing.

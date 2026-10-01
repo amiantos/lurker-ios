@@ -664,10 +664,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// older one would lose a message to save a message. The hold stays put in that case — it is
     /// drained on a later appear, when the field is free.
     private func restoreRefusedSend() {
-        guard composer.isEmpty, let line = viewModel.takeUnsent(buffer.key) else { return }
+        // Not while a reply is pending either (iOS #184): one started on your own line or in a DM
+        // leaves the field empty, and the restored line would go out as THAT reply rather than
+        // the one it was sent as. It waits for the next free moment, like a line held behind text.
+        guard composer.isEmpty, pendingReply == nil, let line = viewModel.takeUnsent(buffer.key) else { return }
         composer.restore(line.text)
-        // With the reply it went out as — unless another has been started here since.
-        if let reply = line.reply, pendingReply == nil { pendingReply = reply }
+        // With the reply it went out as, if any.
+        pendingReply = line.reply
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -3314,21 +3317,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// client without replies sees (and what the quote hides for us). On your own line, or in a
     /// DM, there's nobody to address: the tag is all it is, so it needs the network to carry one
     /// right now — re-checked here, at the tap, because the sheet was built before it.
+    ///
+    /// ⚠ Unlike the web, a channel reply needs the tags to go out too before it's PENDING: the
+    /// strip says "Replying to alice", and on a network that can't carry the tag right now that
+    /// would be a promise the server then quietly breaks with a plain line. The address still
+    /// goes in, which is all a reply there can be.
     private func reply(to message: Message) {
         guard let nick = message.nick, !nick.isEmpty else { return }
         let target = buffer.key.target
         let unaddressed = message.isSelf || Replies.isPrivate(target)
         let started = Replies.replyable(message, target: target)
-            && (!unaddressed || viewModel.state.canReact(networkId: buffer.key.networkId))
-        // A pending reply to someone else goes first, with the `nick: ` its Reply put in the
-        // draft — or this one would go out still addressed to them.
-        if unaddressed, started, pendingReply?.addressed == true { cancelReply() }
-        if started {
-            // Reply again to the same author: the address in the draft is still the one the first
-            // Reply put there, so a cancel may still take it back.
-            let keepsAddress = pendingReply?.addressed == true && pendingReply?.nick == nick
-            pendingReply = Replies.pending(for: message, addressed: keepsAddress)
-        }
+            && viewModel.state.canReact(networkId: buffer.key.networkId)
+        // Reply again to the same author in a channel: the address in the draft is still the one
+        // the first Reply put there, so a cancel may still take it back.
+        let keepsAddress = started && !unaddressed && pendingReply?.addressed == true
+            && NickCompletion.sameNick(pendingReply?.nick ?? "", nick)
+        // Any other pending reply goes first, with the `nick: ` its Reply put in the draft — or
+        // the next line would go out still addressed to them, or as a reply to their line while
+        // addressed to someone else. (The web leaves `bob: alice: ` here; this doesn't.)
+        if pendingReply != nil, !keepsAddress { cancelReply() }
+        if started { pendingReply = Replies.pending(for: message, addressed: keepsAddress) }
         if !unaddressed {
             let inserted = composer.address(nick, punctuation: addressPunctuation)
             if inserted, started { pendingReply?.addressed = true }
