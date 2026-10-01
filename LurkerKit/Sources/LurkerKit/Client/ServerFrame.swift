@@ -94,7 +94,20 @@ enum ServerFrame: Equatable, Sendable {
     /// which is why it's lifted out of `irc` into its own frame instead of arriving as a
     /// `Message` nothing would render. A topic *change* is a `topic` event and stays a
     /// message, because it's also something the channel said.
-    case channelTopic(networkId: Int?, target: String, topic: String?)
+    ///
+    /// `meta` is the 333 setter and time, when the frame stated them — nil leaves the held pair
+    /// alone, a value replaces both (either half may itself be nil: a 333 can carry the time alone).
+    case channelTopic(networkId: Int?, target: String, topic: String?, meta: TopicMeta? = nil)
+
+    /// A `channel-modes` event (§7.2): the channel's whole mode state — every set letter, the
+    /// values of set param modes, and its creation time. ⚠ Never the key; `k` is a letter only.
+    /// Ephemeral and silent, like `channelTopic`.
+    case channelModes(networkId: Int?, target: String, modes: String, params: [String: String], createdAt: Date?)
+
+    /// Live `mode-spec` (§5.1): the network's channel-mode vocabulary. Arrives once the
+    /// registration burst ends (the snapshot says nil until then) and again whenever a later
+    /// 005 changes it.
+    case modeSpec(networkId: Int, spec: ModeSpec?)
 
     /// A `names` event: the channel's full member list, replacing whatever we hold. The
     /// server sends it on our own join and re-broadcasts it whenever it re-learns the
@@ -435,10 +448,53 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// Whether reactions (and reply tags) can be sent on this network (§5.1). False until the
     /// registration burst ends, then kept current by `react-support`.
     var canReact = false
+    /// The network's channel-mode vocabulary (§5.1). ⚠ Nil until the registration burst ends —
+    /// "unknown", not the RFC defaults — then kept current by `mode-spec`.
+    var modeSpec: ModeSpec?
 }
 
 struct ChannelSnapshot: Equatable, Sendable {
     let name: String
     let topic: String?
     let members: [Member]
+    /// Modes, param values, creation time and the topic's setter — never the key.
+    var modeState = ChannelModeState()
+}
+
+/// Who set a channel's topic and when — 333, or a live TOPIC. Either half may be nil.
+public struct TopicMeta: Equatable, Sendable {
+    public let setBy: String?
+    public let setAt: Date?
+
+    public init(setBy: String?, setAt: Date?) {
+        self.setBy = setBy
+        self.setAt = setAt
+    }
+}
+
+/// What an acked verb answered (§6): `send-result` with the verb's result as `data`. Read by
+/// `LurkerClient.request`, never by the store.
+public struct VerbReply: Equatable, Sendable {
+    public let ok: Bool
+    /// The refusal code — `not-connected`, `refused`, `no-reply`, … — or `no-answer` when nothing
+    /// came back before the socket dropped or the wait ran out.
+    public let error: String?
+    /// For a `refused` list fetch: the IRC numeric and the server's sentence.
+    public let numeric: String?
+    public let text: String?
+    /// A list fetch's entries.
+    public let entries: [ModeListEntry]?
+
+    public init(ok: Bool, error: String?, numeric: String? = nil, text: String? = nil, entries: [ModeListEntry]? = nil) {
+        self.ok = ok
+        self.error = error
+        self.numeric = numeric
+        self.text = text
+        self.entries = entries
+    }
+
+    /// Nothing came back: the socket dropped under it, or the wait ran out.
+    public static let noAnswer = VerbReply(ok: false, error: "no-answer")
+    /// It never went out: no socket to write to.
+    public static let notSent = VerbReply(ok: false, error: "not-connected")
 }

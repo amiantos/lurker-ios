@@ -13,9 +13,9 @@ import Foundation
 /// would put hostnames and credential flags in the message path, and would make the frame
 /// reducer responsible for fields no frame carries.
 ///
-/// The `channels` array the endpoint also returns is not modelled: nothing in #11 reads it
-/// (the form edits autojoin channels only at create time, via `default_channel`). Add it when
-/// something needs it rather than parsing a list to drop it.
+/// Of the `channels` array the endpoint also returns, only each channel's stored key is read
+/// (`channelKeys`) — the channel settings screen's key field (lurker#727). The form edits
+/// autojoin channels only at create time, via `default_channel`.
 public struct NetworkConfig: Equatable, Sendable, Identifiable {
     public let id: Int
     public var name: String
@@ -54,6 +54,12 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
     /// The proxy details saved for this network (#303), or nil when none ever were. Not the same
     /// as a proxy that's switched off, whose details stay saved while the network dials direct.
     public var proxy: NetworkProxy?
+    /// The key the server holds for each channel, by lowercased name — the one it joins with,
+    /// kept current by every live `±k`. Only channels that have one are listed.
+    ///
+    /// ⚠⚠ The ONLY place a channel key reaches this client: channel state and every broadcast
+    /// carry the `k` letter alone. Read-only here; nothing writes it back.
+    public var channelKeys: [String: String]
 
     public init(
         id: Int,
@@ -73,7 +79,8 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
         hasSaslPassword: Bool = false,
         blocked: Bool = false,
         clientCertificate: ClientCertificate? = nil,
-        proxy: NetworkProxy? = nil
+        proxy: NetworkProxy? = nil,
+        channelKeys: [String: String] = [:]
     ) {
         self.id = id
         self.name = name
@@ -92,6 +99,12 @@ public struct NetworkConfig: Equatable, Sendable, Identifiable {
         self.blocked = blocked
         self.clientCertificate = clientCertificate
         self.proxy = proxy
+        self.channelKeys = channelKeys
+    }
+
+    /// The stored key for `channel`, if there is one.
+    public func key(for channel: String) -> String? {
+        channelKeys[channel.lowercased()]
     }
 }
 

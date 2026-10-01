@@ -286,7 +286,11 @@ enum FrameParser {
             // defaulting the other way would grey out every network on it.
             blocked: obj.bool("blocked"),
             clientCertificate: parseClientCertificate(obj["client_cert"]),
-            proxy: parseProxy(obj["proxy"])
+            proxy: parseProxy(obj["proxy"]),
+            channelKeys: obj.objects("channels").reduce(into: [:]) { out, channel in
+                let name = channel.string("name")
+                if !name.isEmpty, let key = channel.stringOrNull("key") { out[name.lowercased()] = key }
+            }
         )
     }
 
@@ -460,7 +464,8 @@ enum FrameParser {
                 pinned: (network["pinned"] as? [String]) ?? [],
                 dccChats: nonEmptyStrings(network["dccChats"]),
                 dccChatOffers: nonEmptyStrings(network["dccChatOffers"]),
-                canReact: network.bool("canReact")
+                canReact: network.bool("canReact"),
+                modeSpec: parseModeSpec(network["modeSpec"])
             )
         }
         return .snapshot(
@@ -635,7 +640,51 @@ enum FrameParser {
         ChannelSnapshot(
             name: channel.string("name"),
             topic: channel.stringOrNull("topic"),
-            members: channel.objects("members").map(parseMember)
+            members: channel.objects("members").map(parseMember),
+            modeState: ChannelModeState(
+                modes: channel.string("modes"),
+                params: parseModeParams(channel["modeParams"]),
+                createdAt: ISOTime.parse(channel.stringOrNull("createdAt")),
+                topicSetBy: channel.stringOrNull("topicSetBy"),
+                topicSetAt: ISOTime.parse(channel.stringOrNull("topicSetAt"))
+            )
+        )
+    }
+
+    /// `modeParams` — `{"l": "50"}`. Anything that isn't a one-letter key with a string value is
+    /// dropped; a number is taken as its digits, since a limit is a number to anyone writing JSON.
+    private static func parseModeParams(_ raw: Any?) -> [String: String] {
+        guard let object = raw as? [String: Any] else { return [:] }
+        return object.reduce(into: [:]) { out, pair in
+            guard pair.key.count == 1 else { return }
+            if let value = pair.value as? String {
+                out[pair.key] = value
+            } else if let value = pair.value as? Int {
+                out[pair.key] = String(value)
+            }
+        }
+    }
+
+    /// The network's `modeSpec` (§5.1), or nil for null — which is the server saying the burst
+    /// hasn't ended, and must stay "unknown" rather than become a default.
+    ///
+    /// A prefix entry that isn't one letter is dropped, as the server's own parser drops it. A
+    /// `maxModes` of null is "no limit", which is why it stays optional rather than defaulting.
+    static func parseModeSpec(_ raw: Any?) -> ModeSpec? {
+        guard let obj = raw as? [String: Any] else { return nil }
+        let prefix: [PrefixMode] = obj.objects("prefix").compactMap { entry in
+            let mode = entry.string("mode")
+            guard mode.count == 1 else { return nil }
+            return PrefixMode(mode: mode, symbol: entry.string("symbol"))
+        }
+        return ModeSpec(
+            list: obj.string("list"),
+            always: obj.string("always"),
+            onSet: obj.string("onSet"),
+            flags: obj.string("flags"),
+            prefix: prefix,
+            maxModes: obj.intOrNull("maxModes").flatMap { $0 > 0 ? $0 : nil },
+            topicLen: obj.intOrNull("topicLen").flatMap { $0 > 0 ? $0 : nil }
         )
     }
 
@@ -689,6 +738,35 @@ enum FrameParser {
             guard !key.isEmpty, !values.isEmpty else { return nil }
             return SettingDependency(key: key, values: values)
         }
+    }
+
+    /// A `send-result` read in full, for a verb whose answer rides its `data` — `get-mode-list`,
+    /// `set-channel-modes`, `set-topic` (§6). Nil for anything that isn't a `send-result` with a
+    /// `clientId`, since nothing could be waiting on it.
+    ///
+    /// Separate from `parseWs` because `ServerFrame` stays free of untyped payloads: the client
+    /// re-reads only a reply it is actually holding a caller for.
+    static func parseVerbReply(_ text: String) -> (clientId: String, reply: VerbReply)? {
+        guard let obj = object(from: text), obj.string("kind") == "send-result",
+              let clientId = obj.stringOrNull("clientId")
+        else { return nil }
+        let data = obj["data"] as? [String: Any] ?? [:]
+        let entries: [ModeListEntry]? = (data["entries"] as? [[String: Any]])?.compactMap { entry in
+            let mask = entry.string("mask")
+            guard !mask.isEmpty else { return nil }
+            return ModeListEntry(
+                mask: mask, setBy: entry.stringOrNull("setBy"), setAt: ISOTime.parse(entry.stringOrNull("setAt"))
+            )
+        }
+        // `numeric` is a string on the wire ("482"); taken as a number too, in case.
+        let numeric = data.stringOrNull("numeric") ?? data.intOrNull("numeric").map(String.init)
+        return (clientId, VerbReply(
+            ok: obj.bool("ok"),
+            error: obj.stringOrNull("error") ?? data.stringOrNull("error"),
+            numeric: numeric,
+            text: data.stringOrNull("text"),
+            entries: entries
+        ))
     }
 
     /// `GET /api/settings/bootstrap` → `{registry, values}`.
@@ -841,6 +919,12 @@ enum FrameParser {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }
             return .reactSupport(networkId: networkId, canReact: obj.bool("canReact"))
         }
+        // …and so is `mode-spec`. Below the guard it would land in the server log as a line with
+        // no text, and the channel settings would wait forever for a vocabulary that came.
+        if obj.string("type") == "mode-spec" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            return .modeSpec(networkId: networkId, spec: parseModeSpec(obj["modeSpec"]))
+        }
         // `own-nick` is network-scoped state too, and carries no target at all — the visible
         // line is the ordinary `nick` event fanned out per channel, which arrives separately.
         // Below the target guard it would be dropped, leaving `Network.nick` pinned to whatever
@@ -894,11 +978,29 @@ enum FrameParser {
         // payload is in `topic` rather than `text`. Left to `parseEvent` it would become an
         // `.other` Message appended to the buffer, carrying the topic in a field nothing
         // reads.
+        //
+        // The setter and time ride along when the server knows to send them (333). Their KEY's
+        // presence is what counts — `setBy: null` is the server saying it doesn't know who, which
+        // replaces a stale setter; an absent key says nothing about the setter at all.
         if obj.string("type") == "channel-topic" {
             return .channelTopic(
                 networkId: obj.intOrNull("networkId"),
                 target: target,
-                topic: obj.stringOrNull("topic")
+                topic: obj.stringOrNull("topic"),
+                meta: obj.keys.contains("setBy") || obj.keys.contains("setAt")
+                    ? TopicMeta(setBy: obj.stringOrNull("setBy"), setAt: ISOTime.parse(obj.stringOrNull("setAt")))
+                    : nil
+            )
+        }
+        // `channel-modes` is state too: the channel's whole mode string after any change, so the
+        // settings screen reads modes the way the topic bar reads the topic. No id, nothing to draw.
+        if obj.string("type") == "channel-modes" {
+            return .channelModes(
+                networkId: obj.intOrNull("networkId"),
+                target: target,
+                modes: obj.string("modes"),
+                params: parseModeParams(obj["modeParams"]),
+                createdAt: ISOTime.parse(obj.stringOrNull("createdAt"))
             )
         }
         // Membership, for the same reason: no id, nothing to render, a row to mark rather than a
