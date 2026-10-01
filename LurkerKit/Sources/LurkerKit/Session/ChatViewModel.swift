@@ -198,7 +198,9 @@ public final class ChatViewModel {
     /// against the session being revoked and therefore before the revoke lands (#490).
     public func logout() {
         // What was being typed is still the account's: save it while the socket is ours, so it's
-        // there on the next sign-in, here or anywhere.
+        // there on the next sign-in, here or anywhere. Mid-composition too — there's no
+        // commit coming now.
+        _ = draftSync.endComposition()
         flushAllDrafts()
         cancelReconnect()
         client.logout(deviceToken: deviceToken)
@@ -673,11 +675,20 @@ public final class ChatViewModel {
         store.setDraft(edit.key, edit.draft)
         let sent = client.saveDraft(
             networkId: networkId, target: edit.key.target, draft: edit.draft,
+            // The socket died under it. Waits for the reconnect's snapshot — unless a newer edit
+            // has gone out since, which `restore` won't put this one back over.
             onFailure: { [weak self] in Task { @MainActor in self?.draftSync.restore(edit) } }
         )
         // ⚠ No socket, so it waits — protected from the next snapshot, which would otherwise put
         // the server's older copy back over it, and sent once that snapshot gives it a socket.
-        if !sent { draftSync.restore(edit) }
+        if !sent {
+            draftSync.restore(edit)
+        } else if !(store.state.connection == .connected && store.state.snapshotSinceOpen) {
+            // ⚠⚠ A socket still connecting takes the write, but the server builds its
+            // `draft-snapshot` before it reads it — so that snapshot holds the OLDER draft, and
+            // folding it would repaint the composer with it. Never echoed back to us either.
+            draftSync.sentBeforeSnapshot(edit)
+        }
         return sent
     }
 
@@ -689,6 +700,16 @@ public final class ChatViewModel {
     private func dropDraft(_ key: BufferKey) {
         draftFlushes.removeValue(forKey: key.id)?.cancel()
         draftSync.drop(key.id)
+    }
+
+    private func dropDraftsForMissingNetworks() {
+        let live = Set(store.state.networks.keys)
+        let doomed = draftFlushes.keys.filter { id in
+            guard let networkId = Int(id.prefix { $0 != ":" }) else { return false }
+            return !live.contains(networkId)
+        }
+        for id in doomed { draftFlushes.removeValue(forKey: id)?.cancel() }
+        draftSync.dropNetworks(keeping: live)
     }
 
     private func resetDrafts() {
@@ -1397,32 +1418,37 @@ public final class ChatViewModel {
             onFlush?()
             return
         }
-        // Drafts first, the composing one included: the app may not come back, and what was
-        // being typed should be waiting on every other device. Ahead of the presence frame, so
-        // that frame landing — what `onFlush` reports — means these did too.
-        let stranded = flushDraftsForBackground()
-        guard !stranded.isEmpty else {
+        // Drafts too, the composing one included: the app may not come back, and what was being
+        // typed should be waiting on every other device.
+        let edits = takeDraftsForBackground()
+        guard !edits.isEmpty else {
             client.setPresence(false, onFlush: onFlush)
             return
         }
-        // No socket to carry them. Over HTTP instead — the route the web's `pagehide` uses — and
-        // hold the background assertion until it answers. The presence frame has no socket
-        // either, so there's nothing to wait for there.
+        // ⚠ Over HTTP, never the socket — the route the web's `pagehide` beacon uses, for the
+        // same reason. This is exactly the moment a socket is likeliest to be dead without
+        // anyone knowing: it takes the write, the write fails after we're suspended, and the
+        // draft reaches nobody. The background assertion is held until the server answers.
         client.setPresence(false)
         Task { [weak self] in
-            if let self, await client.flushDrafts(stranded.map { ($0.key, $0.draft) }) {
-                for edit in stranded { draftSync.settle(edit) }
+            if let self, await client.flushDrafts(edits.map { ($0.key, $0.draft) }) {
+                for edit in edits { draftSync.settle(edit) }
             }
             onFlush?()
         }
     }
 
-    /// Send every waiting edit, composing or not. Returns the ones that found no socket — they
-    /// stay waiting too, for the next connect, should the HTTP flush not make it either.
-    private func flushDraftsForBackground() -> [DraftSync.Edit] {
+    /// Every waiting edit, composing or not, into the store and kept waiting — until the HTTP
+    /// flush settles it, or the next connect's snapshot sends it, should that flush not make it.
+    private func takeDraftsForBackground() -> [DraftSync.Edit] {
         for task in draftFlushes.values { task.cancel() }
         draftFlushes.removeAll()
-        return draftSync.takeAll().filter { !deliver($0) }
+        let edits = draftSync.takeAll()
+        for edit in edits {
+            store.setDraft(edit.key, edit.draft)
+            draftSync.restore(edit)
+        }
+        return edits
     }
 
     /// The OS's network path came or went. Fed in from the app (which owns the
@@ -1709,18 +1735,25 @@ public final class ChatViewModel {
             store.apply(frame)
         case .draftSnapshot(let entries):
             // The server's drafts, except where this device has written something it hasn't
-            // heard yet — newer by definition. Then whatever was written while there was no socket
-            // goes out on this one.
+            // heard yet — newer by definition. That includes what went to this socket before the
+            // snapshot was built. Then all of it goes out on this one.
+            draftSync.requeueAwaitingSnapshot()
             store.seedDrafts(entries, keeping: draftSync.protectedIds)
             flushAllDrafts()
         case .draftUpdated(let entry):
             // Another device's write. Dropped while this one has an edit on the way (it'll land
             // after, and last write wins) or an IME is composing in that buffer.
             guard !draftSync.isProtected(entry.key.id) else { break }
+            draftSync.superseded(entry.key.id)
             store.apply(frame)
         case .bufferClosed(let networkId, let target):
             dropDraft(BufferKey(networkId: networkId, target: target))
             store.apply(frame)
+        case .networks:
+            // The roster is authoritative for which networks exist, and the fold drops the rest —
+            // their drafts included. An edit waiting for one would otherwise put it back.
+            store.apply(frame)
+            dropDraftsForMissingNetworks()
         case .favoritesChanged:
             // Apply FIRST, announce after — a hook reading `favorites` must see
             // the state this frame proved, not the one before it.

@@ -121,13 +121,23 @@ struct DraftSync: Equatable {
     struct Edit: Equatable, Sendable {
         let key: BufferKey
         let draft: ComposerDraft
+        /// When it was made, in edit order. A write that failed late must not put an edit back
+        /// over a newer one that already went out (`restore`).
+        let seq: Int
     }
 
     /// By `BufferKey.id`. An entry stays until a send for it reached a socket — or, with none,
     /// until the next connect's snapshot gives it one to go out on.
     private(set) var unflushed: [String: Edit] = [:]
+    /// Edits written to a socket before that socket's `draft-snapshot` — which the server built
+    /// before it read them, so it says nothing about them. The snapshot keeps them and they go
+    /// out again behind it.
+    private(set) var awaitingSnapshot: [String: Edit] = [:]
     /// The buffer whose composer is IME-composing, or nil.
     private(set) var composing: String?
+    /// Each buffer's newest edit, by `seq`.
+    private var latest: [String: Int] = [:]
+    private var nextSeq = 0
 
     /// Whether a server write for this buffer must be dropped.
     func isProtected(_ id: String) -> Bool { unflushed[id] != nil || composing == id }
@@ -144,7 +154,11 @@ struct DraftSync: Equatable {
     /// Record an edit. `composing` starts or ends that buffer's composition; ending one in a
     /// buffer that isn't the composing one leaves the other alone.
     mutating func edit(_ key: BufferKey, _ draft: ComposerDraft, composing isComposing: Bool) {
-        unflushed[key.id] = Edit(key: key, draft: draft)
+        nextSeq += 1
+        latest[key.id] = nextSeq
+        unflushed[key.id] = Edit(key: key, draft: draft, seq: nextSeq)
+        // Superseded: this one goes out behind the snapshot instead.
+        awaitingSnapshot[key.id] = nil
         if isComposing {
             composing = key.id
         } else if composing == key.id {
@@ -179,8 +193,10 @@ struct DraftSync: Equatable {
     /// The buffers with an edit waiting, except one whose composition holds its flush.
     var flushableIds: [String] { unflushed.keys.filter { $0 != composing } }
 
-    /// Put an edit back that found no socket — unless a newer one was made in the meantime.
+    /// Put an edit back that didn't reach the server — unless a newer one has been made since,
+    /// waiting or already sent. Only the buffer's newest edit is ever worth sending again.
     mutating func restore(_ edit: Edit) {
+        guard latest[edit.key.id] == edit.seq else { return }
         if unflushed[edit.key.id] == nil { unflushed[edit.key.id] = edit }
     }
 
@@ -190,24 +206,59 @@ struct DraftSync: Equatable {
         if unflushed[edit.key.id] == edit { unflushed[edit.key.id] = nil }
     }
 
+    /// Note an edit written to a socket whose `draft-snapshot` hasn't arrived.
+    mutating func sentBeforeSnapshot(_ edit: Edit) {
+        awaitingSnapshot[edit.key.id] = edit
+    }
+
+    /// The snapshot is here: the edits it can't have seen. Each goes back to waiting (if it's
+    /// still the newest) so it outranks the snapshot and goes out again on this socket.
+    mutating func requeueAwaitingSnapshot() {
+        let edits = awaitingSnapshot.values
+        awaitingSnapshot = [:]
+        for edit in edits { restore(edit) }
+    }
+
+    /// Another device wrote this buffer's draft after we did: ours isn't one to send again.
+    mutating func superseded(_ id: String) {
+        awaitingSnapshot[id] = nil
+    }
+
     /// A closed buffer's draft goes with it; the server clears its row on the close.
     mutating func drop(_ id: String) {
         unflushed[id] = nil
+        awaitingSnapshot[id] = nil
+        latest[id] = nil
         if composing == id { composing = nil }
     }
 
-    /// Follow a rename. On a merge the destination wins if it has an edit of its own — the
-    /// server keeps the survivor's draft too, and what the user typed there is theirs.
+    /// Every edit for a network that's gone.
+    mutating func dropNetworks(keeping ids: Set<Int>) {
+        let doomed = Set(unflushed.values.map(\.key) + awaitingSnapshot.values.map(\.key))
+            .filter { $0.networkId.map { !ids.contains($0) } ?? false }
+        for key in doomed { drop(key.id) }
+    }
+
+    /// Follow a rename. On a merge the renamed buffer is the one that survives (lurker
+    /// `renameBuffer.ts`), and the server keeps its draft — adopting the absorbed one's only when
+    /// it has none. So an edit here moves over whatever the absorbed buffer had waiting.
     mutating func rekey(from: BufferKey, to: BufferKey) {
         guard from.id != to.id else {
             // Same storage key, new display name: the flush has to name the buffer as it is now.
-            if let edit = unflushed[from.id] { unflushed[to.id] = Edit(key: to, draft: edit.draft) }
+            if let edit = unflushed[from.id] { unflushed[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq) }
+            if let edit = awaitingSnapshot[from.id] {
+                awaitingSnapshot[to.id] = Edit(key: to, draft: edit.draft, seq: edit.seq)
+            }
             return
         }
-        let moving = unflushed.removeValue(forKey: from.id)
         if composing == from.id { composing = to.id }
-        guard let moving, unflushed[to.id] == nil else { return }
-        unflushed[to.id] = Edit(key: to, draft: moving.draft)
+        if let seq = latest.removeValue(forKey: from.id) { latest[to.id] = seq }
+        if let moving = awaitingSnapshot.removeValue(forKey: from.id) {
+            awaitingSnapshot[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
+        }
+        if let moving = unflushed.removeValue(forKey: from.id) {
+            unflushed[to.id] = Edit(key: to, draft: moving.draft, seq: moving.seq)
+        }
     }
 
     mutating func reset() { self = DraftSync() }

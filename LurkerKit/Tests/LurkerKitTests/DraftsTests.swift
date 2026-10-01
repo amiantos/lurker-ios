@@ -158,6 +158,17 @@ final class DraftsTests: XCTestCase {
         XCTAssertEqual(state.drafts[BufferKey(networkId: 1, target: "bobby").id]?.body, "you there?")
     }
 
+    func testARenameCarriesADraftWhoseRowHasntArrived() {
+        var state = ChatState()
+        let old = BufferKey(networkId: 1, target: "bob")
+        state.drafts[old.id] = ComposerDraft(body: "seeded before the backlog")
+        state = LurkerStore.reduce(state, .bufferRenamed(
+            networkId: 1, from: "bob", to: "bob_", bufferId: 5, merged: false, mergedFromBufferId: nil
+        ))
+        XCTAssertNil(state.drafts[old.id])
+        XCTAssertEqual(state.drafts[BufferKey(networkId: 1, target: "bob_").id]?.body, "seeded before the backlog")
+    }
+
     func testAMergeKeepsTheSurvivorsDraft() {
         // The renamed buffer survives; the one that already held the name is absorbed. The server
         // keeps the survivor's draft and sends a draft-updated if that changed anything.
@@ -216,7 +227,7 @@ final class DraftsTests: XCTestCase {
         XCTAssertEqual(sync.local(chat.id)?.body, "second", "nor does settling it take the newer one away")
     }
 
-    func testARenameMovesTheEditAndTheDestinationWins() {
+    func testARenameMovesTheEditAndTheRenamedBufferWins() {
         var sync = DraftSync()
         let from = BufferKey(networkId: 1, target: "bob")
         let to = BufferKey(networkId: 1, target: "bobby")
@@ -226,11 +237,71 @@ final class DraftsTests: XCTestCase {
         XCTAssertEqual(sync.take(to.id)?.key, to, "the flush names the buffer as it's called now")
         XCTAssertTrue(sync.defersFlush(to.id), "the composition followed")
 
+        // On a merge the renamed buffer survives and the server keeps its draft (lurker
+        // renameBuffer.ts) — the absorbed buffer's is adopted only when it has none.
         var merge = DraftSync()
-        merge.edit(from, ComposerDraft(body: "source"), composing: false)
-        merge.edit(to, ComposerDraft(body: "typed here"), composing: false)
+        merge.edit(from, ComposerDraft(body: "the live conversation"), composing: false)
+        merge.edit(to, ComposerDraft(body: "absorbed"), composing: false)
         merge.rekey(from: from, to: to)
-        XCTAssertEqual(merge.local(to.id)?.body, "typed here")
+        XCTAssertEqual(merge.local(to.id)?.body, "the live conversation")
+
+        var adopt = DraftSync()
+        adopt.edit(to, ComposerDraft(body: "absorbed"), composing: false)
+        adopt.rekey(from: from, to: to)
+        XCTAssertEqual(adopt.local(to.id)?.body, "absorbed")
+    }
+
+    func testALateFailureNeverPutsBackAnOlderEdit() {
+        // ⚠⚠ Edit A goes to a dying socket; B goes out on the next one; A's write then fails.
+        // Put back, A would go out after B on the next snapshot and overwrite it.
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "A"), composing: false)
+        let a = sync.take(chat.id)!
+        sync.edit(chat, ComposerDraft(body: "B"), composing: false)
+        _ = sync.take(chat.id)!
+        sync.restore(a)
+        XCTAssertNil(sync.local(chat.id))
+        XCTAssertFalse(sync.isProtected(chat.id))
+    }
+
+    func testAnEditSentBeforeTheSnapshotOutranksIt() {
+        // ⚠⚠ A socket still connecting takes the write, but the server builds the snapshot first.
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "hello"), composing: false)
+        sync.sentBeforeSnapshot(sync.take(chat.id)!)
+        XCTAssertFalse(sync.isProtected(chat.id), "nothing is waiting until the snapshot")
+        sync.requeueAwaitingSnapshot()
+        XCTAssertEqual(sync.local(chat.id)?.body, "hello", "kept over the snapshot, and sent again")
+        sync.requeueAwaitingSnapshot()
+        _ = sync.take(chat.id)
+        sync.requeueAwaitingSnapshot()
+        XCTAssertNil(sync.local(chat.id), "only the snapshot it raced")
+    }
+
+    func testAnEditSentBeforeTheSnapshotYieldsToNewerWords() {
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "old"), composing: false)
+        sync.sentBeforeSnapshot(sync.take(chat.id)!)
+        sync.superseded(chat.id)
+        sync.requeueAwaitingSnapshot()
+        XCTAssertNil(sync.local(chat.id), "another device wrote after it")
+
+        sync.edit(chat, ComposerDraft(body: "old"), composing: false)
+        sync.sentBeforeSnapshot(sync.take(chat.id)!)
+        sync.edit(chat, ComposerDraft(body: "new"), composing: false)
+        _ = sync.take(chat.id)
+        sync.requeueAwaitingSnapshot()
+        XCTAssertNil(sync.local(chat.id), "nor over this device's own newer edit")
+    }
+
+    func testADeletedNetworksEditsGo() {
+        var sync = DraftSync()
+        sync.edit(chat, ComposerDraft(body: "x"), composing: false)
+        let eleven = BufferKey(networkId: 11, target: "#chat")
+        sync.edit(eleven, ComposerDraft(body: "y"), composing: false)
+        sync.dropNetworks(keeping: [11])
+        XCTAssertNil(sync.local(chat.id))
+        XCTAssertNotNil(sync.local(eleven.id))
     }
 
     func testACaseOnlyRenameRenamesTheFlush() {

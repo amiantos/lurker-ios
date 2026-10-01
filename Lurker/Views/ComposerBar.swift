@@ -639,8 +639,9 @@ extension ComposerBar: UITextViewDelegate {
     func textViewDidChangeSelection(_ textView: UITextView) {
         emitCompletion()
         // A commit that leaves the text as it was (romaji `ka` committed as typed) changes no
-        // text, so `textViewDidChange` may not hear it — but the marked range went away.
-        reportEdit()
+        // text, so `textViewDidChange` may not hear it — but the marked range went away. Asked
+        // first, because this runs on every caret move and the full comparison copies the text.
+        if isComposing != lastEdit.composing { reportEdit() }
     }
 
     func textViewDidEndEditing(_ textView: UITextView) {

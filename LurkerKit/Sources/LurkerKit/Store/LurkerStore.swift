@@ -1294,6 +1294,12 @@ final class LurkerStore {
                 next.buffers[toKey] = survivor
                 next.indexBufferId(survivor, key: toKey)
             }
+            // A draft can be held for a buffer whose row hasn't arrived (`drafts`), and then
+            // `rekeyBuffer` never ran. It follows the rename all the same — over the absorbed
+            // side's on a merge, since the renamed buffer is the one that survives.
+            if toKey != fromKey, let draft = next.drafts.removeValue(forKey: fromKey) {
+                next.drafts[toKey] = draft
+            }
             // The favorites list carries target strings too, and the server only
             // republishes favorites-changed after MERGES — a plain nick-follow
             // rename would otherwise leave the entry pointing at the dead name
