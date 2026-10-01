@@ -59,6 +59,13 @@ final class ComposerBar: UIView {
     /// programmatic changes (`clear()` after a send, a completion insert), because those are
     /// changes to what the user is composing too. Drives the outgoing typing signal (#61).
     var onDraftChange: ((String) -> Void)?
+    /// Fired when the user changes the field — its text, or whether an IME is composing in it —
+    /// for the synced draft (iOS #188). Unlike `onDraftChange`, never for a `restore`: the owner
+    /// put that text there and knows what it is. And not deduped against what the CHANNEL was
+    /// told, which a restore leaves behind — emptying a restored draft is an edit.
+    var onEdit: (() -> Void)?
+    /// The field stopped being edited — the keyboard went away.
+    var onEndEditing: (() -> Void)?
     /// The pending-reply bar's ×.
     var onCancelReply: (() -> Void)?
 
@@ -68,6 +75,9 @@ final class ComposerBar: UIView {
 
     /// Set while `restore(_:)` is putting a refused line back — see its note.
     private var isRestoring = false
+
+    /// The field as `onEdit` last saw it, so a re-measure or a caret move isn't an edit.
+    private var lastEdit = (text: "", composing: false)
 
     var placeholder: String = "" {
         didSet { placeholderLabel.text = placeholder }
@@ -404,12 +414,19 @@ final class ComposerBar: UIView {
         replaceToken(range, with: "\(value) ")
     }
 
+    /// What's in the field, as typed.
+    var text: String { textView.text ?? "" }
+
+    /// Whether an IME is mid-composition — marked text the keyboard hasn't committed yet.
+    var isComposing: Bool { textView.markedTextRange != nil }
+
     /// Whether the field is empty — nothing typed, nothing but whitespace.
     var isEmpty: Bool {
         (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// Put a refused line back, as typed (#128).
+    /// Put a refused line back, as typed (#128) — or a draft, which may be empty: another device
+    /// emptied it (iOS #188).
     ///
     /// ⚠⚠ Does NOT raise the keyboard, unlike `address(_:)`. Nothing the user did asked for this
     /// — the server refused a send and the text is coming home — so shoving the keyboard up over
@@ -418,7 +435,11 @@ final class ComposerBar: UIView {
     ///
     /// ⚠ Caret at the end, so carrying on writing works without a tap to reposition.
     func restore(_ text: String) {
-        guard !text.isEmpty else { return }
+        // Raised before the text moves, not just around the delegate call below: setting `text`
+        // and the caret fire `textViewDidChangeSelection`, which would report the restore as an
+        // edit of the user's.
+        isRestoring = true
+        defer { isRestoring = false }
         textView.text = text
         textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
         // ⚠⚠ Silently. `textViewDidChange` is needed for the height, the send button and the
@@ -431,9 +452,7 @@ final class ComposerBar: UIView {
         // ⚠ `lastEmittedDraft` is deliberately NOT advanced. It mirrors what the channel was last
         // told, and the channel was told nothing — so deleting the restored line back to empty
         // still correctly emits no change, and typing one character still correctly emits.
-        isRestoring = true
         textViewDidChange(textView)
-        isRestoring = false
     }
 
     /// Address `nick` at the head of the draft — what Reply does (#60).
@@ -619,6 +638,23 @@ extension ComposerBar: UITextViewDelegate {
     /// changes the completion context without changing the text.
     func textViewDidChangeSelection(_ textView: UITextView) {
         emitCompletion()
+        // A commit that leaves the text as it was (romaji `ka` committed as typed) changes no
+        // text, so `textViewDidChange` may not hear it — but the marked range went away. Asked
+        // first, because this runs on every caret move and the full comparison copies the text.
+        if isComposing != lastEdit.composing { reportEdit() }
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+        onEndEditing?()
+    }
+
+    /// Tell the owner the field changed, if it did. A restore is recorded without being told:
+    /// the next real edit compares against what the field shows, not against an older text.
+    private func reportEdit() {
+        let now = (text: textView.text ?? "", composing: isComposing)
+        guard now != lastEdit else { return }
+        lastEdit = now
+        if !isRestoring { onEdit?() }
     }
 
     /// Hand the owner the current completion context, only when it changed. A slash line is
@@ -663,6 +699,7 @@ extension ComposerBar: UITextViewDelegate {
             lastEmittedDraft = draft
             onDraftChange?(draft)
         }
+        reportEdit()
 
         // Grow to fit the text, up to the cap; past it, hold the height and let the text
         // scroll inside. The floor is one line's height, the same value the pills use, so a

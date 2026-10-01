@@ -132,6 +132,8 @@ private func unreadSummary(unread: Int, highlights: Int) -> String {
 final class BufferRowCell: UICollectionViewListCell {
     private let guide = TreeGuideView()
     private let nameLabel = UILabel()
+    /// A draft is waiting in this buffer's composer (iOS #188) — the web's pencil.
+    private let draftMark = UIImageView(image: UIImage(systemName: "pencil"))
     private let hintLabel = UILabel()
     private let countLabel = UILabel()
     /// The pressed and open fill. A view rather than the background configuration, which is
@@ -173,10 +175,16 @@ final class BufferRowCell: UICollectionViewListCell {
         let spacer = UIView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let text = UIStackView(arrangedSubviews: [nameLabel, hintLabel, spacer, countLabel])
+        draftMark.tintColor = Palette.fgMuted
+        draftMark.contentMode = .scaleAspectFit
+        draftMark.isHidden = true
+        draftMark.setContentHuggingPriority(.required, for: .horizontal)
+        draftMark.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let text = UIStackView(arrangedSubviews: [nameLabel, draftMark, hintLabel, spacer, countLabel])
         text.axis = .horizontal
         text.spacing = 10
         text.setCustomSpacing(8, after: nameLabel)
+        text.setCustomSpacing(8, after: draftMark)
         text.alignment = .center
         text.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(text)
@@ -243,6 +251,7 @@ final class BufferRowCell: UICollectionViewListCell {
         highlights: Int,
         presence: FriendPresence?,
         parted: Bool,
+        hasDraft: Bool,
         isOpen: Bool,
         guide shape: TreeGuideView.Shape
     ) {
@@ -256,6 +265,9 @@ final class BufferRowCell: UICollectionViewListCell {
         // Away or offline mutes the name even with something waiting, as the web's `peer-away`
         // outranks its `unread`; the count keeps its colour, so what's waiting still shows.
         nameLabel.textColor = presence?.dimsName == true ? Palette.fgMuted : (signal ?? Palette.fg)
+        draftMark.isHidden = !hasDraft
+        // The list's own face, which tracks the screen's text size rather than the cell's.
+        draftMark.preferredSymbolConfiguration = UIImage.SymbolConfiguration(font: hintFont, scale: .small)
         hintLabel.text = networkHint
         hintLabel.font = hintFont
         hintLabel.isHidden = networkHint == nil
@@ -267,11 +279,12 @@ final class BufferRowCell: UICollectionViewListCell {
         // A channel we're not in: the row's text at half strength. Not the guide, unlike the
         // web's whole-row opacity — a dimmed piece of spine reads as a break in the tree.
         let alpha: CGFloat = parted ? 0.5 : 1
-        for label in [nameLabel, hintLabel, countLabel] { label.alpha = alpha }
+        for view in [nameLabel, draftMark, hintLabel, countLabel] { view.alpha = alpha }
 
         var summary = networkName.map { "\(name), \($0)" } ?? name
         if parted { summary += ", not joined" }
         if let presence, presence.dimsName { summary += ", \(presence.accessibilityLabel)" }
+        if hasDraft { summary += ", draft" }
         summary += unreadSummary(unread: unread, highlights: highlights)
         accessibilityLabel = summary
         setNeedsUpdateConfiguration()

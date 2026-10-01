@@ -22,6 +22,10 @@ final class LurkerClient {
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
+    /// Which socket this is, counting from the first — so a caller can tie something it learned
+    /// from a frame to the socket that sent it. Bumped the moment a socket is made, before it
+    /// opens, because writes start going to it then.
+    private(set) var socketGeneration = 0
     /// Reset per socket; gates the "socket really opened" signal to the first frame that
     /// actually arrives, rather than optimistically on `resume()`.
     private var hasEmittedOpen = false
@@ -555,6 +559,7 @@ final class LurkerClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: request)
         socket = task
+        socketGeneration &+= 1
         task.resume()
         listen(on: task)
     }
@@ -1198,6 +1203,77 @@ final class LurkerClient {
         send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
+    /// Save one buffer's composer draft (`draft-set`), or clear it (`draft-clear`) when there's
+    /// nothing in it — a reply with no text yet is a draft. The server fans `draft-updated` to
+    /// every OTHER socket on the account; this one already knows.
+    ///
+    /// `reply` always rides, `null` included: a `draft-set` without the key leaves the stored
+    /// reply as it was, which is for clients that don't know about replies. This one does, so
+    /// its silence would keep a reply the user cancelled.
+    ///
+    /// Returns false when there was no socket to write to. When there was one, `onComplete`
+    /// says (off the main thread) whether the write made it out.
+    @discardableResult
+    func saveDraft(
+        networkId: Int, target: String, draft: ComposerDraft,
+        onComplete: (@Sendable (_ ok: Bool) -> Void)? = nil
+    ) -> Bool {
+        guard !draft.isEmpty else {
+            return send(["type": "draft-clear", "networkId": networkId, "target": target], onComplete: onComplete)
+        }
+        return send([
+            "type": "draft-set",
+            "networkId": networkId,
+            "target": target,
+            "body": draft.body,
+            "reply": Self.draftReplyRef(draft.reply),
+        ], onComplete: onComplete)
+    }
+
+    /// Save drafts over HTTP (`POST /api/drafts/flush`) — the way out when the socket is gone and
+    /// the app is on its way to the background. An empty draft clears. True on a 2xx.
+    func flushDrafts(_ drafts: [(key: BufferKey, draft: ComposerDraft)]) async -> Bool {
+        guard let token else { return false }
+        let code = await Self.postDrafts(drafts, session: session, baseURL: baseURL, token: token)
+        if code == 401 { reportUnauthorized(sentWith: token) }
+        return (200..<300).contains(code)
+    }
+
+    /// The request itself, against an explicit session — sign-out sends it with the token it is
+    /// about to revoke. Returns the status code, 0 for no answer; 204 for nothing to send.
+    private static func postDrafts(
+        _ drafts: [(key: BufferKey, draft: ComposerDraft)],
+        session: URLSession, baseURL: String, token: String
+    ) async -> Int {
+        guard let url = URL(string: baseURL + "/api/drafts/flush") else { return 0 }
+        let entries: [[String: Any]] = drafts.compactMap { entry in
+            guard let networkId = entry.key.networkId else { return nil }
+            return [
+                "networkId": networkId,
+                "target": entry.key.target,
+                "body": entry.draft.body,
+                "reply": Self.draftReplyRef(entry.draft.reply),
+            ]
+        }
+        guard !entries.isEmpty else { return 204 }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // The route reads a raw text body and parses it itself — it's built for `sendBeacon`,
+        // which can't send JSON.
+        request.setValue("text/plain;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["drafts": entries])
+        guard let (_, response) = try? await session.data(for: request) else { return 0 }
+        return (response as? HTTPURLResponse)?.statusCode ?? 0
+    }
+
+    /// What the server stores of a pending reply: the line, and whether the Reply put the
+    /// address in the text. It resolves the rest itself.
+    private static func draftReplyRef(_ reply: PendingReply?) -> Any {
+        guard let reply else { return NSNull() }
+        return ["messageId": reply.messageId, "addressed": reply.addressed]
+    }
+
     /// Move or drop this buffer's `/clear` marker (#121) — `clear-buffer` / `unclear-buffer`.
     ///
     /// The server anchors the boundary at the current tail and fans a `buffer-cleared` back to
@@ -1403,7 +1479,8 @@ final class LurkerClient {
     private func send(
         _ verb: [String: Any],
         surfacesFailure: Bool = false,
-        onFlush: (@Sendable () -> Void)? = nil
+        onFlush: (@Sendable () -> Void)? = nil,
+        onComplete: (@Sendable (_ ok: Bool) -> Void)? = nil
     ) -> Bool {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
@@ -1414,6 +1491,7 @@ final class LurkerClient {
         }
         socket.send(.string(text)) { [weak self] error in
             defer { onFlush?() }
+            onComplete?(error == nil)
             guard let error, surfacesFailure else { return }
             // Capture the reason (a String) before hopping — Error isn't Sendable, but its
             // localized description is, and it's what makes an offline/TLS failure legible.
@@ -1463,13 +1541,19 @@ final class LurkerClient {
     /// fails (offline, crash, force-quit) the token stays filed against this account, and
     /// the server's native rebind rule is what stops that stranding whoever signs in next
     /// on this phone (#490).
-    func logout(deviceToken: String? = nil) {
+    ///
+    /// `drafts` are saved first, over HTTP with the session being ended: a socket write queued
+    /// now would be cancelled by the `close()` below before it went out.
+    func logout(deviceToken: String? = nil, drafts: [(key: BufferKey, draft: ComposerDraft)] = []) {
         let revokeToken = token
         let base = baseURL
         close()
         guard let revokeToken, let url = URL(string: base + "/api/auth/logout") else { return }
         let session = self.session
         Task {
+            if !drafts.isEmpty {
+                _ = await Self.postDrafts(drafts, session: session, baseURL: base, token: revokeToken)
+            }
             if let deviceToken {
                 await Self.deregisterDevice(
                     session: session, baseURL: base, sessionToken: revokeToken, deviceToken: deviceToken
