@@ -15,6 +15,19 @@ import UIKit
 /// Wraps onto further lines rather than scrolling, so every chip is reachable without a gesture
 /// the message list would fight over. That makes its height depend on its width, which a stack
 /// view in a self-sizing cell can't discover by itself — see `availableWidth`.
+/// The chip row's holder in a cell: touches anywhere in its padding go to the nearest chip, so a
+/// chip's target is its whole slot rather than its drawn edge (see `ReactionRowView.chip(near:)`).
+final class ReactionSlotView: UIView {
+    weak var row: ReactionRowView?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, let row, self.point(inside: point, with: event) else { return nil }
+        let inRow = convert(point, to: row)
+        return row.chip(near: CGPoint(x: inRow.x, y: min(max(inRow.y, 0), row.bounds.height)))
+            ?? super.hitTest(point, with: event)
+    }
+}
+
 final class ReactionRowView: UIView {
 
     /// A chip was tapped on a line we can react to: add or take back ours.
@@ -83,10 +96,32 @@ final class ReactionRowView: UIView {
         setNeedsLayout()
     }
 
+    /// The chip a touch at `point` (this view's space) is for: the chip under it, or failing that
+    /// the nearest one on that line within half a gap sideways and the whole slot vertically.
+    ///
+    /// A chip is drawn a line of text tall (~23pt), which is right for a dense log and too small
+    /// to hit. Its SLOT is bigger: the row's full height for its line, plus the air the cell keeps
+    /// around the row (`ReactionSlotView` forwards touches from there). Neighbouring slots meet at
+    /// the middle of the gap, so they never overlap.
+    func chip(near point: CGPoint) -> UIView? {
+        let views = visibleViews
+        if let hit = views.first(where: { $0.frame.contains(point) }) { return hit }
+        return views
+            .filter { point.x >= $0.frame.minX - Self.gap / 2 && point.x <= $0.frame.maxX + Self.gap / 2 }
+            .min { abs($0.frame.midY - point.y) < abs($1.frame.midY - point.y) }
+    }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard !isHidden, isUserInteractionEnabled, let chip = chip(near: point) else {
+            return super.hitTest(point, with: event)
+        }
+        return chip
+    }
+
     /// Whether `point` (in this view's space) lands on a chip — so the list's long press can
     /// open the sheet there rather than the line's actions.
     func containsChip(at point: CGPoint) -> Bool {
-        (chips + [addChip]).contains { !$0.isHidden && $0.frame.insetBy(dx: -2, dy: -2).contains(point) }
+        chip(near: point) != nil
     }
 
     override var intrinsicContentSize: CGSize {

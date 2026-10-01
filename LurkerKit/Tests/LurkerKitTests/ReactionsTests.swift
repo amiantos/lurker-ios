@@ -399,3 +399,18 @@ final class ReactCommandTests: XCTestCase {
         XCTAssertEqual(Reactions.commandTarget(in: [line(3, isSelf: true)]), .failure(.init("nothing here to react to")))
     }
 }
+
+@MainActor
+final class ReactionRenameTests: XCTestCase {
+    func testARenameCarriesTheRevision() {
+        let store = LurkerStore()
+        store.apply(.backlog(
+            buffer: Buffer(networkId: 1, target: "bob", kind: .dm, hydrated: true),
+            messages: [Message(id: 1, type: .message, nick: "bob", text: "hi", msgid: "m")],
+            hydrated: true, append: false, speakers: nil))
+        store.apply(.reaction(ReactionChange(networkId: 1, target: "bob", messageId: 1, nick: "me", value: "👍", isSelf: true, remove: false, toSelf: false)))
+        store.apply(.bufferRenamed(networkId: 1, from: "bob", to: "bobby", bufferId: nil, merged: false, mergedFromBufferId: nil))
+        XCTAssertEqual(store.state.reactionsRevision(for: BufferKey(networkId: 1, target: "bobby")), 1)
+        XCTAssertNil(store.state.reactionsRevisions["1::bob"])
+    }
+}

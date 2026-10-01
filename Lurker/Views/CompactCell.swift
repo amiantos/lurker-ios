@@ -91,7 +91,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let attachments = MessageAttachmentsView()
     /// The reaction chips, in a holder that indents them under the body and gives them air.
     /// Hidden on every line nobody has reacted to, which is nearly all of them.
-    private let reactionHolder = UIView()
+    private let reactionHolder = ReactionSlotView()
     private let reactionRow = ReactionRowView()
     private var reactionIndent: NSLayoutConstraint!
     private var reactionBottom: NSLayoutConstraint!
@@ -189,6 +189,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         reactionHolder.isHidden = true
         reactionRow.translatesAutoresizingMaskIntoConstraints = false
         reactionHolder.addSubview(reactionRow)
+        reactionHolder.row = reactionRow
         reactionIndent = reactionRow.leadingAnchor.constraint(equalTo: reactionHolder.leadingAnchor)
         reactionBottom = reactionRow.bottomAnchor.constraint(equalTo: reactionHolder.bottomAnchor)
         NSLayoutConstraint.activate([
@@ -439,7 +440,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     }
 
     func reactionChip(at point: CGPoint) -> Bool {
-        guard !reactionHolder.isHidden else { return false }
+        guard !reactionHolder.isHidden, reactionHolder.bounds.contains(convert(point, to: reactionHolder))
+        else { return false }
         return reactionRow.containsChip(at: convert(point, to: reactionRow))
     }
 

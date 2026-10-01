@@ -29,7 +29,11 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     private let stack = UIStackView()
     private let standingStack = UIStackView()
     private let standingTitle = UILabel()
+    /// Two rows of four, not one of eight: eight across a compact phone left each pick ~37pt
+    /// wide, under the 44pt a thumb needs, and clipped the emoji at large type sizes.
     private let quickRow = UIStackView()
+    private let quickTop = UIStackView()
+    private let quickBottom = UIStackView()
     private let field = EmojiTextField()
     private let reactButton = UIButton(type: .system)
     private let fieldRow = UIStackView()
@@ -88,9 +92,14 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         stack.addArrangedSubview(makeHeader())
         stack.setCustomSpacing(22, after: stack.arrangedSubviews[0])
 
-        quickRow.axis = .horizontal
-        quickRow.distribution = .fillEqually
+        quickRow.axis = .vertical
         quickRow.spacing = 6
+        for row in [quickTop, quickBottom] {
+            row.axis = .horizontal
+            row.distribution = .fillEqually
+            row.spacing = 6
+            quickRow.addArrangedSubview(row)
+        }
         stack.addArrangedSubview(quickRow)
 
         field.placeholder = "Any emoji or text"
@@ -187,9 +196,12 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
             ? "This network can't carry reactions right now."
             : "This line can't take reactions."
         if !canReact { problem.isHidden = true; field.resignFirstResponder() }
-        for view in quickRow.arrangedSubviews { view.removeFromSuperview() }
-        for value in Reactions.quickPicks {
-            quickRow.addArrangedSubview(quickButton(value, mine: mine.contains(value)))
+        for row in [quickTop, quickBottom] {
+            for view in row.arrangedSubviews { view.removeFromSuperview() }
+        }
+        let half = (Reactions.quickPicks.count + 1) / 2
+        for (index, value) in Reactions.quickPicks.enumerated() {
+            (index < half ? quickTop : quickBottom).addArrangedSubview(quickButton(value, mine: mine.contains(value)))
         }
 
         standingTitle.isHidden = groups.isEmpty
@@ -219,6 +231,7 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
             ? Palette.translucent(Palette.accent, alpha: 0.15) : .secondarySystemGroupedBackground
         config.background.strokeColor = mine ? Palette.accent : .separator
         let button = UIButton(configuration: config)
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         button.accessibilityLabel = value
         button.accessibilityTraits = mine ? [.button, .selected] : .button
         button.accessibilityHint = mine ? "Takes your reaction back." : nil

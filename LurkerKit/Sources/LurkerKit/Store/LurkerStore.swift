@@ -393,6 +393,9 @@ public struct ChatState: Sendable {
         // Same class as the in-flight page flags `ChatViewModel` rekeys for the same reason.
         unsent[to] = unsent[from]
         unsent[from] = nil
+        // Moved with its lines, so a renamed DM's chips still redraw when a reaction lands.
+        reactionsRevisions[to] = reactionsRevisions[from]
+        reactionsRevisions[from] = nil
         if burstSeen.remove(from) != nil { burstSeen.insert(to) }
         if let id = renamed.bufferId { keysById[id] = to }
     }
