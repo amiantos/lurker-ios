@@ -195,7 +195,7 @@ final class ComposerBar: UIView {
         sendButton.addAction(UIAction { [weak self] _ in self?.fire() }, for: .touchUpInside)
 
         replyBar.effect = Self.glass()
-        replyBar.cornerConfiguration = .corners(radius: .fixed(14))
+        replyBar.cornerConfiguration = .corners(radius: .fixed(22))
         replyBar.translatesAutoresizingMaskIntoConstraints = false
         replyBar.isHidden = true
         replyLabel.font = .preferredFont(forTextStyle: .footnote)
@@ -253,14 +253,17 @@ final class ComposerBar: UIView {
             replyBar.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             replyBar.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
             replyLabel.leadingAnchor.constraint(equalTo: replyBar.contentView.leadingAnchor, constant: 14),
-            replyLabel.topAnchor.constraint(equalTo: replyBar.contentView.topAnchor, constant: 7),
-            replyLabel.bottomAnchor.constraint(equalTo: replyBar.contentView.bottomAnchor, constant: -7),
-            replyCancel.leadingAnchor.constraint(equalTo: replyLabel.trailingAnchor, constant: 8),
-            replyCancel.trailingAnchor.constraint(equalTo: replyBar.contentView.trailingAnchor, constant: -8),
-            replyCancel.centerYAnchor.constraint(equalTo: replyBar.contentView.centerYAnchor),
-            // A thumb-sized target on a small glyph.
-            replyCancel.widthAnchor.constraint(greaterThanOrEqualToConstant: 32),
-            replyCancel.heightAnchor.constraint(greaterThanOrEqualToConstant: 32),
+            replyLabel.centerYAnchor.constraint(equalTo: replyBar.contentView.centerYAnchor),
+            replyLabel.topAnchor.constraint(greaterThanOrEqualTo: replyBar.contentView.topAnchor, constant: 7),
+            replyLabel.bottomAnchor.constraint(lessThanOrEqualTo: replyBar.contentView.bottomAnchor, constant: -7),
+            replyCancel.leadingAnchor.constraint(equalTo: replyLabel.trailingAnchor, constant: 4),
+            replyCancel.trailingAnchor.constraint(equalTo: replyBar.contentView.trailingAnchor),
+            // The only way to cancel by touch, so a full 44pt target — and inside the bar, which
+            // sets the bar's height: a target that hung outside it would never be hit.
+            replyCancel.topAnchor.constraint(equalTo: replyBar.contentView.topAnchor),
+            replyCancel.bottomAnchor.constraint(equalTo: replyBar.contentView.bottomAnchor),
+            replyCancel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            replyCancel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             container.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
 

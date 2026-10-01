@@ -519,31 +519,38 @@ class HistoryFeedViewController: UITableViewController {
         // The header itself stays, carrying the time alone. In the list a header-less row can go
         // without a stamp because the rows around it have one; here every row is a standalone
         // entry from a different buffer and hour, and the section header gives only the day.
-        let name = item.message.type.isBubble
-            ? MessageRenderer.caption(item.message, networkName: section.networkName)
+        // A line from a marked relay bot reads as the person inside its envelope, as it does in
+        // its buffer (#277) — and before replies are presented, which judge the line as it reads.
+        // A reaction row is the reactor's, never relayed.
+        let state = viewModel.state
+        let line = item.reaction == nil
+            ? state.relayBots.reattributing([item.message], networkId: item.networkId).first ?? item.message
+            : item.message
+        let name = line.type.isBubble
+            ? MessageRenderer.caption(line, networkName: section.networkName)
             : nil
-        let time = item.message.date.map { MessageRenderer.compactHeaderTime($0) }
+        let time = line.date.map { MessageRenderer.compactHeaderTime($0) }
         // A reaction to one of your lines (iOS #183): the reactor heads the row, as the speaker
         // does a highlight, and the body says what they reacted and to which line — the web's
         // `bob | 👍 on "…"`.
         // A reply reads as it does in its buffer (lurker#998): its quote above, its address gone.
         // Static here — the row's tap jumps to the reply, where the quote is live again.
-        let state = viewModel.state
         let shown = item.reaction == nil
             ? Replies.presenting(
-                [item.message], networkId: item.networkId, target: item.target,
+                [line], networkId: item.networkId, target: item.target,
                 ignores: state.ignores, relayBots: state.relayBots,
                 ownNick: item.networkId.flatMap { state.networks[$0]?.nick }
-            ).first ?? item.message
-            : item.message
+            ).first ?? line
+            : line
         let body = item.reaction.map { Self.reactionBody($0, traits: traitCollection) }
             ?? MessageRenderer.renderCompactBody(shown, traits: traitCollection)
         cell.configure(
             body,
             header: name == nil && time == nil ? nil : CompactCell.Header(
                 nick: name ?? "",
-                color: MessageRenderer.captionColor(item.message, networkName: section.networkName),
-                time: time
+                color: MessageRenderer.captionColor(line, networkName: section.networkName),
+                time: time,
+                relaySource: line.relaySource
             ),
             startsBlock: true,
             endsBlock: true,

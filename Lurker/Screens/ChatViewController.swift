@@ -3353,11 +3353,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if reply.addressed { composer.removeAddress(reply.nick, punctuation: addressPunctuation) }
     }
 
+    /// Escape cancels a pending reply. Always registered, and switched by `canPerformAction`
+    /// instead: UIKit caches a responder's `keyCommands`, so a list that grew when a reply started
+    /// wasn't reliably seen until something else refreshed it. Unable to perform, the command
+    /// stands aside and Escape does whatever it otherwise would.
     override var keyCommands: [UIKeyCommand]? {
-        guard pendingReply != nil else { return super.keyCommands }
         let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapePressed))
         escape.wantsPriorityOverSystemBehavior = true
         return (super.keyCommands ?? []) + [escape]
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(escapePressed) { return pendingReply != nil }
+        return super.canPerformAction(action, withSender: sender)
     }
 
     @objc private func escapePressed() { cancelReply() }
