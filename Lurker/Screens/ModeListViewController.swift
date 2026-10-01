@@ -33,11 +33,20 @@ final class ModeListViewController: UITableViewController {
     private var fetch = 0
 
     /// The refusal of the last add or remove: the verb's own, or the channel's error rows (482,
-    /// 478 for a full list …) inside the window after it.
+    /// 478 for a full list …) soon after it.
     private var actionError: String?
-    private var errorsSeen: [(text: String, at: Date)] = []
-    private var armed: (from: Int, at: Date)?
-    private static let errorWindow: TimeInterval = 10
+    private var refusals = ChannelRefusals()
+
+    /// A fetch is owed once the link is up: a new socket resynced (the gap arrived as backlog,
+    /// so the list can't be patched up to date) while the network wasn't ready, or the last fetch
+    /// found it down.
+    ///
+    /// ⚠ Paid on the link's RISING edge — connected and in the channel, after not being. Never
+    /// straight off a resync whose network is still registering (after a server restart): that
+    /// fetch is refused `not-connected` and nothing would ask again. The edge also stops a retry
+    /// loop while the store says connected and the server says otherwise.
+    private var fetchOwed = false
+    private var lastSlice: Slice?
     /// One change at a time: a double tap must not send the ban twice.
     private var busy = false
 
@@ -74,9 +83,14 @@ final class ModeListViewController: UITableViewController {
         refreshControl = UIRefreshControl()
         refreshControl?.addAction(UIAction { [weak self] _ in self?.load() }, for: .valueChanged)
 
+        // Only what this screen reads: the state moves on every line in every buffer.
         viewModel.statePublisher
+            .map { [key] state in
+                Slice(access: state.channelAccess(key), linkUp: key.networkId.flatMap { state.networks[$0] }?.state == .connected)
+            }
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.render() }
+            .sink { [weak self] slice in self?.linkMoved(slice) }
             .store(in: &cancellables)
         viewModel.channelEvents
             .receive(on: DispatchQueue.main)
@@ -85,19 +99,42 @@ final class ModeListViewController: UITableViewController {
         load()
     }
 
+    private struct Slice: Equatable {
+        let access: ChannelAccess
+        let linkUp: Bool
+        var ready: Bool { linkUp && access.joined }
+    }
+
+    private func linkMoved(_ slice: Slice) {
+        let wasReady = lastSlice?.ready ?? false
+        lastSlice = slice
+        if fetchOwed, slice.ready, !wasReady {
+            fetchOwed = false
+            load()
+        } else {
+            render()
+        }
+    }
+
     private lazy var addButton = UIBarButtonItem(
         systemItem: .add, primaryAction: UIAction { [weak self] _ in self?.promptForEntry() }
     )
 
     private func receive(_ event: ChatViewModel.ChannelEvent) {
         switch event {
-        case .socketOpened:
-            load()
+        case .resynced:
+            // The store's word on the link is this socket's now: ask at once if it's up, else
+            // when it comes up.
+            if lastSlice?.ready == true {
+                load()
+            } else {
+                fetchOwed = true
+            }
         case .line(let lineKey, let message):
             guard lineKey.id == key.id else { return }
             switch message.type {
             case .mode: rowsSinceFetch.append(message)
-            case .error: errorsSeen.append((message.text ?? "", Date()))
+            case .error: refusals.note(message.text ?? "")
             default: return
             }
             render()
@@ -116,6 +153,10 @@ final class ModeListViewController: UITableViewController {
             refreshControl?.endRefreshing()
             switch result {
             case .entries(let entries): status = .ready(entries)
+            case .offline:
+                status = .failed("Not connected.")
+                // Asked again when the link comes up.
+                fetchOwed = true
             case .failed(let message): status = .failed(message)
             }
             render()
@@ -154,7 +195,7 @@ final class ModeListViewController: UITableViewController {
         }
         busy = true
         actionError = nil
-        armed = (errorsSeen.count, Date())
+        refusals.arm()
         render()
         Task { [weak self, viewModel, key, letter] in
             let failure = await viewModel.setChannelModes(
@@ -162,16 +203,9 @@ final class ModeListViewController: UITableViewController {
             )
             guard let self else { return }
             busy = false
-            actionError = failure
+            actionError = failure?.message
             render()
         }
-    }
-
-    private var serverErrors: [String] {
-        guard let armed, armed.from <= errorsSeen.count else { return [] }
-        return errorsSeen[armed.from...]
-            .filter { $0.at.timeIntervalSince(armed.at) < Self.errorWindow }
-            .map(\.text)
     }
 
     // MARK: - Render
@@ -183,7 +217,7 @@ final class ModeListViewController: UITableViewController {
         case .ready(let entries): next = ChannelModeForm.patch(entries, with: rowsSinceFetch, letter: letter)
         case .loading, .failed: next = []
         }
-        let errors = [actionError].compactMap { $0 } + serverErrors
+        let errors = [actionError].compactMap { $0 } + refusals.current
         let drawing = Drawn(
             status: status, shown: next, canEdit: viewModel.state.channelAccess(key).canEditModes,
             busy: busy, footer: errors.isEmpty ? nil : errors.joined(separator: "\n")

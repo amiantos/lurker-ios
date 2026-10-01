@@ -153,8 +153,40 @@ public struct ModeListEntry: Equatable, Sendable {
 /// The answer to `get-mode-list`.
 public enum ModeListResult: Equatable, Sendable {
     case entries([ModeListEntry])
+    /// The network isn't connected (or our socket dropped under the ask) — worth asking again
+    /// once it is, unlike a refusal.
+    case offline
     /// Why there's no list, worded for the screen.
     case failed(String)
+}
+
+/// The channel's `error` rows read as the answer to a change this screen just sent.
+///
+/// ⚠ By timing, because nothing better exists: MODE changes are untracked by the server's reply
+/// router (a no-op change gets no reply, so there's no reliable end to wait for), so a refusal —
+/// 482, 467, 478 — arrives as the channel's `error` row with nothing tying it to the change. The
+/// rows that land soon after a send are taken as its answer; a server answers a MODE in moments,
+/// and an unrelated error minutes later is not this change's. The web modal draws the same line.
+public struct ChannelRefusals: Equatable, Sendable {
+    private var seen: [(text: String, at: Date)] = []
+    private var armed: (from: Int, at: Date)?
+    public static let window: TimeInterval = 10
+
+    public init() {}
+
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.current == rhs.current }
+
+    /// A change just went out: errors from here on are its answer.
+    public mutating func arm(at now: Date = Date()) { armed = (seen.count, now) }
+
+    /// An `error` row for this channel arrived.
+    public mutating func note(_ text: String, at now: Date = Date()) { seen.append((text, now)) }
+
+    /// The errors answering the latest change — those inside the window after it was sent.
+    public var current: [String] {
+        guard let armed, armed.from <= seen.count else { return [] }
+        return seen[armed.from...].filter { $0.at.timeIntervalSince(armed.at) < Self.window }.map(\.text)
+    }
 }
 
 /// One MODE change to send — `param` present exactly when the mode takes one in that direction.
@@ -396,8 +428,20 @@ public struct ChannelModeDrafts: Equatable, Sendable {
     /// Per saved row: the live state it was saved from, and the edit that went out. Only that
     /// edit is the echo's to clear — the fields stay editable while the ack is out, and a newer
     /// edit (untick +m again before +m comes back) is the user's to keep.
-    private var savedRows: [String: (live: ChannelModeForm.DraftRow, sent: ChannelModeForm.DraftRow)] = [:]
+    private var savedRows: [String: SavedRow] = [:]
     private var savedTopic: (live: String, sent: String)?
+
+    public struct SavedRow: Equatable, Sendable {
+        let live: ChannelModeForm.DraftRow
+        let sent: ChannelModeForm.DraftRow
+    }
+
+    /// What a Save's mode changes are about to send, taken at the moment of Save — before any
+    /// await, since the fields stay editable while it's out. Recorded by `noteSent` only once the
+    /// changes actually go out.
+    public struct Sending: Equatable, Sendable {
+        fileprivate let rows: [String: SavedRow]
+    }
 
     public init() {}
 
@@ -426,14 +470,36 @@ public struct ChannelModeDrafts: Equatable, Sendable {
         return out == live ? nil : out
     }
 
-    /// Note what a Save sent, before it goes, so the echo can dissolve exactly that edit.
-    public mutating func markSaved(
-        changes: [OutgoingModeChange], topic sentTopic: String?, live: ChannelModeForm.Live, liveTopic: String
-    ) {
-        for letter in Set(changes.map(\.letter)) {
-            savedRows[letter] = (live: live.row(letter), sent: shown(letter, live: live))
-        }
-        if let sentTopic { savedTopic = (live: liveTopic, sent: sentTopic) }
+    /// Capture what `changes` will send, as the rows stand now.
+    public func sending(_ changes: [OutgoingModeChange], live: ChannelModeForm.Live) -> Sending {
+        Sending(rows: Dictionary(uniqueKeysWithValues: Set(changes.map(\.letter)).map { letter in
+            (letter, SavedRow(live: live.row(letter), sent: shown(letter, live: live)))
+        }))
+    }
+
+    /// The changes are going out: the echo may now dissolve exactly those edits.
+    ///
+    /// ⚠ Only for changes that are actually SENT. A row recorded for a change that never left
+    /// would be dissolved by any later move of that mode — another op's +m then -m quietly
+    /// throwing away the user's unsent +m.
+    public mutating func noteSent(_ sending: Sending) {
+        savedRows.merge(sending.rows) { _, new in new }
+    }
+
+    /// The changes never went out after all: take back what `noteSent` recorded, unless a later
+    /// Save has recorded over it.
+    public mutating func noteNotSent(_ sending: Sending) {
+        for (letter, row) in sending.rows where savedRows[letter] == row { savedRows[letter] = nil }
+    }
+
+    /// The topic is going out.
+    public mutating func noteTopicSent(_ topic: String, liveTopic: String) {
+        savedTopic = (live: liveTopic, sent: topic)
+    }
+
+    /// …or never did.
+    public mutating func noteTopicNotSent(_ topic: String) {
+        if savedTopic?.sent == topic { savedTopic = nil }
     }
 
     /// Let the live state answer what it can. Call on every state change.

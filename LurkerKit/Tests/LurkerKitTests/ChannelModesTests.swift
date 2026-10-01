@@ -113,6 +113,15 @@ final class ChannelModesTests: XCTestCase {
             "The server refused: No such channel"
         )
         XCTAssertEqual(ChatViewModel.listError(.noAnswer), "The server didn't answer.")
+        XCTAssertEqual(ChatViewModel.listError(VerbReply(ok: false, error: "no-reply")), "The server didn't answer.")
+        XCTAssertEqual(
+            ChatViewModel.listError(VerbReply(ok: false, error: "account-paused")),
+            "This account is paused, so nothing can be fetched.", "a refusal is not silence"
+        )
+        XCTAssertEqual(
+            ChatViewModel.listError(VerbReply(ok: false, error: "unsupported-list-mode")),
+            "Couldn't load the list (unsupported-list-mode)."
+        )
     }
 
     func testNetworkConfigReadsChannelKeys() {
@@ -130,7 +139,7 @@ final class ChannelModesTests: XCTestCase {
 
     /// The settings screens patch lists and read refusals off these — including for a detached
     /// buffer, which holds live lines out of its log. So they come off the frame, not the store.
-    func testLiveLinesAndSocketOpensReachChannelEvents() {
+    func testLiveLinesAndResyncsReachChannelEvents() {
         let model = ChatViewModel(
             sessions: SessionStore(service: "chat.lurker.tests.channelmodes"),
             settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.channelmodes")!)
@@ -139,7 +148,7 @@ final class ChannelModesTests: XCTestCase {
         let sink = model.channelEvents.sink { event in
             switch event {
             case .line(let key, let message): seen.append("\(key.id) \(message.type.rawValue)")
-            case .socketOpened: seen.append("open")
+            case .resynced: seen.append("resynced")
             }
         }
         defer { sink.cancel() }
@@ -147,7 +156,8 @@ final class ChannelModesTests: XCTestCase {
             id: 7, type: .mode, nick: "op", text: "+b x", modes: [ModeChange(mode: "+b", param: "x", kind: .list)]
         )))
         model.handle(.socketOpen)
-        XCTAssertEqual(seen, ["1::#c mode", "open"])
+        model.handle(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: [], maxUploadBytes: nil))
+        XCTAssertEqual(seen, ["1::#c mode", "resynced"], "after the snapshot, not the socket opening")
     }
 
     // MARK: - Store
@@ -359,7 +369,7 @@ final class ChannelModesTests: XCTestCase {
         var drafts = ChannelModeDrafts()
         drafts.setValue("l", "050", live: live)
         let sent = try! ChannelModeForm.changes(spec: spec, live: live, draft: drafts.rows).get()
-        drafts.markSaved(changes: sent, topic: nil, live: live, liveTopic: "")
+        drafts.noteSent(drafts.sending(sent, live: live))
         drafts.reconcile(live: live, liveTopic: "")
         XCTAssertNotNil(drafts.rows["l"], "never cleared on the ack — only the channel answers")
         drafts.reconcile(live: ChannelModeForm.Live(modes: "nl", params: ["l": "50"]), liveTopic: "")
@@ -375,7 +385,7 @@ final class ChannelModesTests: XCTestCase {
         var drafts = ChannelModeDrafts()
         drafts.setOn("m", true, live: live)
         drafts.setOn("s", true, live: live)
-        drafts.markSaved(changes: [OutgoingModeChange(sign: "+", letter: "m")], topic: nil, live: live, liveTopic: "")
+        drafts.noteSent(drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live))
         drafts.setOn("m", false, live: live)
         drafts.reconcile(live: ChannelModeForm.Live(modes: "nm", params: [:]), liveTopic: "")
         XCTAssertEqual(drafts.rows["m"], ChannelModeForm.DraftRow(on: false, value: ""), "the untick stands")
@@ -387,12 +397,71 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertNil(drafts.topicChange(live: "old"), "untouched")
         drafts.setTopic("new\nline")
         XCTAssertEqual(drafts.topicChange(live: "old"), "new line")
-        drafts.markSaved(changes: [], topic: "new line", live: ChannelModeForm.Live(modes: "", params: [:]), liveTopic: "old")
+        drafts.noteTopicSent("new line", liveTopic: "old")
         drafts.reconcile(live: ChannelModeForm.Live(modes: "", params: [:]), liveTopic: "old")
         XCTAssertNotNil(drafts.topic)
         // The server trimmed it: moved, so the saved edit is answered.
         drafts.reconcile(live: ChannelModeForm.Live(modes: "", params: [:]), liveTopic: "new lin")
         XCTAssertNil(drafts.topic)
+    }
+
+    /// ⚠⚠ A change that never went out is not the echo's to answer. The topic failed, so the
+    /// +m behind it never left — and another op's +m then -m must not dissolve it.
+    func testAnUnsentChangeIsNotAnsweredBySomeoneElsesMove() {
+        let live = ChannelModeForm.Live(modes: "n", params: [:])
+        var drafts = ChannelModeDrafts()
+        drafts.setOn("m", true, live: live)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live)
+        drafts.noteSent(sending)
+        drafts.noteNotSent(sending)
+        drafts.reconcile(live: ChannelModeForm.Live(modes: "nm", params: [:]), liveTopic: "")
+        XCTAssertNil(drafts.rows["m"], "matching still answers it")
+
+        drafts.setOn("m", true, live: live)
+        let again = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live)
+        drafts.noteSent(again)
+        drafts.noteNotSent(again)
+        drafts.reconcile(live: ChannelModeForm.Live(modes: "ns", params: [:]), liveTopic: "")
+        XCTAssertNotNil(drafts.rows["m"], "but a move it never caused doesn't")
+    }
+
+    /// A slow first Save whose failure lands after a second Save must not take back the second's
+    /// record.
+    func testTakingBackAnOldSaveLeavesANewerOne() {
+        var drafts = ChannelModeDrafts()
+        let fifty = ChannelModeForm.Live(modes: "l", params: ["l": "50"])
+        drafts.setValue("l", "60", live: fifty)
+        let first = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: fifty)
+        drafts.noteSent(first)
+        let fiftyFive = ChannelModeForm.Live(modes: "l", params: ["l": "55"])
+        let second = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: fiftyFive)
+        drafts.noteSent(second)
+        drafts.noteNotSent(first)
+        // The server normalized: 55 → 56 is the second Save's echo, and answers the edit.
+        drafts.reconcile(live: ChannelModeForm.Live(modes: "l", params: ["l": "56"]), liveTopic: "")
+        XCTAssertNil(drafts.rows["l"])
+    }
+
+    func testOnlyErrorsSoonAfterAChangeAnswerIt() {
+        var refusals = ChannelRefusals()
+        let start = Date(timeIntervalSince1970: 1_000)
+        refusals.note("before", at: start)
+        XCTAssertEqual(refusals.current, [], "nothing sent yet")
+        refusals.arm(at: start.addingTimeInterval(1))
+        refusals.note("482 not an op", at: start.addingTimeInterval(2))
+        refusals.note("much later", at: start.addingTimeInterval(1 + ChannelRefusals.window + 1))
+        XCTAssertEqual(refusals.current, ["482 not an op"])
+        refusals.arm(at: start.addingTimeInterval(100))
+        XCTAssertEqual(refusals.current, [], "a new change starts clean")
+    }
+
+    func testASaveFailureSaysWhetherAnythingCanHaveGoneOut() {
+        XCTAssertNil(ChatViewModel.saveFailure(VerbReply(ok: true, error: nil)))
+        XCTAssertEqual(ChatViewModel.saveFailure(.notSent)?.certainlyUnsent, true)
+        XCTAssertEqual(ChatViewModel.saveFailure(VerbReply(ok: false, error: "account-paused"))?.certainlyUnsent, true)
+        XCTAssertEqual(ChatViewModel.saveFailure(.noAnswer)?.certainlyUnsent, false, "it may have gone out")
+        XCTAssertEqual(ChatViewModel.saveFailure(.connectionLost)?.certainlyUnsent, false)
+        XCTAssertEqual(ChatViewModel.saveFailure(.connectionLost)?.message, "The connection dropped before the server answered.")
     }
 
     // MARK: - Lists

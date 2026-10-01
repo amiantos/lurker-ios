@@ -51,6 +51,8 @@ final class LurkerClient {
     /// `request`. Every entry is settled exactly once: by its reply, its timeout, or the socket it
     /// went down ending (`abandonReplies`), whichever comes first.
     private var pendingReplies: [String: CheckedContinuation<VerbReply, Never>] = [:]
+    /// Each waiter's timeout, cancelled when it's settled any other way.
+    private var replyTimeouts: [String: Task<Void, Never>] = [:]
     private var replySequence = 0
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
@@ -1518,7 +1520,7 @@ final class LurkerClient {
     ///
     /// The answer is correlated by a `clientId` minted here, and ONLY the socket that asked gets
     /// it (`wsHub` sends it to that socket alone). So a socket that ends while the question is out
-    /// has taken the answer with it: `abandonReplies` settles every waiter as `.noAnswer` then,
+    /// has taken the answer with it: `abandonReplies` settles every waiter as `.connectionLost` then,
     /// and a reconnect never inherits a question it can't be answered on. `timeout` is the
     /// backstop for a live socket that simply never says — and has to outlast the server's own
     /// wait for the IRC server, or a slow list reads as no answer while the server is still
@@ -1540,8 +1542,9 @@ final class LurkerClient {
                 settleReply(clientId, .notSent)
                 return
             }
-            Task { [weak self] in
+            replyTimeouts[clientId] = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard !Task.isCancelled else { return }
                 self?.settleReply(clientId, .noAnswer)
             }
         }
@@ -1590,6 +1593,7 @@ final class LurkerClient {
 
     /// Answer one waiter, once. Later answers for the same id find nothing and do nothing.
     private func settleReply(_ clientId: String, _ reply: VerbReply) {
+        replyTimeouts.removeValue(forKey: clientId)?.cancel()
         pendingReplies.removeValue(forKey: clientId)?.resume(returning: reply)
     }
 
@@ -1597,7 +1601,9 @@ final class LurkerClient {
     private func abandonReplies() {
         let waiting = pendingReplies
         pendingReplies = [:]
-        for continuation in waiting.values { continuation.resume(returning: .noAnswer) }
+        for timeout in replyTimeouts.values { timeout.cancel() }
+        replyTimeouts = [:]
+        for continuation in waiting.values { continuation.resume(returning: .connectionLost) }
     }
 
     /// Report a 401 as the end of the session, but only if it answered the token in use now.

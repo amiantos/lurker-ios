@@ -104,7 +104,7 @@ public final class ChatViewModel {
 
     // MARK: - What the UI observes
 
-    /// Live lines as they arrive, and each socket opening — for the channel settings screens
+    /// Live lines as they arrive, and each new socket's snapshot — for the channel settings screens
     /// (lurker#727), which patch an open list from live `MODE ±b/e/I/q` rows and read a Save's
     /// refusal off the channel's `error` rows.
     ///
@@ -116,9 +116,11 @@ public final class ChatViewModel {
 
     public enum ChannelEvent: Sendable {
         case line(BufferKey, Message)
-        /// A new socket: a list fetched before the drop can't be patched up to date, since the gap
-        /// arrives as backlog rather than live rows.
-        case socketOpened
+        /// A new socket's snapshot has been applied, so the store's word on each network is this
+        /// socket's now. A list fetched before the drop can't be patched up to date — the gap
+        /// arrives as backlog rather than live rows — and this is the moment to decide whether
+        /// asking again can work.
+        case resynced
     }
 
     public var state: ChatState { store.state }
@@ -1211,22 +1213,37 @@ public final class ChatViewModel {
 
     // MARK: - Channel controls (lurker#727)
 
-    /// Set a channel's topic. Nil when it went out; otherwise what to tell the user.
+    /// Why a channel change didn't go out — or might not have.
+    public struct ChannelSaveFailure: Equatable, Sendable {
+        /// What to tell the user.
+        public let message: String
+        /// True when nothing can have reached IRC: the server refused before sending. False when
+        /// the answer simply never came, and the change may well have gone out.
+        public let certainlyUnsent: Bool
+    }
+
+    /// Set a channel's topic. Nil when it went out.
     ///
     /// "Went out" is all the answer can say: a refusal (482 under `+t`) arrives as the channel's
     /// `error` row, and the topic itself changes when the `topic` line comes back.
-    public func setTopic(_ key: BufferKey, topic: String) async -> String? {
-        guard let networkId = key.networkId else { return "Not connected." }
-        return Self.saveError(await client.setTopic(networkId: networkId, channel: key.target, topic: topic))
+    public func setTopic(_ key: BufferKey, topic: String) async -> ChannelSaveFailure? {
+        guard let networkId = key.networkId else { return ChannelSaveFailure(message: "Not connected.", certainlyUnsent: true) }
+        return Self.saveFailure(await client.setTopic(networkId: networkId, channel: key.target, topic: topic))
     }
 
     /// Send mode changes to a channel, as the fewest MODE lines the network allows. Nil when they
     /// went out — the same "only that" as `setTopic`.
-    public func setChannelModes(_ key: BufferKey, changes: [OutgoingModeChange]) async -> String? {
-        guard let networkId = key.networkId else { return "Not connected." }
-        return Self.saveError(
+    public func setChannelModes(_ key: BufferKey, changes: [OutgoingModeChange]) async -> ChannelSaveFailure? {
+        guard let networkId = key.networkId else { return ChannelSaveFailure(message: "Not connected.", certainlyUnsent: true) }
+        return Self.saveFailure(
             await client.setChannelModes(networkId: networkId, channel: key.target, changes: changes)
         )
+    }
+
+    nonisolated static func saveFailure(_ reply: VerbReply) -> ChannelSaveFailure? {
+        guard let message = saveError(reply) else { return nil }
+        let unknown = reply.error == "no-answer" || reply.error == "connection-lost"
+        return ChannelSaveFailure(message: message, certainlyUnsent: !unknown)
     }
 
     /// Fetch one of a channel's lists — `b`, `e`, `I`, or `q` where it's a list.
@@ -1234,6 +1251,9 @@ public final class ChatViewModel {
         guard let networkId = key.networkId else { return .failed("Not connected.") }
         let reply = await client.fetchModeList(networkId: networkId, channel: key.target, letter: letter)
         if reply.ok, let entries = reply.entries { return .entries(entries) }
+        // Nothing to ask yet, or the socket took the answer with it: worth asking again once
+        // the link is back, which a refusal isn't.
+        if reply.error == "not-connected" || reply.error == "connection-lost" { return .offline }
         return .failed(Self.listError(reply))
     }
 
@@ -1251,6 +1271,7 @@ public final class ChatViewModel {
         switch reply.error {
         case "not-connected": return "Not connected."
         case "no-answer": return "The server didn't answer."
+        case "connection-lost": return "The connection dropped before the server answered."
         case let error?: return "Couldn't save (\(error))."
         case nil: return "Couldn't save."
         }
@@ -1262,7 +1283,10 @@ public final class ChatViewModel {
             if reply.numeric == "482" { return "Only channel operators can see this list." }
             return "The server refused: \(reply.text ?? reply.numeric ?? "no reason given")"
         case "not-connected": return "Not connected."
-        default: return "The server didn't answer."
+        // The server's own wait ran out, or ours did: nobody said anything.
+        case "no-reply", "no-answer", nil: return "The server didn't answer."
+        case "account-paused": return "This account is paused, so nothing can be fetched."
+        case let error?: return "Couldn't load the list (\(error))."
         }
     }
 
@@ -1896,8 +1920,8 @@ public final class ChatViewModel {
         switch frame {
         case .live(let networkId, let target, let message):
             channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
-        case .socketOpen:
-            channelEventsSubject.send(.socketOpened)
+        case .snapshot:
+            channelEventsSubject.send(.resynced)
         default:
             break
         }

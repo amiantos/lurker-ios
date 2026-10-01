@@ -45,17 +45,17 @@ final class ChannelSettingsViewController: UITableViewController {
     /// The key the server holds, as the network config said when this screen asked. Live `±k`
     /// rows seen since then outrank it — see `storedKey`.
     private var configKey: String?
+    /// Whether the config has been asked for the key since the channel was last seen keyed.
+    /// Asked whenever the channel IS keyed and this is false — not just on open, since the
+    /// channel's modes may land after the screen does, or turn `+k` while it's up.
+    private var keyAsked = false
 
-    /// This channel's live `mode` and `error` rows since the screen opened, off the socket rather
-    /// than out of the buffer's log: a detached buffer holds live lines out of its log, and this
-    /// screen still needs them — the newest `±k` names the key, and an error row is a Save's answer.
+    /// This channel's live `mode` rows since the screen opened (or the socket last reopened), off
+    /// the socket rather than out of the buffer's log: a detached buffer holds live lines out of
+    /// its log, and this screen still needs them — the newest `±k` names the key.
     private var modeRowsSeen: [Message] = []
-    private var errorsSeen: [(text: String, at: Date)] = []
-    /// From which error a Save's answer starts, and when it was sent. Only the rows that come
-    /// soon after count: a server answers a MODE in moments, and a /kick's 441 minutes later
-    /// is not this Save's.
-    private var armed: (from: Int, at: Date)?
-    private static let errorWindow: TimeInterval = 10
+    /// The channel's error rows, as answers to a Save.
+    private var refusals = ChannelRefusals()
 
     private var saving = false
     private var saveError: String?
@@ -89,7 +89,11 @@ final class ChannelSettingsViewController: UITableViewController {
         dataSource.defaultRowAnimation = .fade
         navigationItem.rightBarButtonItem = saveButton
 
+        // Only this channel's slice: the state moves on every line in every buffer, and nothing
+        // else changes what this screen draws.
         viewModel.statePublisher
+            .map { [key] state in Slice(state, key) }
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.render() }
             .store(in: &cancellables)
@@ -98,16 +102,36 @@ final class ChannelSettingsViewController: UITableViewController {
             .sink { [weak self] event in self?.receive(event) }
             .store(in: &cancellables)
         render(animated: false)
+    }
 
-        // The key lives only in the network config, and the copy any other screen read is as old
-        // as that screen. Asked afresh, and only for a keyed channel.
-        if (viewModel.state.channelModes[key.id]?.modes ?? "").contains("k") {
-            Task { [weak self, viewModel, key] in
-                let stored = await viewModel.storedChannelKey(key)
-                guard let self else { return }
-                configKey = stored
-                render()
-            }
+    /// What this screen draws from the store.
+    private struct Slice: Equatable {
+        let modes: ChannelModeState?
+        let topic: String?
+        let access: ChannelAccess
+
+        init(_ state: ChatState, _ key: BufferKey) {
+            modes = state.channelModes[key.id]
+            topic = state.buffers[key.id]?.topic
+            access = state.channelAccess(key)
+        }
+    }
+
+    /// The key lives only in the network config, and the copy any other screen read is as old as
+    /// that screen — so it's asked afresh, once per stretch of the channel being keyed.
+    private func askForKeyIfKeyed(_ modes: String) {
+        guard modes.contains("k") else {
+            keyAsked = false
+            configKey = nil
+            return
+        }
+        guard !keyAsked else { return }
+        keyAsked = true
+        Task { [weak self, viewModel, key] in
+            let stored = await viewModel.storedChannelKey(key)
+            guard let self else { return }
+            configKey = stored
+            render()
         }
     }
 
@@ -116,11 +140,20 @@ final class ChannelSettingsViewController: UITableViewController {
     )
 
     private func receive(_ event: ChatViewModel.ChannelEvent) {
-        guard case .line(let lineKey, let message) = event, lineKey.id == key.id else { return }
-        switch message.type {
-        case .mode: modeRowsSeen.append(message)
-        case .error: errorsSeen.append((message.text ?? "", Date()))
-        default: return
+        switch event {
+        case .resynced:
+            // Whatever changed in the gap came as backlog, not live rows, so a `±k` seen before it
+            // may be stale: forget them, and ask the config again.
+            modeRowsSeen.removeAll()
+            configKey = nil
+            keyAsked = false
+        case .line(let lineKey, let message):
+            guard lineKey.id == key.id else { return }
+            switch message.type {
+            case .mode: modeRowsSeen.append(message)
+            case .error: refusals.note(message.text ?? "")
+            default: return
+            }
         }
         render()
     }
@@ -180,30 +213,30 @@ final class ChannelSettingsViewController: UITableViewController {
             return
         }
         // Decided now, before any await: the fields stay editable while the answer is out, and
-        // what goes out is what the user saved.
-        drafts.markSaved(changes: changes, topic: topic, live: live(state), liveTopic: liveTopic(state))
-        armed = (errorsSeen.count, Date())
+        // what goes out is what the user saved. Each half is recorded as sent only as it goes —
+        // the modes wait on the topic, and a topic that fails takes them with it.
+        let sending = drafts.sending(changes, live: live(state))
+        let topicWas = liveTopic(state)
+        refusals.arm()
         saving = true
         render()
         Task { [weak self, viewModel, key] in
-            var failure: String?
-            if let topic { failure = await viewModel.setTopic(key, topic: topic) }
+            var failure: ChatViewModel.ChannelSaveFailure?
+            if let topic {
+                self?.drafts.noteTopicSent(topic, liveTopic: topicWas)
+                failure = await viewModel.setTopic(key, topic: topic)
+                if failure?.certainlyUnsent == true { self?.drafts.noteTopicNotSent(topic) }
+            }
             if failure == nil, !changes.isEmpty {
+                self?.drafts.noteSent(sending)
                 failure = await viewModel.setChannelModes(key, changes: changes)
+                if failure?.certainlyUnsent == true { self?.drafts.noteNotSent(sending) }
             }
             guard let self else { return }
             saving = false
-            saveError = failure
+            saveError = failure?.message
             render()
         }
-    }
-
-    /// The channel's error rows since the last Save, inside the window.
-    private var serverErrors: [String] {
-        guard let armed, armed.from <= errorsSeen.count else { return [] }
-        return errorsSeen[armed.from...]
-            .filter { $0.at.timeIntervalSince(armed.at) < Self.errorWindow }
-            .map(\.text)
     }
 
     // MARK: - Model
@@ -322,7 +355,7 @@ final class ChannelSettingsViewController: UITableViewController {
 
     /// The Save's refusal under the last section, whichever that is.
     private func withErrors(_ sections: [Section]) -> [Section] {
-        let errors = ([saveError].compactMap { $0 } + serverErrors)
+        let errors = ([saveError].compactMap { $0 } + refusals.current)
         guard !errors.isEmpty, var last = sections.last else { return sections }
         let text = ([last.footer?.text].compactMap { $0 } + errors).joined(separator: "\n")
         last.footer = Footer(text: text, isError: true)
@@ -334,6 +367,7 @@ final class ChannelSettingsViewController: UITableViewController {
     private func render(animated: Bool = true) {
         guard isViewLoaded else { return }
         let state = viewModel.state
+        askForKeyIfKeyed(state.channelModes[key.id]?.modes ?? "")
         drafts.reconcile(live: live(state), liveTopic: liveTopic(state))
         let access = state.channelAccess(key)
         let (changes, topic, error) = pending(state)
@@ -352,10 +386,12 @@ final class ChannelSettingsViewController: UITableViewController {
             snapshot.appendItems(section.items.map(\.id), toSection: section.id)
         }
         // Rows that stayed but now read differently are reconfigured in place — never reloaded,
-        // which would take the keyboard from a field being typed in. And never the row BEING
-        // typed in: what it shows is what's being typed, and touching it mid-word moves the caret.
+        // which would take the keyboard from a field being typed in. And never a row the user has
+        // TYPED in while it has the keyboard: it shows their edit, and touching it mid-word moves
+        // the caret. A focused field with no edit yet is still showing live state, so it follows
+        // it — left alone, it would keep an old topic for them to edit and send back.
         let before = Dictionary(previous.flatMap(\.items).map { ($0.id, $0.content) }, uniquingKeysWith: { a, _ in a })
-        let editing = editingItem
+        let editing = editingItem.flatMap { hasEdit($0) ? $0 : nil }
         let changed = next.flatMap(\.items)
             .filter { before[$0.id] != nil && before[$0.id] != $0.content && $0.id != editing }
             .map(\.id)
@@ -373,6 +409,15 @@ final class ChannelSettingsViewController: UITableViewController {
         }
         if footersMoved {
             UIView.performWithoutAnimation { tableView.performBatchUpdates(nil) }
+        }
+    }
+
+    /// Whether the user has typed in this row since the channel last answered it.
+    private func hasEdit(_ id: ItemID) -> Bool {
+        switch id {
+        case .topicField: drafts.topic != nil
+        case .value(let letter): drafts.rows[letter] != nil
+        case .topicText, .notice, .toggle: false
         }
     }
 

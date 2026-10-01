@@ -476,8 +476,8 @@ public struct TopicMeta: Equatable, Sendable {
 /// `LurkerClient.request`, never by the store.
 public struct VerbReply: Equatable, Sendable {
     public let ok: Bool
-    /// The refusal code — `not-connected`, `refused`, `no-reply`, … — or `no-answer` when nothing
-    /// came back before the socket dropped or the wait ran out.
+    /// The refusal code — `not-connected`, `refused`, `no-reply`, … — or `no-answer` /
+    /// `connection-lost` when nothing came back.
     public let error: String?
     /// For a `refused` list fetch: the IRC numeric and the server's sentence.
     public let numeric: String?
@@ -493,8 +493,11 @@ public struct VerbReply: Equatable, Sendable {
         self.entries = entries
     }
 
-    /// Nothing came back: the socket dropped under it, or the wait ran out.
+    /// Nothing came back before the wait ran out.
     public static let noAnswer = VerbReply(ok: false, error: "no-answer")
+    /// The socket it went down ended first, taking the answer with it. Whether the change reached
+    /// IRC is unknown — only that this socket will never say.
+    public static let connectionLost = VerbReply(ok: false, error: "connection-lost")
     /// It never went out: no socket to write to.
     public static let notSent = VerbReply(ok: false, error: "not-connected")
 }
