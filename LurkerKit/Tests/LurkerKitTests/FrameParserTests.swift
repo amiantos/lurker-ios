@@ -535,7 +535,8 @@ final class FrameParserTests: XCTestCase {
     }
 
     func testAnUnknownFrameKindIsIgnoredNotAnError() {
-        XCTAssertEqual(FrameParser.parseWs(##"{"kind":"draft-snapshot","drafts":{}}"##), .ignored)
+        // Was `draft-snapshot`, until iOS #188 handled it — a kind no server sends stays unknown.
+        XCTAssertEqual(FrameParser.parseWs(##"{"kind":"no-such-frame","drafts":{}}"##), .ignored)
         XCTAssertEqual(FrameParser.parseWs("not json at all"), .ignored)
     }
 

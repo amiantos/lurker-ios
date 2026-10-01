@@ -103,6 +103,9 @@ final class BufferListViewController: UICollectionViewController {
         var parted: Bool = false
         /// `├─` or `└─`, set once the group's rows are known — see `Section.init`.
         var guide: TreeGuideView.Shape = .tee
+        /// Something half-written waits in this buffer's composer, here or on another device
+        /// (iOS #188) — the pencil.
+        var hasDraft: Bool = false
 
         /// What the unread pill counts.
         ///
@@ -119,7 +122,8 @@ final class BufferListViewController: UICollectionViewController {
             presence: FriendPresence? = nil,
             isFriend: Bool = false,
             muted: Bool = false,
-            parted: Bool = false
+            parted: Bool = false,
+            hasDraft: Bool = false
         ) {
             self.buffer = buffer
             self.networkName = networkName
@@ -127,6 +131,7 @@ final class BufferListViewController: UICollectionViewController {
             self.isFriend = isFriend
             self.muted = muted
             self.parted = parted
+            self.hasDraft = hasDraft
         }
     }
 
@@ -387,6 +392,9 @@ final class BufferListViewController: UICollectionViewController {
                     // the `viewWillAppear` rebuild would use the stale pins. Exactly the
                     // failure the favorites and ignores lines above already document.
                     && $0.pinned == $1.pinned
+                    // The pencil (iOS #188). Which buffers have a draft, not what's in them: a
+                    // flush while you type changes the text and nothing this list draws.
+                    && Self.sameDraftedBuffers($0.drafts, $1.drafts)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -650,6 +658,7 @@ final class BufferListViewController: UICollectionViewController {
             highlights: row.buffer.highlights,
             presence: row.presence,
             parted: row.parted,
+            hasDraft: row.hasDraft,
             isOpen: isOpen(row.buffer),
             guide: row.guide
         )
@@ -1270,6 +1279,13 @@ final class BufferListViewController: UICollectionViewController {
         return sections
     }
 
+    /// Whether two draft maps name the same buffers.
+    private nonisolated static func sameDraftedBuffers(
+        _ a: [String: ComposerDraft], _ b: [String: ComposerDraft]
+    ) -> Bool {
+        a.count == b.count && a.keys.allSatisfy { b[$0] != nil }
+    }
+
     /// One friend per favorited DM — the DM slice of the server's favorites list, in the user's
     /// global order (shared with the web client's FRIENDS section since lurker#721).
     private func friendRows(_ entries: [FavoriteEntry], _ state: ChatState) -> [Row] {
@@ -1283,7 +1299,8 @@ final class BufferListViewController: UICollectionViewController {
                 networkName: state.networks[entry.networkId]?.displayName,
                 presence: state.rowPresence(networkId: entry.networkId, nick: entry.target),
                 isFriend: true,
-                muted: Self.isMuted(buffer, state)
+                muted: Self.isMuted(buffer, state),
+                hasDraft: state.hasDraft(buffer.key)
             )
         }
     }
@@ -1313,7 +1330,8 @@ final class BufferListViewController: UICollectionViewController {
                 buffer: buffer,
                 networkName: buffer.networkId.flatMap { state.networks[$0]?.displayName },
                 muted: Self.isMuted(buffer, state),
-                parted: state.isParted(buffer.key)
+                parted: state.isParted(buffer.key),
+                hasDraft: state.hasDraft(buffer.key)
             )
         }
     }
@@ -1342,7 +1360,8 @@ final class BufferListViewController: UICollectionViewController {
     private func rosterRow(_ buffer: Buffer, _ state: ChatState) -> Row {
         Row(
             buffer: buffer, networkName: nil, presence: Self.peerPresence(buffer, state),
-            muted: Self.isMuted(buffer, state), parted: state.isParted(buffer.key)
+            muted: Self.isMuted(buffer, state), parted: state.isParted(buffer.key),
+            hasDraft: state.hasDraft(buffer.key)
         )
     }
 

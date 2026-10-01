@@ -197,6 +197,9 @@ public final class ChatViewModel {
     /// DMs. Handed to the client rather than deregistered here, because it has to happen
     /// against the session being revoked and therefore before the revoke lands (#490).
     public func logout() {
+        // What was being typed is still the account's: save it while the socket is ours, so it's
+        // there on the next sign-in, here or anywhere.
+        flushAllDrafts()
         cancelReconnect()
         client.logout(deviceToken: deviceToken)
         deviceToken = nil
@@ -226,6 +229,8 @@ public final class ChatViewModel {
         // cancels the socket without firing its handler, and a 401 arrives as `.unauthorized` —
         // so the abandon that path does would never run here.
         unsent.abandonAll()
+        // Drafts are account data too, and a timer left armed would flush into the next session.
+        resetDrafts()
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
@@ -608,6 +613,89 @@ public final class ChatViewModel {
     /// Read-and-clear: once it is in a composer, the composer owns it. The caller decides whether
     /// there is room for it — this does not know what is already typed.
     public func takeUnsent(_ key: BufferKey) -> UnsentLine? { store.takeUnsentLine(key) }
+
+    // MARK: - Drafts (iOS #188)
+
+    /// Edits the server hasn't heard yet, and which buffer is composing — see `DraftSync`.
+    private var draftSync = DraftSync()
+    /// The debounced flush per buffer (`BufferKey.id`): each edit re-arms its buffer's.
+    private var draftFlushes: [String: Task<Void, Never>] = [:]
+
+    /// The draft `key`'s composer should show: this device's unflushed edit, else the server's.
+    public func draft(for key: BufferKey) -> ComposerDraft? {
+        draftSync.local(key.id) ?? store.state.drafts[key.id]
+    }
+
+    /// Whether a server write to `key`'s draft is being held off — an edit here the server hasn't
+    /// heard, or a composition in flight. The composer asks before letting one repaint it.
+    public func isDraftProtected(_ key: BufferKey) -> Bool { draftSync.isProtected(key.id) }
+
+    /// The composer for `key` changed — its text, its reply, or whether an IME is composing.
+    /// Goes to the server after `Drafts.flushDelay` of quiet; a composition holds it until it ends.
+    public func editDraft(_ key: BufferKey, _ draft: ComposerDraft, composing: Bool = false) {
+        guard Drafts.syncs(key) else { return }
+        draftSync.edit(key, draft, composing: composing)
+        scheduleDraftFlush(key)
+    }
+
+    /// Send `key`'s draft now if it has an edit waiting — leaving the buffer, leaving the field,
+    /// a send. Ends its composition first: the field is done with it.
+    public func flushDraft(_ key: BufferKey) {
+        if draftSync.composing == key.id { _ = draftSync.endComposition() }
+        sendDraft(key.id)
+    }
+
+    private func scheduleDraftFlush(_ key: BufferKey) {
+        let id = key.id
+        draftFlushes.removeValue(forKey: id)?.cancel()
+        // `endComposition` re-arms it. Until then the edit stays waiting, and protected.
+        guard !draftSync.defersFlush(id) else { return }
+        draftFlushes[id] = Task { [weak self] in
+            try? await Task.sleep(for: Drafts.flushDelay)
+            guard !Task.isCancelled, let self else { return }
+            draftFlushes[id] = nil
+            sendDraft(id)
+        }
+    }
+
+    private func sendDraft(_ id: String) {
+        draftFlushes.removeValue(forKey: id)?.cancel()
+        guard let edit = draftSync.take(id) else { return }
+        deliver(edit)
+    }
+
+    /// Put a taken edit in the store and on the socket. Returns false when there was no socket.
+    @discardableResult
+    private func deliver(_ edit: DraftSync.Edit) -> Bool {
+        guard let networkId = edit.key.networkId else { return true }
+        // Into the store whether or not it reaches the server: the pencil and the next visit read
+        // it from there.
+        store.setDraft(edit.key, edit.draft)
+        let sent = client.saveDraft(
+            networkId: networkId, target: edit.key.target, draft: edit.draft,
+            onFailure: { [weak self] in Task { @MainActor in self?.draftSync.restore(edit) } }
+        )
+        // ⚠ No socket, so it waits — protected from the next snapshot, which would otherwise put
+        // the server's older copy back over it, and sent once that snapshot gives it a socket.
+        if !sent { draftSync.restore(edit) }
+        return sent
+    }
+
+    /// Everything waiting, now. `sendDraft` puts back whatever found no socket.
+    private func flushAllDrafts() {
+        for id in draftSync.flushableIds { sendDraft(id) }
+    }
+
+    private func dropDraft(_ key: BufferKey) {
+        draftFlushes.removeValue(forKey: key.id)?.cancel()
+        draftSync.drop(key.id)
+    }
+
+    private func resetDrafts() {
+        for task in draftFlushes.values { task.cancel() }
+        draftFlushes.removeAll()
+        draftSync.reset()
+    }
 
     /// Hand a line back to the buffer it was typed in, and nudge whatever screen is showing it.
     ///
@@ -1169,6 +1257,7 @@ public final class ChatViewModel {
     /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
     public func closeBuffer(_ key: BufferKey) {
         client.closeBuffer(networkId: key.networkId, target: key.target)
+        dropDraft(key)
         store.removeBuffer(key)
     }
 
@@ -1308,7 +1397,32 @@ public final class ChatViewModel {
             onFlush?()
             return
         }
-        client.setPresence(false, onFlush: onFlush)
+        // Drafts first, the composing one included: the app may not come back, and what was
+        // being typed should be waiting on every other device. Ahead of the presence frame, so
+        // that frame landing — what `onFlush` reports — means these did too.
+        let stranded = flushDraftsForBackground()
+        guard !stranded.isEmpty else {
+            client.setPresence(false, onFlush: onFlush)
+            return
+        }
+        // No socket to carry them. Over HTTP instead — the route the web's `pagehide` uses — and
+        // hold the background assertion until it answers. The presence frame has no socket
+        // either, so there's nothing to wait for there.
+        client.setPresence(false)
+        Task { [weak self] in
+            if let self, await client.flushDrafts(stranded.map { ($0.key, $0.draft) }) {
+                for edit in stranded { draftSync.settle(edit) }
+            }
+            onFlush?()
+        }
+    }
+
+    /// Send every waiting edit, composing or not. Returns the ones that found no socket — they
+    /// stay waiting too, for the next connect, should the HTTP flush not make it either.
+    private func flushDraftsForBackground() -> [DraftSync.Edit] {
+        for task in draftFlushes.values { task.cancel() }
+        draftFlushes.removeAll()
+        return draftSync.takeAll().filter { !deliver($0) }
     }
 
     /// The OS's network path came or went. Fed in from the app (which owns the
@@ -1487,7 +1601,9 @@ public final class ChatViewModel {
         linkPreviews.request(urls)
     }
 
-    private func handle(_ frame: ServerFrame) {
+    /// Internal rather than private so a test can feed a frame through the same path the socket
+    /// does.
+    func handle(_ frame: ServerFrame) {
         switch frame {
         case .settingsBootstrap, .settingsChanged, .settingsValues:
             store.apply(frame)
@@ -1563,6 +1679,11 @@ public final class ChatViewModel {
             if loadingNewer.remove(fromKey.id) != nil { loadingNewer.insert(toKey.id) }
             // A line still awaiting its ack was addressed to the old key — see `rekey`.
             unsent.rekey(from: fromKey, to: toKey)
+            // …and so was a draft edit still waiting to go out. Its flush has to name the buffer
+            // as it's called now.
+            let draftWasDue = draftFlushes.removeValue(forKey: fromKey.id).map { $0.cancel() } != nil
+            draftSync.rekey(from: fromKey, to: toKey)
+            if draftWasDue { scheduleDraftFlush(toKey) }
             let fromMark = lastMarked.removeValue(forKey: fromKey.id)
             if let fromMark {
                 lastMarked[toKey.id] = merged ? max(fromMark, lastMarked[toKey.id] ?? 0) : fromMark
@@ -1585,6 +1706,20 @@ public final class ChatViewModel {
             } else if let clientId {
                 refuse(clientId)
             }
+            store.apply(frame)
+        case .draftSnapshot(let entries):
+            // The server's drafts, except where this device has written something it hasn't
+            // heard yet — newer by definition. Then whatever was written while there was no socket
+            // goes out on this one.
+            store.seedDrafts(entries, keeping: draftSync.protectedIds)
+            flushAllDrafts()
+        case .draftUpdated(let entry):
+            // Another device's write. Dropped while this one has an edit on the way (it'll land
+            // after, and last write wins) or an IME is composing in that buffer.
+            guard !draftSync.isProtected(entry.key.id) else { break }
+            store.apply(frame)
+        case .bufferClosed(let networkId, let target):
+            dropDraft(BufferKey(networkId: networkId, target: target))
             store.apply(frame)
         case .favoritesChanged:
             // Apply FIRST, announce after — a hook reading `favorites` must see
@@ -1731,6 +1866,8 @@ public final class ChatViewModel {
         // cancels the socket without firing its handler, and a 401 arrives as `.unauthorized` —
         // so the abandon that path does would never run here.
         unsent.abandonAll()
+        // Drafts are account data too, and a timer left armed would flush into the next session.
+        resetDrafts()
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()

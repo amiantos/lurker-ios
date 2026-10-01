@@ -354,6 +354,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if wasNearBottom { scrollToBottom() }
         }
         composer.onDraftChange = { [weak self] draft in self?.draftChanged(draft) }
+        composer.onEdit = { [weak self] in self?.saveDraft() }
+        // Leaving the field is the end of an edit, as leaving the buffer is: the web's blur.
+        composer.onEndEditing = { [weak self] in
+            guard let self else { return }
+            viewModel.flushDraft(buffer.key)
+        }
         composer.onCancelReply = { [weak self] in self?.cancelReply() }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
@@ -499,6 +505,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         observeAppearanceInvalidation()
         addEdgeSwipes()
 
+        // Whatever was half-written here last time, on this device or another (iOS #188) —
+        // before the subscription, whose first value is this same stored copy.
+        lastSeenDraft = viewModel.state.drafts[buffer.key.id]
+        showDraft(viewModel.draft(for: buffer.key))
+
         subscribeToState()
         apply(viewModel.state)
     }
@@ -619,6 +630,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
+        // The draft another device wrote (iOS #188). Its own subscription for the reason the
+        // title's is below: it moves the composer and nothing else.
+        viewModel.statePublisher
+            .map { $0.drafts[key] }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] draft in self?.storedDraftChanged(draft) }
+            .store(in: &cancellables)
         // A DM's subtitle says whether the peer is there, and that turns over with nothing
         // else changing — the trap typing fell into. It moves the title and nothing else, so
         // it gets its own subscription rather than a place in the gate above: letting it
@@ -671,6 +690,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.restore(line.text)
         // With the reply it went out as, if any.
         pendingReply = line.reply
+        // It's the draft now, and straight to the server — a restore isn't an edit the composer
+        // reports, and leaving it on the debounce could lose what we just got back.
+        saveDraft()
+        viewModel.flushDraft(buffer.key)
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -679,6 +702,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // mid-sentence for the next 30 seconds. Unconditional: this applies however you left,
         // including a buffer swap.
         endTyping()
+        // …and what was typed goes to the server now, not half a second after you've gone.
+        viewModel.flushDraft(buffer.key)
     }
 
     /// The split this screen was shown in, kept past the moment it leaves: by
@@ -2227,6 +2252,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // pending, as the web does. A refusal brings it back with the line (`restoreRefusedSend`).
         if Replies.consumes(text) { pendingReply = nil }
         composer.clear()
+        // Emptied on the server now, not on the debounce: a quick close or a switch to another
+        // device would otherwise find the line just sent still waiting there.
+        viewModel.flushDraft(buffer.key)
         // The field is free again, so anything still waiting can come back — see
         // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
         // screen next appeared, which for someone staying in one conversation is never.
@@ -3308,8 +3336,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The reply this buffer's composer is writing, shown above the field. The next plain line
     /// or `/me` goes out as it. Lives with the composer whose draft it belongs to.
+    ///
+    /// Part of the draft (iOS #188), so it syncs and comes back with the text.
     private var pendingReply: PendingReply? {
-        didSet { if oldValue != pendingReply { composer.showReply(pendingReply) } }
+        didSet {
+            guard oldValue != pendingReply else { return }
+            composer.showReply(pendingReply)
+            saveDraft()
+        }
     }
 
     /// Reply on a line — the web's `onReply`. A line the server stamped gets a real reply, pending
@@ -3369,6 +3403,47 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     @objc private func escapePressed() { cancelReply() }
+
+    // MARK: - Draft (iOS #188)
+
+    /// Set while the screen puts a draft in the composer itself — opening the buffer, or another
+    /// device's write — so the reply that comes with it isn't saved straight back as an edit.
+    private var isShowingDraft = false
+    /// The stored draft as this screen last saw it, so only a change to it repaints the field.
+    private var lastSeenDraft: ComposerDraft?
+
+    /// Fill the composer with a draft: its text and its reply. Nil empties both.
+    private func showDraft(_ draft: ComposerDraft?) {
+        isShowingDraft = true
+        defer { isShowingDraft = false }
+        let draft = draft ?? ComposerDraft()
+        if composer.text != draft.body { composer.restore(draft.body) }
+        pendingReply = draft.reply
+    }
+
+    /// The composer changed — save it as this buffer's draft.
+    private func saveDraft() {
+        guard !isShowingDraft else { return }
+        viewModel.editDraft(
+            buffer.key,
+            ComposerDraft(body: composer.text, reply: pendingReply),
+            composing: composer.isComposing
+        )
+    }
+
+    /// The stored draft changed — another device's write, a snapshot, or this screen's own
+    /// flush coming back (which matches the field, and changes nothing).
+    ///
+    /// ⚠⚠ Never over an edit of the user's the server hasn't heard, nor mid-composition — the
+    /// view model drops those writes, and this asks it rather than trusting the store's copy,
+    /// which the drop never touched. A write that lands between your pauses does repaint: last
+    /// write wins, as on the web.
+    private func storedDraftChanged(_ draft: ComposerDraft?) {
+        guard draft != lastSeenDraft else { return }
+        lastSeenDraft = draft
+        guard !viewModel.isDraftProtected(buffer.key) else { return }
+        showDraft(draft)
+    }
 
     /// Jump to a reply's quoted line, in this buffer — a tap on the quote. Through the same jump
     /// a highlight takes (#42): straight there when it's loaded, an `around` slice when it isn't.

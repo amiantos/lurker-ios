@@ -1198,6 +1198,66 @@ final class LurkerClient {
         send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
+    /// Save one buffer's composer draft (`draft-set`), or clear it (`draft-clear`) when there's
+    /// nothing in it — a reply with no text yet is a draft. The server fans `draft-updated` to
+    /// every OTHER socket on the account; this one already knows.
+    ///
+    /// `reply` always rides, `null` included: a `draft-set` without the key leaves the stored
+    /// reply as it was, which is for clients that don't know about replies. This one does, so
+    /// its silence would keep a reply the user cancelled.
+    ///
+    /// Returns false when there was no socket to write to; `onFailure` fires (off the main
+    /// thread) when there was one and the write failed on it.
+    @discardableResult
+    func saveDraft(
+        networkId: Int, target: String, draft: ComposerDraft, onFailure: (@Sendable () -> Void)? = nil
+    ) -> Bool {
+        guard !draft.isEmpty else {
+            return send(["type": "draft-clear", "networkId": networkId, "target": target], onFailure: onFailure)
+        }
+        return send([
+            "type": "draft-set",
+            "networkId": networkId,
+            "target": target,
+            "body": draft.body,
+            "reply": Self.draftReplyRef(draft.reply),
+        ], onFailure: onFailure)
+    }
+
+    /// Save drafts over HTTP (`POST /api/drafts/flush`) — the way out when the socket is gone and
+    /// the app is on its way to the background. An empty draft clears. True on a 2xx.
+    func flushDrafts(_ drafts: [(key: BufferKey, draft: ComposerDraft)]) async -> Bool {
+        guard let token, let url = URL(string: baseURL + "/api/drafts/flush") else { return false }
+        let entries: [[String: Any]] = drafts.compactMap { entry in
+            guard let networkId = entry.key.networkId else { return nil }
+            return [
+                "networkId": networkId,
+                "target": entry.key.target,
+                "body": entry.draft.body,
+                "reply": Self.draftReplyRef(entry.draft.reply),
+            ]
+        }
+        guard !entries.isEmpty else { return true }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // The route reads a raw text body and parses it itself — it's built for `sendBeacon`,
+        // which can't send JSON.
+        request.setValue("text/plain;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["drafts": entries])
+        guard let (_, response) = try? await session.data(for: request) else { return false }
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 401 { reportUnauthorized(sentWith: token) }
+        return (200..<300).contains(code)
+    }
+
+    /// What the server stores of a pending reply: the line, and whether the Reply put the
+    /// address in the text. It resolves the rest itself.
+    private static func draftReplyRef(_ reply: PendingReply?) -> Any {
+        guard let reply else { return NSNull() }
+        return ["messageId": reply.messageId, "addressed": reply.addressed]
+    }
+
     /// Move or drop this buffer's `/clear` marker (#121) — `clear-buffer` / `unclear-buffer`.
     ///
     /// The server anchors the boundary at the current tail and fans a `buffer-cleared` back to
@@ -1403,7 +1463,8 @@ final class LurkerClient {
     private func send(
         _ verb: [String: Any],
         surfacesFailure: Bool = false,
-        onFlush: (@Sendable () -> Void)? = nil
+        onFlush: (@Sendable () -> Void)? = nil,
+        onFailure: (@Sendable () -> Void)? = nil
     ) -> Bool {
         guard let socket,
               let data = try? JSONSerialization.data(withJSONObject: verb),
@@ -1414,6 +1475,7 @@ final class LurkerClient {
         }
         socket.send(.string(text)) { [weak self] error in
             defer { onFlush?() }
+            if error != nil { onFailure?() }
             guard let error, surfacesFailure else { return }
             // Capture the reason (a String) before hopping — Error isn't Sendable, but its
             // localized description is, and it's what makes an offline/TLS failure legible.

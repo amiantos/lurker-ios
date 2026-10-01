@@ -67,6 +67,10 @@ enum FrameParser {
                     bufferId: entry.int("bufferId")
                 )
             })
+        case "draft-snapshot":
+            return .draftSnapshot(obj.objects("drafts").compactMap(parseDraftEntry))
+        case "draft-updated":
+            return parseDraftEntry(obj).map { .draftUpdated($0) } ?? .ignored
         case "bookmark-updated":
             // The fan-out for a save/unsave made anywhere on the account, including this
             // device — the server echoes to every socket, so it's the one source of truth
@@ -1061,6 +1065,35 @@ enum FrameParser {
     static func parseReplyContext(_ raw: Any?) -> ReplyContext? {
         guard let obj = raw as? [String: Any], let msgid = obj.stringOrNull("msgid") else { return nil }
         return ReplyContext(msgid: msgid, parent: parseReplyParent(obj["parent"]))
+    }
+
+    /// One buffer's draft. Refused without a network or a target: it would be a draft for
+    /// nowhere, and a frame that says nothing usable must not clear one we hold.
+    ///
+    /// ⚠ `reply` absent and `reply: null` are different statements on `draft-updated` — absent
+    /// is a server from before replies, and leaves ours alone (`carriesReply`).
+    static func parseDraftEntry(_ obj: [String: Any]) -> DraftEntry? {
+        let target = obj.string("target")
+        guard let networkId = obj.intOrNull("networkId"), networkId != 0, !target.isEmpty else { return nil }
+        return DraftEntry(
+            networkId: networkId,
+            target: target,
+            body: obj.string("body"),
+            reply: parseDraftReply(obj["reply"]),
+            // Not `has`, which reads a null as absent: `reply: null` clears.
+            carriesReply: obj["reply"] != nil
+        )
+    }
+
+    /// A draft's reply: `{ messageId, addressed, parent }`. No line id, no reply.
+    static func parseDraftReply(_ raw: Any?) -> DraftReply? {
+        guard let obj = raw as? [String: Any], let messageId = obj.intOrNull("messageId"), messageId != 0
+        else { return nil }
+        return DraftReply(
+            messageId: messageId,
+            addressed: obj.bool("addressed"),
+            parent: parseReplyParent(obj["parent"])
+        )
     }
 
     static func parseReplyParent(_ raw: Any?) -> ReplyParent? {

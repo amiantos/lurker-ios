@@ -176,6 +176,15 @@ enum ServerFrame: Equatable, Sendable {
     /// it just means that line isn't loaded here.
     case bookmarkUpdated(messageId: Int, saved: Bool)
 
+    /// WS `draft-snapshot` (connect burst, frame 2): every composer draft the account has
+    /// saved. Authoritative for the buffers it lists and the ones it doesn't — except where this
+    /// device has an edit the server hasn't heard yet (`DraftSync`).
+    case draftSnapshot([DraftEntry])
+
+    /// WS `draft-updated`: another device (or a rename/merge) changed one buffer's draft.
+    /// Never echoed to the socket that wrote it.
+    case draftUpdated(DraftEntry)
+
     /// WS `reaction`: an IRCv3 reaction was added or (with `remove`) taken back on a stored
     /// line, by anyone, ours included — the network's echo is the only thing that ever lights a
     /// reaction up here (iOS #183). Patches a line we may not hold; never reopens a buffer.

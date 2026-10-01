@@ -300,8 +300,59 @@ public struct ChatState: Sendable {
     ///
     /// Drained by `takeUnsent(_:)` when that buffer next has a composer to put it in.
     public var unsent: [String: [UnsentLine]] = [:]
+    /// Each buffer's composer draft as the server holds it (iOS #188), by `BufferKey.id` —
+    /// seeded by `draft-snapshot`, patched by `draft-updated`, and written by this device's own
+    /// flushes. Sparse: an empty draft has no entry, so a key here is a buffer with a draft.
+    /// **Read through `hasDraft(_:)`** for the list's pencil.
+    ///
+    /// Not what the composer reads while you type: an edit lives in the view model until it is
+    /// flushed (`ChatViewModel.draft(for:)`), so a keystroke doesn't publish a whole `ChatState`
+    /// to every screen. Kept apart from `buffers` too — a draft can arrive for a buffer whose
+    /// row the burst hasn't delivered yet.
+    public var drafts: [String: ComposerDraft] = [:]
 
     public init() {}
+
+    /// Whether this buffer has a draft waiting — the buffer list's pencil.
+    public func hasDraft(_ key: BufferKey) -> Bool { drafts[key.id] != nil }
+
+    /// Fold a `draft-snapshot`: the server's whole answer, except for the buffers in `keeping`,
+    /// where this device holds something newer (an unflushed edit, or a composition) and its own
+    /// copy stays — one the server didn't list included, since it may never have heard of it.
+    mutating func seedDrafts(_ entries: [DraftEntry], keeping: Set<String> = []) {
+        var next: [String: ComposerDraft] = [:]
+        for entry in entries {
+            let id = entry.key.id
+            guard !keeping.contains(id) else { continue }
+            let draft = resolvedDraft(entry, reply: entry.reply)
+            if !draft.isEmpty { next[id] = draft }
+        }
+        for id in keeping { next[id] = drafts[id] }
+        drafts = next
+    }
+
+    /// Fold a `draft-updated`. A frame with no `reply` key keeps the reply we hold.
+    mutating func applyDraftUpdate(_ entry: DraftEntry) {
+        let id = entry.key.id
+        var draft = resolvedDraft(entry, reply: entry.reply)
+        if !entry.carriesReply { draft.reply = drafts[id]?.reply }
+        drafts[id] = draft.isEmpty ? nil : draft
+    }
+
+    /// An entry as the composer holds it: the reply named as the timeline quotes its line.
+    private func resolvedDraft(_ entry: DraftEntry, reply: DraftReply?) -> ComposerDraft {
+        ComposerDraft(
+            body: entry.body,
+            reply: Drafts.pendingReply(
+                from: reply,
+                networkId: entry.networkId,
+                target: entry.target,
+                ignores: ignores,
+                relayBots: relayBots,
+                ownNick: networks[entry.networkId]?.nick
+            )
+        )
+    }
 
     /// Forget a buffer completely — the row and everything keyed to it.
     ///
@@ -339,6 +390,8 @@ public struct ChatState: Sendable {
         // whenever it was reopened. The cost is real — it is the user's own writing — but a
         // buffer they closed is not where they are looking for it.
         unsent[key] = nil
+        // The draft too: the server deletes its row on a close.
+        drafts[key] = nil
     }
 
     /// Forget a network and everything under it — the local half of a delete, whether it
@@ -365,6 +418,9 @@ public struct ChatState: Sendable {
         // it can no longer be answered — left here, the app would go on asking about one.
         dccChats[id] = nil
         dccChatOffers.removeAll { $0.networkId == id }
+        // Drafts are kept apart from `buffers`, so the loop above misses one whose row we never
+        // held.
+        drafts = drafts.filter { !$0.key.hasPrefix("\(id)::") }
     }
 
     /// Move everything keyed by `from` onto `to` — the rename mirror of
@@ -399,6 +455,11 @@ public struct ChatState: Sendable {
         // Same class as the in-flight page flags `ChatViewModel` rekeys for the same reason.
         unsent[to] = unsent[from]
         unsent[from] = nil
+        // The draft follows its buffer. On a merge the absorbed side was dropped first, so this
+        // is the survivor's — what the server keeps too, with a `draft-updated` behind the
+        // rename if that changed anything.
+        drafts[to] = drafts[from]
+        drafts[from] = nil
         // Moved with its lines, so a renamed DM's chips still redraw when a reaction lands.
         reactionsRevisions[to] = reactionsRevisions[from]
         reactionsRevisions[from] = nil
@@ -928,6 +989,21 @@ final class LurkerStore {
         subject.value = Self.reduce(subject.value, frame)
     }
 
+    /// `draft-snapshot`, keeping this device's own copy wherever it holds something newer.
+    func seedDrafts(_ entries: [DraftEntry], keeping: Set<String>) {
+        var next = subject.value
+        next.seedDrafts(entries, keeping: keeping)
+        subject.value = next
+    }
+
+    /// Record a draft this device just sent — or tried to: the pencil and the next visit read
+    /// it either way, and an edit that found no socket goes out after the next snapshot.
+    func setDraft(_ key: BufferKey, _ draft: ComposerDraft) {
+        let value: ComposerDraft? = draft.isEmpty ? nil : draft
+        guard subject.value.drafts[key.id] != value else { return }
+        subject.value.drafts[key.id] = value
+    }
+
     /// The pure core. Given the current state and a frame, produce the next state.
     ///
     /// `now` exists only for the typing lease — the one piece of state whose meaning depends on
@@ -1110,6 +1186,16 @@ final class LurkerStore {
             // Never materializes a network: it describes one the snapshot already named.
             var next = state
             next.networks[networkId]?.canReact = canReact
+            return next
+        case .draftSnapshot(let entries):
+            // Unprotected: what this device has unflushed is the view model's to know, and it
+            // folds through `seedDrafts(_:keeping:)` itself.
+            var next = state
+            next.seedDrafts(entries)
+            return next
+        case .draftUpdated(let entry):
+            var next = state
+            next.applyDraftUpdate(entry)
             return next
         case .bookmarkUpdated(let messageId, let saved):
             var next = state
