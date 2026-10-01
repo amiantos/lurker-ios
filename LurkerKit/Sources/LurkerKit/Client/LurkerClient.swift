@@ -1227,7 +1227,19 @@ final class LurkerClient {
     /// Save drafts over HTTP (`POST /api/drafts/flush`) — the way out when the socket is gone and
     /// the app is on its way to the background. An empty draft clears. True on a 2xx.
     func flushDrafts(_ drafts: [(key: BufferKey, draft: ComposerDraft)]) async -> Bool {
-        guard let token, let url = URL(string: baseURL + "/api/drafts/flush") else { return false }
+        guard let token else { return false }
+        let code = await Self.postDrafts(drafts, session: session, baseURL: baseURL, token: token)
+        if code == 401 { reportUnauthorized(sentWith: token) }
+        return (200..<300).contains(code)
+    }
+
+    /// The request itself, against an explicit session — sign-out sends it with the token it is
+    /// about to revoke. Returns the status code, 0 for no answer; 204 for nothing to send.
+    private static func postDrafts(
+        _ drafts: [(key: BufferKey, draft: ComposerDraft)],
+        session: URLSession, baseURL: String, token: String
+    ) async -> Int {
+        guard let url = URL(string: baseURL + "/api/drafts/flush") else { return 0 }
         let entries: [[String: Any]] = drafts.compactMap { entry in
             guard let networkId = entry.key.networkId else { return nil }
             return [
@@ -1237,7 +1249,7 @@ final class LurkerClient {
                 "reply": Self.draftReplyRef(entry.draft.reply),
             ]
         }
-        guard !entries.isEmpty else { return true }
+        guard !entries.isEmpty else { return 204 }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -1245,10 +1257,8 @@ final class LurkerClient {
         // which can't send JSON.
         request.setValue("text/plain;charset=UTF-8", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["drafts": entries])
-        guard let (_, response) = try? await session.data(for: request) else { return false }
-        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if code == 401 { reportUnauthorized(sentWith: token) }
-        return (200..<300).contains(code)
+        guard let (_, response) = try? await session.data(for: request) else { return 0 }
+        return (response as? HTTPURLResponse)?.statusCode ?? 0
     }
 
     /// What the server stores of a pending reply: the line, and whether the Reply put the
@@ -1525,13 +1535,19 @@ final class LurkerClient {
     /// fails (offline, crash, force-quit) the token stays filed against this account, and
     /// the server's native rebind rule is what stops that stranding whoever signs in next
     /// on this phone (#490).
-    func logout(deviceToken: String? = nil) {
+    ///
+    /// `drafts` are saved first, over HTTP with the session being ended: a socket write queued
+    /// now would be cancelled by the `close()` below before it went out.
+    func logout(deviceToken: String? = nil, drafts: [(key: BufferKey, draft: ComposerDraft)] = []) {
         let revokeToken = token
         let base = baseURL
         close()
         guard let revokeToken, let url = URL(string: base + "/api/auth/logout") else { return }
         let session = self.session
         Task {
+            if !drafts.isEmpty {
+                _ = await Self.postDrafts(drafts, session: session, baseURL: base, token: revokeToken)
+            }
             if let deviceToken {
                 await Self.deregisterDevice(
                     session: session, baseURL: base, sessionToken: revokeToken, deviceToken: deviceToken

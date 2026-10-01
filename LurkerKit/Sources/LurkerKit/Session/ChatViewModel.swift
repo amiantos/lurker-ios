@@ -197,13 +197,15 @@ public final class ChatViewModel {
     /// DMs. Handed to the client rather than deregistered here, because it has to happen
     /// against the session being revoked and therefore before the revoke lands (#490).
     public func logout() {
-        // What was being typed is still the account's: save it while the socket is ours, so it's
-        // there on the next sign-in, here or anywhere. Mid-composition too — there's no
-        // commit coming now.
-        _ = draftSync.endComposition()
-        flushAllDrafts()
+        // What was being typed is still the account's: save it before the session ends, so it's
+        // there on the next sign-in, here or anywhere. Mid-composition too — there's no commit
+        // coming now. Over HTTP inside the logout's own sequence, ahead of the revoke: the
+        // socket is closed the moment `logout` starts, which would cancel a queued write.
+        for task in draftFlushes.values { task.cancel() }
+        draftFlushes.removeAll()
+        let drafts = draftSync.takeAll().map { ($0.key, $0.draft) }
         cancelReconnect()
-        client.logout(deviceToken: deviceToken)
+        client.logout(deviceToken: deviceToken, drafts: drafts)
         deviceToken = nil
         // The next sign-in may be against a different server, whose answer differs.
         apnsSupported = nil
