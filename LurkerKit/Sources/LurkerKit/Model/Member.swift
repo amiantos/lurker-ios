@@ -42,13 +42,16 @@ extension Array where Element == Member {
     /// (`ChatState.channelAccess`, the composer's prompt). Nil for an empty nick, and before
     /// NAMES lands.
     ///
-    /// Cheap enough to run on every state frame: the length check (O(1) on a native string)
-    /// turns away almost every member before the fold allocates. Lowercasing never changes an
-    /// ASCII nick's length, and IRC casemapping is ASCII.
+    /// Runs on every state frame (the composer's prompt), so the exact spelling is tried first:
+    /// the server lists us as it knows us, which is how `Network.nick` has it too, and that
+    /// match costs no allocation. The fold is the fallback, not the path.
+    ///
+    /// ⚠ No length shortcut in front of the fold. Lowercasing can change a nick's UTF-8 length
+    /// (`İ` is two bytes, its fold three), so one would turn away the very member it's looking for.
     public func member(named nick: String) -> Member? {
         guard !nick.isEmpty else { return nil }
+        if let exact = first(where: { $0.nick == nick }) { return exact }
         let folded = nick.lowercased()
-        let length = folded.utf8.count
-        return first { $0.nick.utf8.count == length && $0.nick.lowercased() == folded }
+        return first { $0.nick.lowercased() == folded }
     }
 }
