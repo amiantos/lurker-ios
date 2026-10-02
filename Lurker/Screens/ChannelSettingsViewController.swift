@@ -49,6 +49,10 @@ final class ChannelSettingsViewController: UITableViewController {
     /// Asked whenever the channel IS keyed and this is false — not just on open, since the
     /// channel's modes may land after the screen does, or turn `+k` while it's up.
     private var keyAsked = false
+    /// Which config read may answer. Bumped by every new read and whenever the answer stops
+    /// applying (the channel loses `+k`, the socket resyncs), so a slow read from before can't
+    /// put back a key the channel has since moved on from.
+    private var keyLookup = 0
 
     /// This channel's live `mode` rows since the screen opened (or the socket last reopened), off
     /// the socket rather than out of the buffer's log: a detached buffer holds live lines out of
@@ -121,15 +125,18 @@ final class ChannelSettingsViewController: UITableViewController {
     /// that screen — so it's asked afresh, once per stretch of the channel being keyed.
     private func askForKeyIfKeyed(_ modes: String) {
         guard modes.contains("k") else {
+            if keyAsked { keyLookup += 1 }
             keyAsked = false
             configKey = nil
             return
         }
         guard !keyAsked else { return }
         keyAsked = true
+        keyLookup += 1
+        let mine = keyLookup
         Task { [weak self, viewModel, key] in
             let stored = await viewModel.storedChannelKey(key)
-            guard let self else { return }
+            guard let self, mine == keyLookup else { return }
             configKey = stored
             render()
         }
@@ -147,6 +154,7 @@ final class ChannelSettingsViewController: UITableViewController {
             modeRowsSeen.removeAll()
             configKey = nil
             keyAsked = false
+            keyLookup += 1
         case .line(let lineKey, let message):
             guard lineKey.id == key.id else { return }
             switch message.type {
@@ -165,7 +173,7 @@ final class ChannelSettingsViewController: UITableViewController {
     private var storedKey: String? {
         switch ChannelModeForm.lastKeyChange(modeRowsSeen) {
         case .set(let key): key
-        case .removed: nil
+        case .removed, .setUnknown: nil
         case .none: configKey
         }
     }

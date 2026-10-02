@@ -492,9 +492,14 @@ final class ChannelModesTests: XCTestCase {
             modeRow("a", [ModeChange(mode: "+k", param: "pw", kind: .chan)]),
             modeRow("a", [ModeChange(mode: "-k", param: "*", kind: .chan)]),
         ]), .removed)
+        // A hidden value is still the newest word: an older key must not show through.
+        XCTAssertEqual(ChannelModeForm.lastKeyChange([
+            modeRow("a", [ModeChange(mode: "+k", param: "pw", kind: .chan)]),
+            modeRow("a", [ModeChange(mode: "+k", param: "*", kind: .chan)]),
+        ]), .setUnknown, "`*` is a mask, not a key")
         XCTAssertEqual(
-            ChannelModeForm.lastKeyChange([modeRow("a", [ModeChange(mode: "+k", param: "*", kind: .chan)])]),
-            .none, "`*` is a mask, not a key"
+            ChannelModeForm.lastKeyChange([modeRow("a", [ModeChange(mode: "+k", param: nil, kind: .chan)])]),
+            .setUnknown
         )
     }
 }

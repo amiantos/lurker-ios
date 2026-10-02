@@ -364,13 +364,19 @@ public enum ChannelModeForm {
     }
 
     /// The channel's key as the newest `±k` in `rows` says: a `+k <key>` names it, a `-k` means
-    /// there is none (so a key the config still remembers doesn't come back). `*` is a mask,
-    /// not a key. `.none` — no ±k seen at all — leaves the config's copy standing.
+    /// there is none (so a key the config still remembers doesn't come back). `.none` — no ±k
+    /// seen at all — leaves the config's copy standing.
+    ///
+    /// ⚠ A `+k` whose value is hidden (`*`, or none) is still the newest word: a key is set and
+    /// we don't know it. Skipping it would fall back to an OLDER key and reveal that one. The
+    /// config's copy is no better — the server keeps its stored key over a `+k *` (a mask is not
+    /// a key) — so it reads as `.setUnknown`, which suppresses both.
     public static func lastKeyChange(_ rows: [Message]) -> KeySighting {
         for row in rows.reversed() {
             for change in row.modes.reversed() {
                 if change.mode == "-k" { return .removed }
-                if change.mode == "+k", let param = change.param, !param.isEmpty, param != "*" {
+                if change.mode == "+k" {
+                    guard let param = change.param, !param.isEmpty, param != "*" else { return .setUnknown }
                     return .set(param)
                 }
             }
@@ -382,6 +388,8 @@ public enum ChannelModeForm {
         case none
         case removed
         case set(String)
+        /// A key is set, and its value was hidden from us.
+        case setUnknown
     }
 
     /// `entries` with every ±`letter` list change in `rows` applied, in order. Masks match
