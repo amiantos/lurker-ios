@@ -47,6 +47,13 @@ final class LurkerClient {
     /// a token we ourselves minted is what keeps someone else's bytes off this readout. An
     /// unrecognized token is dropped, silently and correctly.
     private var uploadProgressSinks: [String: @Sendable (UploadServerProgress) -> Void] = [:]
+    /// Callers waiting on an acked verb's `send-result`, by the `clientId` each one minted — see
+    /// `request`. Every entry is settled exactly once: by its reply, its timeout, or the socket it
+    /// went down ending (`abandonReplies`), whichever comes first.
+    private var pendingReplies: [String: CheckedContinuation<VerbReply, Never>] = [:]
+    /// Each waiter's timeout, cancelled when it's settled any other way.
+    private var replyTimeouts: [String: Task<Void, Never>] = [:]
+    private var replySequence = 0
 
     init(onFrame: @escaping (ServerFrame) -> Void) {
         self.onFrame = onFrame
@@ -554,6 +561,8 @@ final class LurkerClient {
         // Replace any prior socket so a reconnect can't leave two live; callbacks from the
         // old one are ignored via the `task === socket` guard below.
         socket?.cancel(with: .goingAway, reason: nil)
+        // Nothing sent down the old socket is answered on the new one.
+        abandonReplies()
         hasEmittedOpen = false
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -618,6 +627,10 @@ final class LurkerClient {
             switch frame {
             case .uploadProgress(let token, let progress):
                 uploadProgressSinks[token]?(progress)
+            // An acked verb's answer, for the caller holding its `clientId`. Read a second time,
+            // in full, because the frame keeps only what the store needs.
+            case .sendResult(let clientId?, _, _) where pendingReplies[clientId] != nil:
+                if let (id, reply) = FrameParser.parseVerbReply(text) { settleReply(id, reply) }
             default:
                 onFrame(frame)
             }
@@ -627,6 +640,7 @@ final class LurkerClient {
 
     private func handleClose(code: Int?, closeCode: Int, reason: String, from task: URLSessionWebSocketTask) {
         guard task === socket else { return }
+        abandonReplies()
         onFrame(Self.closeFrame(status: code, closeCode: closeCode, reason: reason))
     }
 
@@ -1501,6 +1515,97 @@ final class LurkerClient {
         return true
     }
 
+    /// Send a verb that answers on `send-result` with its result as `data` — the channel verbs
+    /// (§6) — and wait for that answer.
+    ///
+    /// The answer is correlated by a `clientId` minted here, and ONLY the socket that asked gets
+    /// it (`wsHub` sends it to that socket alone). So a socket that ends while the question is out
+    /// has taken the answer with it: `abandonReplies` settles every waiter as `.connectionLost` then,
+    /// and a reconnect never inherits a question it can't be answered on. `timeout` is the
+    /// backstop for a live socket that simply never says — and has to outlast the server's own
+    /// wait for the IRC server, or a slow list reads as no answer while the server is still
+    /// collecting it.
+    ///
+    /// `.notSent` when there was no socket to write to, or the write itself failed.
+    func request(_ verb: [String: Any], timeout seconds: Double) async -> VerbReply {
+        replySequence &+= 1
+        let clientId = "ios-verb-\(replySequence)"
+        var payload = verb
+        payload["clientId"] = clientId
+        return await withCheckedContinuation { continuation in
+            pendingReplies[clientId] = continuation
+            let sent = send(payload, onComplete: { [weak self] ok in
+                guard !ok else { return }
+                Task { @MainActor in self?.settleReply(clientId, .notSent) }
+            })
+            guard sent else {
+                settleReply(clientId, .notSent)
+                return
+            }
+            replyTimeouts[clientId] = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                self?.settleReply(clientId, .noAnswer)
+            }
+        }
+    }
+
+    // MARK: - Channel controls (lurker#727)
+
+    /// The server waits up to 30 s on the IRC server for a list; the wait here has to outlast it,
+    /// or a slow list reads as no answer while the server is still collecting it.
+    private static let listReplyTimeout = 35.0
+    /// The other two answer as soon as their lines are written.
+    private static let verbReplyTimeout = 10.0
+
+    /// `set-topic`: `TOPIC #chan :topic`, an empty string clearing it. Unlike a `raw` TOPIC, the
+    /// answer says `not-connected` when the network is down rather than dropping the line.
+    func setTopic(networkId: Int, channel: String, topic: String) async -> VerbReply {
+        await request(
+            ["type": "set-topic", "networkId": networkId, "channel": channel, "topic": topic],
+            timeout: Self.verbReplyTimeout
+        )
+    }
+
+    /// `set-channel-modes`: validated against the network's `modeSpec` and sent as the fewest MODE
+    /// lines it allows. ⚠ The server's REFUSAL (482, 467, 478 …) is not on this answer — it
+    /// arrives as the channel's `error` row.
+    func setChannelModes(networkId: Int, channel: String, changes: [OutgoingModeChange]) async -> VerbReply {
+        let wire: [[String: Any]] = changes.map { change in
+            var out: [String: Any] = ["sign": String(change.sign), "letter": change.letter]
+            if let param = change.param { out["param"] = param }
+            return out
+        }
+        return await request(
+            ["type": "set-channel-modes", "networkId": networkId, "channel": channel, "changes": wire],
+            timeout: Self.verbReplyTimeout
+        )
+    }
+
+    /// `get-mode-list`: one list mode, fresh from the IRC server. The replies never reach the
+    /// server buffer — they come back here, on the answer.
+    func fetchModeList(networkId: Int, channel: String, letter: String) async -> VerbReply {
+        await request(
+            ["type": "get-mode-list", "networkId": networkId, "channel": channel, "letter": letter],
+            timeout: Self.listReplyTimeout
+        )
+    }
+
+    /// Answer one waiter, once. Later answers for the same id find nothing and do nothing.
+    private func settleReply(_ clientId: String, _ reply: VerbReply) {
+        replyTimeouts.removeValue(forKey: clientId)?.cancel()
+        pendingReplies.removeValue(forKey: clientId)?.resume(returning: reply)
+    }
+
+    /// The socket a question went down is gone, so its answer is too.
+    private func abandonReplies() {
+        let waiting = pendingReplies
+        pendingReplies = [:]
+        for timeout in replyTimeouts.values { timeout.cancel() }
+        replyTimeouts = [:]
+        for continuation in waiting.values { continuation.resume(returning: .connectionLost) }
+    }
+
     /// Report a 401 as the end of the session, but only if it answered the token in use now.
     /// A request still out when the session ended (a sign-out, or a revoke another call already
     /// reported) can answer after a new sign-in, and its 401 must not end that session.
@@ -1513,6 +1618,7 @@ final class LurkerClient {
     /// and the dead-token case (a 401) where there's nothing left to revoke.
     func close() {
         socket?.cancel(with: .goingAway, reason: nil)
+        abandonReplies()
         socket = nil
         token = nil
         hasEmittedOpen = false
@@ -1524,6 +1630,7 @@ final class LurkerClient {
     func dropSocket() {
         guard let socket else { return }
         socket.cancel(with: .goingAway, reason: nil)
+        abandonReplies()
         self.socket = nil
         hasEmittedOpen = false
         onFrame(.socketClosed(reason: nil, code: nil))

@@ -104,6 +104,25 @@ public final class ChatViewModel {
 
     // MARK: - What the UI observes
 
+    /// Live lines as they arrive, and each new socket's snapshot — for the channel settings screens
+    /// (lurker#727), which patch an open list from live `MODE ±b/e/I/q` rows and read a Save's
+    /// refusal off the channel's `error` rows.
+    ///
+    /// ⚠⚠ Taken off the frames rather than out of `state.messages`: a DETACHED buffer (the
+    /// reader jumped back into history) holds live lines out of its log, and those screens still
+    /// need every one. Sent after the store has applied the frame.
+    public var channelEvents: AnyPublisher<ChannelEvent, Never> { channelEventsSubject.eraseToAnyPublisher() }
+    private let channelEventsSubject = PassthroughSubject<ChannelEvent, Never>()
+
+    public enum ChannelEvent: Sendable {
+        case line(BufferKey, Message)
+        /// A new socket's snapshot has been applied, so the store's word on each network is this
+        /// socket's now. A list fetched before the drop can't be patched up to date — the gap
+        /// arrives as backlog rather than live rows — and this is the moment to decide whether
+        /// asking again can work.
+        case resynced
+    }
+
     public var state: ChatState { store.state }
     public var statePublisher: AnyPublisher<ChatState, Never> { store.statePublisher }
 
@@ -1192,6 +1211,85 @@ public final class ChatViewModel {
         }
     }
 
+    // MARK: - Channel controls (lurker#727)
+
+    /// Why a channel change didn't go out — or might not have.
+    public struct ChannelSaveFailure: Equatable, Sendable {
+        /// What to tell the user.
+        public let message: String
+        /// True when nothing can have reached IRC: the server refused before sending. False when
+        /// the answer simply never came, and the change may well have gone out.
+        public let certainlyUnsent: Bool
+    }
+
+    /// Set a channel's topic. Nil when it went out.
+    ///
+    /// "Went out" is all the answer can say: a refusal (482 under `+t`) arrives as the channel's
+    /// `error` row, and the topic itself changes when the `topic` line comes back.
+    public func setTopic(_ key: BufferKey, topic: String) async -> ChannelSaveFailure? {
+        guard let networkId = key.networkId else { return ChannelSaveFailure(message: "Not connected.", certainlyUnsent: true) }
+        return Self.saveFailure(await client.setTopic(networkId: networkId, channel: key.target, topic: topic))
+    }
+
+    /// Send mode changes to a channel, as the fewest MODE lines the network allows. Nil when they
+    /// went out — the same "only that" as `setTopic`.
+    public func setChannelModes(_ key: BufferKey, changes: [OutgoingModeChange]) async -> ChannelSaveFailure? {
+        guard let networkId = key.networkId else { return ChannelSaveFailure(message: "Not connected.", certainlyUnsent: true) }
+        return Self.saveFailure(
+            await client.setChannelModes(networkId: networkId, channel: key.target, changes: changes)
+        )
+    }
+
+    nonisolated static func saveFailure(_ reply: VerbReply) -> ChannelSaveFailure? {
+        guard let message = saveError(reply) else { return nil }
+        let unknown = reply.error == "no-answer" || reply.error == "connection-lost"
+        return ChannelSaveFailure(message: message, certainlyUnsent: !unknown)
+    }
+
+    /// Fetch one of a channel's lists — `b`, `e`, `I`, or `q` where it's a list.
+    public func fetchModeList(_ key: BufferKey, letter: String) async -> ModeListResult {
+        guard let networkId = key.networkId else { return .failed("Not connected.") }
+        let reply = await client.fetchModeList(networkId: networkId, channel: key.target, letter: letter)
+        if reply.ok, let entries = reply.entries { return .entries(entries) }
+        // Nothing to ask yet, or the socket took the answer with it: worth asking again once
+        // the link is back, which a refusal isn't.
+        if reply.error == "not-connected" || reply.error == "connection-lost" { return .offline }
+        return .failed(Self.listError(reply))
+    }
+
+    /// The key the server holds for a channel, read fresh from the network config — the only
+    /// place a key reaches this client. Nil when there's none, or the read failed.
+    public func storedChannelKey(_ key: BufferKey) async -> String? {
+        guard let networkId = key.networkId,
+              let config = await client.networkConfigs()?.first(where: { $0.id == networkId })
+        else { return nil }
+        return config.key(for: key.target)
+    }
+
+    nonisolated static func saveError(_ reply: VerbReply) -> String? {
+        if reply.ok { return nil }
+        switch reply.error {
+        case "not-connected": return "Not connected."
+        case "no-answer": return "The server didn't answer."
+        case "connection-lost": return "The connection dropped before the server answered."
+        case let error?: return "Couldn't save (\(error))."
+        case nil: return "Couldn't save."
+        }
+    }
+
+    nonisolated static func listError(_ reply: VerbReply) -> String {
+        switch reply.error {
+        case "refused":
+            if reply.numeric == "482" { return "Only channel operators can see this list." }
+            return "The server refused: \(reply.text ?? reply.numeric ?? "no reason given")"
+        case "not-connected": return "Not connected."
+        // The server's own wait ran out, or ours did: nobody said anything.
+        case "no-reply", "no-answer", nil: return "The server didn't answer."
+        case "account-paused": return "This account is paused, so nothing can be fetched."
+        case let error?: return "Couldn't load the list (\(error))."
+        }
+    }
+
     /// Re-read the roster (`GET /api/networks`) into the store: names, order, and whether the
     /// admin's allowlist blocks each host.
     ///
@@ -1818,6 +1916,15 @@ public final class ChatViewModel {
         // It also means the message frames prime against a store that already holds them, which
         // is the more obviously correct order even though those read their texts from the frame.
         primePreviews(frame)
+
+        switch frame {
+        case .live(let networkId, let target, let message):
+            channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
+        case .snapshot:
+            channelEventsSubject.send(.resynced)
+        default:
+            break
+        }
     }
 
     /// Whether a roster re-read is already in flight. Without it a burst of `state` events

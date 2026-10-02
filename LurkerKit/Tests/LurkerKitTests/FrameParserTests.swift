@@ -220,7 +220,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"channel-topic","topic":"welcome all"}"##
         )
-        guard case let .channelTopic(networkId, target, topic) = frame else {
+        guard case let .channelTopic(networkId, target, topic, _) = frame else {
             return XCTFail("expected channelTopic, got \(frame)")
         }
         XCTAssertEqual(networkId, 1)
@@ -232,7 +232,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"channel-topic"}"##
         )
-        guard case let .channelTopic(_, _, topic) = frame else {
+        guard case let .channelTopic(_, _, topic, _) = frame else {
             return XCTFail("expected channelTopic, got \(frame)")
         }
         XCTAssertNil(topic)

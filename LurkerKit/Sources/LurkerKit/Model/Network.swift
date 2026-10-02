@@ -53,6 +53,13 @@ public struct Network: Equatable, Sendable {
     /// `ChatState.canReact(networkId:)`**, which also requires the network to be connected: the
     /// flag describes the last registration, and a dropped link carries nothing.
     public var canReact: Bool
+    /// The network's channel-mode vocabulary (lurker#727) — which letters are lists, flags and
+    /// params, its PREFIX ladder, MODES and TOPICLEN.
+    ///
+    /// ⚠⚠ Nil means UNKNOWN: the server sends null until the registration burst ends, and this
+    /// goes back to nil whenever the link drops (the next registration restates it). Never read a
+    /// nil as the RFC defaults — a default is not the network saying so.
+    public var modeSpec: ModeSpec?
 
     public init(
         id: Int,
@@ -62,7 +69,8 @@ public struct Network: Equatable, Sendable {
         nick: String = "",
         away: AwayState? = nil,
         blocked: Bool = false,
-        canReact: Bool = false
+        canReact: Bool = false,
+        modeSpec: ModeSpec? = nil
     ) {
         self.id = id
         self.name = name
@@ -72,6 +80,7 @@ public struct Network: Equatable, Sendable {
         self.away = away
         self.blocked = blocked
         self.canReact = canReact
+        self.modeSpec = modeSpec
     }
 
     /// Take the roster's word for the REST-only fields — `name`, `position`, `blocked` — and

@@ -109,6 +109,11 @@ final class BufferInfoViewController: UITableViewController {
 
     private enum Row: Equatable {
         case topic(String?)
+        /// The channel's topic and modes, editable where our rank allows (#187). The payload is
+        /// the set mode letters, shown as the row's value.
+        case channelSettings(modes: String)
+        /// One of the channel's list modes — bans, exceptions, invite exceptions, quiets.
+        case modeList(letter: String, name: String)
         case members(Int)
         case whois
         /// Search pre-scoped to this buffer; the payload is the `in:`/`on:` prefix to seed the
@@ -183,8 +188,26 @@ final class BufferInfoViewController: UITableViewController {
         ).map { [.search(scope: $0)] } ?? []
         switch buffer.kind {
         case .channel:
+            let held = state.channelModes[key]
+            // Which lists exist is the network's to say — `q` is a list on solanum and an owner
+            // elsewhere — so none are offered until its vocabulary arrives, and none out of the
+            // channel, where asking draws a 442.
+            let access = state.channelAccess(buffer.key)
+            let lists: [Row] = access.joined
+                ? access.spec.map { ChannelModeForm.lists(in: $0).map { Row.modeList(letter: $0.letter, name: $0.name) } } ?? []
+                : []
             return [
-                Section(header: "Topic", footer: nil, rows: [.topic(live.topic)]),
+                // Nothing under no topic: there's no one to credit.
+                Section(
+                    header: "Topic",
+                    footer: live.topic?.isEmpty == false ? held?.topicSetterLine : nil,
+                    rows: [.topic(live.topic)]
+                ),
+                Section(
+                    header: nil,
+                    footer: held?.createdAt.map { "Created \($0.formatted(date: .long, time: .omitted))" },
+                    rows: [.channelSettings(modes: held?.modes ?? "")] + lists
+                ),
                 Section(header: nil, footer: nil, rows: [.members(memberCount)] + scopeRows),
                 notifications,
             ]
@@ -303,6 +326,23 @@ final class BufferInfoViewController: UITableViewController {
             content.textProperties.color = topic?.isEmpty == false ? .label : .secondaryLabel
             cell.contentConfiguration = content
 
+        case .channelSettings(let modes):
+            var content = UIListContentConfiguration.valueCell()
+            content.text = "Channel Settings"
+            content.secondaryText = modes.isEmpty ? nil : "+\(modes)"
+            content.image = UIImage(systemName: "slider.horizontal.3")
+            cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            cell.selectionStyle = .default
+
+        case .modeList(_, let name):
+            var content = UIListContentConfiguration.cell()
+            content.text = name
+            content.image = UIImage(systemName: "list.bullet")
+            cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            cell.selectionStyle = .default
+
         case .members(let count):
             var content = UIListContentConfiguration.valueCell()
             content.text = "Members"
@@ -396,6 +436,16 @@ final class BufferInfoViewController: UITableViewController {
             )
             profile.onOpenBuffer = onOpenBuffer
             navigationController?.pushViewController(profile, animated: true)
+        case .channelSettings:
+            // Pushed, like Whois: settings belong to this panel, and Back returns to it.
+            navigationController?.pushViewController(
+                ChannelSettingsViewController(viewModel: viewModel, key: buffer.key), animated: true
+            )
+        case .modeList(let letter, let name):
+            navigationController?.pushViewController(
+                ModeListViewController(viewModel: viewModel, key: buffer.key, letter: letter, name: name),
+                animated: true
+            )
         case .networkAction(let action):
             perform(action)
         case .dccAction(let action):

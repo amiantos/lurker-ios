@@ -75,6 +75,12 @@ public struct ChatState: Sendable {
     public var backlogComplete = false
     public var messages: [String: [Message]] = [:]
     public var members: [String: [Member]] = [:]
+    /// Each channel's modes, param values, creation time and topic setter (lurker#727), keyed
+    /// like `members`. A side table rather than fields on `Buffer` because the backlog path
+    /// replaces a buffer row wholesale, and this is state no backlog carries.
+    ///
+    /// ⚠⚠ Never holds the key — see `ChannelModeState`.
+    public var channelModes: [String: ChannelModeState] = [:]
     /// Buffer favorites (the Friends/Contacts successor): one server-authoritative
     /// global ordered list spanning networks, seeded and corrected wholesale by
     /// `favorites-changed`. The UI splits it by kind — DMs → Friends, channels →
@@ -382,6 +388,7 @@ public struct ChatState: Sendable {
         buffers[key] = nil
         messages[key] = nil
         members[key] = nil
+        channelModes[key] = nil
         typing[key] = nil
         speakers[key] = nil
         heldLive[key] = nil
@@ -444,6 +451,8 @@ public struct ChatState: Sendable {
         messages[from] = nil
         members[to] = members[from]
         members[from] = nil
+        channelModes[to] = channelModes[from]
+        channelModes[from] = nil
         typing[to] = typing[from]
         typing[from] = nil
         speakers[to] = speakers[from]
@@ -1053,8 +1062,34 @@ final class LurkerStore {
             return applyLive(
                 state, networkId: networkId, target: target, message: message, now: now
             )
-        case .channelTopic(let networkId, let target, let topic):
-            return applyChannelTopic(state, networkId: networkId, target: target, topic: topic)
+        case .channelTopic(let networkId, let target, let topic, let meta):
+            var next = applyChannelTopic(state, networkId: networkId, target: target, topic: topic)
+            // The setter rides with the topic only when the server stated it; absent leaves the
+            // held pair alone. Patched onto a channel we hold, like the topic itself.
+            let key = BufferKey(networkId: networkId, target: target).id
+            if let meta, next.buffers[key] != nil {
+                next.channelModes[key, default: ChannelModeState()].topicSetBy = meta.setBy
+                next.channelModes[key, default: ChannelModeState()].topicSetAt = meta.setAt
+            }
+            return next
+        case .channelModes(let networkId, let target, let modes, let params, let createdAt):
+            // Resolve, never materialize — a mode state for a channel with no row has nowhere to
+            // show, and the snapshot that brings the row carries its modes. Replaces the mode half
+            // wholesale: the frame IS the whole mode string.
+            var next = state
+            let key = BufferKey(networkId: networkId, target: target).id
+            guard next.buffers[key] != nil else { return next }
+            var held = next.channelModes[key] ?? ChannelModeState()
+            held.modes = modes
+            held.params = params
+            held.createdAt = createdAt
+            next.channelModes[key] = held
+            return next
+        case .modeSpec(let networkId, let spec):
+            // Never materializes a network, like `react-support`.
+            var next = state
+            next.networks[networkId]?.modeSpec = spec
+            return next
         case .bufferCleared(let networkId, let target, let clearedBeforeId, let clearedAt):
             // Patched onto a buffer we already hold, never conjuring one: the marker is a
             // property OF a buffer, and a clear for a row this client has never seen has
@@ -1149,6 +1184,9 @@ final class LurkerStore {
                 // then). Holding the old answer would offer React on the strength of the last
                 // connection's CLIENTTAGDENY.
                 if connection != .connected { existing.canReact = false }
+                // Same for the mode vocabulary: the next registration restates it once its
+                // burst ends, and until then the last link's answer is not this one's.
+                if connection != .connected { existing.modeSpec = nil }
                 next.networks[networkId] = existing
             } else {
                 next.networks[networkId] = Network(
@@ -1429,6 +1467,10 @@ final class LurkerStore {
             // and nothing is reconnecting.
             case .incompatible: break
             }
+            // Every network's mode vocabulary was this socket's word, and a dropped socket can't
+            // hear the `state` frame that would retire it. The next snapshot restates it; until
+            // then it's unknown, which is what nil says.
+            for id in next.networks.keys { next.networks[id]?.modeSpec = nil }
             // Nobody is typing at us over a socket that isn't there. The lease would retire
             // these on its own, but a `paused` entry holds for 30s — long enough to survive a
             // reconnect and show a peer composing when we've heard nothing from them since
@@ -1619,6 +1661,7 @@ final class LurkerStore {
                 // in every buffer with no event able to retract it.
                 existing.away = snapshot.away
                 existing.canReact = snapshot.canReact
+                existing.modeSpec = snapshot.modeSpec
                 next.networks[snapshot.id] = existing
             } else {
                 // ⚠⚠ No name, rather than a placeholder that reads like one (#136). The
@@ -1631,7 +1674,7 @@ final class LurkerStore {
                 // for a nil name and re-reads the roster.
                 next.networks[snapshot.id] = Network(
                     id: snapshot.id, name: nil, state: snapshot.state, nick: snapshot.nick,
-                    away: snapshot.away, canReact: snapshot.canReact
+                    away: snapshot.away, canReact: snapshot.canReact, modeSpec: snapshot.modeSpec
                 )
             }
             for channel in snapshot.channels {
@@ -1642,6 +1685,7 @@ final class LurkerStore {
                 buffer.topic = channel.topic
                 next.buffers[key] = buffer
                 next.members[key] = channel.members
+                next.channelModes[key] = channel.modeState
                 // Third path that can materialize a row, so it owes `burstSeen` an entry
                 // like the other two — otherwise the burst's closing prune could drop a
                 // buffer the snapshot itself just created. Unreachable against today's
@@ -1811,7 +1855,14 @@ final class LurkerStore {
         // overlap would otherwise re-apply an old topic over the current one, silently
         // reverting the channel's topic to whatever it was at replay time. The Vue client
         // hit this first and its handler carries the same warning.
-        if message.type == .topic { next.buffers[key]?.topic = message.text }
+        if message.type == .topic {
+            next.buffers[key]?.topic = message.text
+            // …and who set it, from the same line: its author and its time.
+            if next.buffers[key] != nil {
+                next.channelModes[key, default: ChannelModeState()].topicSetBy = message.nick
+                next.channelModes[key, default: ChannelModeState()].topicSetAt = message.date
+            }
+        }
         // Membership churn folds into the member list here, and only here — the same
         // seat below the id de-dupe the topic needs, and for the same reason: a
         // replayed join must not resurrect a member who has since parted. Backlog and

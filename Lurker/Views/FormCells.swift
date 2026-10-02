@@ -90,12 +90,16 @@ final class FormTextCell: UITableViewCell {
         field.spellCheckingType = .default
         field.textContentType = nil
         field.clearsOnBeginEditing = false
+        field.isEnabled = true
+        field.rightView = nil
         restoreOnFocus = nil
     }
 
     func configure(label text: String, value: String, placeholder: String? = nil) {
         label.text = text
-        field.text = value
+        // Only when it differs: a cell reconfigured in place while it's being typed in would
+        // otherwise have its caret thrown to the end on every keystroke's re-render.
+        if field.text != value { field.text = value }
         field.placeholder = placeholder
         field.accessibilityLabel = text
     }
@@ -135,11 +139,12 @@ final class FormSwitchCell: UITableViewCell {
         onChange = nil
     }
 
-    func configure(label: String, isOn: Bool) {
+    func configure(label: String, isOn: Bool, isEnabled: Bool = true) {
         var content = defaultContentConfiguration()
         content.text = label
         contentConfiguration = content
-        toggle.isOn = isOn
+        if toggle.isOn != isOn { toggle.setOn(isOn, animated: window != nil) }
+        toggle.isEnabled = isEnabled
         toggle.accessibilityLabel = label
     }
 }
@@ -284,11 +289,23 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         super.prepareForReuse()
         onChange = nil
         onHeightChange = nil
+        textView.autocapitalizationType = .none
+        textView.autocorrectionType = .no
+        textView.spellCheckingType = .no
+    }
+
+    /// The keyboard's help back on, for a box that holds prose — a channel topic — rather than
+    /// a script. The default is off because the first user of this cell was connect commands.
+    func typedAsProse() {
+        textView.autocapitalizationType = .sentences
+        textView.autocorrectionType = .default
+        textView.spellCheckingType = .default
     }
 
     func configure(label: String, value: String, placeholder: String) {
         titleLabel.text = label
-        textView.text = value
+        // Only when it differs, for the reason `FormTextCell.configure` gives.
+        if textView.text != value { textView.text = value }
         placeholderLabel.text = placeholder
         placeholderLabel.isHidden = !value.isEmpty
         // The field's NAME, not its example. VoiceOver reads the placeholder as a hint of its
