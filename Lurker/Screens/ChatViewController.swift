@@ -342,7 +342,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         view.addSubview(connectionBanner)
 
-        applyComposerChrome(ComposerChrome(viewModel.state, buffer: buffer))
+        applyComposerChrome(ComposerChrome(ComposerChrome.Inputs(viewModel.state, buffer: buffer)))
         composer.onSend = { [weak self] text in self?.send(text) }
         // A grown composer reserves more space (via viewDidLayoutSubviews after this forces
         // the pass), and should carry the newest message up with it rather than letting the
@@ -364,9 +364,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.onBack = { [weak self] in
             guard let self else { return }
             // ⚠ Asked of the connection, not of the send: a dropped socket stays non-nil until
-            // the reconnect replaces it, so a write onto it "succeeds" and goes nowhere. Nothing
-            // retries a Back, so say so, or the strip staying put reads as a Back that ignored you.
-            guard viewModel.state.connection != .connected else { return viewModel.setBack() }
+            // the reconnect replaces it, so a write onto it "succeeds" and goes nowhere. And of
+            // BOTH signals: airplane mode flips `reachable` while the socket still reads
+            // `.connected`, for as long as it takes to notice. Nothing retries a Back, so say so,
+            // or the strip staying put reads as a Back that ignored you.
+            let state = viewModel.state
+            guard !state.reachable || state.connection != .connected else { return viewModel.setBack() }
             ToastView.show(
                 "Not connected — try again when you're back online",
                 symbol: "exclamationmark.circle",
@@ -656,8 +659,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // handler scrolls to the last row. Inside `apply` that ran between `rebuildRows()` and
         // the reload, with a fresh away/back divider in `rows` the table didn't have yet, and
         // scrolled to a row past its end.
+        //
+        // Two dedupes. The first compares the raw inputs, which costs next to nothing when they
+        // haven't moved — an unchanged nicklist is the same storage, and `==` on that is O(1).
+        // Only what gets past it searches the nicklist, and the second drops what changed
+        // nothing we show: someone else's away-notify flip moves the list, not our modes.
         viewModel.statePublisher
-            .map { ComposerChrome($0, buffer: thisBuffer) }
+            .map { ComposerChrome.Inputs($0, buffer: thisBuffer) }
+            .removeDuplicates()
+            .map { ComposerChrome($0) }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] chrome in self?.applyComposerChrome(chrome) }
@@ -838,27 +848,42 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// What the composer shows that comes from state rather than from typing: the prompt and
-    /// whether you're away (#135). Holds the INPUTS, not the finished prompt, so the dedupe
-    /// that runs on every frame compares a few values — `members` by its storage first — and
-    /// the nicklist is only searched when something here actually moved.
+    /// whether you're away (#135). Built from `Inputs` only once they've changed — see the
+    /// subscription for why it's two steps.
     private struct ComposerChrome: Equatable {
         var nick: String?
         /// Ours alone, not the nicklist: `Member` carries `away`, and holding the list would let
-        /// every away-notify flip in a busy channel through the dedupe.
+        /// every away-notify flip in a busy channel through to the composer.
         var ownModes: [String]
         var dccSession: Bool?
         var away: AwayState?
 
-        init(_ state: ChatState, buffer: Buffer) {
-            nick = ChatViewController.ownNick(for: state, buffer: buffer)
-            ownModes = buffer.kind == .channel
-                ? state.members[buffer.key.id]?.member(named: nick ?? "")?.modes ?? []
-                : []
-            dccSession = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
-            // ⚠ Not `awayState(for:)`, which leaves out the server log on purpose: that's about
-            // where a divider is noise. This is whether you're away, and you are in every buffer
-            // on the network — the server log included, where `/back` is as likely to be typed.
-            away = buffer.networkId.flatMap { state.networks[$0]?.away }
+        /// What the chrome is made from, as cheap to compare on every frame as it can be. The
+        /// nicklist is held whole, unsearched, because comparing it is O(1) while its storage
+        /// is unchanged and searching it is O(n) every time.
+        struct Inputs: Equatable {
+            var nick: String?
+            var members: [Member]?
+            var dccSession: Bool?
+            var away: AwayState?
+
+            init(_ state: ChatState, buffer: Buffer) {
+                nick = ChatViewController.ownNick(for: state, buffer: buffer)
+                members = buffer.kind == .channel ? state.members[buffer.key.id] : nil
+                dccSession = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
+                // ⚠ Not `awayState(for:)`, which leaves out the server log on purpose: that's
+                // about where a divider is noise. This is whether you're away, and you are in
+                // every buffer on the network — the server log included, where `/back` is as
+                // likely to be typed.
+                away = buffer.networkId.flatMap { state.networks[$0]?.away }
+            }
+        }
+
+        init(_ inputs: Inputs) {
+            nick = inputs.nick
+            ownModes = inputs.members?.member(named: inputs.nick ?? "")?.modes ?? []
+            dccSession = inputs.dccSession
+            away = inputs.away
         }
     }
 
