@@ -111,13 +111,15 @@ public enum CommandParser {
         switch verb {
         case "commands":
             return [.info(CommandRegistry.helpText())]
-        case "away":
+        case "away", "back":
             // Empty message clears away. The network it's typed on goes with it, and from the
-            // system buffer there's none, which the server reads as every network.
+            // system buffer there's none, which the server reads as every network — so `-one`
+            // there is refused rather than quietly reaching them all.
             let (all, message) = awayFlag(argLine)
-            return [.away(message: message, all: all)]
-        case "back":
-            return [.back(all: awayFlag(argLine).all)]
+            if all == false && networkId == nil {
+                return [.info("/\(verb) -one: there's no network here. Run it in a network's buffer.")]
+            }
+            return verb == "away" ? [.away(message: message, all: all)] : [.back(all: all)]
         // Ignore rules are global by default, so both verbs run without a network — the system
         // buffer can list them and write them. Only `-network` needs a connection, and that's
         // checked where it's read.

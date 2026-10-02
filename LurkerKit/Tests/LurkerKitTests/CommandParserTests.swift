@@ -293,6 +293,14 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/back -one"), [.back(all: false)])
     }
 
+    func testOneIsRefusedWhereThereIsNoNetwork() {
+        guard case .info(let text) = effects("/back -one", networkId: nil, target: ":system:").first else {
+            return XCTFail("expected an info line, not a back to every network")
+        }
+        XCTAssertTrue(text.contains("no network here"))
+        XCTAssertEqual(effects("/away -all", networkId: nil, target: ":system:"), [.away(message: "", all: true)])
+    }
+
     func testAwayReadsAFlagOnlyAtTheFrontAndAsAWholeWord() {
         XCTAssertEqual(effects("/away back at -all hands"), [.away(message: "back at -all hands", all: nil)])
         XCTAssertEqual(effects("/away -allnighter"), [.away(message: "-allnighter", all: nil)])
