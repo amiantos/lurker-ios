@@ -422,10 +422,10 @@ public enum CommandRegistry {
 
         // Status / app
         // irssi's and WeeChat's flags: `-all` reaches every network, `-one` just this one.
-        CommandSpec(["away"], .status, "Set yourself away on this network (-all: every network)",
+        CommandSpec(["away"], .status, "Set yourself away (-all: every network, -one: this one)",
                     args: [ArgSpec("-all|-one", .flag, optional: true),
                            ArgSpec("message", .text, optional: true, rest: true)], networkAgnostic: true),
-        CommandSpec(["back"], .status, "Clear your away status on this network (-all: every network)",
+        CommandSpec(["back"], .status, "Clear your away status (-all: every network, -one: this one)",
                     args: [ArgSpec("-all|-one", .flag, optional: true)], networkAgnostic: true),
         // Files under App rather than Moderation, where `/ignore` sits: a relay mark hides
         // nothing and silences nobody, it tells this client how to *read* a bot's lines. The

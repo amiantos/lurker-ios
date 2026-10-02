@@ -379,15 +379,15 @@ public enum CommandParser {
     /// counts — `/away back at -all hands` is a message, as is `-allnighter`. Mirrors the web
     /// client's `parseAwayFlag`.
     static func awayFlag(_ argLine: String) -> (all: Bool?, rest: String) {
-        let line = argLine.drop { $0 == " " || $0 == "\t" }
-        let word = line.prefix { $0 != " " && $0 != "\t" }
+        let line = argLine.drop(while: \.isWhitespace)
+        let word = line.prefix { !$0.isWhitespace }
         let all: Bool
         switch word.lowercased() {
         case "-all": all = true
         case "-one": all = false
         default: return (nil, argLine)
         }
-        return (all, String(line.dropFirst(word.count).drop { $0 == " " || $0 == "\t" }))
+        return (all, String(line.dropFirst(word.count).drop(while: \.isWhitespace)))
     }
 
     /// `/dcc` — the chat verbs, in irssi's syntax exactly, as the web has them:
