@@ -577,8 +577,7 @@ extension ChatState {
         let network = key.networkId.flatMap { networks[$0] }
         let spec = network?.modeSpec
         let joined = buffers[key.id]?.joined == true
-        let nick = network?.nick.lowercased() ?? ""
-        let mine = nick.isEmpty ? [] : (members[key.id]?.first { $0.nick.lowercased() == nick }?.modes ?? [])
+        let mine = members[key.id]?.member(named: network?.nick ?? "")?.modes ?? []
         // ⚠ No rank gate opens before the vocabulary arrives. A conventional ladder in its place
         // would rank letters this network may not have, and offer a +t topic edit to someone
         // below the rank it actually needs. A -t topic needs no rank, so it stays editable.

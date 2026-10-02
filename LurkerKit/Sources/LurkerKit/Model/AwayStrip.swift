@@ -32,7 +32,9 @@ public struct AwayStrip: Equatable, Sendable {
     ) -> AwayStrip? {
         guard let away, away.active else { return nil }
         var detail = " since " + since(away.since, now: now, calendar: calendar, locale: locale)
-        let reason = away.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // Plain text in a plain label: a reason coloured from another client would otherwise
+        // show its control bytes as "04lunch", to the eye and to VoiceOver.
+        let reason = IRCFormatting.strip(away.message ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !reason.isEmpty { detail += " · " + reason }
         return AwayStrip(lead: away.autoSet ? "Auto-away" : "Away", detail: detail)
     }

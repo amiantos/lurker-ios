@@ -22,22 +22,30 @@ final class MemberPrefixTests: XCTestCase {
         XCTAssertEqual(MemberPrefix.of(["v"]), "+")
     }
 
-    // MARK: - Your own glyph (#135)
+    // MARK: - Your own glyph, for the composer's prompt (#135)
 
-    func testYourOwnGlyphIsYourHighestMode() {
+    func testFindingYourselfFoldsNickCase() {
         let members = [member("alice", ["o"]), member("amiantos", ["v", "o"])]
-        XCTAssertEqual(MemberPrefix.of(nick: "amiantos", in: members), "@")
+        XCTAssertEqual(members.member(named: "Amiantos")?.modes, ["v", "o"])
     }
 
-    func testYourOwnGlyphFoldsNickCase() {
-        XCTAssertEqual(MemberPrefix.of(nick: "Amiantos", in: [member("amiantos", ["h"])]), "%")
+    func testNobodyIsYouBeforeNamesOrWithoutANick() {
+        // Another member's glyph would be a lie about you.
+        XCTAssertNil([member("alice", ["o"])].member(named: "amiantos"))
+        XCTAssertNil([member("", ["o"])].member(named: ""))
     }
 
-    func testNoGlyphWhenYouHoldNoModeOrArentListedYet() {
-        XCTAssertEqual(MemberPrefix.of(nick: "amiantos", in: [member("amiantos")]), "")
-        // Before NAMES lands, or another member's glyph would be a lie about you.
-        XCTAssertEqual(MemberPrefix.of(nick: "amiantos", in: [member("alice", ["o"])]), "")
-        XCTAssertEqual(MemberPrefix.of(nick: "", in: [member("", ["o"])]), "")
+    func testTheNetworksPrefixDecidesTheGlyphWhenItHasOne() {
+        // The ladder the channel controls rank by, so the prompt can't claim a rank they don't.
+        let prefix = [PrefixMode(mode: "Y", symbol: "!"), PrefixMode(mode: "o", symbol: "@")]
+        XCTAssertEqual(MemberPrefix.of(["o", "Y"], prefix: prefix), "!")
+        XCTAssertEqual(MemberPrefix.of(["o"], prefix: prefix), "@")
+        // A letter this network doesn't rank isn't a glyph here, whatever the convention says.
+        XCTAssertEqual(MemberPrefix.of(["v"], prefix: prefix), "")
+    }
+
+    func testTheConventionalLadderStandsInBeforeThePrefixIsKnown() {
+        XCTAssertEqual(MemberPrefix.of(["v", "h"], prefix: nil), "%")
     }
 
     func testNoModesMeansNoGlyph() {

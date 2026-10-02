@@ -342,7 +342,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         view.addSubview(connectionBanner)
 
-        composer.placeholder = composerPlaceholder
+        applyComposerChrome(ComposerChrome(viewModel.state, buffer: buffer))
         composer.onSend = { [weak self] text in self?.send(text) }
         // A grown composer reserves more space (via viewDidLayoutSubviews after this forces
         // the pass), and should carry the newest message up with it rather than letting the
@@ -361,7 +361,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             viewModel.flushDraft(buffer.key)
         }
         composer.onCancelReply = { [weak self] in self?.cancelReply() }
-        composer.onBack = { [weak self] in self?.viewModel.setBack() }
+        composer.onBack = { [weak self] in
+            guard let self, !viewModel.setBack() else { return }
+            // Nothing went out, and nothing will retry it — say so, or the strip staying put
+            // reads as a Back that ignored you.
+            ToastView.show(
+                "Not connected — try again when you're back online",
+                symbol: "exclamationmark.circle",
+                over: view, above: noticeAnchor, hold: ToastView.readingHoldSeconds
+            )
+        }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
             self?.uploadPastedImage(data: data, mime: mime, filename: name)
@@ -599,12 +608,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // is the default, so this costs nothing until someone turns it on.
                     && Self.modePrefixes(for: old, buffer: thisBuffer)
                         == Self.modePrefixes(for: new, buffer: thisBuffer)
-                    // Your own glyph, for the composer's prompt (#135) — separately, because
-                    // the map above is empty unless the setting is on, and the prompt shows
-                    // your rank either way. Without this, being opped changes the field only
-                    // when the next line happens to arrive.
-                    && Self.ownPrefix(for: old, buffer: thisBuffer)
-                        == Self.ownPrefix(for: new, buffer: thisBuffer)
                     // Ignore rules decide which of `messages` actually renders and which of
                     // them highlight, and they arrive on their own from another device — the
                     // same trap settings and typing hit. Without this an `/ignore` typed in a
@@ -644,6 +647,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] draft in self?.storedDraftChanged(draft) }
+            .store(in: &cancellables)
+        // The prompt and the away strip (#135). Their own subscription for the title's reason —
+        // they move the composer and nothing else, and an op or a `/away` shouldn't cost a full
+        // `apply` — and for one of their own: ⚠⚠ the strip changes the composer's height, whose
+        // handler scrolls to the last row. Inside `apply` that ran between `rebuildRows()` and
+        // the reload, with a fresh away/back divider in `rows` the table didn't have yet, and
+        // scrolled to a row past its end.
+        viewModel.statePublisher
+            .map { ComposerChrome($0, buffer: thisBuffer) }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] chrome in self?.applyComposerChrome(chrome) }
             .store(in: &cancellables)
         // A DM's subtitle says whether the peer is there, and that turns over with nothing
         // else changing — the trap typing fell into. It moves the title and nothing else, so
@@ -820,25 +835,53 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         buffer.displayName(networkName: buffer.networkId.flatMap { networks[$0]?.name })
     }
 
+    /// What the composer shows that comes from state rather than from typing: the prompt and
+    /// whether you're away (#135). Holds the INPUTS, not the finished prompt, so the dedupe
+    /// that runs on every frame compares a few values — `members` by its storage first — and
+    /// the nicklist is only searched when something here actually moved.
+    private struct ComposerChrome: Equatable {
+        var nick: String?
+        var members: [Member]?
+        var prefix: [PrefixMode]?
+        var dccSession: Bool?
+        var away: AwayState?
+
+        init(_ state: ChatState, buffer: Buffer) {
+            let network = buffer.networkId.flatMap { state.networks[$0] }
+            nick = network?.nick
+            members = buffer.kind == .channel ? state.members[buffer.key.id] : nil
+            prefix = network?.modeSpec?.prefix
+            dccSession = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
+            away = network?.away
+        }
+    }
+
+    private func applyComposerChrome(_ chrome: ComposerChrome) {
+        composer.placeholder = Self.composerPlaceholder(chrome, buffer: buffer)
+        composer.showAway(chrome.away)
+    }
+
     /// What the empty field says: who you'll be speaking as — your nick on this network, with
     /// your rank in a channel (`@amiantos`), the prompt irssi and WeeChat put beside their input
     /// line (#135). The title already names the conversation and the network, so the field
     /// doesn't repeat either; what it adds is the thing that changes under you, a `/nick` or a
-    /// collision's `amiantos_`. Re-read on every `apply`, so it follows both and a mode change.
-    /// Before the network has told us a nick there's nothing true to say, so it says "Message".
-    /// The system buffer is the app's own command console, so it invites one.
+    /// collision's `amiantos_`. The rank is shown whatever `look.nick.show_mode_prefix` says:
+    /// that setting decorates other people's lines, and this is you. Before the network has
+    /// told us a nick there's nothing true to say, so it says "Message". The system buffer is
+    /// the app's own command console, so it invites one.
     ///
     /// A DCC chat isn't spoken over the network, so it names the chat instead — and when it has
     /// no session, the field is the one place always in view to say so before a line is typed
     /// into nothing. The web puts the same sentence in its status bar.
-    private var composerPlaceholder: String {
-        guard let networkId = buffer.networkId else { return "Type a command…" }
+    private static func composerPlaceholder(_ chrome: ComposerChrome, buffer: Buffer) -> String {
+        guard buffer.networkId != nil else { return "Type a command…" }
         if buffer.kind == .dcc {
-            guard viewModel.state.dccChatSession(buffer.key) == false else { return "DCC Chat" }
+            guard chrome.dccSession == false else { return "DCC Chat" }
             return "Not connected — /dcc chat \(DccChat.peer(buffer.target))"
         }
-        guard let nick = networks[networkId]?.nick, !nick.isEmpty else { return "Message" }
-        return Self.ownPrefix(for: viewModel.state, buffer: buffer) + nick
+        guard let nick = chrome.nick, !nick.isEmpty else { return "Message" }
+        let mine = chrome.members?.member(named: nick)?.modes ?? []
+        return MemberPrefix.of(mine, prefix: chrome.prefix) + nick
     }
 
     /// Leave this screen when the buffer it is showing isn't open any more.
@@ -1110,8 +1153,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         rebuildRows()
         updateTypingTicker()
         updateTitle(state)
-        composer.placeholder = composerPlaceholder
-        composer.showAway(buffer.networkId.flatMap { state.networks[$0]?.away })
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
         // the most recent speaker, and a leaver stops being offered.
         updateSuggestions()
@@ -1743,14 +1784,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if !glyph.isEmpty { prefixes[member.nick.lowercased()] = glyph }
         }
         return prefixes
-    }
-
-    /// Our own channel-mode glyph here (`@`, `+`, …), or "" — outside a channel, and in one where
-    /// we hold no mode. Unlike `modePrefixes`, not behind `look.nick.show_mode_prefix`: that
-    /// setting decorates other people's lines, and this is the prompt telling you your own rank.
-    private static func ownPrefix(for state: ChatState, buffer: Buffer) -> String {
-        guard buffer.kind == .channel, let nick = ownNick(for: state, buffer: buffer) else { return "" }
-        return MemberPrefix.of(nick: nick, in: state.members[buffer.key.id] ?? [])
     }
 
     /// Our own nick on this buffer's network, or nil where there isn't one — the system buffer

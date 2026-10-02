@@ -36,3 +36,14 @@ public struct Member: Equatable, Sendable {
         return "\(nick)!\(user)@\(host)"
     }
 }
+
+extension Array where Element == Member {
+    /// The entry for `nick`, folding case — the one place "which of these is me?" is asked
+    /// (`ChatState.channelAccess`, the composer's prompt). Nil for an empty nick, and before
+    /// NAMES lands.
+    public func member(named nick: String) -> Member? {
+        guard !nick.isEmpty else { return nil }
+        let folded = nick.lowercased()
+        return first { $0.nick.lowercased() == folded }
+    }
+}

@@ -201,9 +201,10 @@ final class ComposerBar: UIView {
             self, selector: #selector(applyKeyboardPreferences),
             name: .composerKeyboardPreferencesDidChange, object: nil
         )
-        // "Away since 2:32 PM" is only today's 2:32 at midnight, so the strip re-says it with the
-        // date then — and in the new region's format after a locale change.
-        for name in [Notification.Name.NSCalendarDayChanged, NSLocale.currentLocaleDidChangeNotification] {
+        // "Away since 2:32 PM" stops being true at midnight (it needs the date), on a time zone
+        // or DST change (it's another hour), and on a region change (another format). The first
+        // covers the first three.
+        for name in [UIApplication.significantTimeChangeNotification, NSLocale.currentLocaleDidChangeNotification] {
             NotificationCenter.default.addObserver(self, selector: #selector(dateFormatChanged), name: name, object: nil)
         }
 
@@ -360,7 +361,7 @@ final class ComposerBar: UIView {
         if textView.isFirstResponder { textView.reloadInputViews() }
     }
 
-    /// Neither notification promises the main thread.
+    /// The locale notification doesn't promise the main thread.
     @objc private func dateFormatChanged() {
         DispatchQueue.main.async { [weak self] in self?.renderStrip() }
     }

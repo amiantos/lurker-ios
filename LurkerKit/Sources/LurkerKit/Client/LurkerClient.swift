@@ -929,7 +929,8 @@ final class LurkerClient {
         send(["type": "away", "message": message])
     }
 
-    func setBack() {
+    @discardableResult
+    func setBack() -> Bool {
         send(["type": "back"])
     }
 
