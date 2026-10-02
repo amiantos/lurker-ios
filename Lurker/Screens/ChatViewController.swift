@@ -369,7 +369,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // `.connected`, for as long as it takes to notice. Nothing retries a Back, so say so,
             // or the strip staying put reads as a Back that ignored you.
             let state = viewModel.state
-            guard !state.reachable || state.connection != .connected else { return viewModel.setBack() }
+            guard !state.reachable || state.connection != .connected else {
+                return viewModel.setBack(networkId: buffer.key.networkId)
+            }
             ToastView.show(
                 "Not connected — try again when you're back online",
                 symbol: "exclamationmark.circle",

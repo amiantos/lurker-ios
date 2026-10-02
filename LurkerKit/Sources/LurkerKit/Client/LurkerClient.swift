@@ -922,15 +922,24 @@ final class LurkerClient {
         return out
     }
 
-    /// Set yourself away on every network (`/away`), or clear it (`/back`, or `/away` with no
-    /// message). User-scoped, so neither verb carries a networkId — the server keys on the
-    /// account and fans out to all connections.
-    func setAway(_ message: String) {
-        send(["type": "away", "message": message])
+    /// Set yourself away (`/away`), or clear it (`/back`, or `/away` with no message), on the
+    /// network named (lurker#994). The server widens it to every network for `all: true`, for
+    /// the `away.all_networks` setting when `all` is nil, and when there's no network (the
+    /// system buffer).
+    func setAway(_ message: String, networkId: Int?, all: Bool?) {
+        send(Self.awayFrame(type: "away", message: message, networkId: networkId, all: all))
     }
 
-    func setBack() {
-        send(["type": "back"])
+    func setBack(networkId: Int?, all: Bool?) {
+        send(Self.awayFrame(type: "back", message: nil, networkId: networkId, all: all))
+    }
+
+    static func awayFrame(type: String, message: String?, networkId: Int?, all: Bool?) -> [String: Any] {
+        var frame: [String: Any] = ["type": type]
+        if let message { frame["message"] = message }
+        if let networkId { frame["networkId"] = networkId }
+        if let all { frame["all"] = all }
+        return frame
     }
 
     /// Page older history for a buffer, back from `before` (exclusive message id). The

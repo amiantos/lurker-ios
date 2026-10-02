@@ -167,4 +167,19 @@ final class AwayStateTests: XCTestCase {
         XCTAssertEqual(store.state.networks[2]?.name, "Libera")
         XCTAssertEqual(store.state.networks[2]?.away, wentAway)
     }
+
+    // MARK: - Outgoing frames (lurker#994)
+
+    /// `/away` and `/back` name the network they were typed on and carry `-all`/`-one` as
+    /// `all`; the system buffer names none, which the server reads as every network.
+    func testAwayFramesCarryTheNetworkAndTheFlag() {
+        let typed = LurkerClient.awayFrame(type: "away", message: "lunch", networkId: 3, all: nil)
+        XCTAssertEqual(typed as NSDictionary, ["type": "away", "message": "lunch", "networkId": 3])
+
+        let everywhere = LurkerClient.awayFrame(type: "back", message: nil, networkId: 3, all: true)
+        XCTAssertEqual(everywhere as NSDictionary, ["type": "back", "networkId": 3, "all": true])
+
+        let system = LurkerClient.awayFrame(type: "away", message: "", networkId: nil, all: false)
+        XCTAssertEqual(system as NSDictionary, ["type": "away", "message": "", "all": false])
+    }
 }

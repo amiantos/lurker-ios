@@ -275,12 +275,27 @@ final class CommandParserTests: XCTestCase {
     func testAwayCarriesItsMessageAndRunsFromSystemBuffer() {
         XCTAssertEqual(
             effects("/away lunch", networkId: nil, target: ":system:"),
-            [.away(message: "lunch")]
+            [.away(message: "lunch", all: nil)]
         )
     }
 
     func testBackRunsFromSystemBuffer() {
-        XCTAssertEqual(effects("/back", networkId: nil, target: ":system:"), [.back])
+        XCTAssertEqual(effects("/back", networkId: nil, target: ":system:"), [.back(all: nil)])
+    }
+
+    /// lurker#994: `-all` reaches every network, `-one` just this one; without either the
+    /// server's setting decides.
+    func testAwayAndBackTakeAScopeFlag() {
+        XCTAssertEqual(effects("/away -all lunch"), [.away(message: "lunch", all: true)])
+        XCTAssertEqual(effects("/away -ONE lunch break"), [.away(message: "lunch break", all: false)])
+        XCTAssertEqual(effects("/away -all"), [.away(message: "", all: true)])
+        XCTAssertEqual(effects("/back -all"), [.back(all: true)])
+        XCTAssertEqual(effects("/back -one"), [.back(all: false)])
+    }
+
+    func testAwayReadsAFlagOnlyAtTheFrontAndAsAWholeWord() {
+        XCTAssertEqual(effects("/away back at -all hands"), [.away(message: "back at -all hands", all: nil)])
+        XCTAssertEqual(effects("/away -allnighter"), [.away(message: "-allnighter", all: nil)])
     }
 
     func testCommandsPrintsLocalHelpFromSystemBuffer() {

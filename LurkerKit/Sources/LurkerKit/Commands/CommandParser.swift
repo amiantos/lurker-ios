@@ -112,10 +112,12 @@ public enum CommandParser {
         case "commands":
             return [.info(CommandRegistry.helpText())]
         case "away":
-            // Empty message clears away. User-scoped — no network attached.
-            return [.away(message: argLine)]
+            // Empty message clears away. The network it's typed on goes with it, and from the
+            // system buffer there's none, which the server reads as every network.
+            let (all, message) = awayFlag(argLine)
+            return [.away(message: message, all: all)]
         case "back":
-            return [.back]
+            return [.back(all: awayFlag(argLine).all)]
         // Ignore rules are global by default, so both verbs run without a network — the system
         // buffer can list them and write them. Only `-network` needs a connection, and that's
         // checked where it's read.
@@ -369,6 +371,22 @@ public enum CommandParser {
         "list", "ls", "accept", "ok", "yes", "get", "reject", "deny", "no", "cancel", "abort", "stop",
         "send", "resume",
     ]
+
+    /// The scope flag at the front of an `/away` or `/back` line (lurker#994): `-all` for every
+    /// network, `-one` for just this one, nil without one. Only a leading, whole-word flag
+    /// counts — `/away back at -all hands` is a message, as is `-allnighter`. Mirrors the web
+    /// client's `parseAwayFlag`.
+    static func awayFlag(_ argLine: String) -> (all: Bool?, rest: String) {
+        let line = argLine.drop { $0 == " " || $0 == "\t" }
+        let word = line.prefix { $0 != " " && $0 != "\t" }
+        let all: Bool
+        switch word.lowercased() {
+        case "-all": all = true
+        case "-one": all = false
+        default: return (nil, argLine)
+        }
+        return (all, String(line.dropFirst(word.count).drop { $0 == " " || $0 == "\t" }))
+    }
 
     /// `/dcc` — the chat verbs, in irssi's syntax exactly, as the web has them:
     ///

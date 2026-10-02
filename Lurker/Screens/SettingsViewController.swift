@@ -49,6 +49,9 @@ final class SettingsViewController: UITableViewController {
         // sake. It earns the row under this screen's rule now that both the @ picker and Reply
         // honour it (#133).
         ("input.completion.nick_suffix", "Address nicks with"),
+        // What a bare /away or /back, and the away strip's Back, reach: off, the network you're
+        // on; on, every network (lurker#994). Composing again, so it sits beside the suffix.
+        ("away.all_networks", "Away on every network"),
     ]
 
     /// Curated choices for a `string` key the phone offers as a pull-down.
