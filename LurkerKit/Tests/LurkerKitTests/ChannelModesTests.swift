@@ -226,6 +226,14 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertNil(store.state.networks[9], "never materializes a network")
     }
 
+    /// A dropped socket can't hear the `state` frame that would retire the vocabulary, so the
+    /// drop itself does — until the next snapshot restates it.
+    func testSpecIsForgottenWhenOurSocketDrops() {
+        let store = storeWithChannel()
+        store.apply(.socketClosed(reason: nil, code: nil))
+        XCTAssertNil(store.state.networks[1]?.modeSpec)
+    }
+
     func testChannelStateFollowsARenameAndGoesWithAClose() {
         let store = storeWithChannel()
         store.apply(.bufferRenamed(networkId: 1, from: "#c", to: "#d", bufferId: nil, merged: false, mergedFromBufferId: nil))
@@ -250,6 +258,20 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertFalse(voiced.canSetTopic, "+t, and this network has no halfop: the gate rounds UP to op")
         let open = storeWithChannel(modes: "n", selfModes: []).state.channelAccess(key)
         XCTAssertTrue(open.canSetTopic, "-t: anyone in the channel")
+    }
+
+    /// ⚠ No rank gate opens on a guessed ladder: until the network's PREFIX arrives, a +t topic
+    /// and the modes are read-only — even for someone holding `o`. A -t topic needs no rank.
+    func testAnUnknownSpecOpensNoRankGate() {
+        let store = storeWithChannel(modes: "nt", selfModes: ["o"])
+        store.apply(.modeSpec(networkId: 1, spec: nil))
+        let keyed = store.state.channelAccess(key)
+        XCTAssertNil(keyed.spec)
+        XCTAssertFalse(keyed.canEditModes)
+        XCTAssertFalse(keyed.canSetTopic)
+
+        store.apply(.channelModes(networkId: 1, target: "#c", modes: "n", params: [:], createdAt: nil))
+        XCTAssertTrue(store.state.channelAccess(key).canSetTopic, "-t: anyone in the channel")
     }
 
     func testNothingIsEditableOutOfTheChannel() {

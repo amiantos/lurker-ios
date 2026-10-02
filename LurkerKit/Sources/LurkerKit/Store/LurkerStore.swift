@@ -1467,6 +1467,10 @@ final class LurkerStore {
             // and nothing is reconnecting.
             case .incompatible: break
             }
+            // Every network's mode vocabulary was this socket's word, and a dropped socket can't
+            // hear the `state` frame that would retire it. The next snapshot restates it; until
+            // then it's unknown, which is what nil says.
+            for id in next.networks.keys { next.networks[id]?.modeSpec = nil }
             // Nobody is typing at us over a socket that isn't there. The lease would retire
             // these on its own, but a `paused` entry holds for 30s — long enough to survive a
             // reconnect and show a peer composing when we've heard nothing from them since

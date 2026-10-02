@@ -41,14 +41,6 @@ public struct ModeSpec: Equatable, Sendable {
         self.maxModes = maxModes
         self.topicLen = topicLen
     }
-
-    /// The conventional ladder, for a gate asked before the network has said (`modeSpec` nil).
-    /// Only ever used to *gate* — never to classify a letter, which needs the real spec.
-    public static let defaultPrefix: [PrefixMode] = [
-        PrefixMode(mode: "q", symbol: "~"), PrefixMode(mode: "a", symbol: "&"),
-        PrefixMode(mode: "o", symbol: "@"), PrefixMode(mode: "h", symbol: "%"),
-        PrefixMode(mode: "v", symbol: "+"),
-    ]
 }
 
 /// One membership mode from PREFIX, e.g. `o` / `@`.
@@ -551,15 +543,16 @@ extension ChatState {
         let joined = buffers[key.id]?.joined == true
         let nick = network?.nick.lowercased() ?? ""
         let mine = nick.isEmpty ? [] : (members[key.id]?.first { $0.nick.lowercased() == nick }?.modes ?? [])
-        // Before the vocabulary arrives the conventional ladder gates — gating only, never
-        // classifying, and the server refuses anything it got wrong.
-        let prefix = spec?.prefix ?? ModeSpec.defaultPrefix
+        // ⚠ No rank gate opens before the vocabulary arrives. A conventional ladder in its place
+        // would rank letters this network may not have, and offer a +t topic edit to someone
+        // below the rank it actually needs. A -t topic needs no rank, so it stays editable.
         let modes = channelModes[key.id]?.modes ?? ""
+        let atLeast = { (letter: String) in spec.map { ChannelRank.atLeast(mine, prefix: $0.prefix, letter) } ?? false }
         return ChannelAccess(
             spec: spec,
             joined: joined,
-            canEditModes: joined && ChannelRank.atLeast(mine, prefix: prefix, "o"),
-            canSetTopic: joined && (!modes.contains("t") || ChannelRank.atLeast(mine, prefix: prefix, "h"))
+            canEditModes: joined && atLeast("o"),
+            canSetTopic: joined && (!modes.contains("t") || atLeast("h"))
         )
     }
 }
