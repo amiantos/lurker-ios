@@ -22,6 +22,24 @@ final class MemberPrefixTests: XCTestCase {
         XCTAssertEqual(MemberPrefix.of(["v"]), "+")
     }
 
+    // MARK: - Your own glyph (#135)
+
+    func testYourOwnGlyphIsYourHighestMode() {
+        let members = [member("alice", ["o"]), member("amiantos", ["v", "o"])]
+        XCTAssertEqual(MemberPrefix.of(nick: "amiantos", in: members), "@")
+    }
+
+    func testYourOwnGlyphFoldsNickCase() {
+        XCTAssertEqual(MemberPrefix.of(nick: "Amiantos", in: [member("amiantos", ["h"])]), "%")
+    }
+
+    func testNoGlyphWhenYouHoldNoModeOrArentListedYet() {
+        XCTAssertEqual(MemberPrefix.of(nick: "amiantos", in: [member("amiantos")]), "")
+        // Before NAMES lands, or another member's glyph would be a lie about you.
+        XCTAssertEqual(MemberPrefix.of(nick: "amiantos", in: [member("alice", ["o"])]), "")
+        XCTAssertEqual(MemberPrefix.of(nick: "", in: [member("", ["o"])]), "")
+    }
+
     func testNoModesMeansNoGlyph() {
         XCTAssertEqual(MemberPrefix.of([]), "")
     }

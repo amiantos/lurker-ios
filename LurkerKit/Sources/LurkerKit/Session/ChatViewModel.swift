@@ -1424,6 +1424,13 @@ public final class ChatViewModel {
         client.unfavoriteBuffer(networkId: networkId, target: target)
     }
 
+    /// `/back` from a control rather than the composer — the away strip's Back (#135). No local
+    /// mutation: the strip comes down when the server's `away-state` echo folds in, on every
+    /// device at once.
+    public func setBack() {
+        client.setBack()
+    }
+
     /// Ask the network who `nick` is (#12) — what the profile screen sends on open, and what
     /// its Refresh does.
     ///

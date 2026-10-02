@@ -361,6 +361,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             viewModel.flushDraft(buffer.key)
         }
         composer.onCancelReply = { [weak self] in self?.cancelReply() }
+        composer.onBack = { [weak self] in self?.viewModel.setBack() }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
             self?.uploadPastedImage(data: data, mime: mime, filename: name)
@@ -598,6 +599,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // is the default, so this costs nothing until someone turns it on.
                     && Self.modePrefixes(for: old, buffer: thisBuffer)
                         == Self.modePrefixes(for: new, buffer: thisBuffer)
+                    // Your own glyph, for the composer's prompt (#135) — separately, because
+                    // the map above is empty unless the setting is on, and the prompt shows
+                    // your rank either way. Without this, being opped changes the field only
+                    // when the next line happens to arrive.
+                    && Self.ownPrefix(for: old, buffer: thisBuffer)
+                        == Self.ownPrefix(for: new, buffer: thisBuffer)
                     // Ignore rules decide which of `messages` actually renders and which of
                     // them highlight, and they arrive on their own from another device — the
                     // same trap settings and typing hit. Without this an `/ignore` typed in a
@@ -813,23 +820,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         buffer.displayName(networkName: buffer.networkId.flatMap { networks[$0]?.name })
     }
 
-    /// What the empty field says: the network's name — the transport, the way iMessage
-    /// captions its field "iMessage" or "Text Message" rather than the recipient, who is
-    /// already named by the title. Re-read on every `apply`, because a network the
-    /// snapshot materialized has no name until the REST roster lands (#136) — and until it
-    /// does, the fallback below is what shows, rather than a placeholder posing as a name.
+    /// What the empty field says: who you'll be speaking as — your nick on this network, with
+    /// your rank in a channel (`@amiantos`), the prompt irssi and WeeChat put beside their input
+    /// line (#135). The title already names the conversation and the network, so the field
+    /// doesn't repeat either; what it adds is the thing that changes under you, a `/nick` or a
+    /// collision's `amiantos_`. Re-read on every `apply`, so it follows both and a mode change.
+    /// Before the network has told us a nick there's nothing true to say, so it says "Message".
     /// The system buffer is the app's own command console, so it invites one.
     ///
-    /// A DCC chat's transport is the chat itself, not the network — and when it has no session,
-    /// the field is the one place always in view to say so before a line is typed into nothing.
-    /// The web puts the same sentence in its status bar.
+    /// A DCC chat isn't spoken over the network, so it names the chat instead — and when it has
+    /// no session, the field is the one place always in view to say so before a line is typed
+    /// into nothing. The web puts the same sentence in its status bar.
     private var composerPlaceholder: String {
         guard let networkId = buffer.networkId else { return "Type a command…" }
         if buffer.kind == .dcc {
             guard viewModel.state.dccChatSession(buffer.key) == false else { return "DCC Chat" }
             return "Not connected — /dcc chat \(DccChat.peer(buffer.target))"
         }
-        return networks[networkId]?.name ?? "Message"
+        guard let nick = networks[networkId]?.nick, !nick.isEmpty else { return "Message" }
+        return Self.ownPrefix(for: viewModel.state, buffer: buffer) + nick
     }
 
     /// Leave this screen when the buffer it is showing isn't open any more.
@@ -1102,6 +1111,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         updateTypingTicker()
         updateTitle(state)
         composer.placeholder = composerPlaceholder
+        composer.showAway(buffer.networkId.flatMap { state.networks[$0]?.away })
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
         // the most recent speaker, and a leaver stops being offered.
         updateSuggestions()
@@ -1733,6 +1743,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if !glyph.isEmpty { prefixes[member.nick.lowercased()] = glyph }
         }
         return prefixes
+    }
+
+    /// Our own channel-mode glyph here (`@`, `+`, …), or "" — outside a channel, and in one where
+    /// we hold no mode. Unlike `modePrefixes`, not behind `look.nick.show_mode_prefix`: that
+    /// setting decorates other people's lines, and this is the prompt telling you your own rank.
+    private static func ownPrefix(for state: ChatState, buffer: Buffer) -> String {
+        guard buffer.kind == .channel, let nick = ownNick(for: state, buffer: buffer) else { return "" }
+        return MemberPrefix.of(nick: nick, in: state.members[buffer.key.id] ?? [])
     }
 
     /// Our own nick on this buffer's network, or nil where there isn't one — the system buffer

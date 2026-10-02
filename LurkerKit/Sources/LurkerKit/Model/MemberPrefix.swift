@@ -22,6 +22,15 @@ public enum MemberPrefix {
         return ""
     }
 
+    /// Your own glyph in a channel, for the composer's prompt (#135): `nick`'s entry in
+    /// `members`, or "" when you hold no mode there — or aren't in the list yet, which is the
+    /// moment before NAMES lands, and an unprivileged prompt is the right guess for it.
+    public static func of(nick: String, in members: [Member]) -> String {
+        guard !nick.isEmpty else { return "" }
+        let folded = nick.lowercased()
+        return members.first { $0.nick.lowercased() == folded }.map { of($0.modes) } ?? ""
+    }
+
     /// Sort position: lower is higher-ranked; unprivileged members sort last.
     public static func order(_ modes: [String]) -> Int {
         for (index, letter) in rank.enumerated() where modes.contains(letter) {
