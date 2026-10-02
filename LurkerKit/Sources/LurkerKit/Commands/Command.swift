@@ -26,8 +26,9 @@ import Foundation
 /// parser only decides; `ChatViewModel` performs the I/O. Effects that touch a network
 /// (`send`/`action`/`notice`/`raw`/`join`/`part`/`close`/`ctcp`) run against the issuing
 /// buffer's network — they carry a target/channel but not the id, which the executor
-/// supplies from context. `away`/`back` carry no network at all: they're user-scoped and
-/// hit every connection (see `away_is_user_scoped`).
+/// supplies from context. So do `away`/`back` (lurker#994), which the server then scopes:
+/// that network, or every network for `-all`, the `away.all_networks` setting, or no
+/// network at all (the system buffer).
 public enum CommandEffect: Equatable, Sendable {
     /// PRIVMSG to a target. The server splits it on newlines and byte-length, so the full
     /// text goes as one `send` — the client never chunks (see `LurkerClient.sendMessage`).

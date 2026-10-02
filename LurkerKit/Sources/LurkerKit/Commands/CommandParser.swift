@@ -376,8 +376,9 @@ public enum CommandParser {
 
     /// The scope flag at the front of an `/away` or `/back` line (lurker#994): `-all` for every
     /// network, `-one` for just this one, nil without one. Only a leading, whole-word flag
-    /// counts — `/away back at -all hands` is a message, as is `-allnighter`. Mirrors the web
-    /// client's `parseAwayFlag`.
+    /// counts — `/away back at -all hands` is a message, as is `-allnighter`. The web's
+    /// `parseAwayFlag` reads it the same way, except that its `\s` also counts U+FEFF: this
+    /// splits on `Character.isWhitespace` like every other command (see `IgnoreArgs.tokenize`).
     static func awayFlag(_ argLine: String) -> (all: Bool?, rest: String) {
         let line = argLine.drop(while: \.isWhitespace)
         let word = line.prefix { !$0.isWhitespace }

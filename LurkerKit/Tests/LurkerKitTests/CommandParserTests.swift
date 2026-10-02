@@ -291,7 +291,7 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/away -all"), [.away(message: "", all: true)])
         XCTAssertEqual(effects("/back -all"), [.back(all: true)])
         XCTAssertEqual(effects("/back -one"), [.back(all: false)])
-        // Any whitespace separates, as the web's \s does: a pasted non-breaking space too.
+        // Any Unicode whitespace separates: a pasted non-breaking space too.
         XCTAssertEqual(effects("/away -all\u{00A0}lunch"), [.away(message: "lunch", all: true)])
     }
 

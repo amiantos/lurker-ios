@@ -817,8 +817,9 @@ public final class ChatViewModel {
     }
 
     /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
-    /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network; `away`/
-    /// `back` are user-scoped and carry none; `info` prints a local line.
+    /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network, `away`/
+    /// `back` too, which the server may widen to every network (lurker#994); `info` prints a
+    /// local line.
     private func run(
         _ effects: [CommandEffect], in key: BufferKey, line: String, reply: PendingReply? = nil
     ) -> SendOutcome {
