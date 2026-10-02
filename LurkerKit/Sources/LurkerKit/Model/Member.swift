@@ -36,3 +36,22 @@ public struct Member: Equatable, Sendable {
         return "\(nick)!\(user)@\(host)"
     }
 }
+
+extension Array where Element == Member {
+    /// The entry for `nick`, folding case — the one place "which of these is me?" is asked
+    /// (`ChatState.channelAccess`, the composer's prompt). Nil for an empty nick, and before
+    /// NAMES lands.
+    ///
+    /// Runs on every state frame (the composer's prompt), so the exact spelling is tried first:
+    /// the server lists us as it knows us, which is how `Network.nick` has it too, and that
+    /// match costs no allocation. The fold is the fallback, not the path.
+    ///
+    /// ⚠ No length shortcut in front of the fold. Lowercasing can change a nick's UTF-8 length
+    /// (`İ` is two bytes, its fold three), so one would turn away the very member it's looking for.
+    public func member(named nick: String) -> Member? {
+        guard !nick.isEmpty else { return nil }
+        if let exact = first(where: { $0.nick == nick }) { return exact }
+        let folded = nick.lowercased()
+        return first { $0.nick.lowercased() == folded }
+    }
+}

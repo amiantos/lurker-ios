@@ -22,6 +22,27 @@ final class MemberPrefixTests: XCTestCase {
         XCTAssertEqual(MemberPrefix.of(["v"]), "+")
     }
 
+    // MARK: - Your own glyph, for the composer's prompt (#135)
+
+    func testFindingYourselfFoldsNickCase() {
+        let members = [member("alice", ["o"]), member("amiantos", ["v", "o"])]
+        XCTAssertEqual(members.member(named: "Amiantos")?.modes, ["v", "o"])
+    }
+
+    func testANickWhoseFoldChangesLengthIsStillFound() {
+        // "İ" is two UTF-8 bytes and lowercases to three — a length check in front of the
+        // fold would turn this member away, for `channelAccess` as much as the prompt.
+        let members = [member("alice"), member("İzmir", ["o"])]
+        XCTAssertEqual(members.member(named: "İzmir")?.modes, ["o"])
+        XCTAssertEqual(members.member(named: "i̇zmir")?.modes, ["o"])
+    }
+
+    func testNobodyIsYouBeforeNamesOrWithoutANick() {
+        // Another member's glyph would be a lie about you.
+        XCTAssertNil([member("alice", ["o"])].member(named: "amiantos"))
+        XCTAssertNil([member("", ["o"])].member(named: ""))
+    }
+
     func testNoModesMeansNoGlyph() {
         XCTAssertEqual(MemberPrefix.of([]), "")
     }

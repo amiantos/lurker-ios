@@ -68,6 +68,8 @@ final class ComposerBar: UIView {
     var onEndEditing: (() -> Void)?
     /// The pending-reply bar's ×.
     var onCancelReply: (() -> Void)?
+    /// The away strip's Back (#135).
+    var onBack: (() -> Void)?
 
     /// The draft as of the last `onDraftChange`, so a re-measure that changes no text doesn't
     /// masquerade as an edit. See `textViewDidChange`.
@@ -103,13 +105,27 @@ final class ComposerBar: UIView {
     private let placeholderLabel = UILabel()
     private let attachButton = UIButton(type: .system)
     private let sendButton = UIButton(type: .system)
-    /// The pending reply (iOS #184), as a strip above the field: "Replying to alice  ×". The
-    /// web keeps it in its status bar; iOS has none, and this is where Messages, Discord and
-    /// Telegram all put it — attached to the thing it changes.
-    private let replyBar = UIVisualEffectView()
-    private let replyLabel = UILabel()
-    private let replyCancel = UIButton(type: .system)
-    private var containerBelowReply: NSLayoutConstraint!
+    /// The strip above the field. It says one of two things:
+    ///
+    /// - The pending reply (iOS #184): "Replying to alice  ×". The web keeps it in its status
+    ///   bar; iOS has none, and this is where Messages, Discord and Telegram all put it —
+    ///   attached to the thing it changes.
+    /// - That you're away (#135): "Away since 2:32 PM · lunch  Back". The indicator and the way
+    ///   out are one control, so getting back doesn't depend on remembering `/back`.
+    ///
+    /// The reply wins while one is pending — it's what the next send does — and the away strip
+    /// comes back once it's spent or cancelled. One slot rather than two stacked strips, which
+    /// would eat into the little conversation a phone shows above the keyboard.
+    private let strip = UIVisualEffectView()
+    private let stripLabel = UILabel()
+    private let stripButton = UIButton(type: .system)
+    private var reply: PendingReply?
+    private var away: AwayState?
+    /// `away`'s words, built when it or the clock changes rather than on every render — a
+    /// reply shown or cancelled, a Dynamic Type change — since building them means a
+    /// `DateFormatter`.
+    private var awayText: AwayStrip?
+    private var containerBelowStrip: NSLayoutConstraint!
     private var containerAtTop: NSLayoutConstraint!
 
     /// How tall the text may grow before it scrolls internally instead. Five lines is the
@@ -189,6 +205,12 @@ final class ComposerBar: UIView {
             self, selector: #selector(applyKeyboardPreferences),
             name: .composerKeyboardPreferencesDidChange, object: nil
         )
+        // "Away since 2:32 PM" stops being true at midnight (it needs the date), on a time zone
+        // or DST change (it's another hour), and on a region change (another format). The first
+        // covers the first three.
+        for name in [UIApplication.significantTimeChangeNotification, NSLocale.currentLocaleDidChangeNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(dateFormatChanged), name: name, object: nil)
+        }
 
         // A UITextView has no placeholder of its own, so it's a label pinned inside — at the
         // text container's own origin, in the text view's own font, so it's indistinguishable
@@ -204,24 +226,25 @@ final class ComposerBar: UIView {
         configureRoundGlass(sendGlass, button: sendButton, symbol: "arrow.up")
         sendButton.addAction(UIAction { [weak self] _ in self?.fire() }, for: .touchUpInside)
 
-        replyBar.effect = Self.glass()
-        replyBar.cornerConfiguration = .corners(radius: .fixed(22))
-        replyBar.translatesAutoresizingMaskIntoConstraints = false
-        replyBar.isHidden = true
-        replyLabel.font = .preferredFont(forTextStyle: .footnote)
-        replyLabel.adjustsFontForContentSizeCategory = true
-        replyLabel.lineBreakMode = .byTruncatingTail
-        replyLabel.translatesAutoresizingMaskIntoConstraints = false
-        replyCancel.setImage(UIImage(systemName: "xmark.circle.fill"), for: .normal)
-        replyCancel.tintColor = .secondaryLabel
-        replyCancel.accessibilityLabel = "Cancel reply"
-        replyCancel.translatesAutoresizingMaskIntoConstraints = false
-        replyCancel.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
-        replyCancel.setContentHuggingPriority(.required, for: .horizontal)
-        replyCancel.setContentCompressionResistancePriority(.required, for: .horizontal)
-        replyBar.contentView.addSubview(replyLabel)
-        replyBar.contentView.addSubview(replyCancel)
-        addSubview(replyBar)
+        strip.effect = Self.glass()
+        strip.cornerConfiguration = .corners(radius: .fixed(22))
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        strip.isHidden = true
+        stripLabel.font = .preferredFont(forTextStyle: .footnote)
+        stripLabel.adjustsFontForContentSizeCategory = true
+        stripLabel.lineBreakMode = .byTruncatingTail
+        stripLabel.translatesAutoresizingMaskIntoConstraints = false
+        stripButton.translatesAutoresizingMaskIntoConstraints = false
+        stripButton.addAction(UIAction { [weak self] _ in
+            guard let self else { return }
+            // What the strip is showing NOW, not what it showed when the action was built.
+            if reply != nil { onCancelReply?() } else { onBack?() }
+        }, for: .touchUpInside)
+        stripButton.setContentHuggingPriority(.required, for: .horizontal)
+        stripButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        strip.contentView.addSubview(stripLabel)
+        strip.contentView.addSubview(stripButton)
+        addSubview(strip)
 
         fieldGlass.contentView.addSubview(textView)
         fieldGlass.contentView.addSubview(placeholderLabel)
@@ -259,21 +282,21 @@ final class ComposerBar: UIView {
 
             container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
 
-            replyBar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            replyBar.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
-            replyBar.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
-            replyLabel.leadingAnchor.constraint(equalTo: replyBar.contentView.leadingAnchor, constant: 14),
-            replyLabel.centerYAnchor.constraint(equalTo: replyBar.contentView.centerYAnchor),
-            replyLabel.topAnchor.constraint(greaterThanOrEqualTo: replyBar.contentView.topAnchor, constant: 7),
-            replyLabel.bottomAnchor.constraint(lessThanOrEqualTo: replyBar.contentView.bottomAnchor, constant: -7),
-            replyCancel.leadingAnchor.constraint(equalTo: replyLabel.trailingAnchor, constant: 4),
-            replyCancel.trailingAnchor.constraint(equalTo: replyBar.contentView.trailingAnchor),
-            // The only way to cancel by touch, so a full 44pt target — and inside the bar, which
+            strip.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            strip.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            strip.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+            stripLabel.leadingAnchor.constraint(equalTo: strip.contentView.leadingAnchor, constant: 14),
+            stripLabel.centerYAnchor.constraint(equalTo: strip.contentView.centerYAnchor),
+            stripLabel.topAnchor.constraint(greaterThanOrEqualTo: strip.contentView.topAnchor, constant: 7),
+            stripLabel.bottomAnchor.constraint(lessThanOrEqualTo: strip.contentView.bottomAnchor, constant: -7),
+            stripButton.leadingAnchor.constraint(equalTo: stripLabel.trailingAnchor, constant: 4),
+            stripButton.trailingAnchor.constraint(equalTo: strip.contentView.trailingAnchor),
+            // The only way to cancel (or come back) by touch, so a full 44pt target — and inside the bar, which
             // sets the bar's height: a target that hung outside it would never be hit.
-            replyCancel.topAnchor.constraint(equalTo: replyBar.contentView.topAnchor),
-            replyCancel.bottomAnchor.constraint(equalTo: replyBar.contentView.bottomAnchor),
-            replyCancel.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            replyCancel.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            stripButton.topAnchor.constraint(equalTo: strip.contentView.topAnchor),
+            stripButton.bottomAnchor.constraint(equalTo: strip.contentView.bottomAnchor),
+            stripButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
+            stripButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             container.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
 
@@ -291,7 +314,7 @@ final class ComposerBar: UIView {
         ] + pillSizeConstraints)
 
         containerAtTop = container.topAnchor.constraint(equalTo: topAnchor, constant: 6)
-        containerBelowReply = container.topAnchor.constraint(equalTo: replyBar.bottomAnchor, constant: 6)
+        containerBelowStrip = container.topAnchor.constraint(equalTo: strip.bottomAnchor, constant: 6)
         containerAtTop.isActive = true
 
         fieldAfterAttach = fieldGlass.leadingAnchor.constraint(
@@ -318,6 +341,8 @@ final class ComposerBar: UIView {
         pillSizeConstraints.forEach { $0.constant = pill }
         fieldGlass.cornerConfiguration = .corners(radius: .fixed(pill / 2))
         textViewDidChange(textView)
+        // Back's title is a button configuration's, which doesn't follow Dynamic Type itself.
+        renderStrip()
     }
 
     @available(*, unavailable)
@@ -340,17 +365,44 @@ final class ComposerBar: UIView {
         if textView.isFirstResponder { textView.reloadInputViews() }
     }
 
-    /// Show the pending reply above the field, or take the strip away (nil). The bar grows or
+    /// The locale notification doesn't promise the main thread.
+    @objc private func dateFormatChanged() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            awayText = AwayStrip.make(away)
+            renderStrip()
+        }
+    }
+
+    /// Show the pending reply above the field, or take it away (nil). The strip grows or
     /// shrinks the composer, so the owner hears about it the way it hears about a taller field.
     func showReply(_ reply: PendingReply?) {
-        let wasShowing = !replyBar.isHidden
+        self.reply = reply
+        renderStrip()
+    }
+
+    /// Show that you're away above the field, or stop (nil, or an away that isn't active).
+    ///
+    /// ⚠ Gated on `active` alone. `since` and `message` deliberately outlive `/back` so the
+    /// dividers can draw the finished pair (see `AwayState`), so their presence says nothing.
+    func showAway(_ away: AwayState?) {
+        let away = away?.active == true ? away : nil
+        guard away != self.away else { return }
+        self.away = away
+        awayText = AwayStrip.make(away)
+        renderStrip()
+    }
+
+    private func renderStrip() {
+        let wasShowing = !strip.isHidden
+        let footnote = UIFont.preferredFont(forTextStyle: .footnote)
+        stripButton.accessibilityHint = nil
         if let reply {
             let text = NSMutableAttributedString(
                 string: "Replying to ",
                 attributes: [.foregroundColor: UIColor.secondaryLabel]
             )
             let name = reply.isSelf ? "yourself" : reply.nick
-            let footnote = UIFont.preferredFont(forTextStyle: .footnote)
             text.append(NSAttributedString(string: name, attributes: [
                 .foregroundColor: UIColor.label, .font: footnote.bold,
             ]))
@@ -360,13 +412,41 @@ final class ComposerBar: UIView {
                     string: ": " + excerpt, attributes: [.foregroundColor: UIColor.secondaryLabel]
                 ))
             }
-            replyLabel.attributedText = text
-            replyLabel.accessibilityLabel = "Replying to \(name)" + (excerpt.isEmpty ? "" : ": \(excerpt)")
+            stripLabel.attributedText = text
+            stripLabel.accessibilityLabel = "Replying to \(name)" + (excerpt.isEmpty ? "" : ": \(excerpt)")
+            var config = UIButton.Configuration.plain()
+            config.image = UIImage(systemName: "xmark.circle.fill")
+            config.baseForegroundColor = .secondaryLabel
+            config.contentInsets = .zero
+            stripButton.configuration = config
+            stripButton.accessibilityLabel = "Cancel reply"
+        } else if let label = awayText {
+            let text = NSMutableAttributedString(string: label.lead, attributes: [
+                .foregroundColor: UIColor.label, .font: footnote.bold,
+            ])
+            text.append(NSAttributedString(
+                string: label.detail, attributes: [.foregroundColor: UIColor.secondaryLabel]
+            ))
+            stripLabel.attributedText = text
+            stripLabel.accessibilityLabel = label.lead + label.detail
+            var config = UIButton.Configuration.plain()
+            config.title = "Back"
+            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+                var outgoing = incoming
+                outgoing.font = UIFont.preferredFont(forTextStyle: .footnote).bold
+                return outgoing
+            }
+            // Clear of the strip's rounded end, which a bare 44pt-wide title would crowd.
+            config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 16)
+            stripButton.configuration = config
+            stripButton.accessibilityLabel = "Back"
+            stripButton.accessibilityHint = "Clears your away status."
         }
-        replyBar.isHidden = reply == nil
-        containerAtTop.isActive = reply == nil
-        containerBelowReply.isActive = reply != nil
-        if wasShowing != (reply != nil) { onHeightChange?() }
+        let showing = reply != nil || awayText != nil
+        strip.isHidden = !showing
+        containerAtTop.isActive = !showing
+        containerBelowStrip.isActive = showing
+        if wasShowing != showing { onHeightChange?() }
     }
 
     /// Clears the field after a send the owner accepted, and collapses it back to one line.
