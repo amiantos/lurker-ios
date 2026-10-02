@@ -85,8 +85,13 @@ final class ModeListViewController: UITableViewController {
 
         // Only what this screen reads: the state moves on every line in every buffer.
         viewModel.statePublisher
-            .map { [key] state in
-                Slice(access: state.channelAccess(key), linkUp: key.networkId.flatMap { state.networks[$0] }?.state == .connected)
+            .map { [key, letter] state in
+                let access = state.channelAccess(key)
+                return Slice(
+                    access: access,
+                    linkUp: key.networkId.flatMap { state.networks[$0] }?.state == .connected,
+                    listed: access.spec?.list.contains(letter) == true
+                )
             }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
@@ -102,7 +107,12 @@ final class ModeListViewController: UITableViewController {
     private struct Slice: Equatable {
         let access: ChannelAccess
         let linkUp: Bool
-        var ready: Bool { linkUp && access.joined }
+        /// The network's vocabulary has arrived and says this letter is a list. ⚠ Part of
+        /// readiness, not just of editing: a snapshot with a null `modeSpec` is a connected,
+        /// joined channel whose fetch can still fail — and when the spec lands, that is the edge
+        /// that pays the owed fetch.
+        let listed: Bool
+        var ready: Bool { linkUp && access.joined && listed }
     }
 
     private func linkMoved(_ slice: Slice) {
@@ -157,7 +167,11 @@ final class ModeListViewController: UITableViewController {
                 status = .failed("Not connected.")
                 // Asked again when the link comes up.
                 fetchOwed = true
-            case .failed(let message): status = .failed(message)
+            case .failed(let message):
+                status = .failed(message)
+                // Asked before the link was ready (the vocabulary hadn't arrived, say): ask again
+                // when it is. A refusal from a ready link stands until the user refreshes.
+                if lastSlice?.ready != true { fetchOwed = true }
             }
             render()
         }
@@ -187,6 +201,13 @@ final class ModeListViewController: UITableViewController {
     /// back — nothing is applied here.
     private func change(_ sign: Character, _ mask: String) {
         guard !busy else { return }
+        // Checked now, not when the button was drawn: a reconnect can bring a vocabulary in which
+        // this letter isn't a list — or is an owner grant (`q`) — and a stale button would send it.
+        guard viewModel.state.networks[key.networkId ?? -1]?.modeSpec?.list.contains(letter) == true else {
+            actionError = "This network doesn't have this list right now."
+            render()
+            return
+        }
         // One IRC parameter: the server refuses a mask with a space in it, so say so here.
         if mask.contains(where: \.isWhitespace) {
             actionError = "A mask can't contain spaces."
@@ -219,7 +240,7 @@ final class ModeListViewController: UITableViewController {
         }
         let errors = [actionError].compactMap { $0 } + refusals.current
         let drawing = Drawn(
-            status: status, shown: next, canEdit: viewModel.state.channelAccess(key).canEditModes,
+            status: status, shown: next, canEdit: lastSlice.map { $0.access.canEditModes && $0.listed } ?? false,
             busy: busy, footer: errors.isEmpty ? nil : errors.joined(separator: "\n")
         )
         guard drawing != drawn else { return }
