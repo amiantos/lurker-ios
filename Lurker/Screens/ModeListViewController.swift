@@ -208,6 +208,13 @@ final class ModeListViewController: UITableViewController {
             render()
             return
         }
+        // …and whether we may still change it: an Add alert or a context menu can outlive a deop
+        // or a part, and sending from one would ask for a 482.
+        guard viewModel.state.channelAccess(key).canEditModes else {
+            actionError = "Only channel operators can change this list."
+            render()
+            return
+        }
         // One IRC parameter: the server refuses a mask with a space in it, so say so here.
         if mask.contains(where: \.isWhitespace) {
             actionError = "A mask can't contain spaces."

@@ -231,14 +231,14 @@ final class ChannelSettingsViewController: UITableViewController {
         Task { [weak self, viewModel, key] in
             var failure: ChatViewModel.ChannelSaveFailure?
             if let topic {
-                self?.drafts.noteTopicSent(topic, liveTopic: topicWas)
+                self?.drafts.noteTopicSending(topic, liveTopic: topicWas)
                 failure = await viewModel.setTopic(key, topic: topic)
-                if failure?.certainlyUnsent == true { self?.drafts.noteTopicNotSent(topic) }
+                self?.drafts.settleTopic(topic, wentOut: failure?.certainlyUnsent != true)
             }
             if failure == nil, !changes.isEmpty {
-                self?.drafts.noteSent(sending)
+                self?.drafts.noteSending(sending)
                 failure = await viewModel.setChannelModes(key, changes: changes)
-                if failure?.certainlyUnsent == true { self?.drafts.noteNotSent(sending) }
+                self?.drafts.settle(sending, wentOut: failure?.certainlyUnsent != true)
             }
             guard let self else { return }
             saving = false

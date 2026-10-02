@@ -391,7 +391,7 @@ final class ChannelModesTests: XCTestCase {
         var drafts = ChannelModeDrafts()
         drafts.setValue("l", "050", live: live)
         let sent = try! ChannelModeForm.changes(spec: spec, live: live, draft: drafts.rows).get()
-        drafts.noteSent(drafts.sending(sent, live: live))
+        drafts.noteSending(drafts.sending(sent, live: live))
         drafts.reconcile(live: live, liveTopic: "")
         XCTAssertNotNil(drafts.rows["l"], "never cleared on the ack — only the channel answers")
         drafts.reconcile(live: ChannelModeForm.Live(modes: "nl", params: ["l": "50"]), liveTopic: "")
@@ -407,7 +407,7 @@ final class ChannelModesTests: XCTestCase {
         var drafts = ChannelModeDrafts()
         drafts.setOn("m", true, live: live)
         drafts.setOn("s", true, live: live)
-        drafts.noteSent(drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live))
+        drafts.noteSending(drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live))
         drafts.setOn("m", false, live: live)
         drafts.reconcile(live: ChannelModeForm.Live(modes: "nm", params: [:]), liveTopic: "")
         XCTAssertEqual(drafts.rows["m"], ChannelModeForm.DraftRow(on: false, value: ""), "the untick stands")
@@ -419,7 +419,7 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertNil(drafts.topicChange(live: "old"), "untouched")
         drafts.setTopic("new\nline")
         XCTAssertEqual(drafts.topicChange(live: "old"), "new line")
-        drafts.noteTopicSent("new line", liveTopic: "old")
+        drafts.noteTopicSending("new line", liveTopic: "old")
         drafts.reconcile(live: ChannelModeForm.Live(modes: "", params: [:]), liveTopic: "old")
         XCTAssertNotNil(drafts.topic)
         // The server trimmed it: moved, so the saved edit is answered.
@@ -434,15 +434,15 @@ final class ChannelModesTests: XCTestCase {
         var drafts = ChannelModeDrafts()
         drafts.setOn("m", true, live: live)
         let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live)
-        drafts.noteSent(sending)
-        drafts.noteNotSent(sending)
+        drafts.noteSending(sending)
+        drafts.settle(sending, wentOut: false)
         drafts.reconcile(live: ChannelModeForm.Live(modes: "nm", params: [:]), liveTopic: "")
         XCTAssertNil(drafts.rows["m"], "matching still answers it")
 
         drafts.setOn("m", true, live: live)
         let again = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: live)
-        drafts.noteSent(again)
-        drafts.noteNotSent(again)
+        drafts.noteSending(again)
+        drafts.settle(again, wentOut: false)
         drafts.reconcile(live: ChannelModeForm.Live(modes: "ns", params: [:]), liveTopic: "")
         XCTAssertNotNil(drafts.rows["m"], "but a move it never caused doesn't")
     }
@@ -454,14 +454,61 @@ final class ChannelModesTests: XCTestCase {
         let fifty = ChannelModeForm.Live(modes: "l", params: ["l": "50"])
         drafts.setValue("l", "60", live: fifty)
         let first = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: fifty)
-        drafts.noteSent(first)
+        drafts.noteSending(first)
         let fiftyFive = ChannelModeForm.Live(modes: "l", params: ["l": "55"])
         let second = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: fiftyFive)
-        drafts.noteSent(second)
-        drafts.noteNotSent(first)
+        drafts.noteSending(second)
+        drafts.settle(first, wentOut: false)
         // The server normalized: 55 → 56 is the second Save's echo, and answers the edit.
         drafts.reconcile(live: ChannelModeForm.Live(modes: "l", params: ["l": "56"]), liveTopic: "")
         XCTAssertNil(drafts.rows["l"])
+    }
+
+    /// The echo can come before the answer. If the answer then says the send never went out,
+    /// the edit the echo dissolved comes back.
+    func testAnEditDissolvedWhileItsSendIsOutComesBackIfItNeverWent() {
+        let live = ChannelModeForm.Live(modes: "l", params: ["l": "50"])
+        var drafts = ChannelModeDrafts()
+        drafts.setValue("l", "60", live: live)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: live)
+        drafts.noteSending(sending)
+        drafts.reconcile(live: ChannelModeForm.Live(modes: "l", params: ["l": "51"]), liveTopic: "")
+        XCTAssertNil(drafts.rows["l"], "dissolved by the move, tentatively")
+        drafts.settle(sending, wentOut: false)
+        XCTAssertEqual(drafts.rows["l"]?.value, "60", "never went out: the edit is the user's again")
+
+        // Went out: the dissolve stands.
+        var sent = ChannelModeDrafts()
+        sent.setValue("l", "60", live: live)
+        let out = sent.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: live)
+        sent.noteSending(out)
+        sent.reconcile(live: ChannelModeForm.Live(modes: "l", params: ["l": "51"]), liveTopic: "")
+        sent.settle(out, wentOut: true)
+        XCTAssertNil(sent.rows["l"])
+    }
+
+    func testARestoreNeverOverwritesANewerEdit() {
+        let live = ChannelModeForm.Live(modes: "l", params: ["l": "50"])
+        var drafts = ChannelModeDrafts()
+        drafts.setValue("l", "60", live: live)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: live)
+        drafts.noteSending(sending)
+        let moved = ChannelModeForm.Live(modes: "l", params: ["l": "51"])
+        drafts.reconcile(live: moved, liveTopic: "")
+        drafts.setValue("l", "70", live: moved)
+        drafts.settle(sending, wentOut: false)
+        XCTAssertEqual(drafts.rows["l"]?.value, "70")
+    }
+
+    func testATopicDissolvedWhileItsSendIsOutComesBackIfItNeverWent() {
+        var drafts = ChannelModeDrafts()
+        drafts.setTopic("mine")
+        drafts.noteTopicSending("mine", liveTopic: "old")
+        drafts.reconcile(live: ChannelModeForm.Live(modes: "", params: [:]), liveTopic: "theirs")
+        XCTAssertNil(drafts.topic, "the channel moved: tentatively answered")
+        drafts.settleTopic("mine", wentOut: false)
+        XCTAssertEqual(drafts.topic, "mine")
+        XCTAssertEqual(drafts.topicChange(live: "theirs"), "mine", "Save offers it again")
     }
 
     func testOnlyErrorsSoonAfterAChangeAnswerIt() {

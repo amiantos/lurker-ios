@@ -431,13 +431,22 @@ public struct ChannelModeDrafts: Equatable, Sendable {
     private var savedRows: [String: SavedRow] = [:]
     private var savedTopic: (live: String, sent: String)?
 
+    /// The send whose outcome isn't known yet — one at a time, as the screen sends one Save at a
+    /// time. An echo may dissolve its edits before the answer comes (the line went out, the
+    /// channel moved), and if the answer then says it never went out, those edits come back:
+    /// they are kept here until it's settled.
+    private var pendingLetters: Set<String> = []
+    private var dissolvedWhilePending: [String: ChannelModeForm.DraftRow] = [:]
+    private var topicPending = false
+    private var topicDissolvedWhilePending: String?
+
     public struct SavedRow: Equatable, Sendable {
         let live: ChannelModeForm.DraftRow
         let sent: ChannelModeForm.DraftRow
     }
 
     /// What a Save's mode changes are about to send, taken at the moment of Save — before any
-    /// await, since the fields stay editable while it's out. Recorded by `noteSent` only once the
+    /// await, since the fields stay editable while it's out. Recorded by `noteSending` only once the
     /// changes actually go out.
     public struct Sending: Equatable, Sendable {
         fileprivate let rows: [String: SavedRow]
@@ -477,29 +486,45 @@ public struct ChannelModeDrafts: Equatable, Sendable {
         }))
     }
 
-    /// The changes are going out: the echo may now dissolve exactly those edits.
+    /// The changes are going out: the echo may now dissolve exactly those edits — tentatively,
+    /// until `settle` says whether they did.
     ///
-    /// ⚠ Only for changes that are actually SENT. A row recorded for a change that never left
+    /// ⚠ Recorded only as they go, never at Save: a row recorded for a change that never left
     /// would be dissolved by any later move of that mode — another op's +m then -m quietly
     /// throwing away the user's unsent +m.
-    public mutating func noteSent(_ sending: Sending) {
+    public mutating func noteSending(_ sending: Sending) {
         savedRows.merge(sending.rows) { _, new in new }
+        pendingLetters = Set(sending.rows.keys)
+        dissolvedWhilePending = [:]
     }
 
-    /// The changes never went out after all: take back what `noteSent` recorded, unless a later
-    /// Save has recorded over it.
-    public mutating func noteNotSent(_ sending: Sending) {
-        for (letter, row) in sending.rows where savedRows[letter] == row { savedRows[letter] = nil }
+    /// The answer came. `wentOut` false means nothing can have reached IRC: the record is taken
+    /// back (unless a later Save recorded over it), and an edit the echo dissolved meanwhile is
+    /// restored — unless the user has typed something newer in that row.
+    public mutating func settle(_ sending: Sending, wentOut: Bool) {
+        if !wentOut {
+            for (letter, row) in sending.rows where savedRows[letter] == row { savedRows[letter] = nil }
+            for (letter, edit) in dissolvedWhilePending where rows[letter] == nil { rows[letter] = edit }
+        }
+        pendingLetters = []
+        dissolvedWhilePending = [:]
     }
 
-    /// The topic is going out.
-    public mutating func noteTopicSent(_ topic: String, liveTopic: String) {
+    /// The topic is going out — tentatively, as for the modes.
+    public mutating func noteTopicSending(_ topic: String, liveTopic: String) {
         savedTopic = (live: liveTopic, sent: topic)
+        topicPending = true
+        topicDissolvedWhilePending = nil
     }
 
-    /// …or never did.
-    public mutating func noteTopicNotSent(_ topic: String) {
-        if savedTopic?.sent == topic { savedTopic = nil }
+    /// …and the answer came.
+    public mutating func settleTopic(_ topic: String, wentOut: Bool) {
+        if !wentOut {
+            if savedTopic?.sent == topic { savedTopic = nil }
+            if self.topic == nil, let edit = topicDissolvedWhilePending { self.topic = edit }
+        }
+        topicPending = false
+        topicDissolvedWhilePending = nil
     }
 
     /// Let the live state answer what it can. Call on every state change.
@@ -511,12 +536,23 @@ public struct ChannelModeDrafts: Equatable, Sendable {
             let saved = savedRows[letter]
             let moved = saved.map { $0.live != was } ?? false
             if moved { savedRows[letter] = nil }
-            if matches || (moved && saved?.sent == want) { rows[letter] = nil }
+            if matches {
+                // The channel is as the user wanted, whatever happens to the send.
+                rows[letter] = nil
+            } else if moved, saved?.sent == want {
+                if pendingLetters.contains(letter) { dissolvedWhilePending[letter] = want }
+                rows[letter] = nil
+            }
         }
         guard let topic else { return }
         let sending = ChannelModeForm.topicToSend(topic)
         let moved = savedTopic.map { $0.live != liveTopic } ?? false
-        if sending == liveTopic || (moved && savedTopic?.sent == sending) { self.topic = nil }
+        if sending == liveTopic {
+            self.topic = nil
+        } else if moved, savedTopic?.sent == sending {
+            if topicPending { topicDissolvedWhilePending = topic }
+            self.topic = nil
+        }
         if moved { savedTopic = nil }
     }
 }
