@@ -362,9 +362,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         composer.onCancelReply = { [weak self] in self?.cancelReply() }
         composer.onBack = { [weak self] in
-            guard let self, !viewModel.setBack() else { return }
-            // Nothing went out, and nothing will retry it — say so, or the strip staying put
-            // reads as a Back that ignored you.
+            guard let self else { return }
+            // ⚠ Asked of the connection, not of the send: a dropped socket stays non-nil until
+            // the reconnect replaces it, so a write onto it "succeeds" and goes nowhere. Nothing
+            // retries a Back, so say so, or the strip staying put reads as a Back that ignored you.
+            guard viewModel.state.connection != .connected else { return viewModel.setBack() }
             ToastView.show(
                 "Not connected — try again when you're back online",
                 symbol: "exclamationmark.circle",
@@ -841,18 +843,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the nicklist is only searched when something here actually moved.
     private struct ComposerChrome: Equatable {
         var nick: String?
-        var members: [Member]?
-        var prefix: [PrefixMode]?
+        /// Ours alone, not the nicklist: `Member` carries `away`, and holding the list would let
+        /// every away-notify flip in a busy channel through the dedupe.
+        var ownModes: [String]
         var dccSession: Bool?
         var away: AwayState?
 
         init(_ state: ChatState, buffer: Buffer) {
-            let network = buffer.networkId.flatMap { state.networks[$0] }
-            nick = network?.nick
-            members = buffer.kind == .channel ? state.members[buffer.key.id] : nil
-            prefix = network?.modeSpec?.prefix
+            nick = ChatViewController.ownNick(for: state, buffer: buffer)
+            ownModes = buffer.kind == .channel
+                ? state.members[buffer.key.id]?.member(named: nick ?? "")?.modes ?? []
+                : []
             dccSession = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
-            away = network?.away
+            // ⚠ Not `awayState(for:)`, which leaves out the server log on purpose: that's about
+            // where a divider is noise. This is whether you're away, and you are in every buffer
+            // on the network — the server log included, where `/back` is as likely to be typed.
+            away = buffer.networkId.flatMap { state.networks[$0]?.away }
         }
     }
 
@@ -880,8 +886,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return "Not connected — /dcc chat \(DccChat.peer(buffer.target))"
         }
         guard let nick = chrome.nick, !nick.isEmpty else { return "Message" }
-        let mine = chrome.members?.member(named: nick)?.modes ?? []
-        return MemberPrefix.of(mine, prefix: chrome.prefix) + nick
+        // The conventional glyph, the one your own lines and the nicklist show — the prompt
+        // disagreeing with them about you would be the stranger mistake.
+        return MemberPrefix.of(chrome.ownModes) + nick
     }
 
     /// Leave this screen when the buffer it is showing isn't open any more.

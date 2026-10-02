@@ -41,9 +41,14 @@ extension Array where Element == Member {
     /// The entry for `nick`, folding case — the one place "which of these is me?" is asked
     /// (`ChatState.channelAccess`, the composer's prompt). Nil for an empty nick, and before
     /// NAMES lands.
+    ///
+    /// Cheap enough to run on every state frame: the length check (O(1) on a native string)
+    /// turns away almost every member before the fold allocates. Lowercasing never changes an
+    /// ASCII nick's length, and IRC casemapping is ASCII.
     public func member(named nick: String) -> Member? {
         guard !nick.isEmpty else { return nil }
         let folded = nick.lowercased()
-        return first { $0.nick.lowercased() == folded }
+        let length = folded.utf8.count
+        return first { $0.nick.utf8.count == length && $0.nick.lowercased() == folded }
     }
 }

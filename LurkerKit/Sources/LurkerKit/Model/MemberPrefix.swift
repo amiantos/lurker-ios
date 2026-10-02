@@ -22,14 +22,6 @@ public enum MemberPrefix {
         return ""
     }
 
-    /// The glyph for `modes` by the network's own PREFIX when it has told us one — the ladder
-    /// the channel controls rank by (`ChannelRank`) — else by the conventional map above.
-    /// For the composer's prompt (#135), which should never claim a rank the controls don't.
-    public static func of(_ modes: [String], prefix: [PrefixMode]?) -> String {
-        guard let prefix else { return of(modes) }
-        return ChannelRank.index(modes, prefix: prefix).map { prefix[$0].symbol } ?? ""
-    }
-
     /// Sort position: lower is higher-ranked; unprivileged members sort last.
     public static func order(_ modes: [String]) -> Int {
         for (index, letter) in rank.enumerated() where modes.contains(letter) {

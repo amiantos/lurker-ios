@@ -35,19 +35,6 @@ final class MemberPrefixTests: XCTestCase {
         XCTAssertNil([member("", ["o"])].member(named: ""))
     }
 
-    func testTheNetworksPrefixDecidesTheGlyphWhenItHasOne() {
-        // The ladder the channel controls rank by, so the prompt can't claim a rank they don't.
-        let prefix = [PrefixMode(mode: "Y", symbol: "!"), PrefixMode(mode: "o", symbol: "@")]
-        XCTAssertEqual(MemberPrefix.of(["o", "Y"], prefix: prefix), "!")
-        XCTAssertEqual(MemberPrefix.of(["o"], prefix: prefix), "@")
-        // A letter this network doesn't rank isn't a glyph here, whatever the convention says.
-        XCTAssertEqual(MemberPrefix.of(["v"], prefix: prefix), "")
-    }
-
-    func testTheConventionalLadderStandsInBeforeThePrefixIsKnown() {
-        XCTAssertEqual(MemberPrefix.of(["v", "h"], prefix: nil), "%")
-    }
-
     func testNoModesMeansNoGlyph() {
         XCTAssertEqual(MemberPrefix.of([]), "")
     }

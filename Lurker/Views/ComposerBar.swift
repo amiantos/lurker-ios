@@ -121,6 +121,10 @@ final class ComposerBar: UIView {
     private let stripButton = UIButton(type: .system)
     private var reply: PendingReply?
     private var away: AwayState?
+    /// `away`'s words, built when it or the clock changes rather than on every render — a
+    /// reply shown or cancelled, a Dynamic Type change — since building them means a
+    /// `DateFormatter`.
+    private var awayText: AwayStrip?
     private var containerBelowStrip: NSLayoutConstraint!
     private var containerAtTop: NSLayoutConstraint!
 
@@ -363,7 +367,11 @@ final class ComposerBar: UIView {
 
     /// The locale notification doesn't promise the main thread.
     @objc private func dateFormatChanged() {
-        DispatchQueue.main.async { [weak self] in self?.renderStrip() }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            awayText = AwayStrip.make(away)
+            renderStrip()
+        }
     }
 
     /// Show the pending reply above the field, or take it away (nil). The strip grows or
@@ -381,6 +389,7 @@ final class ComposerBar: UIView {
         let away = away?.active == true ? away : nil
         guard away != self.away else { return }
         self.away = away
+        awayText = AwayStrip.make(away)
         renderStrip()
     }
 
@@ -411,7 +420,7 @@ final class ComposerBar: UIView {
             config.contentInsets = .zero
             stripButton.configuration = config
             stripButton.accessibilityLabel = "Cancel reply"
-        } else if let label = AwayStrip.make(away) {
+        } else if let label = awayText {
             let text = NSMutableAttributedString(string: label.lead, attributes: [
                 .foregroundColor: UIColor.label, .font: footnote.bold,
             ])
@@ -433,7 +442,7 @@ final class ComposerBar: UIView {
             stripButton.accessibilityLabel = "Back"
             stripButton.accessibilityHint = "Clears your away status."
         }
-        let showing = reply != nil || away != nil
+        let showing = reply != nil || awayText != nil
         strip.isHidden = !showing
         containerAtTop.isActive = !showing
         containerBelowStrip.isActive = showing

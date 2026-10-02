@@ -1426,10 +1426,8 @@ public final class ChatViewModel {
 
     /// `/back` from a control rather than the composer — the away strip's Back (#135). No local
     /// mutation: the strip comes down when the server's `away-state` echo folds in, on every
-    /// device at once. False when there was no socket to put it on, so the tap can say so
-    /// rather than leave a strip that looks like it ignored you.
-    @discardableResult
-    public func setBack() -> Bool {
+    /// device at once.
+    public func setBack() {
         client.setBack()
     }
 
