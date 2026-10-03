@@ -41,17 +41,25 @@ public struct FeedPaging {
     public private(set) var placeholder: Placeholder? = .loading
     public private(set) var isLoading = false
 
-    /// Whether a `reload()` replaces a page already in flight rather than being dropped.
+    /// Whether a `reload()` replaces a *first* page already in flight rather than being dropped.
     ///
     /// False for the feeds whose reload is idempotent: pulling Activity twice re-fetches the same
     /// newest page, so the second pull buys nothing and dropping it keeps the refresh control
     /// honest. True for Search, where two reloads are two *different questions* and the one the
     /// user typed last is the only one whose answer they want.
+    ///
+    /// Only ever about a first page. A reload always replaces a page-in or a skip-ahead hop: the
+    /// pull asked for the newest page, not the older one on its way, and a hop chain that can't be
+    /// pulled out of runs its whole budget before the pull is even heard (lurker-ios#204).
     public let supersedes: Bool
 
     /// The next-page cursor from the last response; nil once the server has no more.
     private var nextCursor: FeedCursor?
     private var reachedEnd = false
+
+    /// What's in flight is a first page, not a page-in — only a first page can absorb a repeat
+    /// pull. Meaningless while `isLoading` is false.
+    private var firstInFlight = false
 
     /// Bumped by every `reload()`. A page carries the generation it was requested under, and one
     /// that lands under a newer generation is dropped — the list it was fetched for no longer
@@ -87,8 +95,10 @@ public struct FeedPaging {
     public func isCurrent(_ fetch: Fetch) -> Bool { fetch.generation == generation }
 
     /// (Re)fetch from the newest page: on open, on a pull, and — for Search — every time the
-    /// question changes. Nil when dropped: a repeat reload of a feed that doesn't supersede while
-    /// a page is still loading.
+    /// question changes. Nil when dropped: a repeat reload of the same question, on a feed that
+    /// doesn't supersede, while its first page is still loading. A page-in or a hop in flight is
+    /// superseded instead (see `supersedes`), and so is anything at all when `newQuestion` is set
+    /// — an answer to the old question is never worth waiting for, on any feed.
     ///
     /// `newQuestion` clears the old answer at once — rows, cursor and end — and shows the loading
     /// placeholder (lurker-ios#203). Keeping them, as a pull does, read as the answer to the new
@@ -102,9 +112,11 @@ public struct FeedPaging {
     /// a feed or a question that once spent it would come back from a pull, or the next search
     /// whose first page is all ignored lines, with an empty list while real rows sat a page away.
     public mutating func reload(newQuestion: Bool = false) -> Fetch? {
-        guard !isLoading || supersedes else { return nil }
+        let repeatPull = isLoading && firstInFlight && !supersedes && !newQuestion
+        guard !repeatPull else { return nil }
         generation += 1
         isLoading = true
+        firstInFlight = true
         loadFailed = false
         fruitlessHops = 0
         if newQuestion {
@@ -121,6 +133,7 @@ public struct FeedPaging {
     public mutating func loadMore() -> Fetch? {
         guard !isLoading, !reachedEnd, let cursor = nextCursor else { return nil }
         isLoading = true
+        firstInFlight = false
         return Fetch(generation: generation, cursor: cursor)
     }
 
@@ -212,18 +225,24 @@ public struct FeedPaging {
     private mutating func settle(gainedRows: Bool) -> Fetch? {
         if gainedRows { fruitlessHops = 0 }
         let stalled = !gainedRows && !reachedEnd && nextCursor != nil
-        if stalled, fruitlessHops < Self.maxFruitlessHops {
+        // A hop is spent only on a fetch actually issued. `loadMore` declines while a page is
+        // already in flight — `remove` can get here mid-load — and that page will settle the list
+        // itself when it lands.
+        if stalled, fruitlessHops < Self.maxFruitlessHops, let hop = loadMore() {
             fruitlessHops += 1
             // Only claim to be loading when there's nothing to look at. Topping up beneath a
             // list the user is already reading should be silent.
             if items.isEmpty { placeholder = .loading }
-            return loadMore()
+            return hop
         }
         settlePlaceholder()
         return nil
     }
 
+    /// What an empty list says: still loading while a page is on its way (a removal emptied it
+    /// mid-load), else the failure or the genuine empty.
     private mutating func settlePlaceholder() {
-        placeholder = items.isEmpty ? (loadFailed ? .error : .empty) : nil
+        guard items.isEmpty else { placeholder = nil; return }
+        placeholder = isLoading ? .loading : loadFailed ? .error : .empty
     }
 }

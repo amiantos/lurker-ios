@@ -134,9 +134,11 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the list knowing. Search used to be the odd one out: a WS request/reply whose cursor this
     /// client synthesized from `hasMore` plus the last row's id (#123).
     ///
-    /// `.tooShort` is answered here, locally, and never reaches the wire — that's the point of
-    /// the state. Answering it with an empty page (rather than nil) matters: nil means "we
-    /// couldn't ask", which would put an error in front of someone who is simply mid-word.
+    /// `.tooShort` never reaches the wire — that's the point of the state — and is answered by
+    /// `localFirstPage` before this is asked. The case here is only for completeness: it has no
+    /// cursor, so nothing pages it. Answering it with an empty page (rather than nil) matters:
+    /// nil means "we couldn't ask", which would put an error in front of someone who is simply
+    /// mid-word.
     override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
         let before = cursor?.beforeMessage
         return switch showing {
@@ -144,6 +146,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         case .tooShort: HighlightsPage(items: [], nextBefore: nil)
         case .results: await viewModel.searchMessages(query, before: before)
         }
+    }
+
+    /// `.tooShort` is answered on the spot, so typing into or out of it never flashes
+    /// "Searching…". The landing view is not: its highlights are a server read like any search.
+    override func localFirstPage() -> HighlightsPage? {
+        showing == .tooShort ? HighlightsPage(items: [], nextBefore: nil) : nil
     }
 
     override var loadingModel: StateView.Model {

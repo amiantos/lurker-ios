@@ -105,6 +105,12 @@ class HistoryFeedViewController: UITableViewController {
     /// Nil return means the fetch failed (a 401 has already bounced the session).
     func fetchPage(before: FeedCursor?) async -> HighlightsPage? { nil }
 
+    /// The first page, when this feed can answer it without asking anyone — nil (the default)
+    /// when it has to ask. Landed inside the `reload()` that asked, before anything is drawn, so
+    /// a page that never leaves the device never puts the loading placeholder up first: it would
+    /// flash on every keystroke that moves Search into or out of a state it answers itself.
+    func localFirstPage() -> HighlightsPage? { nil }
+
     /// The three placeholder states, in this feed's own words.
     var loadingModel: StateView.Model { StateView.Model(title: "Loading…", isLoading: true) }
     var emptyModel: StateView.Model { StateView.Model(title: "Nothing here") }
@@ -121,7 +127,10 @@ class HistoryFeedViewController: UITableViewController {
     /// the flat list, the sections and the placeholder all stay in step.
     func trailingSwipeActions(for item: HighlightItem) -> UISwipeActionsConfiguration? { nil }
 
-    /// Whether a `reload()` should replace a page already in flight rather than be dropped.
+    /// Whether a `reload()` should replace a *first* page already in flight rather than be
+    /// dropped. A page-in or a skip-ahead hop is always replaced, and so is anything when the
+    /// reload is a new question — see `FeedPaging.supersedes`.
+    ///
     ///
     /// False for the feeds whose reload is idempotent: pulling Highlights twice re-fetches the
     /// same newest page, so the second pull buys nothing and dropping it keeps the refresh
@@ -171,22 +180,30 @@ class HistoryFeedViewController: UITableViewController {
     /// wasn't asked (lurker-ios#203; see `FeedPaging.reload`). Every other caller re-asks the
     /// question already on screen, and keeps its rows while it does.
     func reload(newQuestion: Bool = false) {
-        // A pull-to-refresh that lands while a page is already loading is dropped — but its
-        // refresh control is already spinning, so end it here or it spins forever. Feeds whose
-        // reloads differ from one another supersede instead; see `reloadSupersedes`.
+        // ⚠ Before the paging state is touched. The first `tableView` access below would
+        // otherwise load the view mid-reload, and `viewDidLoad` reloads too — a nested reload
+        // whose fetch the outer one then replaced in `loadTask` without cancelling, so a live
+        // request went untracked. Loaded first, the nested reload finishes before this one
+        // starts, and this one supersedes it (or, as a repeat pull, is dropped) like any other.
+        loadViewIfNeeded()
+        // A repeat pull while the first page is still loading is dropped — but its refresh
+        // control is already spinning, so end it here or it spins forever. Feeds whose reloads
+        // differ from one another supersede instead; see `reloadSupersedes`.
         guard let fetch = paging.reload(newQuestion: newQuestion) else {
             refreshControl?.endRefreshing()
             return
         }
-        // ⚠ Order relative to the generation bump does not matter, and an earlier version of
-        // this comment claimed it did. `cancel()` only sets a flag and `reload()` runs to
-        // completion on the main actor, so no suspended task can observe a state between the two.
-        // The generation check remains the correctness mechanism; this is the cost saving.
-        loadTask?.cancel()
         loadWasCancelled = false
         // The rows went with the old question, so the table has to stop drawing them now — not
         // when the new answer lands, or a failure would leave them up.
         if newQuestion { rowsChanged() }
+        if let page = localFirstPage() {
+            // Answered on the spot: whatever was in flight answers an older question.
+            loadTask?.cancel()
+            loadTask = nil
+            land(page, for: fetch)
+            return
+        }
         renderPlaceholder()
         start(fetch)
     }
@@ -212,8 +229,13 @@ class HistoryFeedViewController: UITableViewController {
     /// cancelled load leaves a question on screen with no answer under it, so somebody has to ask
     /// again. The placeholder is left as it is — this runs on the way out, so nobody sees it, and
     /// an error placeholder would claim a failure when the user simply left.
+    ///
+    /// ⚠ Guarded on the paging state's `isLoading`, not on `loadTask` being set: the task is left
+    /// in place once it lands, so that check always passed, every disappearance counted as a
+    /// cancelled load, and coming back from a search result re-ran the query — replacing the
+    /// pages the reader had scrolled through with page one.
     func cancelLoad() {
-        guard loadTask != nil else { return }
+        guard paging.isLoading else { return }
         loadTask?.cancel()
         loadTask = nil
         paging.abandon()
@@ -239,7 +261,16 @@ class HistoryFeedViewController: UITableViewController {
     /// Bailing doesn't strand `isLoading`: the generation can only have moved because a
     /// `reload()` superseded this — which set the flag itself and clears it when its own page
     /// lands — or because `cancelLoad` abandoned it, which cleared it.
+    ///
+    /// Cancels the task it replaces, so at most one is ever live and tracked. Usually that task
+    /// is already done; when a reload replaces a page-in or a hop, cancelling it is what stops
+    /// the request (⚠ order relative to the generation bump does not matter — `cancel()` only
+    /// sets a flag, and nothing suspended can run until this returns; the generation check
+    /// remains the correctness mechanism, this is the cost saving). A skip-ahead hop is started
+    /// from inside the task whose page it follows, which this then cancels — harmless, since
+    /// that task has nothing left to do once it has landed.
     private func start(_ fetch: FeedPaging.Fetch) {
+        loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self, paging.isCurrent(fetch) else { return }
             let page = await fetchPage(before: fetch.cursor)

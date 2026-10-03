@@ -200,6 +200,45 @@ final class FeedPagingTests: XCTestCase {
         XCTAssertEqual(ids(paging), [990])
     }
 
+    // MARK: - What a reload may replace
+
+    /// A pull during a scroll's page-in asks for the newest page; the older one on its way is
+    /// dropped rather than the pull.
+    func testAPullDuringAPageInSupersedesIt() {
+        var paging = loaded(supersedes: false)
+        let more = paging.loadMore()!
+        guard let pull = paging.reload() else {
+            return XCTFail("dropped: the pull's spinner ends and nothing is refreshed")
+        }
+        XCTAssertNil(paging.land(page([20], nextBefore: 20), for: more, visible: visible))
+        _ = paging.land(page([31], nextBefore: nil), for: pull, visible: visible)
+        XCTAssertEqual(ids(paging), [31])
+    }
+
+    /// The #204 case on a feed that doesn't supersede: a pull while a hop chain is still spending
+    /// its budget restarts the feed with a fresh one, instead of waiting the chain out.
+    func testAPullDuringAHopChainRestartsItWithAFreshBudget() {
+        var paging = FeedPaging(supersedes: false)
+        var fetch = paging.reload()!
+        for id in stride(from: 999, through: 995, by: -1) {
+            fetch = landIgnored(&paging, id, for: fetch)!
+        }
+        guard let pull = paging.reload() else { return XCTFail("the pull waits out the chain") }
+        XCTAssertNil(landIgnored(&paging, 994, for: fetch), "the chain's next page is dropped")
+        XCTAssertEqual(hopsUntilItStops(&paging, from: pull, at: 500), FeedPaging.maxFruitlessHops)
+    }
+
+    /// A new question supersedes on any feed — waiting out the old question's first page would
+    /// leave its rows and cursor standing under the new one (#203).
+    func testANewQuestionSupersedesEvenOnAFeedThatDoesNot() {
+        var paging = loaded(supersedes: false)
+        let pull = paging.reload()!
+        let bar = paging.reload(newQuestion: true)
+        XCTAssertNotNil(bar)
+        XCTAssertEqual(ids(paging), [])
+        XCTAssertNil(paging.land(page([30], nextBefore: nil), for: pull, visible: visible))
+    }
+
     // MARK: - Page-ins, removals, abandoning
 
     func testAFailedPageInUnderRowsKeepsThemAndCanBeRetried() {
@@ -220,6 +259,18 @@ final class FeedPagingTests: XCTestCase {
         XCTAssertEqual(paging.remove(messageId: 1)?.rowsChanged, true)
         XCTAssertEqual(paging.placeholder, .empty)
         XCTAssertNil(paging.remove(messageId: 1), "already gone")
+    }
+
+    /// A removal that empties the list while a page is in flight can't page — and must not spend
+    /// a hop on the fetch it couldn't issue. The page in flight settles the list when it lands.
+    func testARemovalDuringALoadSpendsNoHop() {
+        var paging = FeedPaging(supersedes: false)
+        let first = paging.reload()!
+        _ = paging.land(page([1], nextBefore: 1), for: first, visible: visible)
+        let more = paging.loadMore()!
+        XCTAssertNil(paging.remove(messageId: 1)?.next)
+        XCTAssertEqual(paging.placeholder, .loading, "a page is still on its way")
+        XCTAssertEqual(hopsUntilItStops(&paging, from: more, at: 500), FeedPaging.maxFruitlessHops)
     }
 
     func testAnAbandonedFetchCannotLand() {
