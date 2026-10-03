@@ -713,6 +713,11 @@ enum FrameParser {
         object(from: text)
     }
 
+    /// `jsonObject(from:)` for a body that arrives as bytes, through the same repair.
+    static func jsonObject(from data: Data) -> [String: Any]? {
+        try? JSONSerialization.jsonObject(with: JSONTextRepair.data(for: data)) as? [String: Any]
+    }
+
     /// The `error` string from a REST failure body (`{error, key}`), when there is one. Lives
     /// here rather than at the call site because this is the one place that knows the wire
     /// format — and the server's own wording ("must be one of …", "out of range") is more use
