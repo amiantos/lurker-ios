@@ -22,9 +22,13 @@ public enum HighlightDay: Equatable, Sendable {
         guard let date else { self = .undated; return }
         let dayStart = calendar.startOfDay(for: date)
         let todayStart = calendar.startOfDay(for: now)
+        // Yesterday is asked as a calendar day, not compared as an instant: where a DST change
+        // moves midnight (Havana, Santiago, Cairo), today's start minus a day lands at 01:00
+        // on a yesterday that began at 00:00, and its rows got a dated header instead.
         if dayStart == todayStart {
             self = .today
-        } else if dayStart == calendar.date(byAdding: .day, value: -1, to: todayStart) {
+        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: todayStart),
+                  calendar.isDate(date, inSameDayAs: yesterday) {
             self = .yesterday
         } else {
             self = .on(dayStart)

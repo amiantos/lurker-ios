@@ -160,6 +160,30 @@ final class RenderingTests: XCTestCase {
         XCTAssertEqual(NickColor.index(for: "Alice"), NickColor.index(for: "alice"))
     }
 
+    func testNickColorLowersAFinalSigmaLikeTheWeb() {
+        // lurker-ios#199: JavaScript's `toLowerCase()` (and Java's) applies Final_Sigma and
+        // Swift's `lowercased()` doesn't, so `ΑΛΕΞΗΣ` hashed to a different colour here.
+        // Expected values are what `toLowerCase()` returns in node.
+        func scalars(_ s: String) -> [UInt32] { NickColor.lowercasedLikeTheWeb(s).unicodeScalars.map(\.value) }
+        XCTAssertEqual(scalars("\u{0391}\u{039B}\u{0395}\u{039E}\u{0397}\u{03A3}"), [0x3B1, 0x3BB, 0x3B5, 0x3BE, 0x3B7, 0x3C2])
+        XCTAssertEqual(scalars("\u{03A3}"), [0x3C3], "no cased letter before it: not final")
+        XCTAssertEqual(scalars("\u{03A3}\u{0391}\u{03A3}"), [0x3C3, 0x3B1, 0x3C2])
+        XCTAssertEqual(scalars("\u{0391}\u{03A3}."), [0x3B1, 0x3C2, 0x2E], "a case-ignorable after it is skipped")
+        XCTAssertEqual(scalars("\u{0391}\u{03A3}'\u{0391}"), [0x3B1, 0x3C3, 0x27, 0x3B1], "a letter after the apostrophe")
+        XCTAssertEqual(scalars("\u{0391}\u{03A3}1"), [0x3B1, 0x3C2, 0x31])
+        XCTAssertEqual(
+            NickColor.index(for: "\u{0391}\u{039B}\u{0395}\u{039E}\u{0397}\u{03A3}"),
+            NickColor.index(for: "\u{03B1}\u{03BB}\u{03B5}\u{03BE}\u{03B7}\u{03C2}")
+        )
+    }
+
+    func testNickColorStopCharsAreCodePointsLikeTheWeb() {
+        // A combining mark on the `_` makes `_\u{0301}` one Character; the web's `for…of`
+        // walks code points and still stops at the `_`.
+        XCTAssertEqual(NickColor.trimForColor("bob_\u{0301}"), "bob")
+        XCTAssertEqual(NickColor.index(for: "bob_\u{0301}"), NickColor.index(for: "bob"))
+    }
+
     func testNickColorIndexInRange() {
         for nick in ["a", "somebody", "🙂user", "___", "z9"] {
             let index = NickColor.index(for: nick)

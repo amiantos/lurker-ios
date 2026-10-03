@@ -76,7 +76,9 @@ public enum CommandParser {
         // the verb, edge-trimmed but with interior spacing preserved (the web's `argLine`).
         let body = String(raw.dropFirst())
         let verb = String(body.prefix { !$0.isWhitespace }).lowercased()
-        let argLine = String(body.dropFirst(verb.count)).trimmingCharacters(in: .whitespaces)
+        // Newlines too, like the web's `trim()`: `/me⏎waves` (a multi-line paste, a
+        // shift-return) would otherwise send the newline at the front of the action.
+        let argLine = String(body.dropFirst(verb.count)).trimmingCharacters(in: .whitespacesAndNewlines)
         let rest = argLine.isEmpty
             ? []
             : argLine.split(whereSeparator: { $0.isWhitespace }).map(String.init)
@@ -763,9 +765,10 @@ public enum CommandParser {
     }
 
     /// The body of a command after its first token, interior spacing preserved — the web's
-    /// `argLine.slice(first.length).trim()`. `argLine` begins with `first`.
+    /// `argLine.slice(first.length).trim()`. `argLine` begins with `first`. Newlines are
+    /// trimmed too, as `trim()` does: `/topic #chan⏎new topic` mustn't start with one.
     private static func body(after first: String, in argLine: String) -> String {
-        String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
+        String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// A DM/user target: has a network, isn't a channel, isn't a `:server:`/`:system:` pseudo.

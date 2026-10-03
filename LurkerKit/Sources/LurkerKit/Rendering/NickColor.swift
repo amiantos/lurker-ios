@@ -78,8 +78,36 @@ public enum NickColor {
     /// The index into `IRCPalette.nick` for `nick`. Trims trailing stop chars, lowercases,
     /// then hashes with weechat's djb2 variant.
     public static func index(for nick: String, paletteCount: Int = IRCPalette.nick.count) -> Int {
-        let key = trimForColor(nick).lowercased()
+        let key = lowercasedLikeTheWeb(trimForColor(nick))
         return Int(djb2(key) % UInt32(max(paletteCount, 1)))
+    }
+
+    /// `lowercased()` plus the one rule it leaves out and JavaScript's `toLowerCase()` applies:
+    /// a capital sigma that ends a word lowers to final `ς`, not `σ` (Unicode's Final_Sigma).
+    /// The palette is keyed on the lowered nick, so `ΑΛΕΞΗΣ` hashed to a different colour here
+    /// than on the web (lurker-ios#199).
+    static func lowercasedLikeTheWeb(_ string: String) -> String {
+        guard string.unicodeScalars.contains(capitalSigma) else { return string.lowercased() }
+        let scalars = Array(string.unicodeScalars)
+        var out = ""
+        for (index, scalar) in scalars.enumerated() {
+            if scalar == capitalSigma, isFinalSigma(at: index, in: scalars) {
+                out.unicodeScalars.append("\u{03C2}")
+            } else {
+                out.unicodeScalars.append(contentsOf: scalar.properties.lowercaseMapping.unicodeScalars)
+            }
+        }
+        return out
+    }
+
+    private static let capitalSigma: Unicode.Scalar = "\u{03A3}"
+
+    /// Final_Sigma: after a cased letter and not before one, skipping case-ignorables
+    /// (apostrophes, combining marks) on both sides.
+    private static func isFinalSigma(at index: Int, in scalars: [Unicode.Scalar]) -> Bool {
+        let before = scalars[..<index].last { !$0.properties.isCaseIgnorable }
+        let after = scalars[(index + 1)...].first { !$0.properties.isCaseIgnorable }
+        return before?.properties.isCased == true && after?.properties.isCased != true
     }
 
     /// weechat `gui_color_get_custom`: `h = h ^ ((h << 5) + (h >> 2) + cp)` per code point,
@@ -95,18 +123,19 @@ public enum NickColor {
 
     /// Trim trailing "away/alt" stop chars: keep leading stop chars, but once a real char
     /// has been seen, stop at the next stop char (`amiantos__` / `amiantos|` → `amiantos`).
-    static func trimForColor(_ nick: String, stopChars: Set<Character> = ["_", "|"]) -> String {
-        var result = ""
+    /// Walks code points, as the web's `for…of` does, not Characters: `bob_` plus a combining
+    /// mark is one Character whose `_` would otherwise never read as a stop.
+    static func trimForColor(_ nick: String, stopChars: Set<Unicode.Scalar> = ["_", "|"]) -> String {
+        var result = String.UnicodeScalarView()
         var seenNonStop = false
-        for character in nick {
-            if stopChars.contains(character) {
+        for scalar in nick.unicodeScalars {
+            if stopChars.contains(scalar) {
                 if seenNonStop { break }
-                result.append(character)
             } else {
                 seenNonStop = true
-                result.append(character)
             }
+            result.append(scalar)
         }
-        return result
+        return String(result)
     }
 }

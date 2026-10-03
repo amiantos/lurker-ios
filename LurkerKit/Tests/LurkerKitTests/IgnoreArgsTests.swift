@@ -354,6 +354,15 @@ final class IgnoreArgsTests: XCTestCase {
         XCTAssertNotNil(parse("bob -pattern \(String(long.dropLast()))"))
     }
 
+    func testPatternLengthIsCountedInUTF16UnitsLikeTheServer() {
+        // lurker-ios#198: the server's limit is JavaScript's `pattern.length`. A flag emoji is
+        // one Character and four units, so 129 of them pass a Character count and are refused
+        // by the server — in silence.
+        let flags = String(repeating: "\u{1F1EB}\u{1F1F7}", count: IgnoreArgs.maxPatternLength / 4 + 1)
+        XCTAssertEqual(error("bob -pattern \(flags)")?.contains("exceeds"), true)
+        XCTAssertNotNil(parse("bob -pattern \(String(flags.dropLast()))"))
+    }
+
     // MARK: - The wire
 
     func testTheEncodedRuleRoundTripsThroughTheFrameDecoder() {

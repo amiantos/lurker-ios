@@ -101,8 +101,8 @@ public enum TypingSignal: String, Sendable {
 /// is miserable to verify by watching a phone, and here it can be driven to any instant in a
 /// test. The view controller keeps only the timer that asks it questions.
 ///
-/// The policy matches the web's (`MessageInput.vue:1616-1643`) so both clients present the
-/// same rhythm to the network:
+/// The rhythm matches the web's (`MessageInput.vue`'s typing block) so both clients present the
+/// same thing to the network:
 ///  - a non-empty draft emits `active`, re-sent no more than every `refresh` seconds;
 ///  - `idle` seconds without a keystroke downgrades to `paused` — "stopped, draft still here";
 ///  - emptying the draft, or turning it into a command, emits `done` immediately;
@@ -110,7 +110,9 @@ public enum TypingSignal: String, Sendable {
 ///
 /// A leading `/` counts as not-composing on purpose: a command is not a message to the
 /// channel, and telling everyone you're typing while you run `/whois` leaks that you're doing
-/// *something* and then never delivers a line to justify it.
+/// *something* and then never delivers a line to justify it. "Leading" is judged on the trimmed
+/// text the composer sends, so ` /whois` is a command (the web checks the raw draft, and
+/// announces it), and a `//`-escaped line is a message, so it is announced.
 public struct OutgoingTyping: Sendable {
     /// How often an ongoing `active` is re-sent. The peer's `active` lease is 6s, so a 3s
     /// refresh keeps it alive with a full period to spare against a dropped tag.
@@ -128,10 +130,12 @@ public struct OutgoingTyping: Sendable {
     /// to say anything.
     public var isSignalling: Bool { sent != nil }
 
-    /// Whether `draft` is something we'd tell the network we're composing.
+    /// Whether `draft` is something we'd tell the network we're composing. Asked of the
+    /// trimmed text, which is what the composer sends: ` /whois bob` runs as a command, and
+    /// `//shrug` goes to the channel as `/shrug`.
     private static func isComposing(_ draft: String) -> Bool {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && !draft.hasPrefix("/")
+        return !trimmed.isEmpty && (!trimmed.hasPrefix("/") || trimmed.hasPrefix("//"))
     }
 
     /// The draft changed. Returns the signal to send, or nil to stay quiet.
