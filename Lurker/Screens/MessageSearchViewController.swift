@@ -134,9 +134,11 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     /// the list knowing. Search used to be the odd one out: a WS request/reply whose cursor this
     /// client synthesized from `hasMore` plus the last row's id (#123).
     ///
-    /// `.tooShort` is answered here, locally, and never reaches the wire — that's the point of
-    /// the state. Answering it with an empty page (rather than nil) matters: nil means "we
-    /// couldn't ask", which would put an error in front of someone who is simply mid-word.
+    /// `.tooShort` never reaches the wire — that's the point of the state — and is answered by
+    /// `localFirstPage` before this is asked. The case here is only for completeness: it has no
+    /// cursor, so nothing pages it. Answering it with an empty page (rather than nil) matters:
+    /// nil means "we couldn't ask", which would put an error in front of someone who is simply
+    /// mid-word.
     override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
         let before = cursor?.beforeMessage
         return switch showing {
@@ -144,6 +146,12 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         case .tooShort: HighlightsPage(items: [], nextBefore: nil)
         case .results: await viewModel.searchMessages(query, before: before)
         }
+    }
+
+    /// `.tooShort` is answered on the spot, so typing into or out of it never flashes
+    /// "Searching…". The landing view is not: its highlights are a server read like any search.
+    override func localFirstPage() -> HighlightsPage? {
+        showing == .tooShort ? HighlightsPage(items: [], nextBefore: nil) : nil
     }
 
     override var loadingModel: StateView.Model {
@@ -369,8 +377,8 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         commit(text)
     }
 
-    /// Adopt `text` as the query and run it. `reload()` supersedes anything in flight, so the
-    /// last committed query is always the one whose answer lands.
+    /// Adopt `text` as the query and run it. `reload(newQuestion:)` supersedes anything in
+    /// flight, so the last committed query is always the one whose answer lands.
     ///
     /// This is also where the screen changes mode, and it reads the *parsed* query rather than
     /// the raw string so that "empty" means the same thing here as it does to the server: a
@@ -387,7 +395,10 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         guard next != parsed || nextShowing != showing else { return }
         parsed = next
         showing = nextShowing
-        reload()
+        // A different question, so the old answer goes now rather than when the new one lands
+        // (lurker-ios#203): left up, it read as the answer to this one, stayed there with no
+        // error if this one failed, and paged its own cursor under this query.
+        reload(newQuestion: true)
     }
 
     private static let debounceMilliseconds = 350
