@@ -75,7 +75,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         viewModel.onBufferOpened = { [weak self] key in self?.land(on: key) }
         // …and a join that didn't happen, or a DM that couldn't be asked for, says why.
         viewModel.onJoinNotice = { [weak self] notice in self?.showNotice(notice.message) }
-        viewModel.onOpenNotice = { [weak self] notice in self?.showNotice(notice.message) }
         // A DCC chat offer asks, over whatever is on screen (lurker#270).
         dccOfferPrompt = DccOfferPrompt(
             viewModel: viewModel,
@@ -350,8 +349,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// is animation fighting itself, and replacing the stack under a sheet still up leaves it
     /// hanging over a screen that no longer presented it.
     private func land(on key: BufferKey) {
-        guard viewModel.session == .loggedIn else { return }
-        dismissPresented(animated: true) { [weak self] in
+        guard let split, viewModel.session == .loggedIn else { return }
+        split.dismissPresented(animated: true) { [weak self] in
             guard let self, let navigation, viewModel.session == .loggedIn else { return }
             navigation.showBuffer(
                 viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: true
@@ -382,18 +381,6 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             split.dismissPresented()
         } else {
             navigation?.dismiss(animated: false)
-        }
-    }
-
-    /// `dismissPresented`, animated, with `completion` run once the sheets are down — at once if
-    /// none were up.
-    private func dismissPresented(animated: Bool, completion: @escaping () -> Void) {
-        if let split {
-            split.dismissPresented(animated: animated, completion: completion)
-        } else if let navigation, navigation.presentedViewController != nil {
-            navigation.dismiss(animated: animated, completion: completion)
-        } else {
-            completion()
         }
     }
 

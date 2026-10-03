@@ -681,6 +681,18 @@ public struct ChatState: Sendable {
         return Reactions.groups(list)
     }
 
+    /// Whether a write for this network can reach it right now: the device has a path, our socket
+    /// is up, and the network is connected — the one rule `/join`, a DM's `open-buffer` (iOS #201)
+    /// and a reaction share, so a reconnect can't make them disagree.
+    ///
+    /// ⚠ All three, not just the network's row. After a drop `connection` reads `.reconnecting`
+    /// while the network row still says `.connected`, and the client keeps the closed socket until
+    /// it reconnects — so a send there "succeeds" and nothing ever answers.
+    public func canWrite(networkId: Int?) -> Bool {
+        guard reachable, connection == .connected, let networkId else { return false }
+        return networks[networkId]?.state == .connected
+    }
+
     /// Whether a reaction — or a reply's tags — can go out on this network right now: it's
     /// connected and its last registration said yes (§5.1). The server's own gate needs a reply
     /// tag allowed too, so this is also the nearest signal for "a reply will carry its tag".
@@ -688,9 +700,8 @@ public struct ChatState: Sendable {
     /// ⚠ Our own socket first, like `presence`: while it's down `network.state` is whatever the
     /// last snapshot said, and nothing we send goes anywhere.
     public func canReact(networkId: Int?) -> Bool {
-        guard reachable, connection == .connected, let networkId, let network = networks[networkId]
-        else { return false }
-        return network.state == .connected && network.canReact
+        guard canWrite(networkId: networkId), let networkId else { return false }
+        return networks[networkId]?.canReact == true
     }
 
     /// The newest lines of every loaded network buffer, for a `sync-reactions` after a resume:

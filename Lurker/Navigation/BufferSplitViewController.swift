@@ -65,15 +65,45 @@ final class BufferSplitViewController: UISplitViewController {
     /// One sheet is animated down: the screens keep to one at a time. Anything still up once it
     /// is gone — a second column's — goes the unanimated way before `completion`, so the caller
     /// never navigates under a sheet.
+    ///
+    /// ⚠⚠ `completion` ALWAYS runs, exactly once. A landing navigates in it after its wait is
+    /// already spent, so a completion that never came lost the landing for good — and UIKit drops
+    /// a dismiss asked for mid-transition (a sheet the user is swiping, an alert coming up), its
+    /// completion with it, saying nothing but a console line. So: a transition already running is
+    /// waited out first, and a dismiss that didn't start is swept unanimated and finished at once.
     func dismissPresented(animated: Bool, completion: @escaping () -> Void) {
         currentChat?.endColumnSearch()
         guard let presenter = ([listNav, chatNav] as [UIViewController] + [self])
             .first(where: { $0.presentedViewController != nil })
         else { return completion() }
-        presenter.dismiss(animated: animated) { [weak self] in
+        var finished = false
+        let finish = { [weak self] in
+            guard !finished else { return }
+            finished = true
             self?.dismissPresented()
             completion()
         }
+        if let running = Self.runningTransition(above: presenter) {
+            // Ends either way — completed, or a swipe the user let go of — and the sweep then takes
+            // down whatever is still up.
+            if !running.animate(alongsideTransition: nil, completion: { _ in finish() }) { finish() }
+            return
+        }
+        presenter.dismiss(animated: animated) { finish() }
+        // Refused after all: nothing is on its way down, so no completion is coming.
+        if let sheet = presenter.presentedViewController, !sheet.isBeingDismissed { finish() }
+    }
+
+    /// A presentation or dismissal in progress anywhere in the chain `presenter` heads, if any.
+    private static func runningTransition(
+        above presenter: UIViewController
+    ) -> UIViewControllerTransitionCoordinator? {
+        var next = presenter.presentedViewController
+        while let current = next {
+            if let coordinator = current.transitionCoordinator { return coordinator }
+            next = current.presentedViewController
+        }
+        return nil
     }
 
     /// The sheet on screen, whichever column put it up: `dismissPresented`'s counterpart, for
@@ -196,7 +226,7 @@ final class BufferSplitViewController: UISplitViewController {
     func showBuffer(_ buffer: Buffer, jumpTo messageId: Int? = nil, animated: Bool) {
         // Whatever was still waiting to land — a DM, a DCC chat, a join — would pull the reader off
         // this one (iOS #201). Every way a buffer goes on screen comes through here.
-        viewModel.bufferShown()
+        viewModel.supersedeLandings()
         // ⚠ Collapsed, the conversation lives on the LIST's stack — `splitViewControllerDid
         // Collapse` moved it there, and `chatNav` is off screen and empty. So none of the code
         // below applies: the early-out could never fire, and `show(.secondary)` would be

@@ -63,7 +63,7 @@ struct PendingOpen: Equatable {
 /// rule settles three races:
 ///  - two opens whose replies come back out of order: the earlier request's late reply is stale,
 ///    so it can't take the user to the chat they asked for first;
-///  - a reply that outlives the session: `reset` moves the number on, so an open sent before a
+///  - a reply that outlives the session: `cancel` moves the number on, so an open sent before a
 ///    sign-out can't install a wait into whoever signs in next;
 ///  - a close that beats an open still in flight: `closing` moves the number on when the open in
 ///    flight is for the chat being closed.
@@ -163,17 +163,13 @@ struct PendingOpens {
         waiting = taken
     }
 
-    /// Something newer has the user's attention — a join that opens, or a buffer they went to
-    /// themselves: nothing asked for so far may land.
+    /// Nothing asked for so far may land: something newer has the user's attention — a join that
+    /// opens, a buffer they went to themselves — or they signed out, and nothing from this session
+    /// may land in the next.
     mutating func cancel() {
         latest += 1
         inFlight = nil
         waiting = nil
-    }
-
-    /// Sign-out: nothing asked for in this session may land in the next one.
-    mutating func reset() {
-        cancel()
     }
 
     /// The buffer to go to, if the wait just ended in one. Clears the wait either way it ends.
@@ -192,17 +188,3 @@ struct PendingOpens {
     }
 }
 
-/// A buffer this device asked to open that couldn't be asked for (iOS #201), to tell the user in
-/// passing — the counterpart of `JoinNotice`, from a screen without a composer to put the line back
-/// in. The app shows it as a toast.
-public enum OpenNotice: Equatable, Sendable {
-    /// The `open-buffer` went nowhere: there was no connection to carry it.
-    case notConnected(target: String)
-
-    /// What the toast says.
-    public var message: String {
-        switch self {
-        case .notConnected(let target): "Can't open \(target) while disconnected"
-        }
-    }
-}

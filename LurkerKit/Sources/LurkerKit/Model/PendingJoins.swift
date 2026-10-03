@@ -106,8 +106,9 @@ struct PendingJoins {
     }
 }
 
-/// A join this device asked for that didn't happen, to tell the user in passing (#57). The app
-/// shows it as a toast.
+/// A join this device asked for that didn't happen, to tell the user in passing (#57) — or a DM it
+/// asked to open from a profile or a Friends row (iOS #201), which fails the same way and is told
+/// the same way. The app shows it as a toast.
 public enum JoinNotice: Equatable, Sendable {
     /// The server refused. `reason` is its own sentence, such as "This channel is invite-only."
     case refused(channel: String, reason: String)
@@ -115,6 +116,8 @@ public enum JoinNotice: Equatable, Sendable {
     case noResponse(channel: String)
     /// Never sent: the network isn't connected, or there was no socket to carry the JOIN.
     case notConnected(channel: String, network: String)
+    /// A DM's `open-buffer` was never sent, for the same reason.
+    case dmNotConnected(nick: String, network: String)
 
     /// What the toast says.
     public var message: String {
@@ -122,6 +125,7 @@ public enum JoinNotice: Equatable, Sendable {
         case .refused(let channel, let reason): "Couldn't join \(channel): \(reason)"
         case .noResponse(let channel): "No response joining \(channel)"
         case .notConnected(let channel, let network): "Can't join \(channel) while \(network) is offline"
+        case .dmNotConnected(let nick, let network): "Can't message \(nick) while \(network) is offline"
         }
     }
 }

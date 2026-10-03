@@ -2336,18 +2336,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // counted on the pill.
             scrollToBottom()
         }
-        let outcome = viewModel.send(buffer.key, text: text, reply: pendingReply)
-        // Spent if the line went out as it — a plain line or a `/me`. Any other command leaves it
-        // pending, as the web does. A refusal brings it back with the line (`restoreRefusedSend`).
-        if Replies.consumes(text) { pendingReply = nil }
+        // ⚠⚠ Cleared and flushed BEFORE the line goes to the view model, not after. Sending can
+        // take the user somewhere inside that call — `/query` to a DM we hold, `/join` to a
+        // channel we're in — and cleared after, the screen on its way out saved the command as
+        // this buffer's draft, which syncs to every device (#188, #201). A line refused inside the
+        // call comes back into this cleared field, and never travels with a switch: one that went
+        // nowhere goes nowhere (see `ChatViewModel.run`).
         composer.clear()
         // Emptied on the server now, not on the debounce: a quick close or a switch to another
         // device would otherwise find the line just sent still waiting there.
         viewModel.flushDraft(buffer.key)
+        let outcome = viewModel.send(buffer.key, text: text, reply: pendingReply)
+        // Spent if the line went out as it — a plain line or a `/me`. Any other command leaves it
+        // pending, as the web does. A refusal brings it back with the line (`restoreRefusedSend`).
+        if Replies.consumes(text) { pendingReply = nil }
         // The field is free again, so anything still waiting can come back — see
         // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
         // screen next appeared, which for someone staying in one conversation is never.
         restoreRefusedSend()
+        // `/msg`/`/query` to a channel asked us to switch to it.
+        if case .activate(let key) = outcome { navigate(to: key) }
         // `/whois` — open the profile rather than leaving the numerics in the server buffer as
         // the only answer.
         if case .showProfile(let networkId, let who) = outcome {
@@ -2364,6 +2372,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// carries up, so a join's refusal (#57) isn't drawn behind either. The jump pill and the
     /// suggestions ride the same edge.
     var noticeAnchor: NSLayoutYAxisAnchor { composer.topAnchor }
+
+    /// Switch to a channel — what `/msg` and `/query` to one ask for. The target may not be in
+    /// state yet, which is what `buffer(for:)` synthesizes for.
+    private func navigate(to key: BufferKey) {
+        guard key != buffer.key else { return }
+        navigationController?.showBuffer(
+            viewModel.state.buffer(for: key), viewModel: viewModel, animated: true
+        )
+    }
 
     /// Someone's profile, on its own sheet — the `/whois` and message-action route in. The two
     /// sheet-borne routes push instead, so the profile arrives inside the list you came from.

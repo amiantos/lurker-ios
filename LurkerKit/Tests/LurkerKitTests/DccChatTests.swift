@@ -446,7 +446,7 @@ final class DccChatTests: XCTestCase {
     func testAReplyFromBeforeASignOutIsStale() {
         var opens = PendingOpens()
         let ticket = opens.begin(DccChat.key(networkId: 1, nick: "bob"))
-        opens.reset()
+        opens.cancel()
         opens.opened(ticket, now: opened)
         XCTAssertNil(opens.waiting)
     }
