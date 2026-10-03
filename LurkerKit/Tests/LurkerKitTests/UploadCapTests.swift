@@ -45,22 +45,23 @@ struct UploadCapTests {
         let frame = snapshotFrame(
             #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxUploadBytes":26214400}"#
         )
-        guard case let .snapshot(_, _, maxUploadBytes) = frame else {
+        guard case let .snapshot(_, _, limits) = frame else {
             Issue.record("expected a snapshot, got \(frame)")
             return
         }
-        #expect(maxUploadBytes == 26_214_400)
+        #expect(limits.maxUploadBytes == 26_214_400)
     }
 
     @Test("a snapshot from a server too old to advertise says nothing, not zero")
     func anOldSnapshotSaysNothing() {
         let frame = snapshotFrame(#"{"kind":"snapshot","networks":[],"globalIgnores":[]}"#)
-        guard case let .snapshot(_, _, maxUploadBytes) = frame else {
+        guard case let .snapshot(_, _, limits) = frame else {
             Issue.record("expected a snapshot, got \(frame)")
             return
         }
-        #expect(maxUploadBytes == nil)
-        #expect(Uploads.compressionTarget(advertised: maxUploadBytes) == Uploads.fallbackMaxBytes)
+        #expect(limits.maxUploadBytes == nil)
+        #expect(Uploads.compressionTarget(advertised: limits.maxUploadBytes)
+            == Uploads.fallbackMaxBytes)
     }
 
     @Test("a non-positive cap is read as no answer")
@@ -73,11 +74,11 @@ struct UploadCapTests {
                 #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxUploadBytes":"# + value
                     + "}"
             )
-            guard case let .snapshot(_, _, maxUploadBytes) = frame else {
+            guard case let .snapshot(_, _, limits) = frame else {
                 Issue.record("expected a snapshot")
                 return
             }
-            #expect(maxUploadBytes == nil, "\(value) is not a cap any file could satisfy")
+            #expect(limits.maxUploadBytes == nil, "\(value) is not a cap any file could satisfy")
         }
     }
 
@@ -86,12 +87,12 @@ struct UploadCapTests {
         let frame = FrameParser.parseWs(
             #"{"kind":"settings","changes":{"uploads.image.max_upload_mb":12},"maxUploadBytes":12582912}"#
         )
-        guard case let .settingsChanged(changes, maxUploadBytes) = frame else {
+        guard case let .settingsChanged(changes, limits) = frame else {
             Issue.record("expected a settings frame, got \(frame)")
             return
         }
         #expect(changes["uploads.image.max_upload_mb"] == .int(12))
-        #expect(maxUploadBytes == 12_582_912)
+        #expect(limits.maxUploadBytes == 12_582_912)
     }
 
     @Test("a settings frame about anything else carries no cap")
@@ -99,11 +100,11 @@ struct UploadCapTests {
         let frame = FrameParser.parseWs(
             #"{"kind":"settings","changes":{"chat.consolidate_joins":true}}"#
         )
-        guard case let .settingsChanged(_, maxUploadBytes) = frame else {
+        guard case let .settingsChanged(_, limits) = frame else {
             Issue.record("expected a settings frame, got \(frame)")
             return
         }
-        #expect(maxUploadBytes == nil, "absent here means unchanged, not uncapped")
+        #expect(limits.maxUploadBytes == nil, "absent here means unchanged, not uncapped")
     }
 
     // MARK: - Reaching the store
@@ -111,7 +112,7 @@ struct UploadCapTests {
     @Test("the snapshot seeds the cap")
     func snapshotSeedsTheStore() {
         let state = LurkerStore.reduce(
-            ChatState(), .snapshot([], globalIgnores: [], maxUploadBytes: 26_214_400))
+            ChatState(), .snapshot([], globalIgnores: [], uploadLimits: UploadLimits(maxUploadBytes: 26_214_400)))
         #expect(state.maxUploadBytes == 26_214_400)
     }
 
@@ -120,8 +121,8 @@ struct UploadCapTests {
         // The snapshot is the cap's refresh point. Leaving the last server's number in force
         // would compress against a limit this one never claimed.
         var state = LurkerStore.reduce(
-            ChatState(), .snapshot([], globalIgnores: [], maxUploadBytes: 26_214_400))
-        state = LurkerStore.reduce(state, .snapshot([], globalIgnores: [], maxUploadBytes: nil))
+            ChatState(), .snapshot([], globalIgnores: [], uploadLimits: UploadLimits(maxUploadBytes: 26_214_400)))
+        state = LurkerStore.reduce(state, .snapshot([], globalIgnores: [], uploadLimits: .unstated))
         #expect(state.maxUploadBytes == nil)
         #expect(Uploads.compressionTarget(advertised: state.maxUploadBytes)
             == Uploads.fallbackMaxBytes)
@@ -130,10 +131,13 @@ struct UploadCapTests {
     @Test("a settings frame that carries a cap updates it")
     func aSettingsFrameRaisesTheCap() {
         var state = LurkerStore.reduce(
-            ChatState(), .snapshot([], globalIgnores: [], maxUploadBytes: 26_214_400))
+            ChatState(), .snapshot([], globalIgnores: [], uploadLimits: UploadLimits(maxUploadBytes: 26_214_400)))
         state = LurkerStore.reduce(
             state,
-            .settingsChanged(["uploads.image.max_upload_mb": .int(50)], maxUploadBytes: 52_428_800)
+            .settingsChanged(
+                ["uploads.image.max_upload_mb": .int(50)],
+                uploadLimits: UploadLimits(maxUploadBytes: 52_428_800)
+            )
         )
         #expect(state.maxUploadBytes == 52_428_800)
     }
@@ -145,9 +149,9 @@ struct UploadCapTests {
         // compressor back on the 90 MiB guess every time the user flipped an unrelated switch
         // — and it would stay there until the next reconnect.
         var state = LurkerStore.reduce(
-            ChatState(), .snapshot([], globalIgnores: [], maxUploadBytes: 209_715_200))
+            ChatState(), .snapshot([], globalIgnores: [], uploadLimits: UploadLimits(maxUploadBytes: 209_715_200)))
         state = LurkerStore.reduce(
-            state, .settingsChanged(["chat.consolidate_joins": .bool(true)], maxUploadBytes: nil))
+            state, .settingsChanged(["chat.consolidate_joins": .bool(true)], uploadLimits: .unstated))
         #expect(state.maxUploadBytes == 209_715_200)
     }
 

@@ -468,7 +468,7 @@ final class WhoisTests: XCTestCase {
         store.apply(.nickNoteUpdated(networkId: 7, nick: "alice", note: "stale", updatedAt: nil))
         store.apply(.snapshot(
             [NetworkSnapshot(id: 7, state: .connected, nick: "me", channels: [])],
-            globalIgnores: [], maxUploadBytes: nil
+            globalIgnores: [], uploadLimits: .unstated
         ))
         XCTAssertNil(store.state.nickNotes.note(networkId: 7, nick: "alice"))
     }

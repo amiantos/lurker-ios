@@ -294,6 +294,14 @@ public struct ChatState: Sendable {
     /// ⚠ It is a FILE cap: the multipart envelope is already subtracted server-side, so size
     /// the file to exactly this and don't budget for the boundaries again.
     public var maxUploadBytes: Int?
+    /// The longest edge, in pixels, the server keeps of a static image (lurker#872, #155) —
+    /// the number to shrink a photo to before uploading it. Carried exactly like
+    /// `maxUploadBytes`: seeded by the snapshot, patched by a `settings` frame that touched it.
+    ///
+    /// ⚠⚠ nil is **"the server hasn't said"**, and then images go up as they always did. There
+    /// is no fallback dimension: a guessed 2048 would shrink photos on an instance that keeps
+    /// 4096, and that loss is the user's, invisibly. Read it through `ImageShrink.plan`.
+    public var maxStaticImageDimension: Int?
     public var error: String?
     /// Text the server refused to send, waiting for the buffer it was TYPED IN. Keyed by
     /// `BufferKey.id`.
@@ -1023,7 +1031,7 @@ final class LurkerStore {
         switch frame {
         case .networks(let networks):
             return applyNetworks(state, networks)
-        case .snapshot(let networks, let globalIgnores, let maxUploadBytes):
+        case .snapshot(let networks, let globalIgnores, let uploadLimits):
             // Frame 1 of every burst (CLIENT_PROTOCOL.md §4.3), so this is where the
             // roster reconciliation window opens. Start collecting the keys the server
             // names; `backlog-complete` closes the window and prunes the rest.
@@ -1038,10 +1046,11 @@ final class LurkerStore {
             // This socket has spoken: from here `peerPresence` and the networks' states are its
             // own, not what was left over from before a drop (see `rowPresence`).
             next.snapshotSinceOpen = true
-            // Assigned outright, nil included: the snapshot is the cap's refresh point, so a
+            // Assigned outright, nil included: the snapshot is the limits' refresh point, so a
             // reconnect to an instance that no longer advertises one has to put us back on
             // the fallback rather than leave a number from the last server in force.
-            next.maxUploadBytes = maxUploadBytes
+            next.maxUploadBytes = uploadLimits.maxUploadBytes
+            next.maxStaticImageDimension = uploadLimits.maxStaticImageDimension
             return applySnapshot(next, networks, globalIgnores: globalIgnores)
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
@@ -1410,16 +1419,19 @@ final class LurkerStore {
             var next = state
             next.settings.load(registry: registry, values: values)
             return next
-        case .settingsChanged(let changes, let maxUploadBytes):
+        case .settingsChanged(let changes, let uploadLimits):
             var next = state
             // Patch, never replace — the frame carries only what moved, so assigning it
             // wholesale would drop every other stored setting until the next bootstrap.
             next.settings.apply(changes: changes)
-            // ⚠⚠ Conditional, for the same reason: the cap rides this frame ONLY when it was
-            // the thing that changed. Assigning it unconditionally would clear the advertised
-            // number every time the user toggled anything else, quietly putting the compressor
-            // back on the fallback until the next reconnect.
-            if let maxUploadBytes { next.maxUploadBytes = maxUploadBytes }
+            // ⚠⚠ Conditional, for the same reason: the limits ride this frame ONLY when one of
+            // them changed. Assigning them unconditionally would clear the advertised numbers
+            // every time the user toggled anything else, quietly putting the compressor back
+            // on the fallback — and photos back to full size — until the next reconnect.
+            if let bytes = uploadLimits.maxUploadBytes { next.maxUploadBytes = bytes }
+            if let dimension = uploadLimits.maxStaticImageDimension {
+                next.maxStaticImageDimension = dimension
+            }
             return next
         case .settingsValues(let values):
             var next = state

@@ -42,6 +42,33 @@ public enum Uploads {
     }
 }
 
+/// The numbers the server advertises for sizing an upload before it starts, as they ride the
+/// `snapshot` and `settings` frames. Each is nil for **"the server didn't say"** — never a
+/// default, never zero.
+///
+/// - `maxUploadBytes` is the largest FILE this account may send (lurker#627, #149).
+/// - `maxStaticImageDimension` is the longest edge, in pixels, the server keeps of a STATIC
+///   image (lurker#872, #155): it downscales anything larger and re-encodes it, so pixels past
+///   this are bytes on the wire for nothing. Animated images and SVG bypass that resize, which
+///   is why the name says static — see `ImageShrink`.
+///
+/// What nil means depends on the frame. On a `snapshot` it is an instance too old to send the
+/// field, and the store assigns it outright, because the snapshot is the refresh point. On a
+/// `settings` frame it means **unchanged** — the server sends these only when the user touched
+/// one of the limits — and the store patches only what arrived.
+public struct UploadLimits: Sendable, Equatable {
+    public var maxUploadBytes: Int?
+    public var maxStaticImageDimension: Int?
+
+    public init(maxUploadBytes: Int? = nil, maxStaticImageDimension: Int? = nil) {
+        self.maxUploadBytes = maxUploadBytes
+        self.maxStaticImageDimension = maxStaticImageDimension
+    }
+
+    /// Neither number: an old server's snapshot, or a settings frame that didn't touch either.
+    public static let unstated = UploadLimits()
+}
+
 /// What the server returns on a successful upload. Mirrors the JSON the web client reads:
 /// the `url` is what gets pasted into the composer, `mime` is derived from the magic bytes
 /// (trust it over any client guess), and `thumbnailUrl` is present only when the server

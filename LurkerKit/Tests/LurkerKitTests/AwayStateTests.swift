@@ -101,7 +101,7 @@ final class AwayStateTests: XCTestCase {
     private func snapshot(_ away: AwayState?) -> ServerFrame {
         .snapshot(
             [NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], away: away)],
-            globalIgnores: [], maxUploadBytes: nil
+            globalIgnores: [], uploadLimits: .unstated
         )
     }
 

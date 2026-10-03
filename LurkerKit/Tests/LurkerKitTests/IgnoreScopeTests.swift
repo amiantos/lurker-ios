@@ -125,7 +125,7 @@ final class IgnoreScopeTests: XCTestCase {
                         ignoredMasks: [rule(mask: "local")]
                     ),
                 ],
-                globalIgnores: [rule(mask: "spammer")], maxUploadBytes: nil
+                globalIgnores: [rule(mask: "spammer")], uploadLimits: .unstated
             )
         )
         XCTAssertTrue(store.state.ignores.isHidden(networkId: 1, input(nick: "spammer")))
@@ -136,7 +136,7 @@ final class IgnoreScopeTests: XCTestCase {
         store.apply(
             .snapshot(
                 [NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
-                globalIgnores: [], maxUploadBytes: nil
+                globalIgnores: [], uploadLimits: .unstated
             )
         )
         XCTAssertTrue(store.state.ignores.isEmpty(for: 1))
@@ -152,7 +152,7 @@ final class IgnoreScopeTests: XCTestCase {
                         ignoredMasks: [rule(mask: "local")]
                     ),
                 ],
-                globalIgnores: [rule(mask: "spammer")], maxUploadBytes: nil
+                globalIgnores: [rule(mask: "spammer")], uploadLimits: .unstated
             )
         )
         // networkId nil is the GLOBAL bucket here — not the system buffer, which is what a nil

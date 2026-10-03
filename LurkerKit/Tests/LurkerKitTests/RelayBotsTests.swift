@@ -243,7 +243,7 @@ final class RelayBotsTests: XCTestCase {
                 id: 1, state: .connected, nick: "me", channels: [],
                 relayBots: [RelayBot(nick: "bridge", pattern: "{nick}: {message}")]
             )],
-            globalIgnores: [], maxUploadBytes: nil
+            globalIgnores: [], uploadLimits: .unstated
         ))
         XCTAssertEqual(store.state.relayBots.listing(for: 1).map(\.nick), ["bridge"])
 
@@ -251,7 +251,7 @@ final class RelayBotsTests: XCTestCase {
         // that keeps rewriting its lines' authors.
         store.apply(.snapshot(
             [NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
-            globalIgnores: [], maxUploadBytes: nil
+            globalIgnores: [], uploadLimits: .unstated
         ))
         XCTAssertTrue(store.state.relayBots.listing(for: 1).isEmpty)
     }

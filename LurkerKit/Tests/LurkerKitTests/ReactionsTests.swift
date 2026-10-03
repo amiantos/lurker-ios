@@ -210,7 +210,7 @@ final class ReactionsTests: XCTestCase {
         let store = LurkerStore()
         store.apply(.socketOpen)
         store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
-                              globalIgnores: [], maxUploadBytes: nil))
+                              globalIgnores: [], uploadLimits: .unstated))
         XCTAssertFalse(store.state.canReact(networkId: 1), "false until the burst says otherwise")
         store.apply(.reactSupport(networkId: 1, canReact: true))
         XCTAssertTrue(store.state.canReact(networkId: 1))
@@ -231,7 +231,7 @@ final class ReactionsTests: XCTestCase {
         let store = LurkerStore()
         store.apply(.socketOpen)
         store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], canReact: true)],
-                              globalIgnores: [], maxUploadBytes: nil))
+                              globalIgnores: [], uploadLimits: .unstated))
         XCTAssertTrue(store.state.canReact(networkId: 1))
         store.apply(.socketClosed(reason: nil, code: nil))
         XCTAssertFalse(store.state.canReact(networkId: 1))

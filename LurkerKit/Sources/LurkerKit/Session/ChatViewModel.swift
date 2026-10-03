@@ -94,11 +94,11 @@ public final class ChatViewModel {
         // so `settings.loaded` stays honestly false until a real bootstrap arrives, while every
         // behavior gate already reads the user's actual choice.
         let cached = settingsCache.load()
-        // No cap: the cache holds setting VALUES, and the advertised cap is not one of them —
-        // it is the server's resolution of three ceilings, only one of which the user owns.
-        // nil here is the honest "nobody has said yet", and the snapshot lands on connect,
-        // well before there is a video to compress.
-        if !cached.isEmpty { store.apply(.settingsChanged(cached, maxUploadBytes: nil)) }
+        // No limits: the cache holds setting VALUES, and the advertised limits are not among
+        // them — each is the server's resolution of an operator policy and a user setting, and
+        // only one of those is the user's. nil here is the honest "nobody has said yet", and
+        // the snapshot lands on connect, well before there is anything to upload.
+        if !cached.isEmpty { store.apply(.settingsChanged(cached, uploadLimits: .unstated)) }
         restoreSession()
     }
 
@@ -401,6 +401,10 @@ public final class ChatViewModel {
     /// reconnect and re-sent when the user changes their own limit, so a copy taken when a
     /// screen was built is a number that may since have moved.
     public var uploadCapBytes: Int { Uploads.compressionTarget(advertised: state.maxUploadBytes) }
+
+    /// The longest edge the server keeps of a static image, or nil when it hasn't said — in
+    /// which case images go up untouched (#155). Read at upload time, like `uploadCapBytes`.
+    public var maxStaticImageDimension: Int? { state.maxStaticImageDimension }
 
     /// Which `/api/config` answer is the current one. Every reconnect attempt starts a read, so
     /// several can be out at once, and an older answer landing last must not undo a newer one. See
