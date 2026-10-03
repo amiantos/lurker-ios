@@ -442,11 +442,10 @@ enum FrameParser {
 
     // MARK: - Private
 
+    /// Through `JSONTextRepair` first: Foundation fails a whole frame on a lone surrogate
+    /// escape and strips a leading U+FEFF from every string, and both lose user text.
     private static func object(from text: String) -> [String: Any]? {
-        guard let data = text.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
+        try? JSONSerialization.jsonObject(with: JSONTextRepair.data(for: text)) as? [String: Any]
     }
 
     private static func parseSnapshot(_ obj: [String: Any]) -> ServerFrame {

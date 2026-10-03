@@ -66,6 +66,22 @@ struct PreviewDecodeTests {
         #expect(got[0].thumbWidth == 1200)
     }
 
+    @Test("a description capped mid-emoji costs one character, not the batch")
+    func loneSurrogateDoesNotDiscardTheBatch() {
+        // lurker-ios#195: the server caps a description by UTF-16 index, which can leave the
+        // high half of an emoji as a lone `\ud83d` escape. JSONDecoder refused the whole
+        // document for it, which reads one layer up as a transport failure.
+        let got = decode(
+            #"""
+            {"previews":[
+              {"url":"https://e.test/a","status":"ok","kind":"page","description":"fun \ud83d"},
+              {"url":"https://e.test/b","status":"ok","kind":"page"}
+            ]}
+            """#)
+        #expect(got.map(\.url) == ["https://e.test/a", "https://e.test/b"])
+        #expect(got.first?.description == "fun \u{FFFD}")
+    }
+
     // MARK: - Feature flags
 
     @Test("a failed or malformed answer is UNKNOWN, not 'the server says no'")

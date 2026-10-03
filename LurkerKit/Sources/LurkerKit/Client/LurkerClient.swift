@@ -1956,7 +1956,9 @@ final class LurkerClient {
     /// said so.
     nonisolated static func decodePreviews(_ data: Data) -> [LinkPreview] {
         struct Envelope: Decodable { let previews: [FailableDecodable<LinkPreview>] }
-        return (try? JSONDecoder().decode(Envelope.self, from: data))?
+        // Repaired first: a description the server capped mid-emoji ends in a lone surrogate
+        // escape, and JSONDecoder refuses the whole document for it — all twenty previews.
+        return (try? JSONDecoder().decode(Envelope.self, from: JSONTextRepair.forDecoder(data)))?
             .previews.compactMap(\.value) ?? []
     }
 
