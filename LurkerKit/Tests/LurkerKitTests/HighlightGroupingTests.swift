@@ -91,6 +91,24 @@ final class HighlightGroupingTests: XCTestCase {
         XCTAssertTrue(HighlightGrouping.group([], now: now, calendar: calendar).isEmpty)
     }
 
+    func testYesterdayHoldsOnADayThatStartsAfterMidnight() {
+        // lurker-ios#200: Havana springs forward at midnight, so 2026-03-08 begins at 01:00.
+        // Today's start minus a day was 01:00 on the 7th, which began at 00:00, so yesterday's
+        // rows got a dated header. Santiago and Cairo do the same; Havana's fall-back day
+        // (2026-11-02, whose midnight repeats) missed the other way.
+        var havana = Calendar(identifier: .gregorian)
+        havana.timeZone = TimeZone(identifier: "America/Havana")!
+        func noon(_ month: Int, _ day: Int) -> Date {
+            havana.date(from: DateComponents(year: 2026, month: month, day: day, hour: 12))!
+        }
+        XCTAssertEqual(HighlightDay(date: noon(3, 7), now: noon(3, 8), calendar: havana), .yesterday)
+        XCTAssertEqual(HighlightDay(date: noon(11, 1), now: noon(11, 2), calendar: havana), .yesterday)
+        XCTAssertEqual(
+            HighlightDay(date: noon(3, 6), now: noon(3, 8), calendar: havana),
+            .on(havana.startOfDay(for: noon(3, 6)))
+        )
+    }
+
     func testDayIsClassifiedAgainstPassedNowNotTheDeviceDate() {
         // A fixed `now` that is emphatically not the day this test runs. Today/yesterday must
         // be measured against it, not the real clock — the earlier `isDateInToday` version

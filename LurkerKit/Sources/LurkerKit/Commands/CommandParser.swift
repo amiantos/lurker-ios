@@ -76,7 +76,9 @@ public enum CommandParser {
         // the verb, edge-trimmed but with interior spacing preserved (the web's `argLine`).
         let body = String(raw.dropFirst())
         let verb = String(body.prefix { !$0.isWhitespace }).lowercased()
-        let argLine = String(body.dropFirst(verb.count)).trimmingCharacters(in: .whitespaces)
+        // Newlines too, like the web's `trim()`: `/me⏎waves` (a multi-line paste, a
+        // shift-return) would otherwise send the newline at the front of the action.
+        let argLine = String(body.dropFirst(verb.count)).trimmingCharacters(in: .whitespacesAndNewlines)
         let rest = argLine.isEmpty
             ? []
             : argLine.split(whereSeparator: { $0.isWhitespace }).map(String.init)

@@ -128,10 +128,11 @@ public struct OutgoingTyping: Sendable {
     /// to say anything.
     public var isSignalling: Bool { sent != nil }
 
-    /// Whether `draft` is something we'd tell the network we're composing.
+    /// Whether `draft` is something we'd tell the network we're composing. Asked of the
+    /// trimmed text, which is what the composer sends: ` /whois bob` runs as a command.
     private static func isComposing(_ draft: String) -> Bool {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && !draft.hasPrefix("/")
+        return !trimmed.isEmpty && !trimmed.hasPrefix("/")
     }
 
     /// The draft changed. Returns the signal to send, or nil to stay quiet.

@@ -319,7 +319,9 @@ public enum IgnoreArgs {
         // was typed in. Its rejection arrives as silence — `wsHub`'s `add-ignore` drops a
         // failed validation with a bare `break` and sends nothing back — so anything caught
         // there and not here is confirmed as added and simply never exists.
-        if let pattern, pattern.count > maxPatternLength {
+        // UTF-16 units, as the server's `pattern.length` counts them: 400 flag emoji are 400
+        // Characters and 1,600 units, which the server refuses.
+        if let pattern, pattern.utf16.count > maxPatternLength {
             return fail("pattern exceeds \(maxPatternLength) chars")
         }
         // The regex check is the one that can't be exact: the server compiles with V8 and this

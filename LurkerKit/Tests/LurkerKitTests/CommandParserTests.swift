@@ -61,6 +61,13 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/me waves   slowly"), [.action(target: "#chan", text: "waves   slowly")])
     }
 
+    func testMeFollowedByANewlineSendsOnlyTheText() {
+        // lurker-ios#197: a multi-line paste or a shift-return can put a newline, not a space,
+        // after the verb. The web's `trim()` drops it; the action must not start with it.
+        XCTAssertEqual(effects("/me\nwaves"), [.action(target: "#chan", text: "waves")])
+        XCTAssertEqual(effects("/me\n waves  slowly\n"), [.action(target: "#chan", text: "waves  slowly")])
+    }
+
     func testEmptyMeIsANoOp() {
         XCTAssertEqual(effects("/me"), [])
     }

@@ -87,6 +87,15 @@ final class OutgoingTypingTests: XCTestCase {
         XCTAssertFalse(typing.isSignalling)
     }
 
+    func testACommandAfterLeadingWhitespaceIsStillACommand() {
+        // lurker-ios#202: the composer trims before sending, so ` /whois al` runs as a command;
+        // announcing typing for it would be the same leak as for `/whois al`.
+        var typing = OutgoingTyping()
+        XCTAssertNil(typing.draftChanged(to: " /whois al", at: t0))
+        XCTAssertNil(typing.draftChanged(to: "\n/join #x", at: t0.addingTimeInterval(1)))
+        XCTAssertFalse(typing.isSignalling)
+    }
+
     func testTurningAMessageIntoACommandSaysDone() {
         var typing = OutgoingTyping()
         _ = typing.draftChanged(to: "hello", at: t0)
