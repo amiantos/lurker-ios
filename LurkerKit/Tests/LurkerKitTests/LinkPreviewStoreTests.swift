@@ -173,9 +173,8 @@ struct LinkPreviewStoreTests {
         let stub = Stub()
         let store = makeStore(stub)
         store.request((0..<25).map { "https://e.test/\($0)" })
-        // Batches after the first are paced, so this needs longer than the coalesce window.
-        try? await Task.sleep(for: .milliseconds(900))
-        #expect(stub.batches.count == 2)
+        // Batches after the first are paced 600ms apart: waited for, not slept through.
+        #expect(await eventually { stub.batches.count == 2 })
         #expect(stub.batches[0].count == 20)
         #expect(stub.batches[1].count == 5)
     }
@@ -249,8 +248,7 @@ struct LinkPreviewStoreTests {
 
         clock.date.addTimeInterval(60)
         #expect(store.runDueReasks())
-        #expect(await eventually { stub.batches.count == 2 })
-        #expect(stub.batches.count == 2, "the URL is asked about a second time")
+        #expect(await eventually { stub.batches.count == 2 }, "the URL is asked about a second time")
     }
 
     @Test("never re-asks a VERDICT, so a dead link is not a perpetual poller")
@@ -313,7 +311,6 @@ struct LinkPreviewStoreTests {
         store.request(["https://e.test/dead"])
         // A lapsed value is still a value, so `isPending` reads it as settled: wait on the batch.
         #expect(await eventually { stub.batches.count == 2 })
-        #expect(stub.batches.count == 2)
     }
 
     // MARK: - Sign-out, and not repopulating what it cleared
@@ -340,6 +337,8 @@ struct LinkPreviewStoreTests {
         _ = store
 
         resetting.request(["https://e.test/a"])
+        // The resolve has to have HAPPENED, or the emptiness below holds for the wrong reason.
+        #expect(await eventually { stub.batches.count == 1 })
         await settle()
 
         #expect(
@@ -390,9 +389,8 @@ struct LinkPreviewStoreTests {
         store.onUpdate = { _ in updates += 1 }
 
         store.request((0..<45).map { "https://e.test/\($0)" })
-        // Long enough for two of the three batches, not all three.
-        try? await Task.sleep(for: .milliseconds(800))
-        #expect(updates >= 2, "each completed batch paints; saw \(updates)")
+        // Two paints before the drain ends; a store that painted once at the end never gets there.
+        #expect(await eventually { updates >= 2 }, "each completed batch paints; saw \(updates)")
     }
 
     @Test("says WHICH urls moved, so a consumer can tell whether it is affected")
@@ -437,10 +435,11 @@ struct LinkPreviewStoreTests {
         clock.date.addTimeInterval(PreviewReask.floor + 1)
         store.request(["https://e.test/dead"])
         #expect(await eventually { stub.batches.count == 2 }, "asked a second time")
-        // ⚠ A beat AFTER the batch lands, because the stub records its call before the flush
-        // decides whether to say anything — asserting the silence on the batch alone would be
-        // asserting it a moment too early, which is a test that passes for the wrong reason.
-        await settle()
+        // ⚠ AFTER the flush has decided, not when the batch lands: the stub records its call
+        // before the flush decides whether to say anything, so asserting the silence on the batch
+        // alone would pass for the wrong reason. The second rung is written in the same stretch
+        // as that decision.
+        #expect(await eventually { store.retry["https://e.test/dead"]?.tries == 2 })
         #expect(reported.count == 1, "and the second answer says nothing new")
     }
 
@@ -503,8 +502,7 @@ struct LinkPreviewStoreTests {
         let store = makeStore(stub)
         let urls = (0..<40).map { "https://e.test/\($0)" }
         store.request(urls)
-        try? await Task.sleep(for: .milliseconds(800))
-
+        #expect(await eventually { !stub.batches.isEmpty })
         #expect(stub.batches.first == Array(urls.prefix(20)))
     }
 
@@ -531,6 +529,7 @@ struct LinkPreviewStoreTests {
         }
         store.request(["https://e.test/skewed"])
         #expect(await answered(store, ["https://e.test/skewed"]))
+        #expect(store.preview(for: "https://e.test/skewed") != nil, "the answer did land")
         #expect(store.retry["https://e.test/skewed"] == nil)
         #expect(!store.runDueReasks())
     }
@@ -562,7 +561,10 @@ struct LinkPreviewStoreTests {
             _ = store.runDueReasks()
             // Its retry entry is what moves (a rung up, or gone): a re-queued URL already reads as
             // settled, so `answered` would return at once.
-            _ = await eventually { store.retry["https://e.test/silent"]?.tries != tries }
+            guard await eventually({ store.retry["https://e.test/silent"]?.tries != tries }) else {
+                Issue.record("round \(rounds + 1)'s re-ask never landed")
+                break
+            }
             rounds += 1
         }
         #expect(rounds < 20, "it gave up rather than polling forever")
