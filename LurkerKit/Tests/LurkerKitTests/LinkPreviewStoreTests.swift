@@ -385,12 +385,15 @@ struct LinkPreviewStoreTests {
         // resolved previews sitting in the cache with nothing told to draw them.
         let stub = Stub()
         let store = makeStore(stub)
-        var updates = 0
-        store.onUpdate = { _ in updates += 1 }
+        // How many batches had been asked when each paint happened. The stub records a batch as
+        // its resolve starts, so a paint per batch reads 1, then 2 — and a store that painted
+        // once at the end of the drain reads 3, once.
+        var paintedAt: [Int] = []
+        store.onUpdate = { _ in paintedAt.append(stub.batches.count) }
 
         store.request((0..<45).map { "https://e.test/\($0)" })
-        // Two paints before the drain ends; a store that painted once at the end never gets there.
-        #expect(await eventually { updates >= 2 }, "each completed batch paints; saw \(updates)")
+        #expect(await eventually { paintedAt.count >= 2 })
+        #expect(Array(paintedAt.prefix(2)) == [1, 2], "each batch paints before the next is asked; saw \(paintedAt)")
     }
 
     @Test("says WHICH urls moved, so a consumer can tell whether it is affected")
