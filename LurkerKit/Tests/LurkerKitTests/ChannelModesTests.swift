@@ -156,7 +156,7 @@ final class ChannelModesTests: XCTestCase {
             id: 7, type: .mode, nick: "op", text: "+b x", modes: [ModeChange(mode: "+b", param: "x", kind: .list)]
         )))
         model.handle(.socketOpen)
-        model.handle(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: [], maxUploadBytes: nil))
+        model.handle(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: [], uploadLimits: .unstated))
         XCTAssertEqual(seen, ["1::#c mode", "resynced"], "after the snapshot, not the socket opening")
     }
 
@@ -173,7 +173,7 @@ final class ChannelModesTests: XCTestCase {
                 modeState: ChannelModeState(modes: modes, topicSetBy: "alice")
             )],
             modeSpec: spec
-        )], globalIgnores: [], maxUploadBytes: nil))
+        )], globalIgnores: [], uploadLimits: .unstated))
         return store
     }
 

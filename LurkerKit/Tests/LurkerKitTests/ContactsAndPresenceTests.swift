@@ -130,7 +130,7 @@ final class ContactsAndPresenceTests: XCTestCase {
     private func connectedNetwork(_ id: Int, presence: [String: PresenceState] = [:]) -> ServerFrame {
         .snapshot(
             [NetworkSnapshot(id: id, state: .connected, nick: "me", channels: [], peerPresence: presence)],
-            globalIgnores: [], maxUploadBytes: nil
+            globalIgnores: [], uploadLimits: .unstated
         )
     }
 
@@ -184,7 +184,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         let store = connectedStore()
         store.apply(.snapshot([
             NetworkSnapshot(id: 2, state: .disconnected, nick: "me", channels: [], peerPresence: ["darc": .online]),
-        ], globalIgnores: [], maxUploadBytes: nil))
+        ], globalIgnores: [], uploadLimits: .unstated))
         XCTAssertEqual(store.state.rowPresence(networkId: 2, nick: "darc"), .offline)
     }
 
@@ -236,7 +236,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         // there is unreachable → offline, even if a stale row said otherwise.
         store.apply(.snapshot([
             NetworkSnapshot(id: 2, state: .reconnecting, nick: "me", channels: [], peerPresence: ["darc": .online]),
-        ], globalIgnores: [], maxUploadBytes: nil))
+        ], globalIgnores: [], uploadLimits: .unstated))
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .offline)
     }
 
@@ -255,7 +255,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         store.apply(.snapshot([
             NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], peerPresence: ["darc": .away]),
             NetworkSnapshot(id: 3, state: .connected, nick: "me", channels: [], peerPresence: ["darc": .online]),
-        ], globalIgnores: [], maxUploadBytes: nil))
+        ], globalIgnores: [], uploadLimits: .unstated))
         // A Friends chip reads the presence of ITS network's peer — the same nick elsewhere
         // is a different person as far as the dot is concerned.
         XCTAssertEqual(store.state.presence(networkId: 2, nick: "darc"), .away)

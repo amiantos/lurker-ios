@@ -48,8 +48,9 @@ final class AttachmentPicker: NSObject {
         let url: URL
         let filename: String
         let mime: String
-        /// True for video, the one class we compress on-device before uploading. Images and
-        /// audio pass straight through (the server re-encodes images; audio is already small).
+        /// True for video, the one class we compress on-device before uploading. Audio passes
+        /// straight through (it is already small), and images are only ever redrawn smaller —
+        /// the server does the real re-encode (`ImageConverter`).
         let isVideo: Bool
     }
 

@@ -2461,7 +2461,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// Upload an image pasted into the composer (#14). Reuses the whole pick→upload path by
     /// staging the pasteboard bytes to a temp file, so it flows through the same progress,
-    /// URL-insert, and cleanup. Images never need compression, so `isVideo` is always false.
+    /// URL-insert, and cleanup — including the shrink, which a big screenshot can use.
     private func uploadPastedImage(data: Data, mime: String, filename: String) {
         guard !isUploadBusy else { return }
         let ext = (filename as NSString).pathExtension.isEmpty ? "png" : (filename as NSString).pathExtension
@@ -2673,7 +2673,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         token: String,
         batch: UploadStatusView.Batch
     ) async -> UploadOutcome {
-        // The picker's copy and any on-device derivative (transcode / HEIC→JPEG) are ours to
+        // The picker's copy and any on-device derivative (transcode / image redraw) are ours to
         // clean up on every exit.
         defer { try? FileManager.default.removeItem(at: picked.url) }
         var fileURL = picked.url
@@ -2715,12 +2715,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             } catch {
                 return .failed(.compressionFailed(error.localizedDescription))
             }
-        } else if let jpeg = await ImageConverter.jpegIfProblematicHEIC(source: fileURL, mime: mime) {
-            // A HEIC the server's libheif can't decode → hand it a JPEG instead.
-            derivedTemp = jpeg
-            fileURL = jpeg
-            filename = (filename as NSString).deletingPathExtension + ".jpg"
-            mime = "image/jpeg"
+        } else if let converted = await ImageConverter.prepare(
+            // Read now, like the cap: it is refreshed on every reconnect (#155).
+            source: fileURL, maxStaticImageDimension: viewModel.maxStaticImageDimension
+        ) {
+            // Pixels the server would have thrown away, or a HEIC its libheif can't decode —
+            // either way, a smaller ordinary image goes up in its place.
+            derivedTemp = converted.url
+            fileURL = converted.url
+            filename = (filename as NSString).deletingPathExtension + "." + converted.fileExtension
+            mime = converted.mime
         }
 
         if Task.isCancelled { return .cancelled }

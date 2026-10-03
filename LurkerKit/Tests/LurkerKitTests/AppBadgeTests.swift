@@ -107,7 +107,7 @@ final class AppBadgeWriteTests: XCTestCase {
         states.send(LurkerStore.reduce(states.value, frame))
     }
 
-    private let snapshot = ServerFrame.snapshot([], globalIgnores: [], maxUploadBytes: nil)
+    private let snapshot = ServerFrame.snapshot([], globalIgnores: [], uploadLimits: .unstated)
 
     /// The connect-burst frame that carries a buffer's server-side counts.
     private func backlog(_ target: String, highlights: Int, unread: Int = 0) -> ServerFrame {

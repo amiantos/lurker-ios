@@ -22,16 +22,16 @@ enum ServerFrame: Equatable, Sendable {
     /// value rather than hidden in a default because a snapshot that dropped it would leave
     /// the most common kind of rule silently inert until the next time one was edited.
     ///
-    /// `maxUploadBytes` is the account's advertised upload cap (lurker#627), refreshed on
-    /// every reconnect. **nil is "the server didn't say", not "no cap"** — an instance older
-    /// than the field is a normal condition, and reading its silence as a number would be the
-    /// guess this replaced. See `Uploads.compressionTarget(advertised:)`.
+    /// `uploadLimits` are the account's advertised upload cap (lurker#627) and static-image
+    /// dimension (lurker#872), refreshed on every reconnect. **Each nil is "the server didn't
+    /// say", not "no limit"** — an instance older than the field is a normal condition, and
+    /// reading its silence as a number would be the guess these replaced. See
+    /// `Uploads.compressionTarget(advertised:)` and `ImageShrink`.
     ///
-    /// It belongs to the account rather than to any network, so it rides the frame the way
-    /// `globalIgnores` does. It is the second such field; a third (#17's `protocolVersion`,
-    /// also on this frame) is the point at which these want to be a struct rather than a
-    /// longer tuple.
-    case snapshot([NetworkSnapshot], globalIgnores: [IgnoreRule], maxUploadBytes: Int?)
+    /// They belong to the account rather than to any network, so they ride the frame the way
+    /// `globalIgnores` does — grouped as one struct, because a third and fourth positional
+    /// value is where a tuple stops being readable.
+    case snapshot([NetworkSnapshot], globalIgnores: [IgnoreRule], uploadLimits: UploadLimits)
 
     /// WS `backlog-complete`: the terminal frame of a snapshot burst (lurker #635).
     ///
@@ -362,12 +362,13 @@ enum ServerFrame: Equatable, Sendable {
     /// WS `settings`: the keys that just changed, fanned out to every device (including the
     /// echo of this client's own `PATCH`). A patch, never a full set.
     ///
-    /// ⚠⚠ `maxUploadBytes` rides this frame **only when the cap was actually touched** — the
-    /// server recomputes and re-sends it when `uploads.image.max_upload_mb` is among the
-    /// changes, and omits it otherwise. So nil here means "unchanged", NOT "no cap", and the
-    /// store must patch it conditionally rather than assign it. Overwriting with nil would
-    /// drop the advertised cap on every unrelated settings change the user made.
-    case settingsChanged([String: SettingValue], maxUploadBytes: Int?)
+    /// ⚠⚠ `uploadLimits` ride this frame **only when a limit was actually touched** — the
+    /// server recomputes and re-sends both when `uploads.image.max_upload_mb` or
+    /// `uploads.image.max_dimension` is among the changes, and omits them otherwise. So nil
+    /// here means "unchanged", NOT "no limit", and the store must patch each conditionally
+    /// rather than assign it. Overwriting with nil would drop the advertised numbers on every
+    /// unrelated settings change the user made.
+    case settingsChanged([String: SettingValue], uploadLimits: UploadLimits)
 
     /// The `{values}` a REST reply carries (`PATCH /api/settings`) — the user's complete
     /// stored set, which REPLACES what we hold rather than merging into it. See

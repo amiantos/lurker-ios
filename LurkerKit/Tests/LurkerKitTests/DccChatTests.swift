@@ -222,7 +222,7 @@ final class DccChatTests: XCTestCase {
     private func snapshot(_ id: Int = 1, state: ConnectionState = .connected, chats: [String] = [], offers: [String] = []) -> ServerFrame {
         .snapshot([
             NetworkSnapshot(id: id, state: state, nick: "me", channels: [], dccChats: chats, dccChatOffers: offers),
-        ], globalIgnores: [], maxUploadBytes: nil)
+        ], globalIgnores: [], uploadLimits: .unstated)
     }
 
     private let bob = BufferKey(networkId: 1, target: "=bob")
@@ -325,7 +325,7 @@ final class DccChatTests: XCTestCase {
         store.apply(.snapshot([
             NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], dccChats: ["bob"], dccChatOffers: ["carol"]),
             NetworkSnapshot(id: 2, state: .connected, nick: "me", channels: [], dccChatOffers: ["dave"]),
-        ], globalIgnores: [], maxUploadBytes: nil))
+        ], globalIgnores: [], uploadLimits: .unstated))
         store.apply(.networks([Network(id: 2, name: "Other")]))
         XCTAssertFalse(store.state.isDccChatLive(bob))
         XCTAssertEqual(store.state.dccChatOffers.map(\.nick), ["dave"], "the other network's offer stays")
