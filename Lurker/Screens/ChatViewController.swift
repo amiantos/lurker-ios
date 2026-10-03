@@ -2342,14 +2342,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // this buffer's draft, which syncs to every device (#188, #201). A line refused inside the
         // call comes back into this cleared field, and never travels with a switch: one that went
         // nowhere goes nowhere (see `ChatViewModel.run`).
+        //
+        // The reply is taken for the send first, and a spent one cleared BEFORE the composer: the
+        // clear saves the draft, and the flush below sends it, so clearing it after left an empty
+        // draft on the server still carrying the reply this line used up. Spent if the line went
+        // out as it — a plain line or a `/me`. Any other command leaves it pending, as the web
+        // does. A refusal brings it back with the line (`restoreRefusedSend`), as it always has.
+        let reply = pendingReply
+        if Replies.consumes(text) { pendingReply = nil }
         composer.clear()
         // Emptied on the server now, not on the debounce: a quick close or a switch to another
         // device would otherwise find the line just sent still waiting there.
         viewModel.flushDraft(buffer.key)
-        let outcome = viewModel.send(buffer.key, text: text, reply: pendingReply)
-        // Spent if the line went out as it — a plain line or a `/me`. Any other command leaves it
-        // pending, as the web does. A refusal brings it back with the line (`restoreRefusedSend`).
-        if Replies.consumes(text) { pendingReply = nil }
+        let outcome = viewModel.send(buffer.key, text: text, reply: reply)
         // The field is free again, so anything still waiting can come back — see
         // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
         // screen next appeared, which for someone staying in one conversation is never.

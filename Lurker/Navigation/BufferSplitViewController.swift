@@ -73,8 +73,11 @@ final class BufferSplitViewController: UISplitViewController {
     /// waited out first, and a dismiss that didn't start is swept unanimated and finished at once.
     func dismissPresented(animated: Bool, completion: @escaping () -> Void) {
         currentChat?.endColumnSearch()
-        guard let presenter = ([listNav, chatNav] as [UIViewController] + [self])
-            .first(where: { $0.presentedViewController != nil })
+        // The conversation too, as `topPresented` has it: it presents its column search, and the
+        // dismissal `endColumnSearch` just started is a running transition to wait out like any
+        // other — missed, the landing raced it.
+        let presenters = [listNav, chatNav] + [currentChat].compactMap { $0 } + [self]
+        guard let presenter = presenters.first(where: { $0.presentedViewController != nil })
         else { return completion() }
         var finished = false
         let finish = { [weak self] in

@@ -363,16 +363,16 @@ public final class ChatViewModel {
     /// then.
     private func openThenShow(_ key: BufferKey) -> Bool {
         let now = Date()
-        switch pendingOpens.plan(key, held: store.state.buffers[key.id] != nil, now: now) {
-        case .alreadyWaiting:
-            return true
-        case .write:
-            // The rule `/join` uses, so a reconnect can't make the two disagree.
-            guard store.state.canWrite(networkId: key.networkId), openBuffer(key) else { return false }
-        case .show:
-            break
-        }
+        let plan = pendingOpens.plan(key, held: store.state.buffers[key.id] != nil, now: now)
+        guard plan != .alreadyWaiting else { return true }
+        // ⚠ Before the write, not after it worked. This is the newest ask to be taken somewhere,
+        // and one that fails is still newer: left standing, the older DM, DCC chat or join landed
+        // after the "can't message" toast and took the user somewhere they'd stopped asking for.
         supersedeLandings()
+        // The rule `/join` uses, so a reconnect can't make the two disagree.
+        if plan == .write, !(store.state.canWrite(networkId: key.networkId) && openBuffer(key)) {
+            return false
+        }
         pendingOpens.waitFor(key, now: now)
         settlePendingOpen()
         return true
@@ -1443,6 +1443,9 @@ public final class ChatViewModel {
         }
         // ⚠ All three, not just the network's row — see `canWrite`.
         let network = store.state.networks[networkId]
+        // A join that will open is the newest ask to be taken somewhere (iOS #201) — before it is
+        // sent, so one that can't be still stands the older ones down (see `openThenShow`).
+        if opens, toJoin.contains(first) { supersedeLandings() }
         guard store.state.canWrite(networkId: networkId), client.joinChannel(networkId: networkId, channel: name, key: joinKey) else {
             // Nothing to say when every channel was already open: that was `/join` for a channel
             // you're in, and it opened.
@@ -1451,8 +1454,6 @@ public final class ChatViewModel {
             }
             return
         }
-        // A join that will open is the newest ask to be taken somewhere (iOS #201).
-        if opens, toJoin.contains(first) { supersedeLandings() }
         // Sent for channels we're already in too, because `/cycle` joins right behind its own part
         // while the row still reads joined. That rejoin isn't tracked: its own part would read as
         // a forward. A refused one shows as the parted row it leaves.
