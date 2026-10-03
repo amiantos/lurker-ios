@@ -96,6 +96,12 @@ final class OutgoingTypingTests: XCTestCase {
         XCTAssertFalse(typing.isSignalling)
     }
 
+    func testADoubleSlashEscapeIsAMessageAndIsAnnounced() {
+        // `//shrug` goes to the channel as `/shrug`, so it is composing like any other line.
+        var typing = OutgoingTyping()
+        XCTAssertEqual(typing.draftChanged(to: "//shrug", at: t0), .active)
+    }
+
     func testTurningAMessageIntoACommandSaysDone() {
         var typing = OutgoingTyping()
         _ = typing.draftChanged(to: "hello", at: t0)

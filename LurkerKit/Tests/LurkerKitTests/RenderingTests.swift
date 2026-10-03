@@ -177,6 +177,13 @@ final class RenderingTests: XCTestCase {
         )
     }
 
+    func testNickColorStopCharsAreCodePointsLikeTheWeb() {
+        // A combining mark on the `_` makes `_\u{0301}` one Character; the web's `for…of`
+        // walks code points and still stops at the `_`.
+        XCTAssertEqual(NickColor.trimForColor("bob_\u{0301}"), "bob")
+        XCTAssertEqual(NickColor.index(for: "bob_\u{0301}"), NickColor.index(for: "bob"))
+    }
+
     func testNickColorIndexInRange() {
         for nick in ["a", "somebody", "🙂user", "___", "z9"] {
             let index = NickColor.index(for: nick)

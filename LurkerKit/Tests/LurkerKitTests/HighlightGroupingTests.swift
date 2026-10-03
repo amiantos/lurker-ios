@@ -94,8 +94,8 @@ final class HighlightGroupingTests: XCTestCase {
     func testYesterdayHoldsOnADayThatStartsAfterMidnight() {
         // lurker-ios#200: Havana springs forward at midnight, so 2026-03-08 begins at 01:00.
         // Today's start minus a day was 01:00 on the 7th, which began at 00:00, so yesterday's
-        // rows got a dated header. Santiago and Cairo do the same; Havana's fall-back day
-        // (2026-11-02, whose midnight repeats) missed the other way.
+        // rows got a dated header. Santiago and Cairo do the same. Havana's fall-back on
+        // 2026-11-01 (01:00 back to 00:00) missed the other way, seen from the 2nd.
         var havana = Calendar(identifier: .gregorian)
         havana.timeZone = TimeZone(identifier: "America/Havana")!
         func noon(_ month: Int, _ day: Int) -> Date {

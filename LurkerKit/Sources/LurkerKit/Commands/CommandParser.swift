@@ -765,9 +765,10 @@ public enum CommandParser {
     }
 
     /// The body of a command after its first token, interior spacing preserved — the web's
-    /// `argLine.slice(first.length).trim()`. `argLine` begins with `first`.
+    /// `argLine.slice(first.length).trim()`. `argLine` begins with `first`. Newlines are
+    /// trimmed too, as `trim()` does: `/topic #chan⏎new topic` mustn't start with one.
     private static func body(after first: String, in argLine: String) -> String {
-        String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespaces)
+        String(argLine.dropFirst(first.count)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// A DM/user target: has a network, isn't a channel, isn't a `:server:`/`:system:` pseudo.

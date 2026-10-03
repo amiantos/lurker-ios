@@ -68,6 +68,11 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/me\n waves  slowly\n"), [.action(target: "#chan", text: "waves  slowly")])
     }
 
+    func testABodyAfterAFirstArgumentDropsALeadingNewline() {
+        // The same trim, one token in: `/notice bob⏎hi` must not send "\nhi".
+        XCTAssertEqual(effects("/notice bob\nhi"), effects("/notice bob hi"))
+    }
+
     func testEmptyMeIsANoOp() {
         XCTAssertEqual(effects("/me"), [])
     }

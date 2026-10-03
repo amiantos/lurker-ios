@@ -94,7 +94,7 @@ public enum NickColor {
             if scalar == capitalSigma, isFinalSigma(at: index, in: scalars) {
                 out.unicodeScalars.append("\u{03C2}")
             } else {
-                out += String(scalar).lowercased()
+                out.unicodeScalars.append(contentsOf: scalar.properties.lowercaseMapping.unicodeScalars)
             }
         }
         return out
@@ -123,18 +123,19 @@ public enum NickColor {
 
     /// Trim trailing "away/alt" stop chars: keep leading stop chars, but once a real char
     /// has been seen, stop at the next stop char (`amiantos__` / `amiantos|` → `amiantos`).
-    static func trimForColor(_ nick: String, stopChars: Set<Character> = ["_", "|"]) -> String {
-        var result = ""
+    /// Walks code points, as the web's `for…of` does, not Characters: `bob_` plus a combining
+    /// mark is one Character whose `_` would otherwise never read as a stop.
+    static func trimForColor(_ nick: String, stopChars: Set<Unicode.Scalar> = ["_", "|"]) -> String {
+        var result = String.UnicodeScalarView()
         var seenNonStop = false
-        for character in nick {
-            if stopChars.contains(character) {
+        for scalar in nick.unicodeScalars {
+            if stopChars.contains(scalar) {
                 if seenNonStop { break }
-                result.append(character)
             } else {
                 seenNonStop = true
-                result.append(character)
             }
+            result.append(scalar)
         }
-        return result
+        return String(result)
     }
 }
