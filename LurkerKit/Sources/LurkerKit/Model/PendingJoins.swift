@@ -93,6 +93,13 @@ struct PendingJoins {
             .map { .timedOut($0.key) }
     }
 
+    /// Something newer has the user's attention — a DM or DCC chat opening, another join that
+    /// opens, or a buffer they went to themselves (iOS #201): no join asked for so far may take
+    /// them anywhere. Still tracked, so a refusal or a silence is still told.
+    mutating func stopOpening() {
+        for id in requests.keys { requests[id]?.opens = false }
+    }
+
     /// Forget everything: the socket died or the account signed out, so no answer is coming.
     mutating func removeAll() {
         requests.removeAll()

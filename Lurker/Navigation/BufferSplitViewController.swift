@@ -59,6 +59,23 @@ final class BufferSplitViewController: UISplitViewController {
         if presentedViewController != nil { dismiss(animated: false) }
     }
 
+    /// `dismissPresented`, animated, with `completion` run once the sheets are down — at once if
+    /// none were up. The column search still goes unanimated (see `endColumnSearch`).
+    ///
+    /// One sheet is animated down: the screens keep to one at a time. Anything still up once it
+    /// is gone — a second column's — goes the unanimated way before `completion`, so the caller
+    /// never navigates under a sheet.
+    func dismissPresented(animated: Bool, completion: @escaping () -> Void) {
+        currentChat?.endColumnSearch()
+        guard let presenter = ([listNav, chatNav] as [UIViewController] + [self])
+            .first(where: { $0.presentedViewController != nil })
+        else { return completion() }
+        presenter.dismiss(animated: animated) { [weak self] in
+            self?.dismissPresented()
+            completion()
+        }
+    }
+
     /// The sheet on screen, whichever column put it up: `dismissPresented`'s counterpart, for
     /// showing something over it rather than taking it down.
     var topPresented: UIViewController? {
@@ -177,6 +194,9 @@ final class BufferSplitViewController: UISplitViewController {
     /// and it forwards here. Collapsed, the columns are one merged stack and `show(.secondary)`
     /// pushes onto it, which is the phone's list-then-chat arrangement.
     func showBuffer(_ buffer: Buffer, jumpTo messageId: Int? = nil, animated: Bool) {
+        // Whatever was still waiting to land — a DM, a DCC chat, a join — would pull the reader off
+        // this one (iOS #201). Every way a buffer goes on screen comes through here.
+        viewModel.bufferShown()
         // ⚠ Collapsed, the conversation lives on the LIST's stack — `splitViewControllerDid
         // Collapse` moved it there, and `chatNav` is off screen and empty. So none of the code
         // below applies: the early-out could never fire, and `show(.secondary)` would be

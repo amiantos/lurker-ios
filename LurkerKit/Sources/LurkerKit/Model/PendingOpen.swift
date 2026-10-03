@@ -74,7 +74,11 @@ struct PendingOpen: Equatable {
 /// for after it.
 ///
 /// ⚠ ONE wait, deliberately, shared by DMs and DCC chats. A second open replaces the first: there
-/// is one screen to land on, and the buffer asked for last is the one the user is looking for.
+/// is one screen to land on, and the buffer asked for last is the one the user is looking for. It
+/// replaces it as it is ASKED (`begin`), not when its reply comes back — a wait left standing
+/// meanwhile could land, and the newer open's reply would then yank the user on a second time.
+/// For the same reason the view model `cancel`s this for a join that opens, and for the user's own
+/// move to a buffer.
 ///
 /// ⚠⚠ A close does its bookkeeping BEFORE its request goes out, not when the reply comes back. The
 /// server writes "Cancelled…" into `=nick` as it acts, over the socket, and that frame usually
@@ -101,10 +105,29 @@ struct PendingOpens {
     /// The buffer the latest open request is for, while it's still in flight.
     private var inFlight: BufferKey?
 
-    /// An open is about to go out.
+    /// What it takes to open `key` and go there.
+    enum Plan: Equatable {
+        /// Nothing: we're already waiting for it. A re-tap must not send another `open-buffer`,
+        /// which every other device is told about, nor restart the clock.
+        case alreadyWaiting
+        /// No write — the row is here, and `open-buffer` is a write the server refuses outright
+        /// for a paused account. Just go.
+        case show
+        /// Ask for it, then wait for the row.
+        case write
+    }
+
+    /// See `Plan`. `held` is whether the store has the row; a wait past its deadline is no wait.
+    func plan(_ key: BufferKey, held: Bool, now: Date) -> Plan {
+        if let waiting, waiting.isFor(key), now <= waiting.deadline { return .alreadyWaiting }
+        return held ? .show : .write
+    }
+
+    /// An open is about to go out. It replaces any wait still standing — see the type's note.
     mutating func begin(_ key: BufferKey) -> Ticket {
         latest += 1
         inFlight = key
+        waiting = nil
         return Ticket(number: latest, key: key)
     }
 
@@ -140,11 +163,17 @@ struct PendingOpens {
         waiting = taken
     }
 
-    /// Sign-out: nothing asked for in this session may land in the next one.
-    mutating func reset() {
+    /// Something newer has the user's attention — a join that opens, or a buffer they went to
+    /// themselves: nothing asked for so far may land.
+    mutating func cancel() {
         latest += 1
         inFlight = nil
         waiting = nil
+    }
+
+    /// Sign-out: nothing asked for in this session may land in the next one.
+    mutating func reset() {
+        cancel()
     }
 
     /// The buffer to go to, if the wait just ended in one. Clears the wait either way it ends.
@@ -159,6 +188,21 @@ struct PendingOpens {
         case .open(let key):
             waiting = nil
             return key
+        }
+    }
+}
+
+/// A buffer this device asked to open that couldn't be asked for (iOS #201), to tell the user in
+/// passing — the counterpart of `JoinNotice`, from a screen without a composer to put the line back
+/// in. The app shows it as a toast.
+public enum OpenNotice: Equatable, Sendable {
+    /// The `open-buffer` went nowhere: there was no connection to carry it.
+    case notConnected(target: String)
+
+    /// What the toast says.
+    public var message: String {
+        switch self {
+        case .notConnected(let target): "Can't open \(target) while disconnected"
         }
     }
 }

@@ -679,9 +679,12 @@ final class LurkerClient {
     /// made merely *opening a screen* reopen a buffer on every device the user owns, and,
     /// because the server's paused-account gate correctly classes writes as writes, made a
     /// paused account unable to read its own history at all.
-    func openBuffer(networkId: Int?, target: String, countBy: HistoryCountBy) {
-        guard let networkId else { return }
-        send([
+    ///
+    /// Returns whether it was handed to a socket — see `send`.
+    @discardableResult
+    func openBuffer(networkId: Int?, target: String, countBy: HistoryCountBy) -> Bool {
+        guard let networkId else { return false }
+        return send([
             "type": "open-buffer", "networkId": networkId, "target": target,
             "countBy": countBy.rawValue,
         ])
