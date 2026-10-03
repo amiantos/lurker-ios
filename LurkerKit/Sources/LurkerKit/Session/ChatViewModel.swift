@@ -67,13 +67,15 @@ public final class ChatViewModel {
     /// app shows it as a toast.
     public var onJoinNotice: ((_ notice: JoinNotice) -> Void)?
 
-    /// A DCC chat this device opened or accepted has a buffer to go to (lurker#270). The app
+    /// A buffer this device opened has a row to go to: a DCC chat opened or accepted
+    /// (lurker#270), or a DM from a profile, a Friends row or `/msg` (iOS #201). The app
     /// navigates, the same move as `onJoinOpened`. Fired with the stored row's key.
-    public var onDccChatOpened: ((_ key: BufferKey) -> Void)?
+    public var onBufferOpened: ((_ key: BufferKey) -> Void)?
 
-    /// The DCC chat we just opened, until its `=nick` row exists — see `DccOpens`. Giving up is
-    /// quiet: the chat's notices say what happened, in a buffer the list will show.
-    private var dccOpens = DccOpens()
+    /// The buffer we just opened, until its row exists — see `PendingOpens`. Giving up is quiet.
+    /// A DCC chat's notices say what happened, in a buffer the list will show; a DM's refused
+    /// `open-buffer` comes back as the server's `error` frame, which already says so.
+    private var pendingOpens = PendingOpens()
 
     /// The joins waiting on an answer — see `PendingJoins`, where the rules live and can be tested.
     private var pendingJoins = PendingJoins()
@@ -257,7 +259,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
-        dccOpens.reset()
+        pendingOpens.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()
@@ -326,6 +328,31 @@ public final class ChatViewModel {
     /// `hydrate(_:)`.
     public func openBuffer(_ key: BufferKey) {
         client.openBuffer(networkId: key.networkId, target: key.target, countBy: historyCountBy)
+    }
+
+    /// Open a buffer and go there once its row exists (iOS #201): Send Message on a profile, a
+    /// Friends row whose DM is closed, `/msg` and `/query`. The app is taken there through
+    /// `onBufferOpened` — at once if the row is already here, else as soon as the server's answer
+    /// mints it, and not at all if that hasn't happened within `PendingOpen.patience`.
+    ///
+    /// ⚠⚠ Never `openBuffer` and then navigate. `open-buffer` only queues a write, and the row it
+    /// mints comes back later on the socket. A chat screen that opens first finds no row while the
+    /// roster is settled, which `handleBufferDisappeared` reads as "this buffer isn't coming" — and
+    /// it backs out to the list. The DCC chat had the same race and the same cure (lurker#270), so
+    /// the two share one wait: the buffer asked for last is the one to land on.
+    public func openAndShow(_ key: BufferKey) {
+        openBuffer(key)
+        pendingOpens.waitFor(key, now: Date())
+        settlePendingOpen()
+    }
+
+    /// Hand a buffer this device opened to the app once its row exists, or let go once it's clearly
+    /// not coming. Run after every frame, and straight after a wait goes in, so a row that's already
+    /// here is gone to without waiting for one.
+    private func settlePendingOpen() {
+        if let key = pendingOpens.settle(buffers: store.state.buffers, now: Date()) {
+            onBufferOpened?(key)
+        }
     }
 
     /// The page-size unit every history read asks for (#10). Read fresh each time rather than
@@ -619,12 +646,11 @@ public final class ChatViewModel {
         await client.deleteUpload(id: id)
     }
 
-    /// What the UI should do after a line of input — almost always nothing, but `/msg` and
-    /// `/query` ask the composer's owner to switch to the DM they opened. `/join` asks nothing
-    /// of the screen: it goes through `requestJoin`, which opens the channel once we're in it.
+    /// What the UI should do after a line of input — almost always nothing. `/msg`, `/query` and
+    /// `/join` ask nothing of the screen: they open the buffer they name once its row exists
+    /// (`openAndShow`, `requestJoin`), which a screen switching at once would race (iOS #201).
     public enum SendOutcome: Equatable, Sendable {
         case none
-        case activate(BufferKey)
         /// `/whois` — open this person's profile. Carries the network because a profile is
         /// about a person *on a connection*, and the buffer the command was typed in is the
         /// only thing that knows which one.
@@ -821,7 +847,7 @@ public final class ChatViewModel {
     }
 
     /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
-    /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network, `away`/
+    /// follow-up (a profile, for `/whois`). Wire effects run on `key`'s network, `away`/
     /// `back` too, which the server may widen to every network (lurker#994); `info` prints a
     /// local line.
     private func run(
@@ -890,12 +916,12 @@ public final class ChatViewModel {
             case .ctcp(let target, let type, let args):
                 client.sendCTCP(networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args)
             case .activate(let target):
-                // Mint/hydrate the DM row so the buffer exists to switch to. A brand-new
-                // /query target isn't in `state.buffers` yet, so the destination screen's own
-                // hydrate wouldn't fire — this `open-buffer` is what brings the row (and its
-                // backlog) into being.
-                client.openBuffer(networkId: networkId, target: target, countBy: historyCountBy)
-                outcome = .activate(BufferKey(networkId: networkId, target: target))
+                // Mint/hydrate the DM row and switch to it once it's here. A brand-new /query
+                // target isn't in `state.buffers` yet, so the destination screen's own hydrate
+                // wouldn't fire — this `open-buffer` is what brings the row (and its backlog)
+                // into being, and going there before it lands bounces off a settled roster
+                // (iOS #201). See `openAndShow`.
+                openAndShow(BufferKey(networkId: networkId, target: target))
             case .addIgnore(let scope, let rule, let receipt):
                 // `scope`, not `networkId`: nil is a global rule, which is the default and the
                 // one an unqualified `/ignore bob` makes. Nothing is written locally — the
@@ -1011,17 +1037,17 @@ public final class ChatViewModel {
     /// Offer a DCC chat to `nick`, or accept the one they offered (lurker#270). Nil on success, a
     /// message otherwise.
     ///
-    /// On success the app is taken to the chat's `=nick` buffer through `onDccChatOpened` — at
-    /// once if the row exists, else as soon as the server mints it (see `DccOpens`).
+    /// On success the app is taken to the chat's `=nick` buffer through `onBufferOpened` — at
+    /// once if the row exists, else as soon as the server mints it (see `PendingOpens`).
     public func openDccChat(networkId: Int, nick: String, passive: Bool = false) async -> String? {
         // Taken before the request goes out, so a later open, a close or a sign-out that lands
-        // while it's in flight can make its reply stale — see `DccOpens`.
-        let ticket = dccOpens.begin(networkId: networkId, nick: nick)
+        // while it's in flight can make its reply stale — see `PendingOpens`.
+        let ticket = pendingOpens.begin(DccChat.key(networkId: networkId, nick: nick))
         if let refusal = await client.openDccChat(networkId: networkId, nick: nick, passive: passive) {
             return refusal
         }
-        dccOpens.opened(ticket, now: Date())
-        settlePendingDccOpen()
+        pendingOpens.opened(ticket, now: Date())
+        settlePendingOpen()
         return nil
     }
 
@@ -1033,17 +1059,10 @@ public final class ChatViewModel {
     /// still standing then would take the user into the chat they were ending. A refused close
     /// ended nothing, so it puts the wait back.
     public func closeDccChat(networkId: Int, nick: String) async -> String? {
-        let mark = dccOpens.closing(networkId: networkId, nick: nick)
+        let mark = pendingOpens.closing(DccChat.key(networkId: networkId, nick: nick))
         let refusal = await client.closeDccChat(networkId: networkId, nick: nick)
-        if refusal != nil { dccOpens.closeRefused(mark) }
+        if refusal != nil { pendingOpens.closeRefused(mark) }
         return refusal
-    }
-
-    /// Hand a DCC chat's buffer to the app once it exists, or let go once it's clearly not coming.
-    private func settlePendingDccOpen() {
-        if let key = dccOpens.settle(buffers: store.state.buffers, now: Date()) {
-            onDccChatOpened?(key)
-        }
     }
 
     /// Print a command's receipt, or say why there isn't one.
@@ -1918,7 +1937,7 @@ public final class ChatViewModel {
             store.apply(frame)
         }
 
-        settlePendingDccOpen()
+        settlePendingOpen()
 
         // ⚠⚠ AFTER `store.apply`, never before. `primePreviews` reads the settings out of the
         // store to decide whether either feature is on — so running it first meant a
@@ -2056,7 +2075,7 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
-        dccOpens.reset()
+        pendingOpens.reset()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
         lastMarked.removeAll()

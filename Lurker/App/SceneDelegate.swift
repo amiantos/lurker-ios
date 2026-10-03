@@ -69,9 +69,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
         }
 
-        // A join this device asked for (#57), and a DCC chat it opened or accepted (lurker#270).
+        // A join this device asked for (#57), and a DCC chat it opened or accepted (lurker#270) or
+        // a DM it opened (#201) once the row is there.
         viewModel.onJoinOpened = { [weak self] key in self?.land(on: key) }
-        viewModel.onDccChatOpened = { [weak self] key in self?.land(on: key) }
+        viewModel.onBufferOpened = { [weak self] key in self?.land(on: key) }
         // …and a join that didn't happen says why.
         viewModel.onJoinNotice = { [weak self] notice in self?.showNotice(notice.message) }
         // A DCC chat offer asks, over whatever is on screen (lurker#270).
@@ -342,7 +343,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Drop every sheet, wherever it was presented from. A sheet put up from the conversation
     /// column is attached to *that* column, and the primary's `dismiss` walks up to the split
     /// and never sees it.
-    /// Go to a buffer this device asked to open — a join that landed, a DCC chat that started.
+    /// Go to a buffer this device asked to open — a join that landed, a DCC chat that started, a
+    /// DM whose row arrived.
     /// The same move as a notification tap: anything presented comes down, then the buffer opens.
     private func land(on key: BufferKey) {
         guard let navigation, viewModel.session == .loggedIn else { return }

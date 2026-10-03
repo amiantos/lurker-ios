@@ -35,10 +35,6 @@ final class BufferInfoViewController: UITableViewController {
     /// belongs to the chat screen, which owns the one-sheet-at-a-time rule.
     var onSearchBuffer: ((String) -> Void)?
 
-    /// Go to a conversation — what the profile pushed from the Whois row needs when its Send
-    /// Message or a channel row is tapped. Passed straight through.
-    var onOpenBuffer: ((BufferKey) -> Void)?
-
     /// What the table is showing. The next build is compared against it to decide whether
     /// there is anything to reload — see `render`.
     private var sections: [Section] = []
@@ -434,7 +430,6 @@ final class BufferInfoViewController: UITableViewController {
             let profile = UserProfileViewController(
                 viewModel: viewModel, networkId: networkId, nick: buffer.target
             )
-            profile.onOpenBuffer = onOpenBuffer
             navigationController?.pushViewController(profile, animated: true)
         case .channelSettings:
             // Pushed, like Whois: settings belong to this panel, and Back returns to it.

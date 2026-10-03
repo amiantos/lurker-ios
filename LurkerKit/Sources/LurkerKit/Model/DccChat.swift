@@ -31,6 +31,11 @@ public enum DccChat {
     public static func target(for nick: String) -> String {
         "=\(nick)"
     }
+
+    /// …and its key, on `networkId`.
+    static func key(networkId: Int, nick: String) -> BufferKey {
+        BufferKey(networkId: networkId, target: target(for: nick))
+    }
 }
 
 /// A peer's offer to open a DCC chat with us, still waiting on an answer.

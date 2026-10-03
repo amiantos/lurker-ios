@@ -32,13 +32,6 @@ final class MemberListViewController: UITableViewController {
     /// scrolling finds them faster than typing does. Above it, scanning stops working.
     private static let searchThreshold = 20
 
-    /// Passed through to the profile a row opens, for its Send Message and channel rows.
-    ///
-    /// Handed back for the same reason `BufferInfoViewController` hands its rows back: this
-    /// screen is inside a sheet, and the presenter owns what happens to that sheet. Nil means
-    /// the profile simply doesn't offer those rows — see `UserProfileViewController`.
-    var onOpenBuffer: ((BufferKey) -> Void)?
-
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
         self.buffer = buffer
@@ -226,7 +219,6 @@ final class MemberListViewController: UITableViewController {
         let profile = UserProfileViewController(
             viewModel: viewModel, networkId: networkId, nick: visible[indexPath.row].nick
         )
-        profile.onOpenBuffer = onOpenBuffer
         navigationController?.pushViewController(profile, animated: true)
     }
 
