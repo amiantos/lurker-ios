@@ -100,7 +100,7 @@ final class DccOfferPrompt {
             self?.answered(nil)
         })
         let accept = UIAlertAction(title: "Accept", style: .default) { [weak self] _ in
-            // On success the app is taken to the chat by `onDccChatOpened`.
+            // On success the app is taken to the chat by `onBufferOpened`.
             self?.answered {
                 await $0.openDccChat(networkId: offer.networkId, nick: offer.nick)
             }

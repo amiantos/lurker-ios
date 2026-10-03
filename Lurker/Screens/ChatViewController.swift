@@ -2336,19 +2336,30 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // counted on the pill.
             scrollToBottom()
         }
-        let outcome = viewModel.send(buffer.key, text: text, reply: pendingReply)
-        // Spent if the line went out as it — a plain line or a `/me`. Any other command leaves it
-        // pending, as the web does. A refusal brings it back with the line (`restoreRefusedSend`).
+        // ⚠⚠ Cleared and flushed BEFORE the line goes to the view model, not after. Sending can
+        // take the user somewhere inside that call — `/query` to a DM we hold, `/join` to a
+        // channel we're in — and cleared after, the screen on its way out saved the command as
+        // this buffer's draft, which syncs to every device (#188, #201). A line refused inside the
+        // call comes back into this cleared field, and never travels with a switch: one that went
+        // nowhere goes nowhere (see `ChatViewModel.run`).
+        //
+        // The reply is taken for the send first, and a spent one cleared BEFORE the composer: the
+        // clear saves the draft, and the flush below sends it, so clearing it after left an empty
+        // draft on the server still carrying the reply this line used up. Spent if the line went
+        // out as it — a plain line or a `/me`. Any other command leaves it pending, as the web
+        // does. A refusal brings it back with the line (`restoreRefusedSend`), as it always has.
+        let reply = pendingReply
         if Replies.consumes(text) { pendingReply = nil }
         composer.clear()
         // Emptied on the server now, not on the debounce: a quick close or a switch to another
         // device would otherwise find the line just sent still waiting there.
         viewModel.flushDraft(buffer.key)
+        let outcome = viewModel.send(buffer.key, text: text, reply: reply)
         // The field is free again, so anything still waiting can come back — see
         // `restoreRefusedSend`. Without this a second refused line sat in the queue until the
         // screen next appeared, which for someone staying in one conversation is never.
         restoreRefusedSend()
-        // `/msg`/`/query` opened a DM and asked us to switch to it.
+        // `/msg`/`/query` to a channel asked us to switch to it.
         if case .activate(let key) = outcome { navigate(to: key) }
         // `/whois` — open the profile rather than leaving the numerics in the server buffer as
         // the only answer.
@@ -2367,17 +2378,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// suggestions ride the same edge.
     var noticeAnchor: NSLayoutYAxisAnchor { composer.topAnchor }
 
-    /// Switch to another buffer — what `/msg` and `/query` ask for once the DM is open. The
-    /// target may not be in state yet (a brand-new DM whose `open-buffer` reply is still in
-    /// flight), which is what `buffer(for:)` synthesizes for.
-    /// A profile inside a sheet asked to go somewhere — Send Message, or one of the channels
-    /// the whois listed.
-    ///
-    /// Dismiss, then navigate. Replacing the stack while a sheet is still up leaves the sheet
-    /// hanging over a screen that no longer presented it, and the navigation happens in the
-    /// completion so it can't race the dismissal.
-    private func leaveSheet(to key: BufferKey) {
-        dismiss(animated: true) { [weak self] in self?.navigate(to: key) }
+    /// Switch to a channel — what `/msg` and `/query` to one ask for. The target may not be in
+    /// state yet, which is what `buffer(for:)` synthesizes for.
+    private func navigate(to key: BufferKey) {
+        guard key != buffer.key else { return }
+        navigationController?.showBuffer(
+            viewModel.state.buffer(for: key), viewModel: viewModel, animated: true
+        )
     }
 
     /// Someone's profile, on its own sheet — the `/whois` and message-action route in. The two
@@ -2388,18 +2395,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func showProfile(networkId: Int, nick: String) {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let profile = UserProfileViewController(viewModel: viewModel, networkId: networkId, nick: nick)
-        profile.onOpenBuffer = { [weak self] key in self?.leaveSheet(to: key) }
         let sheet = UINavigationController(rootViewController: profile)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
         present(sheet, animated: true)
-    }
-
-    private func navigate(to key: BufferKey) {
-        guard key != buffer.key else { return }
-        navigationController?.showBuffer(
-            viewModel.state.buffer(for: key), viewModel: viewModel, animated: true
-        )
     }
 
     // MARK: - Attachments (#14)
@@ -2876,7 +2875,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             guard let self else { return }
             showSearch(viewModel: viewModel, seed: scope)
         }
-        info.onOpenBuffer = { [weak self] key in self?.leaveSheet(to: key) }
         let sheet = UINavigationController(rootViewController: info)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
@@ -2888,7 +2886,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func showMemberList() {
         guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
         let members = MemberListViewController(viewModel: viewModel, buffer: buffer)
-        members.onOpenBuffer = { [weak self] key in self?.leaveSheet(to: key) }
         let sheet = UINavigationController(rootViewController: members)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
         // Medium first: a nick list is a glance, and half-height keeps the conversation

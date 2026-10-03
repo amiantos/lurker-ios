@@ -69,10 +69,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             UserPreferences.standard.rewriteBuffer(from: from, to: to)
         }
 
-        // A join this device asked for (#57), and a DCC chat it opened or accepted (lurker#270).
+        // A join this device asked for (#57), and a DCC chat it opened or accepted (lurker#270) or
+        // a DM it opened (#201) once the row is there.
         viewModel.onJoinOpened = { [weak self] key in self?.land(on: key) }
-        viewModel.onDccChatOpened = { [weak self] key in self?.land(on: key) }
-        // …and a join that didn't happen says why.
+        viewModel.onBufferOpened = { [weak self] key in self?.land(on: key) }
+        // …and a join that didn't happen, or a DM that couldn't be asked for, says why.
         viewModel.onJoinNotice = { [weak self] notice in self?.showNotice(notice.message) }
         // A DCC chat offer asks, over whatever is on screen (lurker#270).
         dccOfferPrompt = DccOfferPrompt(
@@ -339,20 +340,22 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Drop every sheet, wherever it was presented from. A sheet put up from the conversation
-    /// column is attached to *that* column, and the primary's `dismiss` walks up to the split
-    /// and never sees it.
-    /// Go to a buffer this device asked to open — a join that landed, a DCC chat that started.
-    /// The same move as a notification tap: anything presented comes down, then the buffer opens.
+    /// Go to a buffer this device asked to open — a join that landed, a DCC chat that started, a
+    /// DM whose row arrived. The same move as a notification tap: anything presented comes down,
+    /// then the buffer opens.
+    ///
+    /// Dismissed animated, and the navigation runs in the completion — the way a profile's Send
+    /// Message always left its sheet. Sliding a screen in while a sheet is still on its way down
+    /// is animation fighting itself, and replacing the stack under a sheet still up leaves it
+    /// hanging over a screen that no longer presented it.
     private func land(on key: BufferKey) {
-        guard let navigation, viewModel.session == .loggedIn else { return }
-        // Animated only when nothing was up. Sliding a screen in while a sheet is still on its
-        // way down is the animation-fighting-itself the join sheet already avoids.
-        let animated = presentedSheet() == nil
-        dismissPresented()
-        navigation.showBuffer(
-            viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: animated
-        )
+        guard let split, viewModel.session == .loggedIn else { return }
+        split.dismissPresented(animated: true) { [weak self] in
+            guard let self, let navigation, viewModel.session == .loggedIn else { return }
+            navigation.showBuffer(
+                viewModel.state.buffer(for: key), viewModel: viewModel, jumpTo: nil, animated: true
+            )
+        }
     }
 
     /// Say something that went wrong, over whatever is on screen: the sheet on top if there is
@@ -370,6 +373,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
     }
 
+    /// Drop every sheet, wherever it was presented from. A sheet put up from the conversation
+    /// column is attached to *that* column, and the primary's `dismiss` walks up to the split
+    /// and never sees it.
     private func dismissPresented() {
         if let split {
             split.dismissPresented()

@@ -25,15 +25,6 @@ final class UserProfileViewController: UITableViewController {
     private let nick: String
     private var cancellables = Set<AnyCancellable>()
 
-    /// Go to a conversation. Handed back rather than done here for the same reason
-    /// `BufferInfoViewController` hands back its rows: this screen may be inside a sheet, and
-    /// the presenter owns dismissing itself before anything replaces the stack behind it.
-    ///
-    /// ⚠ Without one, Send Message and the channel rows are dead taps — they'd ask the server
-    /// for the buffer and then go nowhere. So the rows that need it are only offered when it
-    /// is set, rather than trusting every future caller to remember.
-    var onOpenBuffer: ((BufferKey) -> Void)?
-
     private var sections: [Section] = []
     private var status: ProfileStatus = .resolve(
         peer: .unknown, whois: nil, isLookingUp: false, isSelf: false
@@ -148,9 +139,7 @@ final class UserProfileViewController: UITableViewController {
         if !flagRows.isEmpty {
             built.append(Section(header: nil, footer: nil, rows: flagRows))
         }
-        // Channels are a navigation offer, so they need somewhere to navigate — same rule as
-        // Send Message below.
-        let channels = onOpenBuffer == nil ? [] : (whois?.channels ?? [])
+        let channels = whois?.channels ?? []
         if !channels.isEmpty {
             built.append(
                 Section(header: "Channels", footer: nil, rows: channels.map { .channel($0) })
@@ -259,7 +248,7 @@ final class UserProfileViewController: UITableViewController {
 
     private var actionsSection: Section {
         var rows: [Row] = []
-        if status.canSendDirectMessage, onOpenBuffer != nil { rows.append(.sendDirectMessage) }
+        if status.canSendDirectMessage { rows.append(.sendDirectMessage) }
         rows.append(.refresh)
         return Section(header: nil, footer: nil, rows: rows)
     }
@@ -417,11 +406,12 @@ final class UserProfileViewController: UITableViewController {
             navigationController?.pushViewController(editor, animated: true)
 
         case .sendDirectMessage:
-            // Mint or reopen the DM row first — the server refuses to activate a buffer that
-            // doesn't exist, and the same socket delivers the row before we ask to show it.
-            let key = BufferKey(networkId: networkId, target: nick)
-            viewModel.openBuffer(key)
-            onOpenBuffer?(key)
+            // Mint or reopen the DM row, and go there once it's in the store — the way a channel
+            // row above goes once we're in it. ⚠ Not at once: `open-buffer` only queues a write,
+            // and a chat screen that beat the row there found a settled roster without it and
+            // backed straight out to the list (#201). Going takes the sheet down first, the way a
+            // notification tap does.
+            viewModel.openAndShow(BufferKey(networkId: networkId, target: nick))
 
         case .refresh:
             // A no-op while a lookup is already out, which is `requestWhois`'s own rule — so

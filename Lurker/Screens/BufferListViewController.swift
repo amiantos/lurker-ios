@@ -1497,8 +1497,13 @@ final class BufferListViewController: UICollectionViewController {
         // the same backlog a second time. Gated on the explicit Friends-row flag, not a
         // presence proxy: presence is styling every DM row carries, not a fact about where
         // the buffer came from.
+        //
+        // ⚠ And it goes there once that row is in, not at once (#201). `open-buffer` only queues
+        // the write; a chat screen opened before the row lands finds a settled roster without it
+        // and backs straight out to this list.
         if row.isFriend, state.buffers[row.buffer.key.id] == nil {
-            viewModel.openBuffer(row.buffer.key)
+            viewModel.openAndShow(row.buffer.key)
+            return
         }
         onSelect?(row.buffer)
     }

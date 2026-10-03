@@ -25,6 +25,19 @@ struct PendingJoinsTests {
         #expect(joins.pendingCount == 0)
     }
 
+    @Test("a newer ask to go somewhere stands an opening join down, and its refusal is still told")
+    func stopOpeningKeepsTheJoinTrackedButGoesNowhere() {
+        // ⚠ `/join #slow`, then Send Message to bob: bob landed, then #slow's answer yanked the
+        // user away from him (iOS #201).
+        var joins = PendingJoins()
+        joins.request(chan, opens: true, now: t0)
+        joins.stopOpening()
+        #expect(joins.joined(chan) == .joined(chan, opens: false))
+        joins.request(chan, opens: true, now: t0)
+        joins.stopOpening()
+        #expect(joins.refused(chan, reason: "No.") == .refused(chan, reason: "No."))
+    }
+
     @Test("a join nobody here asked for moves nobody")
     func unaskedJoinsAreIgnored() {
         // A reconnect's rejoin, or a join made on another device, must not switch the screen or
