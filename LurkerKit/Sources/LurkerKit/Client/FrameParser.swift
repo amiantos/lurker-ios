@@ -442,11 +442,10 @@ enum FrameParser {
 
     // MARK: - Private
 
+    /// Through `JSONTextRepair` first: Foundation fails a whole frame on a lone surrogate
+    /// escape and strips a leading U+FEFF from every string, and both lose user text.
     private static func object(from text: String) -> [String: Any]? {
-        guard let data = text.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
+        try? JSONSerialization.jsonObject(with: JSONTextRepair.data(for: text)) as? [String: Any]
     }
 
     private static func parseSnapshot(_ obj: [String: Any]) -> ServerFrame {
@@ -712,6 +711,11 @@ enum FrameParser {
     /// `JSONSerialization` stays behind the one type that knows the wire format.
     static func jsonObject(from text: String) -> [String: Any]? {
         object(from: text)
+    }
+
+    /// `jsonObject(from:)` for a body that arrives as bytes, through the same repair.
+    static func jsonObject(from data: Data) -> [String: Any]? {
+        try? JSONSerialization.jsonObject(with: JSONTextRepair.data(for: data)) as? [String: Any]
     }
 
     /// The `error` string from a REST failure body (`{error, key}`), when there is one. Lives

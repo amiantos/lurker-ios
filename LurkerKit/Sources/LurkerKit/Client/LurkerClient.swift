@@ -1379,7 +1379,7 @@ final class LurkerClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         guard let (data, response) = try? await session.data(for: request),
               (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
-              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+              let body = FrameParser.jsonObject(from: data)
         else { return nil }
         return body["transports"] as? [String] ?? []
     }
@@ -1894,7 +1894,7 @@ final class LurkerClient {
     /// is unreachable through the awaiting method without a live server.
     nonisolated static func parseConfig(_ data: Data, code: Int) -> InstanceConfig? {
         guard (200..<300).contains(code),
-            let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let body = FrameParser.jsonObject(from: data)
         else { return nil }
         let features = body["features"] as? [String: Any]
         return InstanceConfig(
@@ -1956,7 +1956,9 @@ final class LurkerClient {
     /// said so.
     nonisolated static func decodePreviews(_ data: Data) -> [LinkPreview] {
         struct Envelope: Decodable { let previews: [FailableDecodable<LinkPreview>] }
-        return (try? JSONDecoder().decode(Envelope.self, from: data))?
+        // Repaired first: a description the server capped mid-emoji ends in a lone surrogate
+        // escape, and JSONDecoder refuses the whole document for it — all twenty previews.
+        return (try? JSONDecoder().decode(Envelope.self, from: JSONTextRepair.forDecoder(data)))?
             .previews.compactMap(\.value) ?? []
     }
 
@@ -2109,11 +2111,11 @@ final class LurkerClient {
         }
         if code == 413 { throw UploadError.tooLarge }
         guard (200..<300).contains(code) else {
-            let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+            let message = FrameParser.jsonObject(from: data)?["error"] as? String
             throw UploadError.server(message ?? "Upload failed (HTTP \(code))")
         }
 
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let object = FrameParser.jsonObject(from: data),
               let id = object["id"] as? Int,
               let storedURL = object["url"] as? String
         else {

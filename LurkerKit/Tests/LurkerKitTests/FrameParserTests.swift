@@ -146,6 +146,30 @@ final class FrameParserTests: XCTestCase {
         XCTAssertTrue(messages[1].isSelf)
     }
 
+    func testBacklogWithALoneSurrogateKeepsEveryRow() {
+        // lurker-ios#195: one string the server cut mid-emoji (`\ud83d` with no low half) made
+        // JSONSerialization refuse the whole frame, and the whole backlog went with it.
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"backlog","networkId":1,"target":"#lurker","hasMoreOlder":false,"events":[{"id":1,"type":"message","nick":"alice","text":"cut \ud83d"},{"id":2,"type":"message","nick":"bob","text":"fine"}]}"##
+        )
+        guard case let .backlog(_, messages, _, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertEqual(messages.map(\.text), ["cut \u{FFFD}", "fine"])
+    }
+
+    func testMessageTextKeepsALeadingByteOrderMark() {
+        // lurker-ios#196: Foundation strips one leading U+FEFF from every string; the web and
+        // the server keep it.
+        let frame = FrameParser.parseWs(
+            "{\"kind\":\"backlog\",\"networkId\":1,\"target\":\"#lurker\",\"hasMoreOlder\":false,\"events\":[{\"id\":1,\"type\":\"message\",\"nick\":\"alice\",\"text\":\"\u{FEFF}pasted\"}]}"
+        )
+        guard case let .backlog(_, messages, _, _, _) = frame else {
+            return XCTFail("expected backlog, got \(frame)")
+        }
+        XCTAssertEqual(messages.first?.text?.unicodeScalars.first, "\u{FEFF}")
+    }
+
     func testLiveIrcFrameReadsTheEventSpreadFlatOnTheFrame() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","id":7,"networkId":1,"target":"#lurker","type":"message","nick":"carol","text":"yo","self":false,"matched":true}"##

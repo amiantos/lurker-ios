@@ -178,7 +178,7 @@ public enum OAuth {
     }
 
     private static func json(_ data: Data) -> [String: Any]? {
-        (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        FrameParser.jsonObject(from: data)
     }
 }
 
