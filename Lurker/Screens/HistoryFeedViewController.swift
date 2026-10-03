@@ -238,9 +238,10 @@ class HistoryFeedViewController: UITableViewController {
         guard paging.isLoading else { return }
         loadTask?.cancel()
         loadTask = nil
-        paging.abandon()
         refreshControl?.endRefreshing()
-        loadWasCancelled = true
+        // Only a load that left nothing on screen needs asking again: leaving mid page-in, with
+        // rows up, must not cost the reader their place when they come back.
+        if paging.abandon() { loadWasCancelled = true }
     }
 
     /// Fetch the next older page, if there is one and we're not already fetching.

@@ -140,9 +140,15 @@ public struct FeedPaging {
     /// Give up on the page in flight without asking another — nobody is waiting for it. Its
     /// answer can no longer land. The placeholder is left alone: an error would claim a failure
     /// when the user simply left.
-    public mutating func abandon() {
+    ///
+    /// True when that leaves nothing on screen, so the question must be asked again next time
+    /// it's shown. Rows already up still answer it: an abandoned page-in or pull leaves them, and
+    /// asking again would replace the pages the reader had scrolled through with page one.
+    @discardableResult
+    public mutating func abandon() -> Bool {
         generation += 1
         isLoading = false
+        return items.isEmpty
     }
 
     /// A page arrived (nil: the fetch failed). Nil back when it was superseded and has touched

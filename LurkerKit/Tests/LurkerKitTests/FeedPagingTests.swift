@@ -284,4 +284,17 @@ final class FeedPagingTests: XCTestCase {
         _ = paging.land(page([2], nextBefore: nil), for: again, visible: visible)
         XCTAssertEqual(ids(paging), [2])
     }
+
+    func testAbandoningOnlyAsksAgainWhenNothingIsOnScreen() {
+        // A cold load abandoned leaves no answer; a page-in abandoned under rows does — asking
+        // again on return would swap the reader's scrolled pages for page one.
+        var cold = FeedPaging(supersedes: true)
+        _ = cold.reload()
+        XCTAssertTrue(cold.abandon())
+
+        var paged = loaded(supersedes: true)
+        XCTAssertNotNil(paged.loadMore())
+        XCTAssertFalse(paged.abandon())
+        XCTAssertFalse(paged.items.isEmpty)
+    }
 }
