@@ -275,12 +275,37 @@ final class CommandParserTests: XCTestCase {
     func testAwayCarriesItsMessageAndRunsFromSystemBuffer() {
         XCTAssertEqual(
             effects("/away lunch", networkId: nil, target: ":system:"),
-            [.away(message: "lunch")]
+            [.away(message: "lunch", all: nil)]
         )
     }
 
     func testBackRunsFromSystemBuffer() {
-        XCTAssertEqual(effects("/back", networkId: nil, target: ":system:"), [.back])
+        XCTAssertEqual(effects("/back", networkId: nil, target: ":system:"), [.back(all: nil)])
+    }
+
+    /// lurker#994: `-all` reaches every network, `-one` just this one; without either the
+    /// server's setting decides.
+    func testAwayAndBackTakeAScopeFlag() {
+        XCTAssertEqual(effects("/away -all lunch"), [.away(message: "lunch", all: true)])
+        XCTAssertEqual(effects("/away -ONE lunch break"), [.away(message: "lunch break", all: false)])
+        XCTAssertEqual(effects("/away -all"), [.away(message: "", all: true)])
+        XCTAssertEqual(effects("/back -all"), [.back(all: true)])
+        XCTAssertEqual(effects("/back -one"), [.back(all: false)])
+        // Any Unicode whitespace separates: a pasted non-breaking space too.
+        XCTAssertEqual(effects("/away -all\u{00A0}lunch"), [.away(message: "lunch", all: true)])
+    }
+
+    func testOneIsRefusedWhereThereIsNoNetwork() {
+        guard case .info(let text) = effects("/back -one", networkId: nil, target: ":system:").first else {
+            return XCTFail("expected an info line, not a back to every network")
+        }
+        XCTAssertTrue(text.contains("no network here"))
+        XCTAssertEqual(effects("/away -all", networkId: nil, target: ":system:"), [.away(message: "", all: true)])
+    }
+
+    func testAwayReadsAFlagOnlyAtTheFrontAndAsAWholeWord() {
+        XCTAssertEqual(effects("/away back at -all hands"), [.away(message: "back at -all hands", all: nil)])
+        XCTAssertEqual(effects("/away -allnighter"), [.away(message: "-allnighter", all: nil)])
     }
 
     func testCommandsPrintsLocalHelpFromSystemBuffer() {

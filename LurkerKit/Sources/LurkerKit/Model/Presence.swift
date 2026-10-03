@@ -6,9 +6,9 @@ import Foundation
 /// Your *own* away state — the self half of this file's subject, where `PresenceState` below
 /// is the peer half.
 ///
-/// User-scoped rather than network-scoped (`/away` hits every connection, see lurker's
-/// `user_away_state`), but broadcast per network, so each network carries an identical copy
-/// and reading any one of them reads the user's state.
+/// Network-scoped (lurker's `network_away_state`, lurker#994): `/away` sets the network it's
+/// typed on, or every network for `-all` or the `away.all_networks` setting. So one network
+/// can be away while another isn't, and each network's copy speaks only for that network.
 ///
 /// `since` and `message` deliberately survive `/back` — the completed away→back pair is what
 /// the message-list dividers render, so clearing them on return would erase the marker at

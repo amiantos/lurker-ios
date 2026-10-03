@@ -111,11 +111,15 @@ public enum CommandParser {
         switch verb {
         case "commands":
             return [.info(CommandRegistry.helpText())]
-        case "away":
-            // Empty message clears away. User-scoped — no network attached.
-            return [.away(message: argLine)]
-        case "back":
-            return [.back]
+        case "away", "back":
+            // Empty message clears away. The network it's typed on goes with it, and from the
+            // system buffer there's none, which the server reads as every network — so `-one`
+            // there is refused rather than quietly reaching them all.
+            let (all, message) = awayFlag(argLine)
+            if all == false && networkId == nil {
+                return [.info("/\(verb) -one: there's no network here. Run it in a network's buffer.")]
+            }
+            return verb == "away" ? [.away(message: message, all: all)] : [.back(all: all)]
         // Ignore rules are global by default, so both verbs run without a network — the system
         // buffer can list them and write them. Only `-network` needs a connection, and that's
         // checked where it's read.
@@ -369,6 +373,23 @@ public enum CommandParser {
         "list", "ls", "accept", "ok", "yes", "get", "reject", "deny", "no", "cancel", "abort", "stop",
         "send", "resume",
     ]
+
+    /// The scope flag at the front of an `/away` or `/back` line (lurker#994): `-all` for every
+    /// network, `-one` for just this one, nil without one. Only a leading, whole-word flag
+    /// counts — `/away back at -all hands` is a message, as is `-allnighter`. The web's
+    /// `parseAwayFlag` reads it the same way, except that its `\s` also counts U+FEFF: this
+    /// splits on `Character.isWhitespace` like every other command (see `IgnoreArgs.tokenize`).
+    static func awayFlag(_ argLine: String) -> (all: Bool?, rest: String) {
+        let line = argLine.drop(while: \.isWhitespace)
+        let word = line.prefix { !$0.isWhitespace }
+        let all: Bool
+        switch word.lowercased() {
+        case "-all": all = true
+        case "-one": all = false
+        default: return (nil, argLine)
+        }
+        return (all, String(line.dropFirst(word.count).drop(while: \.isWhitespace)))
+    }
 
     /// `/dcc` — the chat verbs, in irssi's syntax exactly, as the web has them:
     ///

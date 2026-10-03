@@ -817,8 +817,9 @@ public final class ChatViewModel {
     }
 
     /// Carry out a command's effects in order against `key`'s buffer, returning the last UI
-    /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network; `away`/
-    /// `back` are user-scoped and carry none; `info` prints a local line.
+    /// follow-up (an `activate`, for `/msg`). Wire effects run on `key`'s network, `away`/
+    /// `back` too, which the server may widen to every network (lurker#994); `info` prints a
+    /// local line.
     private func run(
         _ effects: [CommandEffect], in key: BufferKey, line: String, reply: PendingReply? = nil
     ) -> SendOutcome {
@@ -878,10 +879,10 @@ public final class ChatViewModel {
                 // authoritative one — an optimistic local clear would have to guess the id and
                 // would be wrong for anything that landed in between.
                 client.clearBuffer(networkId: networkId, target: target, undo: undo)
-            case .away(let message):
-                client.setAway(message)
-            case .back:
-                client.setBack()
+            case .away(let message, let all):
+                client.setAway(message, networkId: networkId, all: all)
+            case .back(let all):
+                client.setBack(networkId: networkId, all: all)
             case .ctcp(let target, let type, let args):
                 client.sendCTCP(networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args)
             case .activate(let target):
@@ -1424,11 +1425,12 @@ public final class ChatViewModel {
         client.unfavoriteBuffer(networkId: networkId, target: target)
     }
 
-    /// `/back` from a control rather than the composer — the away strip's Back (#135). No local
+    /// `/back` from a control rather than the composer — the away strip's Back (#135), on the
+    /// network the strip is showing, scoped as a typed `/back` is (lurker#994). No local
     /// mutation: the strip comes down when the server's `away-state` echo folds in, on every
     /// device at once.
-    public func setBack() {
-        client.setBack()
+    public func setBack(networkId: Int?) {
+        client.setBack(networkId: networkId, all: nil)
     }
 
     /// Ask the network who `nick` is (#12) — what the profile screen sends on open, and what

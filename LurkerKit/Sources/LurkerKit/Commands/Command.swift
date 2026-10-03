@@ -26,8 +26,9 @@ import Foundation
 /// parser only decides; `ChatViewModel` performs the I/O. Effects that touch a network
 /// (`send`/`action`/`notice`/`raw`/`join`/`part`/`close`/`ctcp`) run against the issuing
 /// buffer's network — they carry a target/channel but not the id, which the executor
-/// supplies from context. `away`/`back` carry no network at all: they're user-scoped and
-/// hit every connection (see `away_is_user_scoped`).
+/// supplies from context. So do `away`/`back` (lurker#994), which the server then scopes:
+/// that network, or every network for `-all`, the `away.all_networks` setting, or no
+/// network at all (the system buffer).
 public enum CommandEffect: Equatable, Sendable {
     /// PRIVMSG to a target. The server splits it on newlines and byte-length, so the full
     /// text goes as one `send` — the client never chunks (see `LurkerClient.sendMessage`).
@@ -51,11 +52,13 @@ public enum CommandEffect: Equatable, Sendable {
     /// nothing is deleted, the messages are hidden behind a boundary the user can undo from
     /// the divider or with `/clear off`.
     case clear(target: String, undo: Bool)
-    /// User-scoped away; an empty message clears it (the server treats `/away` with no text
-    /// as `/back`).
-    case away(message: String)
-    /// User-scoped back.
-    case back
+    /// Away on the network it's typed on; an empty message clears it (the server treats
+    /// `/away` with no text as `/back`). `all` is the `-all` (true) or `-one` (false) flag, nil
+    /// without one, which leaves the scope to the server's `away.all_networks` setting
+    /// (lurker#994).
+    case away(message: String, all: Bool?)
+    /// Back on the network it's typed on, scoped like `away`.
+    case back(all: Bool?)
     /// A CTCP request aimed at a target — `/ctcp`, `/ping`.
     case ctcp(target: String, type: String, args: String)
     /// Open the target buffer and switch the UI to it — the DM that `/msg` and `/query`
@@ -419,9 +422,12 @@ public enum CommandRegistry {
         CommandSpec(["reconnect"], .server, "Reconnect this network"),
 
         // Status / app
-        CommandSpec(["away"], .status, "Set yourself away on every network",
-                    args: [ArgSpec("message", .text, optional: true, rest: true)], networkAgnostic: true),
-        CommandSpec(["back"], .status, "Clear your away status", networkAgnostic: true),
+        // irssi's and WeeChat's flags: `-all` reaches every network, `-one` just this one.
+        CommandSpec(["away"], .status, "Set yourself away (-all: every network, -one: this one)",
+                    args: [ArgSpec("-all|-one", .flag, optional: true),
+                           ArgSpec("message", .text, optional: true, rest: true)], networkAgnostic: true),
+        CommandSpec(["back"], .status, "Clear your away status (-all: every network, -one: this one)",
+                    args: [ArgSpec("-all|-one", .flag, optional: true)], networkAgnostic: true),
         // Files under App rather than Moderation, where `/ignore` sits: a relay mark hides
         // nothing and silences nobody, it tells this client how to *read* a bot's lines. The
         // thing it changes is the log, not the room.

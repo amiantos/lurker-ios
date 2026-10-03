@@ -369,7 +369,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // `.connected`, for as long as it takes to notice. Nothing retries a Back, so say so,
             // or the strip staying put reads as a Back that ignored you.
             let state = viewModel.state
-            guard !state.reachable || state.connection != .connected else { return viewModel.setBack() }
+            guard !state.reachable || state.connection != .connected else {
+                return viewModel.setBack(networkId: buffer.key.networkId)
+            }
             ToastView.show(
                 "Not connected — try again when you're back online",
                 symbol: "exclamationmark.circle",
@@ -1827,8 +1829,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// Your own away state as it applies to *this* buffer (#68), or nil where it doesn't.
     ///
-    /// The state itself is user-scoped — `/away` hits every connection — but the server
-    /// broadcasts a copy per network, so reading this buffer's network reads the user's state.
+    /// Away is per network (lurker#994): one network can be away while another isn't, so this
+    /// reads this buffer's own network and says nothing about the rest.
     ///
     /// Conversations only. The `:server:` log and the system buffer are narration about the
     /// connection rather than a conversation you were absent from, so a marker there would be
