@@ -2558,8 +2558,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     continue files
                 }
                 // Cancelled while that file was being copied. A document copy can't be
-                // interrupted, so it lands anyway — and `performUpload` would then run a HEIC
-                // transcode, or start a compression pass, before its own cancellation check
+                // interrupted, so it lands anyway — and `performUpload` would then redraw an
+                // image, or start a compression pass, before its own cancellation check
                 // turned it back. Stop here instead, and delete the copy that check would
                 // otherwise have been responsible for.
                 if Task.isCancelled {
@@ -2665,7 +2665,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return top
     }
 
-    /// Compress (video only) then upload, reporting each phase to the status view. Returns an
+    /// Compress a video or redraw an image (`ImageConverter`), then upload, reporting each
+    /// phase to the status view. Returns an
     /// outcome rather than throwing so `beginUpload`'s completion stays a flat switch, and
     /// treats a cancel as its own case so a user-initiated stop never pops an error alert.
     private func performUpload(
@@ -2723,8 +2724,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // either way, a smaller ordinary image goes up in its place.
             derivedTemp = converted.url
             fileURL = converted.url
-            filename = (filename as NSString).deletingPathExtension + "." + converted.fileExtension
-            mime = converted.mime
+            filename = (filename as NSString).deletingPathExtension + "." + converted.format.fileExtension
+            mime = converted.format.mime
         }
 
         if Task.isCancelled { return .cancelled }

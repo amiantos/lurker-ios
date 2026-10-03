@@ -26,7 +26,8 @@ public enum ImageShrink {
         /// doesn't change which edge that is.
         public var pixelWidth: Int
         public var pixelHeight: Int
-        /// Images in the container. More than one is an animation (GIF, APNG, animated WebP).
+        /// Images in the container (`CGImageSourceGetCount`). More than one is an animation
+        /// (GIF, APNG, animated WebP) — except in a JPEG, see `plan`.
         public var frameCount: Int
         /// ImageIO's type for the bytes (`CGImageSourceGetType`), e.g. `public.jpeg`. Read from
         /// the file itself, never from its extension or the picker's claim.
@@ -89,24 +90,36 @@ public enum ImageShrink {
     /// 4096 is ~64 MB and still past what the server keeps by default.
     public static let heicDecodeCeiling = 4096
 
+    /// The most pixels a shrink will decode to — the same ~64 MB of bitmap the HEIC ceiling
+    /// allows. Past it the original goes up and the server shrinks it: that costs the user
+    /// bandwidth, where decoding a 12000×9000 image to an 8192 edge (~200 MB) could cost them
+    /// the app.
+    public static let shrinkPixelBudget = heicDecodeCeiling * heicDecodeCeiling
+
     public static func plan(_ source: Source, maxStaticImageDimension: Int?) -> Plan {
         let longestEdge = max(source.pixelWidth, source.pixelHeight)
         guard longestEdge > 0 else { return .leave }
-        let format = output(for: source)
 
         // Some iPhone HEICs carry more `iref` references than the server's libheif allows and
-        // come back 415 (lurker#626), so every HEIC is converted, as it always has been — the
-        // advertised dimension only lets the conversion go smaller. Ahead of the frame check
-        // because that's what the conversion always did; Photos doesn't produce animated HEIC
-        // (that's `public.heics`, a different type).
+        // come back 415 (lurker#626), so every HEIC is converted to JPEG, as it always has
+        // been — the advertised dimension only lets the conversion go smaller. Always JPEG,
+        // even with alpha: the conversion has no size check to fall back on, and a 4096px
+        // photo as PNG is tens of MB. Ahead of the frame check because that's what the
+        // conversion always did; Photos doesn't produce animated HEIC (that's `public.heics`).
         if Self.isHEIC(source.typeIdentifier) {
             let bound = min(maxStaticImageDimension ?? heicDecodeCeiling, heicDecodeCeiling)
-            return .convert(maxPixelSize: bound, format: format)
+            return .convert(maxPixelSize: bound, format: .jpeg)
         }
 
         // ⚠⚠ An animation goes up verbatim. The server skips the resize for it, so it keeps
         // every frame — and a redraw here would flatten it to the first one, with no error.
-        guard source.frameCount == 1 else { return .leave }
+        //
+        // ⚠ But a JPEG with more than one image is not an animation. An MPO (stereo cameras)
+        // or a JPEG carrying an HDR gain map stores its extra images in an MPF segment, which
+        // ImageIO counts and the server's decoder doesn't — to sharp it is one page, resized
+        // like any photo. Skipping it would quietly upload the full original.
+        let animated = source.frameCount > 1 && source.typeIdentifier != Format.jpeg.typeIdentifier
+        guard !animated else { return .leave }
 
         // ⚠⚠ No dimension, no shrink. The server didn't say what it keeps, so nothing tells us
         // which pixels are waste; a guessed 2048 would cost a user on a 4096 instance half
@@ -114,11 +127,17 @@ public enum ImageShrink {
         guard let maxStaticImageDimension, longestEdge > maxStaticImageDimension else {
             return .leave
         }
-        return .shrink(maxPixelSize: maxStaticImageDimension, format: format)
+
+        // Past the budget, let the server do it (see `shrinkPixelBudget`).
+        let scale = Double(maxStaticImageDimension) / Double(longestEdge)
+        let pixels = Double(source.pixelWidth) * scale * Double(source.pixelHeight) * scale
+        guard pixels <= Double(shrinkPixelBudget) else { return .leave }
+
+        return .shrink(maxPixelSize: maxStaticImageDimension, format: output(for: source))
     }
 
     /// JPEG and PNG keep their own format. Anything else — RAW/DNG, TIFF, a static GIF or
-    /// WebP, HEIC — becomes PNG when it can be transparent, so transparency survives, and JPEG
+    /// WebP — becomes PNG when it can be transparent, so transparency survives, and JPEG
     /// otherwise, because a photo as PNG would be several times the bytes this exists to save.
     static func output(for source: Source) -> Format {
         switch source.typeIdentifier {

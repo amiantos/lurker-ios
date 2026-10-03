@@ -30,17 +30,24 @@ nonisolated enum ImageConverter {
     /// A redrawn image in a temp file the caller owns and must delete.
     struct Converted {
         let url: URL
-        let mime: String
-        let fileExtension: String
+        let format: ImageShrink.Format
     }
 
     /// The redrawn image, or nil to mean "upload the original untouched" — which is also what a
     /// failure returns: better to try the original than to block the upload outright. Runs off
     /// the main actor; decoding a photo is real work.
+    ///
+    /// A cancel reaches the redraw, which checks it between the decode and the encode — ImageIO
+    /// can't be interrupted mid-decode, but a RAW's encode needn't follow a tap on Cancel.
     static func prepare(source: URL, maxStaticImageDimension: Int?) async -> Converted? {
-        await Task.detached(priority: .userInitiated) {
+        let task = Task.detached(priority: .userInitiated) {
             redraw(source: source, maxStaticImageDimension: maxStaticImageDimension)
-        }.value
+        }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
     }
 
     private static func redraw(source: URL, maxStaticImageDimension: Int?) -> Converted? {
@@ -82,7 +89,8 @@ nonisolated enum ImageConverter {
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
-        guard let image = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary)
+        guard let image = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary),
+              !Task.isCancelled
         else { return nil }
 
         let dest = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -105,7 +113,7 @@ nonisolated enum ImageConverter {
             try? FileManager.default.removeItem(at: dest)
             return nil
         }
-        return Converted(url: dest, mime: format.mime, fileExtension: format.fileExtension)
+        return Converted(url: dest, format: format)
     }
 
     private static func fileSize(_ url: URL) -> Int? {

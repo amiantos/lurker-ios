@@ -59,6 +59,27 @@ struct ImageShrinkTests {
         }
     }
 
+    @Test("⚠ a JPEG with extra images is still a photo, not an animation")
+    func multiPictureJPEGIsShrunk() {
+        // An MPO, or a JPEG carrying an HDR gain map: ImageIO counts the MPF images, the
+        // server's decoder sees one page and resizes it. Leaving it alone would upload the
+        // full original for nothing — silently, which is why it's worth a test.
+        #expect(ImageShrink.plan(source(8064, 6048, frames: 2), maxStaticImageDimension: 2048)
+            == .shrink(maxPixelSize: 2048, format: .jpeg))
+    }
+
+    @Test("a shrink past the decode budget leaves the shrinking to the server")
+    func aHugeDecodeIsLeftToTheServer() {
+        // 12000×9000 to an 8192 edge is 8192×6144 — ~200 MB of bitmap. The server can shrink it;
+        // a jetsam can't be undone.
+        #expect(ImageShrink.plan(source(12000, 9000), maxStaticImageDimension: 8192) == .leave)
+        // The same photo to a 4096 edge fits, as does a long panorama to 8192.
+        #expect(ImageShrink.plan(source(12000, 9000), maxStaticImageDimension: 4096)
+            == .shrink(maxPixelSize: 4096, format: .jpeg))
+        #expect(ImageShrink.plan(source(20000, 4000), maxStaticImageDimension: 8192)
+            == .shrink(maxPixelSize: 8192, format: .jpeg))
+    }
+
     @Test("a static GIF, by contrast, is just an image")
     func aStaticGIFIsShrunk() {
         #expect(ImageShrink.plan(source(4000, 3000, type: "com.compuserve.gif"),
@@ -99,6 +120,11 @@ struct ImageShrinkTests {
         // Even when it already fits: the conversion is about decodability, not size.
         #expect(ImageShrink.plan(source(640, 480, type: "public.heif"), maxStaticImageDimension: 2048)
             == .convert(maxPixelSize: 2048, format: .jpeg))
+        // JPEG even with alpha: a conversion has no size check to fall back on, and a 4096px
+        // photo as PNG could run into the upload cap where the JPEG never did.
+        #expect(ImageShrink.plan(source(4032, 3024, type: "public.heic", alpha: true),
+                                 maxStaticImageDimension: nil)
+            == .convert(maxPixelSize: ImageShrink.heicDecodeCeiling, format: .jpeg))
     }
 
     @Test("an image ImageIO couldn't measure is left alone")
