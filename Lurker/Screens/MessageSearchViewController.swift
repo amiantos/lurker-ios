@@ -369,8 +369,8 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         commit(text)
     }
 
-    /// Adopt `text` as the query and run it. `reload()` supersedes anything in flight, so the
-    /// last committed query is always the one whose answer lands.
+    /// Adopt `text` as the query and run it. `reload(newQuestion:)` supersedes anything in
+    /// flight, so the last committed query is always the one whose answer lands.
     ///
     /// This is also where the screen changes mode, and it reads the *parsed* query rather than
     /// the raw string so that "empty" means the same thing here as it does to the server: a
@@ -387,7 +387,10 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
         guard next != parsed || nextShowing != showing else { return }
         parsed = next
         showing = nextShowing
-        reload()
+        // A different question, so the old answer goes now rather than when the new one lands
+        // (lurker-ios#203): left up, it read as the answer to this one, stayed there with no
+        // error if this one failed, and paged its own cursor under this query.
+        reload(newQuestion: true)
     }
 
     private static let debounceMilliseconds = 350

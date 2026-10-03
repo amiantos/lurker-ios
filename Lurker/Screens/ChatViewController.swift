@@ -1664,7 +1664,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// that turns on who spoke recently.
     ///
     /// So the filters that can thin the view have to re-arm paging themselves, exactly as
-    /// `HistoryFeedViewController.settle()` does for the same reason. `loadOlder` is guarded
+    /// `FeedPaging.settle` does for the history feeds. `loadOlder` is guarded
     /// against re-entry and reads the RAW store list for its cursor, so calling it here is
     /// safe and correctly paged however little of that list is visible.
     ///
