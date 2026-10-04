@@ -461,7 +461,10 @@ final class BufferListViewController: UICollectionViewController {
         // — the reconnect's burst re-sends the list unchanged, which releases nothing. So the
         // shadow goes with the socket, and the list shows the store's order again (sweep L29).
         // A drop written into a socket that had died without saying so is the case this covers.
-        if state.connection != .connected {
+        //
+        // And with a socket that hasn't had its snapshot: a foreground reconnect can replace one
+        // that died without saying so while the state never left `.connected`.
+        if state.connection != .connected || !state.snapshotSinceOpen {
             optimisticFavoriteOrder = nil
             favoritesAtDrop = nil
         }
@@ -1538,12 +1541,10 @@ final class BufferListViewController: UICollectionViewController {
     /// impossible to notice missing until a relaunch strands someone on a spinner.
     ///
     /// Offline it says so and leaves the row (sweep L16). Removing it anyway sent no PART, so the
-    /// reconnect's snapshot put the row back and the channel had never been left. Asked of both
-    /// connection signals before the send's own answer, for the dropped-but-unnoticed socket
-    /// that takes a write and loses it.
+    /// reconnect's snapshot put the row back and the channel had never been left.
     @discardableResult
     private func close(_ buffer: Buffer) -> Bool {
-        guard canWrite, viewModel.closeBuffer(buffer.key) else {
+        guard viewModel.closeBuffer(buffer.key) else {
             ToastView.showNotConnected(over: navigationController?.view ?? view)
             return false
         }
@@ -1553,9 +1554,6 @@ final class BufferListViewController: UICollectionViewController {
         UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
         return true
     }
-
-    /// Whether a write has a socket to go down: both signals, as `ChatViewController`'s.
-    private var canWrite: Bool { state.reachable && state.connection == .connected }
 
     /// Long-press to pin. The Favorites section is only as real as the way to fill it, and
     /// a section with no path into it would just be a permanently empty box. Available on the
@@ -1819,7 +1817,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // change, and a reorder that went nowhere has no echo coming to change them — the reconnect
         // re-sends the same list — so this device kept an order nobody else had (sweep L29). The
         // row goes home instead, which is the truth.
-        guard canWrite, viewModel.reorderFavorites(bufferIds: reorderedIds) else {
+        guard viewModel.reorderFavorites(bufferIds: reorderedIds) else {
             ToastView.showNotConnected(over: navigationController?.view ?? view)
             return
         }

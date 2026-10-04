@@ -48,6 +48,31 @@ final class OfflineWritesTests: XCTestCase {
         }
     }
 
+    /// A write that would go out is still refused when it couldn't reach the server: a reconnect's
+    /// socket that hasn't opened (it takes writes before its upgrade, and loses them if the
+    /// attempt fails), or a device with no path while the old socket still reads connected.
+    /// `/msg` goes through the seam, which says "sent", so only the gate can hand it back.
+    func testAWriteThatWouldGoOutWaitsForTheConnection() {
+        let unopened = ChatViewModel(
+            sessions: SessionStore(service: "chat.lurker.tests.offlinewrites"),
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.offlinewrites")!)
+        )
+        unopened.sendMessageSeam = { _, _ in true }
+        unopened.send(channel, text: "/msg bob hi")
+        XCTAssertEqual(unopened.takeUnsent(channel)?.text, "/msg bob hi", "the socket hasn't opened")
+
+        let unreachable = viewModel()
+        unreachable.sendMessageSeam = { _, _ in true }
+        unreachable.setReachable(false)
+        unreachable.send(channel, text: "/msg bob hi")
+        XCTAssertEqual(unreachable.takeUnsent(channel)?.text, "/msg bob hi", "the device has no path")
+
+        let online = viewModel()
+        online.sendMessageSeam = { _, _ in true }
+        online.send(channel, text: "/msg bob hi")
+        XCTAssertNil(online.takeUnsent(channel), "connected and reachable: it went")
+    }
+
     /// A command that puts nothing on the wire holds nothing: there is nothing to have lost.
     func testALocalCommandHoldsNothing() {
         let model = viewModel()

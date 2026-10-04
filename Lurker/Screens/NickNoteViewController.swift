@@ -65,15 +65,12 @@ final class NickNoteViewController: UITableViewController {
 
     /// Put a note (or the delete, an empty one) on the wire and close — or, when it can't go
     /// out, stay open with what was typed and say so (sweep L14). Nothing locally holds a note,
-    /// so closing on a write that went nowhere lost it outright. Asked of BOTH connection signals
-    /// first, as Android's `NickNoteModel.sendRefusal` does: a dropped socket that hasn't been
-    /// noticed yet still takes the write and loses it.
+    /// so closing on a write that went nowhere lost it outright. The toast sits above the
+    /// keyboard, which is up: the field has focus from the moment the screen opens.
     private func send(_ note: String) {
-        let state = viewModel.state
-        guard state.reachable, state.connection == .connected,
-              viewModel.setNickNote(networkId: networkId, nick: nick, note: note)
-        else {
-            return ToastView.showNotConnected(over: navigationController?.view ?? view)
+        guard viewModel.setNickNote(networkId: networkId, nick: nick, note: note) else {
+            let host: UIView = navigationController?.view ?? view
+            return ToastView.showNotConnected(over: host, above: host.keyboardLayoutGuide.topAnchor)
         }
         navigationController?.popViewController(animated: true)
     }
