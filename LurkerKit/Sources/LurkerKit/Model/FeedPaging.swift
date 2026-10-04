@@ -7,8 +7,8 @@
 /// The half of the app's `HistoryFeedViewController` that isn't table plumbing, kept synchronous
 /// and pure so the rules can be tested. The screen runs the fetches this hands it and reports
 /// each answer back through `land`; what comes back says whether the rows changed and whether
-/// another page should be asked for straight away. lurker-android's `FeedPager` is the same
-/// machine.
+/// another page should be asked for straight away. lurker-android's `FeedPager` drives the
+/// same type.
 ///
 /// A REST read paginated by a cursor rather than streamed: it fetches on open and pages as you
 /// scroll, with pull-to-refresh to pick up anything that changed while it sat open.
@@ -84,6 +84,11 @@ public struct FeedPaging {
     /// every reload restores the budget.
     private var fruitlessHops = 0
     static let maxFruitlessHops = 10
+
+    /// How near the end of the rows a screen asks for the next page: a row drawn within this many
+    /// of the last one pages in. Here rather than in each screen because `remove` pages by the
+    /// same rule — "where a scroll would have asked anyway" — and the two must not drift apart.
+    public static let prefetchWindow = 8
 
     public init(supersedes: Bool) {
         self.supersedes = supersedes
@@ -217,17 +222,15 @@ public struct FeedPaging {
     /// list the user just cleared.
     ///
     /// Pages in only when the removal leaves `prefetchWindow` rows or fewer — the point at which a
-    /// scroll would have asked anyway, so pass the screen's own prefetch threshold. And a removal
-    /// spends no skip-ahead hop: a swipe is not a page an ignore rule emptied. Settling it like
-    /// one fetched a page on every bookmark removed from a long list, and ten swipes spent the
-    /// whole budget, so a later page an ignore rule emptied stopped the feed dead on a live cursor.
-    public mutating func remove(messageId: Int, prefetchWindow: Int) -> Landing? {
+    /// scroll would have asked anyway. And a removal spends no skip-ahead hop: a swipe is not a
+    /// page an ignore rule emptied. Settling it like one fetched a page on every bookmark removed
+    /// from a long list, and ten swipes spent the whole budget, so a later page an ignore rule
+    /// emptied stopped the feed dead on a live cursor.
+    public mutating func remove(messageId: Int) -> Landing? {
         guard let index = items.firstIndex(where: { $0.message.id == messageId }) else { return nil }
         items.remove(at: index)
         if items.isEmpty { loadFailed = false }
-        // `loadMore` declines while a page is already in flight; that page settles the list.
-        if items.count <= prefetchWindow, let next = loadMore() {
-            if items.isEmpty { placeholder = .loading }
+        if items.count <= Self.prefetchWindow, let next = pageIn() {
             return Landing(rowsChanged: true, next: next)
         }
         settlePlaceholder()
@@ -246,15 +249,22 @@ public struct FeedPaging {
         // A hop is spent only on a fetch actually issued. `loadMore` declines while a page is
         // already in flight — `remove` can get here mid-load — and that page will settle the list
         // itself when it lands.
-        if stalled, fruitlessHops < Self.maxFruitlessHops, let hop = loadMore() {
+        if stalled, fruitlessHops < Self.maxFruitlessHops, let hop = pageIn() {
             fruitlessHops += 1
-            // Only claim to be loading when there's nothing to look at. Topping up beneath a
-            // list the user is already reading should be silent.
-            if items.isEmpty { placeholder = .loading }
             return hop
         }
         settlePlaceholder()
         return nil
+    }
+
+    /// Ask for the next page beneath the rows, if one can be asked for. `loadMore` declines while a
+    /// page is already in flight; that page settles the list when it lands.
+    private mutating func pageIn() -> Fetch? {
+        guard let fetch = loadMore() else { return nil }
+        // Only claim to be loading when there's nothing to look at. Topping up beneath a list the
+        // user is already reading should be silent.
+        if items.isEmpty { placeholder = .loading }
+        return fetch
     }
 
     /// What an empty list says: still loading while a page is on its way (a removal emptied it

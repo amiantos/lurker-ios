@@ -69,10 +69,6 @@ class HistoryFeedViewController: UITableViewController {
 
     private let placeholder = StateView()
 
-    /// Fetch the next page once the user scrolls within this many rows of the bottom, so the
-    /// list extends before they hit the end rather than stalling on it.
-    private static let prefetchThreshold = 8
-
     /// A rendered channel+day run: the resolved header text (network name + target + day) over
     /// the rows that share it. The run boundaries and day classification are computed by
     /// `HighlightGrouping` in LurkerKit; this only carries what the table draws.
@@ -354,8 +350,7 @@ class HistoryFeedViewController: UITableViewController {
     /// too, so emptying the list lands on the empty state rather than a blank table.
     @MainActor
     func removeItem(id messageId: Int) {
-        guard let landing = paging.remove(messageId: messageId, prefetchWindow: Self.prefetchThreshold)
-        else { return }
+        guard let landing = paging.remove(messageId: messageId) else { return }
         apply(landing)
     }
 
@@ -523,7 +518,9 @@ class HistoryFeedViewController: UITableViewController {
         // however the channel+day runs are sized.
         guard indexPath.section < sectionOffsets.count else { return }
         let globalIndex = sectionOffsets[indexPath.section] + indexPath.row
-        if globalIndex >= items.count - Self.prefetchThreshold { loadMore() }
+        // `FeedPaging.prefetchWindow`: page in before the user hits the end rather than stalling
+        // on it — the same window a removal pages by.
+        if globalIndex >= items.count - FeedPaging.prefetchWindow { loadMore() }
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
