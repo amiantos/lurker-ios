@@ -94,13 +94,20 @@ public struct SpeakerMap: Equatable, Sendable {
     }
 
     /// Carry an entry across a nick change, so someone who spoke and then renamed doesn't read
-    /// as a stranger when they part. The newer of the two times wins where both exist.
+    /// as a stranger when they part. The newer of the two times wins where both exist. A
+    /// case-only change (`alice` → `Alice`) keeps the entry and its time and takes the new
+    /// spelling, which is what completion offers.
     public mutating func rename(from old: String, to new: String) {
         let oldKey = old.lowercased()
         let newKey = new.lowercased()
-        guard !oldKey.isEmpty, !newKey.isEmpty, oldKey != newKey,
-              let carried = lastSpoke.removeValue(forKey: oldKey)
-        else { return }
+        guard !oldKey.isEmpty, !newKey.isEmpty else { return }
+        if oldKey == newKey {
+            if let entry = lastSpoke[oldKey] {
+                lastSpoke[oldKey] = Speaker(nick: new, lastSpoke: entry.lastSpoke)
+            }
+            return
+        }
+        guard let carried = lastSpoke.removeValue(forKey: oldKey) else { return }
         record(nick: new, at: carried.lastSpoke)
     }
 

@@ -111,4 +111,13 @@ final class SpeakersTests: XCTestCase {
         map.rename(from: "alice", to: "Alice_AFK")
         XCTAssertEqual(map.recent, [Speaker(nick: "Alice_AFK", lastSpoke: Self.t0)])
     }
+
+    /// The folded key doesn't move, but the spelling completion offers does.
+    func testACaseOnlyRenameRespellsTheEntry() {
+        var map = SpeakerMap([Speaker(nick: "alice", lastSpoke: Self.t0)])
+        map.rename(from: "alice", to: "Alice")
+        XCTAssertEqual(map.recent, [Speaker(nick: "Alice", lastSpoke: Self.t0)])
+        map.rename(from: "bob", to: "Bob")
+        XCTAssertEqual(map.recent.count, 1, "an unknown nick is still a no-op")
+    }
 }
