@@ -273,6 +273,35 @@ final class FeedPagingTests: XCTestCase {
         XCTAssertEqual(hopsUntilItStops(&paging, from: more, at: 500), FeedPaging.maxFruitlessHops)
     }
 
+    /// A removal from a long list doesn't page: the next scroll into the prefetch window asks.
+    /// (`loaded` holds ten rows; the window is eight.)
+    func testARemovalFromALongListDoesNotPage() {
+        var paging = loaded(supersedes: false)
+        let landing = paging.remove(messageId: 30)
+        XCTAssertEqual(landing?.rowsChanged, true)
+        XCTAssertNil(landing?.next, "nine rows left, outside the window")
+        XCTAssertNil(paging.placeholder)
+        XCTAssertEqual(paging.loadMore()?.cursor, FeedCursor(beforeMessage: 21), "the cursor is still live")
+    }
+
+    func testARemovalThatRunsTheListShortPages() {
+        var paging = loaded(supersedes: false)
+        XCTAssertNil(paging.remove(messageId: 30)?.next)
+        XCTAssertEqual(paging.remove(messageId: 29)?.next?.cursor,
+                       FeedCursor(beforeMessage: 21),
+                       "eight rows left: inside the window, where a scroll would have asked")
+        XCTAssertNil(paging.placeholder, "topping up beneath rows is silent")
+    }
+
+    /// A swipe is not a page an ignore rule emptied: the page a removal asks for leaves the whole
+    /// skip-ahead budget for the fruitless pages after it.
+    func testARemovalSpendsNoHop() {
+        var paging = loaded(supersedes: false)
+        _ = paging.remove(messageId: 30)
+        let fetch = paging.remove(messageId: 29)!.next!
+        XCTAssertEqual(hopsUntilItStops(&paging, from: fetch, at: 20), FeedPaging.maxFruitlessHops)
+    }
+
     func testAnAbandonedFetchCannotLand() {
         var paging = FeedPaging(supersedes: true)
         let first = paging.reload()!

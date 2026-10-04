@@ -338,6 +338,10 @@ public final class ChatViewModel {
     /// Test seam: stands in for the socket `openBuffer` writes to, which no test has.
     var openBufferSeam: ((BufferKey) -> Bool)?
 
+    /// Test seam: stands in for the socket a command's PRIVMSG goes out on (`/msg bob hi`), so a
+    /// test can have a line that went — target and text in, whether it went out.
+    var sendMessageSeam: ((String, String) -> Bool)?
+
     /// Open a DM and go there once its row exists (iOS #201): Send Message on a profile, a Friends
     /// row whose DM is closed. The app is taken there through `onBufferOpened` — at once if the row
     /// is already here, else as soon as the server's answer mints it, and not at all if that hasn't
@@ -353,7 +357,13 @@ public final class ChatViewModel {
     /// ⚠ DMs only. The server's `open-buffer` mints a row only for a nick: for a channel it JOINs,
     /// and only a `#` one, so a wait on `&local` or an invite-only channel would never be met.
     public func openAndShow(_ key: BufferKey) {
-        guard !openThenShow(key), let networkId = key.networkId else { return }
+        if !openThenShow(key) { sayDmNotConnected(key) }
+    }
+
+    /// The DM's `open-buffer` couldn't go out, so nothing waits: tell the user rather than leave
+    /// them tapping a row that does nothing.
+    private func sayDmNotConnected(_ key: BufferKey) {
+        guard let networkId = key.networkId else { return }
         let network = store.state.networks[networkId]?.displayName ?? "the network"
         onJoinNotice?(.dmNotConnected(nick: key.target, network: network))
     }
@@ -919,9 +929,10 @@ public final class ChatViewModel {
         for effect in effects {
             switch effect {
             case .send(let target, let text):
-                wentNowhere = !client.sendMessage(
-                    networkId: networkId, target: target, text: text, clientId: correlator())
-                    || wentNowhere
+                let clientId = correlator()
+                let went = sendMessageSeam?(target, text)
+                    ?? client.sendMessage(networkId: networkId, target: target, text: text, clientId: clientId)
+                wentNowhere = !went || wentNowhere
             case .action(let target, let text):
                 // A `/me` can be the reply — `reply` is nil for every other command (see `send`).
                 wentNowhere = !client.sendAction(
@@ -949,6 +960,8 @@ public final class ChatViewModel {
             case .part(let channel, let reason):
                 client.part(networkId: networkId, channel: channel, reason: reason)
             case .close(let target):
+                // As `closeBuffer` does: a `/close` stands down a pending open for that buffer.
+                _ = pendingOpens.closing(BufferKey(networkId: networkId, target: target))
                 client.closeBuffer(networkId: networkId, target: target)
             case .clear(let target, let undo):
                 // Nothing is written locally, deliberately. The server picks the exact boundary
@@ -966,29 +979,36 @@ public final class ChatViewModel {
             case .activate(let target):
                 guard let networkId else { break }
                 let to = BufferKey(networkId: networkId, target: target)
-                if ChannelName.isChannelTarget(target) {
+                if wentNowhere {
+                    // `/msg … hi`'s line went nowhere: it is coming back to this composer to be
+                    // sent again, and going anywhere would take the user away from it — a channel
+                    // as much as a nick.
+                } else if ChannelName.isChannelTarget(target) {
                     // A channel: switch at once, as before #201. `open-buffer` JOINs only a `#`
                     // channel and mints no row for the rest, so there is no row to wait for.
                     client.openBuffer(networkId: networkId, target: target, countBy: historyCountBy)
                     outcome = .activate(to)
-                } else if !wentNowhere {
+                } else {
                     // A nick: mint/hydrate the DM row and switch to it once it's here. A brand-new
                     // /query target isn't in `state.buffers` yet, so the destination screen's own
                     // hydrate wouldn't fire — this `open-buffer` is what brings the row (and its
                     // backlog) into being, and going there before it lands bounces off a settled
                     // roster (iOS #201). See `openAndShow`.
                     //
-                    // An `open-buffer` that couldn't go out refuses the line, as a send that went
-                    // nowhere does — it comes back to the composer. Minted here because nothing
-                    // else in a bare `/query` would have.
+                    // An `open-buffer` that couldn't go out refuses a bare `/query`, as a send that
+                    // went nowhere does — it comes back to the composer. Minted here because
+                    // nothing else in a bare `/query` would have. Never `/msg bob hi`'s: its line
+                    // already went, and handing it back would have it sent twice — so say why
+                    // the screen stayed put instead, as Send Message does.
                     if !openThenShow(to) {
-                        _ = correlator()
-                        wentNowhere = true
+                        if lineId == nil {
+                            _ = correlator()
+                            wentNowhere = true
+                        } else {
+                            sayDmNotConnected(to)
+                        }
                     }
                 }
-                // ⚠ …and nowhere at all when `/msg bob hi`'s line went nowhere: it is coming back
-                // to this composer to be sent again, and going to bob would take the user away
-                // from it.
             case .addIgnore(let scope, let rule, let receipt):
                 // `scope`, not `networkId`: nil is a global rule, which is the default and the
                 // one an unqualified `/ignore bob` makes. Nothing is written locally — the
@@ -1483,6 +1503,9 @@ public final class ChatViewModel {
 
     /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
     public func closeBuffer(_ key: BufferKey) {
+        // A close stands down a wait for the same buffer: a DM closed while its open is pending
+        // would otherwise be minted again by the late backlog and taken back into (iOS #201).
+        _ = pendingOpens.closing(key)
         client.closeBuffer(networkId: key.networkId, target: key.target)
         dropDraft(key)
         store.removeBuffer(key)
