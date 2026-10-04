@@ -19,12 +19,13 @@ public struct Speaker: Equatable, Sendable {
 
 /// One buffer's "who has spoken here lately", keyed by lowercased nick.
 ///
-/// Feeds two readers, and it matters that they share one map. The smart filter (#63) asks *when*
+/// Feeds three readers, and it matters that they share one map. The smart filter (#63) asks *when*
 /// a nick last spoke, to decide whether their join/part/quit/nick line is churn worth hiding;
 /// `Consolidation` asks *whether* they're in the set at all, to float people you were just
 /// talking to to the front of a truncated summary. Two derivations of "recent speaker" would
 /// eventually disagree, and the disagreement would show up as a line the filter hid and the
-/// summary still counted.
+/// summary still counted. Nick completion (`NickCompletion.candidates`) ranks by it too, as the
+/// web's does — capped, so a keystroke never pays for how much history is loaded.
 ///
 /// **Seeded from the server, then kept current locally.** The seed is what makes the phone agree
 /// with the browser: the server's list is capped at 20 and computed over a fixed scan window, and
@@ -41,7 +42,8 @@ public struct SpeakerMap: Equatable, Sendable {
     /// seed of 20, so a seed never immediately evicts itself.
     public static let cap = 128
 
-    private var lastSpoke: [String: Date] = [:]
+    /// Lowercased nick → the nick as it was last spelled, and when it last spoke.
+    private var lastSpoke: [String: Speaker] = [:]
 
     public init() {}
 
@@ -50,12 +52,23 @@ public struct SpeakerMap: Equatable, Sendable {
     }
 
     /// When `nick` last spoke here, or nil if they haven't (within what we know).
-    public subscript(nick: String) -> Date? { lastSpoke[nick.lowercased()] }
+    public subscript(nick: String) -> Date? { lastSpoke[nick.lowercased()]?.lastSpoke }
 
     /// Everyone in the map, lowercased — what `Consolidation` ranks its truncated name lists by.
     public var nicks: Set<String> { Set(lastSpoke.keys) }
 
     public var isEmpty: Bool { lastSpoke.isEmpty }
+
+    /// Everyone in the map as they last spelled their nick, most recent first — what nick
+    /// completion leads with. A tie (one seed timestamp) falls back to the case-folded nick, so
+    /// the order never depends on the dictionary's.
+    public var recent: [Speaker] {
+        lastSpoke.values.sorted {
+            $0.lastSpoke != $1.lastSpoke
+                ? $0.lastSpoke > $1.lastSpoke
+                : $0.nick.lowercased() < $1.nick.lowercased()
+        }
+    }
 
     /// Apply the server's list, keeping any local entry it doesn't know about or that is newer.
     ///
@@ -75,8 +88,8 @@ public struct SpeakerMap: Equatable, Sendable {
     public mutating func record(nick: String, at date: Date) {
         let key = nick.lowercased()
         guard !key.isEmpty else { return }
-        if let known = lastSpoke[key], known >= date { return }
-        lastSpoke[key] = date
+        if let known = lastSpoke[key], known.lastSpoke >= date { return }
+        lastSpoke[key] = Speaker(nick: nick, lastSpoke: date)
         trim()
     }
 
@@ -88,14 +101,14 @@ public struct SpeakerMap: Equatable, Sendable {
         guard !oldKey.isEmpty, !newKey.isEmpty, oldKey != newKey,
               let carried = lastSpoke.removeValue(forKey: oldKey)
         else { return }
-        record(nick: newKey, at: carried)
+        record(nick: new, at: carried.lastSpoke)
     }
 
     /// Evict the least-recent speaker once past the cap. One at a time, because entries only
     /// ever arrive one at a time — `seed` records each of its own.
     private mutating func trim() {
         guard lastSpoke.count > Self.cap,
-              let oldest = lastSpoke.min(by: { $0.value < $1.value })?.key
+              let oldest = lastSpoke.min(by: { $0.value.lastSpoke < $1.value.lastSpoke })?.key
         else { return }
         lastSpoke.removeValue(forKey: oldest)
     }

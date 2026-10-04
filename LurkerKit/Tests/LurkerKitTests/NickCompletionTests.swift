@@ -4,20 +4,26 @@
 import XCTest
 @testable import LurkerKit
 
-/// Locks the @‑mention logic to the web client's `nickCompletion.ts`: speakers before
+/// Locks nick completion to the web client's `nickCompletion.ts`: speakers before
 /// members, recency order, self excluded, departed speakers dropped in channels — plus
 /// the token scanner and the addressing suffix the composer inserts.
 final class NickCompletionTests: XCTestCase {
 
-    private func speech(_ id: Int, _ nick: String, isSelf: Bool = false) -> Message {
-        Message(id: id, type: .message, nick: nick, text: "hi", isSelf: isSelf)
+    /// A speaker map where each nick spoke at its index — so the LAST listed spoke most recently,
+    /// the way a buffer's history reads.
+    private func spoke(_ nicks: String...) -> SpeakerMap {
+        var map = SpeakerMap()
+        for (index, nick) in nicks.enumerated() {
+            map.record(nick: nick, at: Date(timeIntervalSince1970: TimeInterval(index + 1)))
+        }
+        return map
     }
 
     // MARK: - Candidates
 
     func testRecentSpeakersLeadNewestFirstThenMembersAlphabetically() {
         let candidates = NickCompletion.candidates(
-            messages: [speech(1, "alice"), speech(2, "bob")],
+            speakers: spoke("alice", "bob"),
             members: [Member(nick: "zoe"), Member(nick: "alice"), Member(nick: "bob"), Member(nick: "carol")],
             selfNick: "me",
             query: "",
@@ -29,7 +35,7 @@ final class NickCompletionTests: XCTestCase {
 
     func testFilteringIsCaseInsensitiveAndKeepsRecencyOrder() {
         let candidates = NickCompletion.candidates(
-            messages: [speech(1, "Anna"), speech(2, "arthur")],
+            speakers: spoke("Anna", "arthur"),
             members: [Member(nick: "Anna"), Member(nick: "arthur"), Member(nick: "AXEL"), Member(nick: "bob")],
             selfNick: nil,
             query: "a",
@@ -40,7 +46,7 @@ final class NickCompletionTests: XCTestCase {
 
     func testYouAreNeverACandidate() {
         let candidates = NickCompletion.candidates(
-            messages: [speech(1, "ME", isSelf: true), speech(2, "alice")],
+            speakers: spoke("ME", "alice"),
             members: [Member(nick: "me"), Member(nick: "alice")],
             selfNick: "me",
             query: "",
@@ -52,34 +58,36 @@ final class NickCompletionTests: XCTestCase {
     /// The web filters channel speakers by current membership: completing someone who
     /// left addresses nobody. A DM has no member list, so its speakers pass unfiltered.
     func testADepartedSpeakerIsDroppedInChannelsButNotDMs() {
-        let history = [speech(1, "ghost"), speech(2, "alice")]
+        let speakers = spoke("ghost", "alice")
         let inChannel = NickCompletion.candidates(
-            messages: history, members: [Member(nick: "alice")],
+            speakers: speakers, members: [Member(nick: "alice")],
             selfNick: nil, query: "", isChannel: true
         )
         XCTAssertEqual(inChannel, ["alice"])
 
         let inDM = NickCompletion.candidates(
-            messages: history, members: [],
+            speakers: speakers, members: [],
             selfNick: nil, query: "", isChannel: false
         )
         XCTAssertEqual(inDM, ["alice", "ghost"])
     }
 
-    func testOnlySpeechCountsAsSpeakingAndTheCapHolds() {
-        let noisy: [Message] = [
-            speech(1, "alice"),
-            Message(id: 2, type: .join, nick: "joiner", text: nil),
-            Message(id: 3, type: .notice, nick: "noticebot", text: "psa"),
-            Message(id: 4, type: .action, nick: "bob", text: "waves"),
-        ]
-        let members = ["alice", "bob", "joiner", "noticebot", "carol", "dave"].map { Member(nick: $0) }
+    func testTheCapHolds() {
+        let members = ["alice", "bob", "carol", "dave", "erin", "frank"].map { Member(nick: $0) }
         let candidates = NickCompletion.candidates(
-            messages: noisy, members: members, selfNick: nil, query: "", isChannel: true
+            speakers: spoke("alice", "bob"), members: members, selfNick: nil, query: "", isChannel: true
         )
-        XCTAssertEqual(candidates.count, 4, "capped at four")
-        XCTAssertEqual(Array(candidates.prefix(2)), ["bob", "alice"],
-                       "an action speaks; a join or notice does not")
+        XCTAssertEqual(candidates, ["bob", "alice", "carol", "dave"], "capped at four")
+    }
+
+    /// A speaker is offered as they last spelled their nick, not as the map's lowercased key.
+    func testASpeakerKeepsTheirSpelling() {
+        XCTAssertEqual(
+            NickCompletion.candidates(
+                speakers: spoke("Alice"), members: [], selfNick: nil, query: "al", isChannel: false
+            ),
+            ["Alice"]
+        )
     }
 
     // MARK: - Token scanning

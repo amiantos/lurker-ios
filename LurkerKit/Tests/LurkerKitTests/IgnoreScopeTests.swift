@@ -455,10 +455,11 @@ final class IgnoreScopeTests: XCTestCase {
             Member(nick: "bobby", user: "u", host: "h"),
             Member(nick: "bonnie", user: "u", host: "h"),
         ]
-        let messages = [Message(id: 1, type: .message, nick: "bobby", text: "hi")]
+        var speakers = SpeakerMap()
+        speakers.record(nick: "bobby", at: Date(timeIntervalSince1970: 1))
         let set = IgnoreSet(global: [rule(mask: "bobby")])
         let candidates = NickCompletion.candidates(
-            messages: messages, members: members, selfNick: "me", query: "bo", isChannel: true,
+            speakers: speakers, members: members, selfNick: "me", query: "bo", isChannel: true,
             ignores: set, networkId: 1
         )
         XCTAssertEqual(candidates, ["bonnie"])
@@ -472,7 +473,7 @@ final class IgnoreScopeTests: XCTestCase {
         let set = IgnoreSet(global: [rule(mask: "*!spam@evil.example")])
         XCTAssertEqual(
             NickCompletion.candidates(
-                messages: [], members: members, selfNick: "me", query: "bo", isChannel: true,
+                speakers: SpeakerMap(), members: members, selfNick: "me", query: "bo", isChannel: true,
                 ignores: set, networkId: 1
             ),
             []

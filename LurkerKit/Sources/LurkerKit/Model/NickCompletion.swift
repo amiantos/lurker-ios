@@ -23,8 +23,10 @@ public enum NickCompletion {
     // MARK: - Candidates
 
     /// Who a nick query offers — after an `@`, or a bare word — best first, capped at
-    /// `limit`. `messages` supplies recency (newest last, as buffers hold them); `members`
-    /// supplies the fallback pool and the still-here check.
+    /// `limit`. `speakers` supplies recency — the store's `SpeakerMap`, the web's
+    /// `buf.speakers`, never a scan of the loaded messages: a bare word asks on most keystrokes,
+    /// and the map is capped where the history is not. `members` supplies the fallback pool and
+    /// the still-here check.
     ///
     /// `ignores`/`networkId` strip ignored candidates. Taken as the shared type rather than an
     /// injected predicate: `IgnoreSet` lives in this module, is immutable, and already carries
@@ -33,10 +35,10 @@ public enum NickCompletion {
     /// "nobody is ignored" for the callers that don't care.
     ///
     /// A member's userhost is reconstructed from the member row when the server sent both
-    /// halves; a speaker carries only a nick, so a hostmask-only rule can't suppress one
-    /// (matching the web, which has the same information at the same point).
+    /// halves; a speaker carries only a nick, so a hostmask-only rule can't suppress a speaker
+    /// who has left (matching the web, which has the same information at the same point).
     public static func candidates(
-        messages: [Message],
+        speakers: SpeakerMap,
         members: [Member],
         selfNick: String?,
         query: String,
@@ -62,13 +64,11 @@ public enum NickCompletion {
         }
         var out: [String] = []
 
-        // Speakers, newest first. Only speech counts — the web records speakers on
-        // message/action alone, so a notice bot or a join flood never crowds the list.
-        for message in messages.reversed() {
+        // Speakers, newest first. Only speech counts, and never our own — the map records
+        // message/action from others alone, so a notice bot or a join flood never crowds it.
+        for speaker in speakers.recent {
             guard out.count < limit else { return out }
-            guard message.type == .message || message.type == .action,
-                  !message.isSelf, let nick = message.nick, !nick.isEmpty
-            else { continue }
+            let nick = speaker.nick
             let lc = nick.lowercased()
             guard !seen.contains(lc), lc.hasPrefix(prefix) else { continue }
             let member = memberByNick[lc]
@@ -76,7 +76,7 @@ public enum NickCompletion {
             // Marked seen either way: an ignored nick is *decided*, and leaving it unseen would
             // let the member pass below offer the same person the speaker pass just refused.
             seen.insert(lc)
-            if isIgnored(nick, message.userhost ?? member?.userhost) { continue }
+            if isIgnored(nick, member?.userhost) { continue }
             out.append(nick)
         }
 
