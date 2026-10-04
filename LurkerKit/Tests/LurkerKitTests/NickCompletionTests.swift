@@ -106,9 +106,54 @@ final class NickCompletionTests: XCTestCase {
     }
 
     func testACaretOutsideTheTokenDeactivatesIt() {
-        XCTAssertNil(NickCompletion.activeMention(in: "@al done", caret: 8),
+        XCTAssertNil(NickCompletion.activeMention(in: "@al done ", caret: 9),
                      "past the token's word there is no active mention")
-        XCTAssertNil(NickCompletion.activeMention(in: "plain text", caret: 5))
+        XCTAssertNil(NickCompletion.activeMention(in: "plain text", caret: 0))
+    }
+
+    // MARK: - Bare words (#57)
+
+    /// The web's mobile strip: two letters of a nick ask without an `@`, and completion
+    /// replaces the word from its first letter.
+    func testABareWordOfTwoLettersAsks() {
+        XCTAssertEqual(NickCompletion.activeMention(in: "hey al", caret: 6),
+                       NickCompletion.MentionToken(start: 4, end: 6, query: "al"))
+        XCTAssertEqual(NickCompletion.activeMention(in: "al", caret: 2),
+                       NickCompletion.MentionToken(start: 0, end: 2, query: "al"))
+    }
+
+    func testABareWordOfOneLetterDoesNot() {
+        XCTAssertNil(NickCompletion.activeMention(in: "hey a", caret: 5),
+                     "every \"I\" and \"a\" would float the pills")
+        XCTAssertNil(NickCompletion.activeMention(in: "hey alice", caret: 5),
+                     "the threshold counts what's typed BEFORE the caret, not the word")
+    }
+
+    func testABareCaretMidWordFiltersToTheCaretButSpansTheWord() {
+        XCTAssertEqual(NickCompletion.activeMention(in: "alice more", caret: 2),
+                       NickCompletion.MentionToken(start: 0, end: 5, query: "al"))
+    }
+
+    /// Completion replaces the whole word, so a bare word holding an `@` anywhere — even
+    /// after the caret — never asks: it would take the `@host` with it.
+    func testABareWordWithAnAtAnywhereDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "mail user@host", caret: 9))
+        XCTAssertNil(NickCompletion.activeMention(in: "mail user@host", caret: 7))
+    }
+
+    func testACommandOrChannelWordDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "/jo", caret: 3))
+        XCTAssertNil(NickCompletion.activeMention(in: "//jo", caret: 4), "an escaped command")
+        for sigil in ["#", "&", "+", "!"] {
+            XCTAssertNil(NickCompletion.activeMention(in: "see \(sigil)li", caret: 7), sigil)
+        }
+    }
+
+    func testAnAtStillAsksFromItsFirstKeystroke() {
+        XCTAssertEqual(NickCompletion.activeMention(in: "hey @a", caret: 6)?.query, "a",
+                       "the bare threshold never applies to an @")
+        XCTAssertNil(NickCompletion.activeMention(in: "@a@b", caret: 4),
+                     "a second @ before the caret is still email-shaped")
     }
 
     // MARK: - Addressing suffix

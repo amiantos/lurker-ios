@@ -3,8 +3,8 @@
 
 import Foundation
 
-/// @‑mention completion: the pure logic behind the pill strip the composer floats when
-/// the user types `@`. A faithful port of the web client's `nickCompletion.ts`, so the
+/// Nick completion: the pure logic behind the pill strip the composer floats when the
+/// user types `@`, or the first letters of a nick (#57). A faithful port of the web client's `nickCompletion.ts`, so the
 /// two clients can't disagree about who leads the list:
 ///
 ///  - recent speakers first, most recent first — the people you're most likely answering;
@@ -96,47 +96,68 @@ public enum NickCompletion {
 
     // MARK: - Token
 
-    /// An in-progress `@…` under the caret. Offsets are UTF-16 (`NSRange`'s currency, so
-    /// the composer can hand `selectedRange` straight in).
+    /// An in-progress nick under the caret — an `@…`, or a bare word long enough to ask.
+    /// Offsets are UTF-16 (`NSRange`'s currency, so the composer can hand `selectedRange`
+    /// straight in).
     public struct MentionToken: Equatable {
-        /// Offset of the `@` itself.
+        /// Offset of the token's first character: the `@`, or a bare word's first letter.
+        /// Completion replaces from here, so the `@` goes and the nick stands alone.
         public let start: Int
         /// One past the token's last character — the end of the whitespace-delimited
         /// word, which runs *past* the caret when the caret sits mid-word. Completion
         /// replaces `start..<end`: swallowing the tail is what keeps `@al|ice` from
         /// completing to "aliceice".
         public let end: Int
-        /// What follows the `@`, up to the caret — the filter query. Deliberately not the
-        /// whole word: the list should answer what's been typed so far.
+        /// What's been typed of the nick, up to the caret — after the `@`, or from a bare
+        /// word's start. The filter query. Deliberately not the whole word: the list should
+        /// answer what's been typed so far.
         public let query: String
     }
 
-    /// The active mention at `caret`, or nil. A token is the whitespace-delimited run the
-    /// caret sits in, and it must *begin* with `@` at a word boundary — `user@host` is an
-    /// email-shaped word, not a mention, exactly as the web treats it.
+    /// How much of a bare word must be typed before it asks for nicks — the web's mobile
+    /// strip threshold, so a one-letter word ("I", "a") never floats the pills.
+    public static let bareWordMinimum = 2
+
+    /// The nick being typed at `caret`, or nil. A token is the whitespace-delimited run the
+    /// caret sits in, and it asks in one of two shapes:
+    ///
+    ///  - `@…`, explicit, so it asks from the first keystroke — a lone `@` lists everyone;
+    ///  - a bare word with at least `bareWordMinimum` characters before the caret, the
+    ///    web's mobile suggestion strip (#57), so a nick can be finished without the `@`.
+    ///    A word that opens with `/` (a command, or `//` escaping one) or a channel sigil
+    ///    is never a nick, so it never asks.
+    ///
+    /// An `@` anywhere but the word's start disqualifies it — `user@host` is an
+    /// email-shaped word, not a mention, exactly as the web treats it. For an `@…` only the
+    /// part before the caret counts (the `@` must be the nearest one behind it); a bare
+    /// word may not hold one at all, because completion replaces the whole word and would
+    /// take an `@host` after the caret with it.
     public static func activeMention(in text: String, caret: Int) -> MentionToken? {
         let chars = Array(text.utf16)
         guard caret >= 0, caret <= chars.count else { return nil }
-        let at = UnicodeScalar("@").value
-        var index = caret - 1
-        while index >= 0 {
-            let unit = chars[index]
-            if isWhitespace(unit) { return nil } // hit the word's start without finding @
-            if UInt32(unit) == at {
-                // The @ must open the word: start of text, or after whitespace. An @
-                // mid-word (user@host) disqualifies the whole word, so stop either way.
-                guard index == 0 || isWhitespace(chars[index - 1]) else { return nil }
-                var end = caret
-                while end < chars.count, !isWhitespace(chars[end]) { end += 1 }
-                return MentionToken(
-                    start: index,
-                    end: end,
-                    query: String(decoding: chars[(index + 1)..<caret], as: UTF16.self)
-                )
-            }
-            index -= 1
+        let at = UInt16(UnicodeScalar("@").value)
+        var start = caret
+        while start > 0, !isWhitespace(chars[start - 1]) { start -= 1 }
+        var end = caret
+        while end < chars.count, !isWhitespace(chars[end]) { end += 1 }
+
+        if start < caret, chars[start] == at {
+            guard !chars[(start + 1)..<caret].contains(at) else { return nil }
+            return MentionToken(
+                start: start,
+                end: end,
+                query: String(decoding: chars[(start + 1)..<caret], as: UTF16.self)
+            )
         }
-        return nil
+
+        guard caret - start >= bareWordMinimum, !chars[start..<end].contains(at) else { return nil }
+        let word = String(decoding: chars[start..<end], as: UTF16.self)
+        guard !word.hasPrefix("/"), !ChannelName.isChannelTarget(word) else { return nil }
+        return MentionToken(
+            start: start,
+            end: end,
+            query: String(decoding: chars[start..<caret], as: UTF16.self)
+        )
     }
 
     /// What a completed nick carries after it: the addressing form when the mention opens

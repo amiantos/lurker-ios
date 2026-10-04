@@ -38,7 +38,7 @@ final class ComposerBar: UIView {
     var onHeightChange: (() -> Void)?
 
     /// What kind of completion is live under the caret. The composer detects the *shape*
-    /// (`CommandCompletion` for a slash line, `NickCompletion` for an `@`) and reports the
+    /// (`CommandCompletion` for a slash line, `NickCompletion` for a nick) and reports the
     /// query; the owner turns that into candidates and floats the pills.
     enum Completion: Equatable {
         /// Typing the command verb — `/jo|`. `query` excludes the slash.
@@ -47,7 +47,8 @@ final class ComposerBar: UIView {
         case channelArg(query: String)
         /// Typing a nick argument of a command — `/msg al|`, `/whois b|`.
         case nickArg(query: String)
-        /// An `@`-mention anywhere free text is allowed, including inside `/me …`.
+        /// A nick being typed — `@al|`, or a bare `al|` (#57) — anywhere free text is
+        /// allowed, including inside `/me …`.
         case mention(query: String)
     }
 
@@ -739,8 +740,8 @@ extension ComposerBar: UITextViewDelegate {
 
     /// Hand the owner the current completion context, only when it changed. A slash line is
     /// classified first (`CommandCompletion`); a channel/nick argument or the verb itself
-    /// wins, and anything else — free text, an unknown command — falls through to `@`-mention
-    /// detection, so `/me @al|` still completes a nick. A selection (length > 0) is editing,
+    /// wins, and anything else — free text, an unknown command — falls through to nick
+    /// detection, so `/me @al|` and `/me al|` still complete a nick. A selection (length > 0) is editing,
     /// never mid-token.
     private func emitCompletion() {
         let selection = textView.selectedRange

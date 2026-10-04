@@ -416,7 +416,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             self?.updateSuggestions()
         }
         // A pick means different things per context: a command inserts its verb, a channel
-        // or nick argument inserts that value, an `@`-mention inserts the nick with its
+        // or nick argument inserts that value, a nick being typed inserts the nick with its
         // addressing suffix. The composer owns each insertion; this only routes to it.
         suggestions.onPick = { [weak self] suggestion in
             guard let self else { return }
