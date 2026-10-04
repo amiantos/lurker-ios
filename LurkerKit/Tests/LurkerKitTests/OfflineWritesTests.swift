@@ -73,6 +73,26 @@ final class OfflineWritesTests: XCTestCase {
         XCTAssertNil(online.takeUnsent(channel), "connected and reachable: it went")
     }
 
+    /// A forced reconnect — the foreground's stale-socket check — replaces the socket while the
+    /// state still reads `.connected`. The new socket takes writes during its upgrade and loses them
+    /// if the attempt fails, so the user's writes wait for its first frame.
+    func testAForcedReconnectHoldsWritesUntilTheNewSocketOpens() {
+        let model = viewModel()
+        model.sendMessageSeam = { _, _ in true }
+        XCTAssertEqual(model.state.connection, .connected)
+        model.reconnectSocket()
+        XCTAssertEqual(model.state.connection, .connected, "the state hasn't moved; only the socket has")
+        model.send(channel, text: "/msg bob hi")
+        XCTAssertEqual(model.takeUnsent(channel)?.text, "/msg bob hi", "the new socket hasn't opened")
+        XCTAssertFalse(model.setNickNote(networkId: 1, nick: "bob", note: "lives in Berlin"))
+        XCTAssertFalse(model.closeBuffer(channel))
+        XCTAssertNotNil(model.state.buffers[channel.id])
+
+        model.handle(.socketOpen)
+        model.send(channel, text: "/msg bob hi")
+        XCTAssertNil(model.takeUnsent(channel), "open: it went")
+    }
+
     /// A command that puts nothing on the wire holds nothing: there is nothing to have lost.
     func testALocalCommandHoldsNothing() {
         let model = viewModel()

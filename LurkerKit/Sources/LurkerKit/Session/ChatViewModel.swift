@@ -195,6 +195,7 @@ public final class ChatViewModel {
             client.restore(server: server, token: token)
             sessionSubject.value = .loggedIn
             Task { await loadConfig() }
+            socketOpening = true
             await client.start()
             return true
         case .unknownClient:
@@ -525,7 +526,7 @@ public final class ChatViewModel {
             // The server takes this build again: it was rolled back, or updated.
             store.clearIncompatible()
             guard isForeground else { return }
-            client.reconnect(since: store.state.maxEventId)
+            reconnectSocket()
         }
     }
 
@@ -639,7 +640,16 @@ public final class ChatViewModel {
     /// - a reconnect's new socket takes writes before its upgrade succeeds — deliberately, for the
     ///   connect burst — and loses them if the attempt fails. `.connected` waits for its first frame;
     /// - airplane mode flips `reachable` while the old socket still reads `.connected`.
-    private var canWrite: Bool { store.state.reachable && store.state.connection == .connected }
+    private var canWrite: Bool {
+        store.state.reachable && store.state.connection == .connected && !socketOpening
+    }
+
+    /// A socket is being opened and hasn't sent its first frame. ⚠ Needed beside `.connected`: a
+    /// forced reconnect (the foreground's stale-socket check) replaces the socket without the state
+    /// ever leaving `.connected`, and the new one takes writes during its upgrade and loses them if
+    /// the attempt fails. The client's own connect burst writes through regardless; this gates only
+    /// the user's writes, through `canWrite`.
+    private var socketOpening = false
 
     /// React with `value` on a line, or take ours back when it's already there (iOS #183).
     ///
@@ -1798,6 +1808,7 @@ public final class ChatViewModel {
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
         Task { await loadConfig() }
+        socketOpening = true
         Task { await client.start() }
     }
 
@@ -1942,6 +1953,7 @@ public final class ChatViewModel {
             configReads.supersedeInFlight()
             onIncompatible(incompatibility)
         case .socketOpen:
+            socketOpening = false
             // A socket that opens after the server was found not to take this build (its config
             // answered first) is closed rather than used.
             guard store.state.connection.incompatibility == nil else {
@@ -2181,6 +2193,14 @@ public final class ChatViewModel {
         // Every attempt re-reads the config, not only while it's unanswered: it carries the
         // server's version, which moves exactly when a deploy drops the socket. See `loadConfig`.
         Task { await loadConfig() }
+        reconnectSocket()
+    }
+
+    /// Open a new socket in place of the old one, resuming from the last event. The one door every
+    /// reconnect goes through, so user writes wait for the new socket (`socketOpening`) — a forced
+    /// one included, which replaces a stale socket while the state still reads `.connected`.
+    func reconnectSocket() {
+        socketOpening = true
         client.reconnect(since: store.state.maxEventId)
     }
 
