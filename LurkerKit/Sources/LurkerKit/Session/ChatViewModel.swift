@@ -932,6 +932,14 @@ public final class ChatViewModel {
         // Recorded rather than acted on inline so the remaining effects still run: a command that
         // is half machinery should not stop halfway because one send found no socket.
         var wentNowhere = false
+        // The verbs with no `send-result` of their own — `/topic`, `/nick`, `/part`, `/away` and
+        // the rest. Nothing is in flight when one goes out, so the correlator is minted only for a
+        // failure, to carry the line back; before sweep L02 they were dropped without a word.
+        func wire(_ went: Bool) {
+            guard !went else { return }
+            _ = correlator()
+            wentNowhere = true
+        }
         for effect in effects {
             switch effect {
             case .send(let target, let text):
@@ -950,7 +958,7 @@ public final class ChatViewModel {
                     networkId: networkId, target: target, text: text, clientId: correlator())
                     || wentNowhere
             case .raw(let line):
-                client.sendRaw(networkId: networkId, line: line)
+                wire(client.sendRaw(networkId: networkId, line: line))
             case .showProfile(let who):
                 // Nothing goes out here — the screen asks when it opens. A `/whois` typed in
                 // the system buffer has no connection to ask on and is silently no-op'd, the
@@ -964,24 +972,25 @@ public final class ChatViewModel {
                     requestJoin(networkId: networkId, channel: channel, key: joinKey, opens: true)
                 }
             case .part(let channel, let reason):
-                client.part(networkId: networkId, channel: channel, reason: reason)
+                wire(client.part(networkId: networkId, channel: channel, reason: reason))
             case .close(let target):
                 // As `closeBuffer` does: a `/close` stands down a pending open for that buffer.
                 _ = pendingOpens.closing(BufferKey(networkId: networkId, target: target))
-                client.closeBuffer(networkId: networkId, target: target)
+                wire(client.closeBuffer(networkId: networkId, target: target))
             case .clear(let target, let undo):
                 // Nothing is written locally, deliberately. The server picks the exact boundary
                 // id (the current tail) and fans a `buffer-cleared` back to every device
                 // including this one, so the marker this screen draws is always the
                 // authoritative one — an optimistic local clear would have to guess the id and
                 // would be wrong for anything that landed in between.
-                client.clearBuffer(networkId: networkId, target: target, undo: undo)
+                wire(client.clearBuffer(networkId: networkId, target: target, undo: undo))
             case .away(let message, let all):
-                client.setAway(message, networkId: networkId, all: all)
+                wire(client.setAway(message, networkId: networkId, all: all))
             case .back(let all):
-                client.setBack(networkId: networkId, all: all)
+                wire(client.setBack(networkId: networkId, all: all))
             case .ctcp(let target, let type, let args):
-                client.sendCTCP(networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args)
+                wire(client.sendCTCP(
+                    networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args))
             case .activate(let target):
                 guard let networkId else { break }
                 let to = BufferKey(networkId: networkId, target: target)
@@ -1240,12 +1249,17 @@ public final class ChatViewModel {
     /// Mark a buffer read up to its latest loaded message. Server-authoritative and
     /// MAX-clamped, and deduped here, so calling it on every state change while viewing a
     /// buffer is cheap. The `read-state` echo updates the counts.
+    ///
+    /// ⚠ Recorded only once it has gone out. A mark with no socket goes nowhere, and recording it
+    /// anyway had the dedupe skip the same id after the reconnect — the pointer never moved, on
+    /// this device's badge or anyone else's (sweep L23).
     public func markRead(_ key: BufferKey) {
         guard let latest = store.state.messages[key.id]?.compactMap({ $0.id != 0 ? $0.id : nil }).max(),
               latest > (lastMarked[key.id] ?? 0)
         else { return }
-        lastMarked[key.id] = latest
-        client.markRead(networkId: key.networkId, target: key.target, messageId: latest)
+        if client.markRead(networkId: key.networkId, target: key.target, messageId: latest) {
+            lastMarked[key.id] = latest
+        }
     }
 
     public func markAllRead() {
@@ -1508,13 +1522,20 @@ public final class ChatViewModel {
     }
 
     /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
-    public func closeBuffer(_ key: BufferKey) {
+    ///
+    /// False, with the row and its draft left alone, when the close couldn't go out. Removing the
+    /// row anyway left the channel joined and the draft unsent, and the reconnect's snapshot put
+    /// the row straight back with no account of why (sweep L16) — so the caller says so instead.
+    @discardableResult
+    public func closeBuffer(_ key: BufferKey) -> Bool {
         // A close stands down a wait for the same buffer: a DM closed while its open is pending
         // would otherwise be minted again by the late backlog and taken back into (iOS #201).
+        // Whether or not the close goes out — the user has said they're done with it.
         _ = pendingOpens.closing(key)
-        client.closeBuffer(networkId: key.networkId, target: key.target)
+        guard client.closeBuffer(networkId: key.networkId, target: key.target) else { return false }
         dropDraft(key)
         store.removeBuffer(key)
+        return true
     }
 
     /// The networks the user is on, unordered.
@@ -1549,8 +1570,9 @@ public final class ChatViewModel {
     /// `/back` from a control rather than the composer — the away strip's Back (#135), on the
     /// network the strip is showing, scoped as a typed `/back` is (lurker#994). No local
     /// mutation: the strip comes down when the server's `away-state` echo folds in, on every
-    /// device at once.
-    public func setBack(networkId: Int?) {
+    /// device at once. False when it went nowhere.
+    @discardableResult
+    public func setBack(networkId: Int?) -> Bool {
         client.setBack(networkId: networkId, all: nil)
     }
 
@@ -1602,12 +1624,17 @@ public final class ChatViewModel {
     /// ⚠ A `=bob` DCC chat is a conversation with bob, so its note IS bob's note. The server
     /// stores whatever nick it is handed, so without this a note written from the chat would be
     /// filed under `=bob` — a second note about the same person that the DM with bob never shows.
-    public func setNickNote(networkId: Int, nick: String, note: String) {
+    ///
+    /// False when it went nowhere: the editor stays open with what was typed (sweep L14).
+    @discardableResult
+    public func setNickNote(networkId: Int, nick: String, note: String) -> Bool {
         client.setNickNote(networkId: networkId, nick: DccChat.peer(nick), note: note)
     }
 
     /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
-    public func reorderFavorites(bufferIds: [Int]) {
+    /// False when it went nowhere, and then no echo is coming to settle a drop (sweep L29).
+    @discardableResult
+    public func reorderFavorites(bufferIds: [Int]) -> Bool {
         client.reorderFavorites(bufferIds: bufferIds)
     }
 

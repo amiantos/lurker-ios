@@ -60,7 +60,21 @@ final class NickNoteViewController: UITableViewController {
         // ⚠ Sent verbatim; the server trims and decides. A whitespace-only note is a DELETE
         // there, so pre-trimming here would only hide which of the two happened — the
         // `nick-note-updated` echo is what settles it either way.
-        viewModel.setNickNote(networkId: networkId, nick: nick, note: draft)
+        send(draft)
+    }
+
+    /// Put a note (or the delete, an empty one) on the wire and close — or, when it can't go
+    /// out, stay open with what was typed and say so (sweep L14). Nothing locally holds a note,
+    /// so closing on a write that went nowhere lost it outright. Asked of BOTH connection signals
+    /// first, as Android's `NickNoteModel.sendRefusal` does: a dropped socket that hasn't been
+    /// noticed yet still takes the write and loses it.
+    private func send(_ note: String) {
+        let state = viewModel.state
+        guard state.reachable, state.connection == .connected,
+              viewModel.setNickNote(networkId: networkId, nick: nick, note: note)
+        else {
+            return ToastView.showNotConnected(over: navigationController?.view ?? view)
+        }
         navigationController?.popViewController(animated: true)
     }
 
@@ -95,6 +109,7 @@ final class NickNoteViewController: UITableViewController {
         ) as! FormTextViewCell
         cell.configure(label: "Note about \(nick)", value: draft, placeholder: "Anything worth remembering.")
         cell.onChange = { [weak self] text in self?.draft = text }
+        cell.accepts = { NickNote.fits($0) }
         cell.onHeightChange = { [weak tableView] in
             // Re-measure without reloading, which would resign the keyboard mid-typing.
             tableView?.beginUpdates()
@@ -116,8 +131,7 @@ final class NickNoteViewController: UITableViewController {
             guard let self else { return }
             // An empty note IS the delete verb — one frame shape for both, which is the
             // server's own encoding rather than a convention chosen here.
-            viewModel.setNickNote(networkId: networkId, nick: nick, note: "")
-            navigationController?.popViewController(animated: true)
+            send("")
         })
         present(confirm, animated: true)
     }

@@ -369,15 +369,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // BOTH signals: airplane mode flips `reachable` while the socket still reads
             // `.connected`, for as long as it takes to notice. Nothing retries a Back, so say so,
             // or the strip staying put reads as a Back that ignored you.
-            let state = viewModel.state
-            guard !state.reachable || state.connection != .connected else {
-                return viewModel.setBack(networkId: buffer.key.networkId)
-            }
-            ToastView.show(
-                "Not connected — try again when you're back online",
-                symbol: "exclamationmark.circle",
-                over: view, above: noticeAnchor, hold: ToastView.readingHoldSeconds
-            )
+            if canWrite, viewModel.setBack(networkId: buffer.key.networkId) { return }
+            ToastView.showNotConnected(over: view, above: noticeAnchor)
         }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
@@ -695,7 +688,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Gated on the read boundary being latched, for the reason spelled out in `apply`:
         // marking read is what destroys the record of where the reader left off, so it can't
         // run before that record has been taken. The next `apply` picks it up.
-        if dividerAfterId != nil { viewModel.markRead(buffer.key) }
+        if dividerAfterId != nil, canWrite { viewModel.markRead(buffer.key) }
         // …and it's now the buffer you're reading — see `recordVisit`.
         if !isResting { recordVisit() }
         // An error that landed before we had a window — or while a sheet was covering us —
@@ -1205,7 +1198,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // buffer before the backlog that would have said where the boundary was. The wait is
         // short and self-clearing — the frame that answers the hydrate latches the boundary
         // above, and this fires on that same pass.
-        if view.window != nil, dividerAfterId != nil { viewModel.markRead(buffer.key) }
+        //
+        // And only online, as Android's `mayWrite` is (sweep L23): a mark written onto a socket
+        // that has dropped but not yet noticed goes nowhere, and the kit would dedupe the retry.
+        // Coming back online is a state change, so this runs again then.
+        if view.window != nil, dividerAfterId != nil, canWrite { viewModel.markRead(buffer.key) }
 
         // Following the tail decides everything here (see `followsTail`): preserving your
         // position only means anything if you have one to preserve. Parked at the live bottom,
@@ -2379,6 +2376,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// suggestions ride the same edge.
     var noticeAnchor: NSLayoutYAxisAnchor { composer.topAnchor }
 
+    /// Whether a write has a socket to go down — both signals, for the reason `composer.onBack`
+    /// gives: airplane mode flips `reachable` while the socket still reads `.connected`.
+    private var canWrite: Bool {
+        let state = viewModel.state
+        return state.reachable && state.connection == .connected
+    }
+
     /// Switch to a channel — what `/msg` and `/query` to one ask for. The target may not be in
     /// state yet, which is what `buffer(for:)` synthesizes for.
     private func navigate(to key: BufferKey) {
@@ -3397,7 +3401,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 reply: { [weak self] message in self?.reply(to: message) },
                 copy: { UIPasteboard.general.string = $0 },
                 setBookmark: { [weak self] id, saved in
-                    self?.viewModel.setBookmark(messageId: id, saved: saved)
+                    // Nothing changes on screen until the server's echo, so a save that went
+                    // nowhere has to say so or it reads as a tap that missed (sweep L53).
+                    guard let self, !viewModel.setBookmark(messageId: id, saved: saved) else { return }
+                    ToastView.showNotConnected(
+                        "Not connected — the bookmark didn't change.", over: view, above: noticeAnchor)
                 },
                 showProfile: { [weak self] nick in
                     // Safe to present straight away: the action sheet runs this from its own

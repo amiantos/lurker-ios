@@ -808,18 +808,21 @@ final class LurkerClient {
     }
 
     /// Part a channel with an optional reason. The buffer survives (dimmed); `/close` drops it.
-    func part(networkId: Int?, channel: String, reason: String?) {
-        guard let networkId else { return }
+    /// False when it went nowhere — the composer hands a `/part` typed offline back (sweep L02).
+    @discardableResult
+    func part(networkId: Int?, channel: String, reason: String?) -> Bool {
+        guard let networkId else { return false }
         var verb: [String: Any] = ["type": "part", "networkId": networkId, "channel": channel]
         if let reason { verb["reason"] = reason }
-        send(verb)
+        return send(verb)
     }
 
     /// A CTCP request aimed at a target — `/ctcp`, `/ping`. `issuingTarget` is the buffer the
-    /// command was run in, so a reply can be routed back to it.
-    func sendCTCP(networkId: Int?, target: String, issuingTarget: String, ctcpType: String, args: String) {
-        guard let networkId else { return }
-        send([
+    /// command was run in, so a reply can be routed back to it. False when it went nowhere.
+    @discardableResult
+    func sendCTCP(networkId: Int?, target: String, issuingTarget: String, ctcpType: String, args: String) -> Bool {
+        guard let networkId else { return false }
+        return send([
             "type": "ctcp",
             "networkId": networkId,
             "target": target,
@@ -928,12 +931,14 @@ final class LurkerClient {
     /// Set yourself away (`/away`), or clear it (`/back`, or `/away` with no message), on the
     /// network named (lurker#994). The server widens it to every network for `all: true`, for
     /// the `away.all_networks` setting when `all` is nil, and when there's no network (the
-    /// system buffer).
-    func setAway(_ message: String, networkId: Int?, all: Bool?) {
+    /// system buffer). False when it went nowhere.
+    @discardableResult
+    func setAway(_ message: String, networkId: Int?, all: Bool?) -> Bool {
         send(Self.awayFrame(type: "away", message: message, networkId: networkId, all: all))
     }
 
-    func setBack(networkId: Int?, all: Bool?) {
+    @discardableResult
+    func setBack(networkId: Int?, all: Bool?) -> Bool {
         send(Self.awayFrame(type: "back", message: nil, networkId: networkId, all: all))
     }
 
@@ -1013,7 +1018,9 @@ final class LurkerClient {
     /// Mark a buffer read up to `messageId`. The server MAX-clamps, so re-sending a lower
     /// id is a safe no-op. The system buffer sends `networkId: null` (hence NSNull, not a
     /// dropped key), so this can't reuse the `guard let networkId` shortcut.
-    func markRead(networkId: Int?, target: String, messageId: Int) {
+    /// False when it went nowhere, which `ChatViewModel.markRead` must not record as marked.
+    @discardableResult
+    func markRead(networkId: Int?, target: String, messageId: Int) -> Bool {
         send([
             "type": "mark-read",
             "networkId": networkId.map { $0 as Any } ?? NSNull(),
@@ -1224,9 +1231,14 @@ final class LurkerClient {
 
     /// Close a buffer: parts a channel and stops tracking a DM. The server pseudo-buffer
     /// (`:server:`) can't be closed. No-op for the system buffer (networkId nil).
-    func closeBuffer(networkId: Int?, target: String) {
-        guard let networkId, !target.hasPrefix(":server:") else { return }
-        send(["type": "close-buffer", "networkId": networkId, "target": target])
+    ///
+    /// False when there was a verb to send and no socket to carry it. The two no-ops answer
+    /// true: nothing was meant to go out, so nothing went missing — a `/close` typed in the
+    /// server log mustn't come back to the composer as if the connection were down.
+    @discardableResult
+    func closeBuffer(networkId: Int?, target: String) -> Bool {
+        guard let networkId, !target.hasPrefix(":server:") else { return true }
+        return send(["type": "close-buffer", "networkId": networkId, "target": target])
     }
 
     /// Save one buffer's composer draft (`draft-set`), or clear it (`draft-clear`) when there's
@@ -1309,9 +1321,11 @@ final class LurkerClient {
     /// buffer row to carry a marker — the same guard `closeBuffer` needs. The `:server:` log
     /// IS clearable, unlike closing: a network's log is a real buffer with real read state,
     /// and hiding a wall of connection noise is exactly what someone would want there.
-    func clearBuffer(networkId: Int?, target: String, undo: Bool) {
-        guard let networkId else { return }
-        send([
+    /// False when it went nowhere.
+    @discardableResult
+    func clearBuffer(networkId: Int?, target: String, undo: Bool) -> Bool {
+        guard let networkId else { return false }
+        return send([
             "type": undo ? "unclear-buffer" : "clear-buffer",
             "networkId": networkId,
             "target": target,
@@ -1335,7 +1349,9 @@ final class LurkerClient {
     /// span networks, so names can't address them). Send the FULL permuted list; a subset
     /// floats to the front and would demote everything unmentioned. The server echoes the
     /// authoritative `favorites-changed` either way (a stale set snaps this device back).
-    func reorderFavorites(bufferIds: [Int]) {
+    /// False when it went nowhere: then no echo is coming to settle the order on screen.
+    @discardableResult
+    func reorderFavorites(bufferIds: [Int]) -> Bool {
         send(["type": "reorder-favorites", "bufferIds": bufferIds])
     }
 
