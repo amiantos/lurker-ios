@@ -826,9 +826,12 @@ final class CommandParserTests: XCTestCase {
         XCTAssertTrue(isInfo(effects("/invite #other")))
     }
 
-    func testInviteIgnoresASecondWordThatIsNotAChannel() {
-        XCTAssertEqual(effects("/invite bob notachan"), [.raw(line: "INVITE bob #chan")])
-        XCTAssertTrue(isInfo(effects("/invite bob notachan", target: "alice")))
+    func testInviteRefusesASecondWordThatIsNotAChannel() {
+        // `/invite bob rust` meant #rust: inviting bob to the current channel instead is worse
+        // than saying so. (The web falls back to the current channel here.)
+        XCTAssertEqual(effects("/invite bob rust"),
+                       [.info("/invite: \"rust\" isn't a channel — usage: /invite <nick> [#channel]")])
+        XCTAssertTrue(isInfo(effects("/invite bob rust", target: "alice")))
     }
 
     func testPartAndTopicReadAPunctuatedFirstWordAsText() {
@@ -851,6 +854,34 @@ final class CommandParserTests: XCTestCase {
         let open = { (name: String) in name == "+local" }
         XCTAssertEqual(context("/mode +local +m", hasBuffer: open), [.raw(line: "MODE +local +m")])
         XCTAssertEqual(context("/mode +m", hasBuffer: open), [.raw(line: "MODE #chan +m")])
+    }
+
+    func testModeShortcutsSplitAtTheByteBudgetBeforeModes() {
+        // Long masks reach the web's 400-byte budget before a generous MODES does.
+        let masks = (1...8).map { "*!*@" + String(repeating: "h", count: 60) + "\($0).example" }
+        let lines = context("/ban " + masks.joined(separator: " "), modeSpec: spec(maxModes: 20))
+        XCTAssertGreaterThan(lines.count, 1)
+        var sent: [String] = []
+        for effect in lines {
+            guard case .raw(let line) = effect else { return XCTFail("expected raw lines") }
+            XCTAssertLessThanOrEqual(line.utf8.count, 400)
+            let words = line.split(separator: " ")
+            XCTAssertEqual(words[2].count - 1, words.count - 3, "one letter per mask")
+            sent += words.dropFirst(3).map(String.init)
+        }
+        XCTAssertEqual(sent, masks)
+    }
+
+    func testAppCommandsAnswerInTheSystemBufferToo() {
+        // Nothing about these is per-network, so "needs an active network" would send someone to
+        // a channel only to be told the same thing there.
+        for line in ["/set foo", "/get foo", "/theme dark", "/hilight word", "/network add", "/net", "/server x"] {
+            let answer = effects(line, networkId: nil, target: ":system:")
+            guard answer.count == 1, case .info(let text) = answer[0] else {
+                XCTFail("\(line) should be answered"); continue
+            }
+            XCTAssertFalse(text.contains("needs an active network"), line)
+        }
     }
 
     func testJoinAndPartShortAliases() {
@@ -890,8 +921,11 @@ final class CommandParserTests: XCTestCase {
     func testReactRefusesAnEmojiNameItCannotResolve() {
         XCTAssertTrue(isInfo(effects("/react :tada:")))
         XCTAssertTrue(isInfo(effects("/react :+1:")))
+        // The web resolves the unclosed form too.
+        XCTAssertTrue(isInfo(effects("/react :tada")))
         // Emoticons and the emoji itself still go out.
         XCTAssertEqual(effects("/react :D"), [.react(value: ":D")])
+        XCTAssertEqual(effects("/react :P"), [.react(value: ":P")])
         XCTAssertEqual(effects("/react :-)"), [.react(value: ":-)")])
         XCTAssertEqual(effects("/react 🎉"), [.react(value: "🎉")])
     }

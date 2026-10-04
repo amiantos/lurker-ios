@@ -347,8 +347,13 @@ public enum CommandRegistry {
                     args: [ArgSpec("newnick", .newNick)]),
         CommandSpec(["whois"], .channels, "Look up a user",
                     args: [ArgSpec("nick", .nick, optional: true)]),
+        // Channel-first too, as /kick takes it. Completion follows the first form: nothing in a
+        // form can say "this token is a channel", so the second is for `/commands` to show.
         CommandSpec(["invite"], .channels, "Invite a user to a channel",
-                    args: [ArgSpec("nick", .nick), ArgSpec("channel", .channel, optional: true)]),
+                    forms: [
+                        [ArgSpec("nick", .nick), ArgSpec("channel", .channel, optional: true)],
+                        [ArgSpec("channel", .channel), ArgSpec("nick", .nick)],
+                    ]),
 
         // Moderation
         CommandSpec(["kick"], .moderation, "Kick a user from this channel",
