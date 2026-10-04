@@ -932,9 +932,10 @@ public final class ChatViewModel {
         // Recorded rather than acted on inline so the remaining effects still run: a command that
         // is half machinery should not stop halfway because one send found no socket.
         var wentNowhere = false
-        // The verbs with no `send-result` of their own — `/topic`, `/nick`, `/part`, `/away` and
-        // the rest. Nothing is in flight when one goes out, so the correlator is minted only for a
-        // failure, to carry the line back; before sweep L02 they were dropped without a word.
+        // Every wire effect reports here. The message verbs mint their correlator before sending,
+        // since it rides the verb; the rest — `/topic`, `/nick`, `/part`, `/away` — have no
+        // `send-result`, so theirs is minted only for a failure, to carry the line back. Before
+        // sweep L02 those were dropped without a word.
         func wire(_ went: Bool) {
             guard !went else { return }
             _ = correlator()
@@ -944,19 +945,16 @@ public final class ChatViewModel {
             switch effect {
             case .send(let target, let text):
                 let clientId = correlator()
-                let went = sendMessageSeam?(target, text)
-                    ?? client.sendMessage(networkId: networkId, target: target, text: text, clientId: clientId)
-                wentNowhere = !went || wentNowhere
+                wire(sendMessageSeam?(target, text)
+                    ?? client.sendMessage(networkId: networkId, target: target, text: text, clientId: clientId))
             case .action(let target, let text):
                 // A `/me` can be the reply — `reply` is nil for every other command (see `send`).
-                wentNowhere = !client.sendAction(
+                wire(client.sendAction(
                     networkId: networkId, target: target, text: text, clientId: correlator(),
-                    replyTo: target == key.target ? reply?.messageId : nil)
-                    || wentNowhere
+                    replyTo: target == key.target ? reply?.messageId : nil))
             case .notice(let target, let text):
-                wentNowhere = !client.sendNotice(
-                    networkId: networkId, target: target, text: text, clientId: correlator())
-                    || wentNowhere
+                wire(client.sendNotice(
+                    networkId: networkId, target: target, text: text, clientId: correlator()))
             case .raw(let line):
                 wire(client.sendRaw(networkId: networkId, line: line))
             case .showProfile(let who):
@@ -1946,6 +1944,10 @@ public final class ChatViewModel {
             // banner already names the outage, and a "No response" for each would only pile up
             // behind it (#57).
             pendingJoins.removeAll()
+            // And the read marks are asked again. One written into a socket that had died without
+            // saying so was recorded as sent, and the dedupe would skip it for good (sweep L23).
+            // The server MAX-clamps, so a mark that did land costs one redundant write.
+            lastMarked.removeAll()
             store.apply(frame)
             onSocketDropped()
         case .channelJoined(let networkId, let target):

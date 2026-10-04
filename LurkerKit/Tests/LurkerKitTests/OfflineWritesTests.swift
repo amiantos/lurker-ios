@@ -8,8 +8,10 @@ import XCTest
 /// queues a verb behind a dropped socket, so each of these has to say it went nowhere — a command
 /// comes back to the composer, a close leaves its row — rather than looking like it worked.
 ///
-/// No test has a socket, so every send here goes nowhere: the state is what a phone in airplane
-/// mode sees once "Reconnecting…" shows.
+/// No test has a socket, so every send here goes nowhere. A socket that has ended answers the same
+/// false (`LurkerClient.socketEnded`) until the reconnect replaces it, which is the window
+/// "Reconnecting…" shows; one that has died without saying so can't be told from a live one, and
+/// the screens gate on both connection signals for that.
 @MainActor
 final class OfflineWritesTests: XCTestCase {
 

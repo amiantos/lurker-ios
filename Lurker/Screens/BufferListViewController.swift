@@ -457,6 +457,14 @@ final class BufferListViewController: UICollectionViewController {
     /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
+        // A drop's shadow order waits for an echo, and a socket that ends takes the echo with it
+        // — the reconnect's burst re-sends the list unchanged, which releases nothing. So the
+        // shadow goes with the socket, and the list shows the store's order again (sweep L29).
+        // A drop written into a socket that had died without saying so is the case this covers.
+        if state.connection != .connected {
+            optimisticFavoriteOrder = nil
+            favoritesAtDrop = nil
+        }
         // The title is in the bar, not the list, so it tracks connection regardless of
         // whether the roster below is worth rebuilding. `apply` no-ops when nothing it shows
         // has moved.

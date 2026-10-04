@@ -22,6 +22,11 @@ final class LurkerClient {
     private var baseURL = ""
     private var token: String?
     private var socket: URLSessionWebSocketTask?
+    /// The socket has ended, and the reconnect hasn't replaced it yet. ⚠⚠ The task is kept —
+    /// `dropSocket` and the `task === socket` guards still need it — but nothing can be written to
+    /// it, so `send` answers false. Without this, every write made while "Reconnecting…" showed
+    /// reported true and went nowhere, which is the window the callers' Bool exists for.
+    private var socketEnded = false
     /// Which socket this is, counting from the first — so a caller can tie something it learned
     /// from a frame to the socket that sent it. Bumped the moment a socket is made, before it
     /// opens, because writes start going to it then.
@@ -568,6 +573,7 @@ final class LurkerClient {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: request)
         socket = task
+        socketEnded = false
         socketGeneration &+= 1
         task.resume()
         listen(on: task)
@@ -640,6 +646,7 @@ final class LurkerClient {
 
     private func handleClose(code: Int?, closeCode: Int, reason: String, from task: URLSessionWebSocketTask) {
         guard task === socket else { return }
+        socketEnded = true
         abandonReplies()
         onFrame(Self.closeFrame(status: code, closeCode: closeCode, reason: reason))
     }
@@ -773,11 +780,11 @@ final class LurkerClient {
     /// A raw IRC line — the escape hatch behind `/nick`, `/mode`, `/kick`, `/whois`, the
     /// service messages, the server queries, and every unrecognized command.
     ///
-    /// **Returns false when it went nowhere.** Most callers rightly ignore that — a raw line
-    /// is fire-and-forget and its answer is whatever the server buffer prints. The WHOIS
-    /// behind the profile screen is the exception, and it is why this returns at all: it
-    /// claims an in-flight slot that only a reply can free, so a line that never left the
-    /// socket would wedge that nick's lookup for the session (see `whoisPending`).
+    /// **Returns false when it went nowhere.** A typed `/quote` (and every command that goes out
+    /// raw) is handed back to the composer on false (sweep L02). The WHOIS behind the profile
+    /// screen needs it too: it claims an in-flight slot that only a reply can free, so a line
+    /// that never left the socket would wedge that nick's lookup for the session (see
+    /// `whoisPending`).
     @discardableResult
     func sendRaw(networkId: Int?, line: String) -> Bool {
         guard let networkId else { return false }
@@ -1524,7 +1531,7 @@ final class LurkerClient {
         onFlush: (@Sendable () -> Void)? = nil,
         onComplete: (@Sendable (_ ok: Bool) -> Void)? = nil
     ) -> Bool {
-        guard let socket,
+        guard let socket, !socketEnded,
               let data = try? JSONSerialization.data(withJSONObject: verb),
               let text = String(data: data, encoding: .utf8)
         else {

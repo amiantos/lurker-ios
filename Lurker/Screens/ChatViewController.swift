@@ -364,11 +364,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.onCancelReply = { [weak self] in self?.cancelReply() }
         composer.onBack = { [weak self] in
             guard let self else { return }
-            // ⚠ Asked of the connection, not of the send: a dropped socket stays non-nil until
-            // the reconnect replaces it, so a write onto it "succeeds" and goes nowhere. And of
-            // BOTH signals: airplane mode flips `reachable` while the socket still reads
-            // `.connected`, for as long as it takes to notice. Nothing retries a Back, so say so,
-            // or the strip staying put reads as a Back that ignored you.
+            // ⚠ Asked of the connection AND of the send. Of BOTH connection signals: airplane
+            // mode flips `reachable` while the socket still reads `.connected`, for as long as it
+            // takes to notice. And of the send, which says when there was no socket to take it.
+            // Nothing retries a Back, so say so, or the strip staying put reads as a Back that
+            // ignored you.
             if canWrite, viewModel.setBack(networkId: buffer.key.networkId) { return }
             ToastView.showNotConnected(over: view, above: noticeAnchor)
         }
@@ -3403,7 +3403,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 setBookmark: { [weak self] id, saved in
                     // Nothing changes on screen until the server's echo, so a save that went
                     // nowhere has to say so or it reads as a tap that missed (sweep L53).
-                    guard let self, !viewModel.setBookmark(messageId: id, saved: saved) else { return }
+                    guard let self else { return }
+                    if canWrite, viewModel.setBookmark(messageId: id, saved: saved) { return }
                     ToastView.showNotConnected(
                         "Not connected — the bookmark didn't change.", over: view, above: noticeAnchor)
                 },
