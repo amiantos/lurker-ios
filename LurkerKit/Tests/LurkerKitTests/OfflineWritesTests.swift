@@ -87,10 +87,12 @@ final class OfflineWritesTests: XCTestCase {
         XCTAssertFalse(model.setNickNote(networkId: 1, nick: "bob", note: "lives in Berlin"))
         XCTAssertFalse(model.closeBuffer(channel))
         XCTAssertNotNil(model.state.buffers[channel.id])
+        XCTAssertFalse(model.state.canWrite(networkId: 1), "joins, opens and reactions wait too")
 
         model.handle(.socketOpen)
         model.send(channel, text: "/msg bob hi")
         XCTAssertNil(model.takeUnsent(channel), "open: it went")
+        XCTAssertTrue(model.state.canWrite(networkId: 1))
     }
 
     /// A command that puts nothing on the wire holds nothing: there is nothing to have lost.

@@ -252,6 +252,8 @@ final class BufferListViewController: UICollectionViewController {
     /// store snapshot it permutes — see `orderedFavorites(_:)`.
     private var optimisticFavoriteOrder: [Int]?
     private var favoritesAtDrop: [FavoriteEntry]?
+    /// The burst the drop was made in. A new one releases the shadow — see `apply`.
+    private var burstAtDrop = 0
     /// The store's favorites when the live drag lifted. A drop is refused if they've moved
     /// since — see `performDropWith`.
     private var favoritesAtDragStart: [FavoriteEntry]?
@@ -458,13 +460,12 @@ final class BufferListViewController: UICollectionViewController {
     private func apply(_ state: ChatState) {
         self.state = state
         // A drop's shadow order waits for an echo, and a socket that ends takes the echo with it
-        // — the reconnect's burst re-sends the list unchanged, which releases nothing. So the
-        // shadow goes with the socket, and the list shows the store's order again (sweep L29).
-        // A drop written into a socket that had died without saying so is the case this covers.
-        //
-        // And with a socket that hasn't had its snapshot: a foreground reconnect can replace one
-        // that died without saying so while the state never left `.connected`.
-        if state.connection != .connected || !state.snapshotSinceOpen {
+        // — the reconnect's burst re-sends the list unchanged, which releases nothing (sweep L29).
+        // So a new burst releases it: its snapshot is the server's whole favorites order, which is
+        // what the echo would have said. That covers a drop written into a socket that died
+        // without saying so, a forced foreground reconnect included, and a drop that did go out
+        // keeps its place until then rather than snapping home when the old socket goes.
+        if optimisticFavoriteOrder != nil, state.burstGeneration != burstAtDrop {
             optimisticFavoriteOrder = nil
             favoritesAtDrop = nil
         }
@@ -1825,6 +1826,7 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         // drag end would otherwise restore the store's pre-drop order (a visible snap
         // home, and a corrupt base for a quick second drag). See orderedFavorites(_:).
         favoritesAtDrop = state.favorites
+        burstAtDrop = state.burstGeneration
         optimisticFavoriteOrder = reorderedIds
 
         // The model moves with the view rather than being rebuilt: the echo would reach the

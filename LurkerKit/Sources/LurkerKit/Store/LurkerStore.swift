@@ -45,6 +45,17 @@ public struct ChatState: Sendable {
     /// still what they were before the drop, and `rowPresence` waits it out (#167). Not
     /// `burstActive`: that only turns on when the snapshot itself arrives.
     public var snapshotSinceOpen = false
+    /// A socket is being opened and hasn't sent its first frame. ⚠ Needed beside `connection`: a
+    /// forced reconnect (the foreground's stale-socket check) replaces the socket without the state
+    /// ever leaving `.connected`, and the new one takes writes during its upgrade and loses them if
+    /// the attempt fails. Read only by `socketWritable`, so the banner and title don't move; the
+    /// client's own connect burst writes through regardless.
+    public internal(set) var socketOpening = false
+
+    /// Whether a write the user makes can reach the server now: the device has a path, our socket
+    /// has opened, and it isn't being replaced. The one rule every user write asks (the client
+    /// sweep's offline-writes batch), here and in `canWrite(networkId:)`.
+    public var socketWritable: Bool { reachable && connection == .connected && !socketOpening }
     /// Highest persisted message id seen (excluding the system buffer, which has its own
     /// id space) — replayed as `?since=` on reconnect so the server ships only the gap.
     /// Populated now so #4 can resume without a store change.
@@ -689,7 +700,7 @@ public struct ChatState: Sendable {
     /// while the network row still says `.connected`, and the client keeps the closed socket until
     /// it reconnects — so a send there "succeeds" and nothing ever answers.
     public func canWrite(networkId: Int?) -> Bool {
-        guard reachable, connection == .connected, let networkId else { return false }
+        guard socketWritable, let networkId else { return false }
         return networks[networkId]?.state == .connected
     }
 
@@ -985,6 +996,12 @@ final class LurkerStore {
     func setReachable(_ reachable: Bool) {
         guard subject.value.reachable != reachable else { return }
         subject.value.reachable = reachable
+    }
+
+    /// A socket is being opened (see `ChatState.socketOpening`); its `socketOpen` clears it.
+    func setSocketOpening() {
+        guard !subject.value.socketOpening else { return }
+        subject.value.socketOpening = true
     }
 
     /// Record that the server and this build can't talk (#17). A direct mutation rather than a
@@ -1474,6 +1491,7 @@ final class LurkerStore {
         case .socketOpen:
             var next = state
             next.connection = .connected
+            next.socketOpening = false
             // Connected, but this socket hasn't said anything yet: until its snapshot lands, every
             // presence row and network state is left over from before the drop.
             next.snapshotSinceOpen = false

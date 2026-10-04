@@ -2372,7 +2372,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// suggestions ride the same edge.
     var noticeAnchor: NSLayoutYAxisAnchor { composer.topAnchor }
 
-
     /// Switch to a channel — what `/msg` and `/query` to one ask for. The target may not be in
     /// state yet, which is what `buffer(for:)` synthesizes for.
     private func navigate(to key: BufferKey) {
