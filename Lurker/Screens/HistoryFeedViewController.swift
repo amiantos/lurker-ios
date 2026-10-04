@@ -354,7 +354,8 @@ class HistoryFeedViewController: UITableViewController {
     /// too, so emptying the list lands on the empty state rather than a blank table.
     @MainActor
     func removeItem(id messageId: Int) {
-        guard let landing = paging.remove(messageId: messageId) else { return }
+        guard let landing = paging.remove(messageId: messageId, prefetchWindow: Self.prefetchThreshold)
+        else { return }
         apply(landing)
     }
 

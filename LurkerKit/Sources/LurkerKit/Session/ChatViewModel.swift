@@ -966,29 +966,36 @@ public final class ChatViewModel {
             case .activate(let target):
                 guard let networkId else { break }
                 let to = BufferKey(networkId: networkId, target: target)
-                if ChannelName.isChannelTarget(target) {
+                if wentNowhere {
+                    // `/msg … hi`'s line went nowhere: it is coming back to this composer to be
+                    // sent again, and going anywhere would take the user away from it — a channel
+                    // as much as a nick.
+                } else if ChannelName.isChannelTarget(target) {
                     // A channel: switch at once, as before #201. `open-buffer` JOINs only a `#`
                     // channel and mints no row for the rest, so there is no row to wait for.
                     client.openBuffer(networkId: networkId, target: target, countBy: historyCountBy)
                     outcome = .activate(to)
-                } else if !wentNowhere {
+                } else if DccChat.isTarget(target) {
+                    // A DCC chat (`=nick`): `open-buffer` never mints one, so a wait could never be
+                    // met — it would only stand every other landing down and expire in silence.
+                    // Go if the row is held; a chat that isn't open is `/dcc chat`'s to start.
+                    if store.state.buffers[to.id] != nil { outcome = .activate(to) }
+                } else {
                     // A nick: mint/hydrate the DM row and switch to it once it's here. A brand-new
                     // /query target isn't in `state.buffers` yet, so the destination screen's own
                     // hydrate wouldn't fire — this `open-buffer` is what brings the row (and its
                     // backlog) into being, and going there before it lands bounces off a settled
                     // roster (iOS #201). See `openAndShow`.
                     //
-                    // An `open-buffer` that couldn't go out refuses the line, as a send that went
-                    // nowhere does — it comes back to the composer. Minted here because nothing
-                    // else in a bare `/query` would have.
-                    if !openThenShow(to) {
+                    // An `open-buffer` that couldn't go out refuses a bare `/query`, as a send that
+                    // went nowhere does — it comes back to the composer. Minted here because
+                    // nothing else in a bare `/query` would have. Never `/msg bob hi`'s: its line
+                    // already went, and handing it back would have it sent twice.
+                    if !openThenShow(to), lineId == nil {
                         _ = correlator()
                         wentNowhere = true
                     }
                 }
-                // ⚠ …and nowhere at all when `/msg bob hi`'s line went nowhere: it is coming back
-                // to this composer to be sent again, and going to bob would take the user away
-                // from it.
             case .addIgnore(let scope, let rule, let receipt):
                 // `scope`, not `networkId`: nil is a global rule, which is the default and the
                 // one an unqualified `/ignore bob` makes. Nothing is written locally — the
@@ -1483,6 +1490,9 @@ public final class ChatViewModel {
 
     /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
     public func closeBuffer(_ key: BufferKey) {
+        // A close stands down a wait for the same buffer: a DM closed while its open is pending
+        // would otherwise be minted again by the late backlog and taken back into (iOS #201).
+        _ = pendingOpens.closing(key)
         client.closeBuffer(networkId: key.networkId, target: key.target)
         dropDraft(key)
         store.removeBuffer(key)

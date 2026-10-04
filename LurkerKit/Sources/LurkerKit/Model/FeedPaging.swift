@@ -215,11 +215,23 @@ public struct FeedPaging {
     /// by removing things is not failing to load it, so the failure latch clears — a refresh that
     /// failed while rows were still up would otherwise leave "Couldn't load" as the epitaph for a
     /// list the user just cleared.
-    public mutating func remove(messageId: Int) -> Landing? {
+    ///
+    /// Pages in only when the removal leaves `prefetchWindow` rows or fewer — the point at which a
+    /// scroll would have asked anyway, so pass the screen's own prefetch threshold. And a removal
+    /// spends no skip-ahead hop: a swipe is not a page an ignore rule emptied. Settling it like
+    /// one fetched a page on every bookmark removed from a long list, and ten swipes spent the
+    /// whole budget, so a later page an ignore rule emptied stopped the feed dead on a live cursor.
+    public mutating func remove(messageId: Int, prefetchWindow: Int) -> Landing? {
         guard let index = items.firstIndex(where: { $0.message.id == messageId }) else { return nil }
         items.remove(at: index)
         if items.isEmpty { loadFailed = false }
-        return Landing(rowsChanged: true, next: settle(gainedRows: false))
+        // `loadMore` declines while a page is already in flight; that page settles the list.
+        if items.count <= prefetchWindow, let next = loadMore() {
+            if items.isEmpty { placeholder = .loading }
+            return Landing(rowsChanged: true, next: next)
+        }
+        settlePlaceholder()
+        return Landing(rowsChanged: true, next: nil)
     }
 
     /// Close out a list mutation: either ask for the next page, or say what the list now shows.
