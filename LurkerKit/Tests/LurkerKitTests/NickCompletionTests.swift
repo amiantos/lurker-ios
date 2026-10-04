@@ -171,6 +171,8 @@ final class NickCompletionTests: XCTestCase {
                      "the composer trims, so leading whitespace is still a command")
         XCTAssertEqual(NickCompletion.activeMention(in: "/me waves at al", caret: 15)?.query, "al")
         XCTAssertEqual(NickCompletion.activeMention(in: "/ME waves at al", caret: 15)?.query, "al")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/shrug ask al", caret: 13)?.query, "al",
+                       "/shrug's argument is speech too")
         XCTAssertNil(NickCompletion.activeMention(in: "/meow al", caret: 8), "a verb, not a prefix")
         XCTAssertEqual(NickCompletion.activeMention(in: "//x al", caret: 6)?.query, "al")
         XCTAssertEqual(NickCompletion.activeMention(in: "/topic hi @al", caret: 13)?.query, "al")

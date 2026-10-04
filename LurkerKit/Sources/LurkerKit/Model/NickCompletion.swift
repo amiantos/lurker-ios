@@ -171,7 +171,8 @@ public enum NickCompletion {
 
     /// Whether the draft is a command whose arguments a bare word must stay out of: it opens
     /// (after any whitespace, which the composer trims before sending) with `/` and a verb
-    /// other than `me`. `//` escapes a command, so that line is text.
+    /// other than `me` or `shrug`, whose arguments are chat text. `//` escapes a command, so
+    /// that line is text.
     private static func isCommandLine(_ chars: [UInt16]) -> Bool {
         var index = 0
         while index < chars.count, isWhitespace(chars[index]) { index += 1 }
@@ -179,7 +180,7 @@ public enum NickCompletion {
         guard index < chars.count, chars[index] == slash else { return false }
         let verb = chars[(index + 1)...].prefix { !isWhitespace($0) }
         if verb.first == slash { return false }
-        return String(decoding: verb, as: UTF16.self).lowercased() != "me"
+        return !["me", "shrug"].contains(String(decoding: verb, as: UTF16.self).lowercased())
     }
 
     /// What a completed nick carries after it: the addressing form when the mention opens
