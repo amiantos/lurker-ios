@@ -950,6 +950,11 @@ final class CommandParserTests: XCTestCase {
         // Emoticons and the emoji itself still go out.
         XCTAssertEqual(effects("/react :D"), [.react(value: ":D")])
         XCTAssertEqual(effects("/react :P"), [.react(value: ":P")])
+        XCTAssertEqual(effects("/react :-D"), [.react(value: ":-D")])
+        XCTAssertEqual(effects("/react :-p"), [.react(value: ":-p")])
+        // `:-1` and `:+1` are names on the web (👎, 👍), not faces.
+        XCTAssertTrue(isInfo(effects("/react :-1")))
+        XCTAssertTrue(isInfo(effects("/react :+1")))
         XCTAssertEqual(effects("/react :-)"), [.react(value: ":-)")])
         XCTAssertEqual(effects("/react 🎉"), [.react(value: "🎉")])
     }

@@ -819,12 +819,14 @@ public enum CommandParser {
     }
 
     /// A whole `:name:` in the gemoji character set — what the web's `reactionFromInput` would
-    /// look up, closing colon optional. Left open, the name needs two characters: `:D` and `:P`
-    /// are emoticons, not names.
+    /// look up, closing colon optional. Left open, an emoticon isn't a name: `:D` and `:P` are
+    /// too short to be one, and a nose and a letter (`:-D`, `:-p`) is a face. `:-1` and `:+1`
+    /// stay names — the web turns them into 👎 and 👍.
     private static func isShortcode(_ text: String) -> Bool {
         guard text.hasPrefix(":") else { return false }
         let closed = text.count > 1 && text.hasSuffix(":")
         let name = text.dropFirst().dropLast(closed ? 1 : 0)
+        if !closed, name.count == 2, name.first == "-", name.last?.isLetter == true { return false }
         return name.count >= (closed ? 1 : 2) && name.allSatisfy { char in
             char.isASCII && (char.isLetter || char.isNumber || "_+-".contains(char))
         }
