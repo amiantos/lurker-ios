@@ -50,6 +50,14 @@ public enum CommandParser {
     /// no arguments prints the marks on this network, and nil means "they haven't arrived yet", so
     /// the listing says so rather than claiming there are none.
     ///
+    /// `modeSpec` is the network's mode vocabulary, nil while it's unknown: `/quiet` reads it to
+    /// tell a quiet list from an owner rank, and the mode shortcuts read its MODES limit.
+    ///
+    /// `hasBuffer` answers whether this network has a buffer by that name open. `/part`, `/topic`
+    /// and `/mode` ask it about a leading `&`, `+` or `!` word, which is a channel only when one by
+    /// that name exists (see `leadsWithChannel`). It defaults to "none", which reads every such
+    /// word as text.
+    ///
     /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
     public static func parse(
         _ input: String,
@@ -57,6 +65,8 @@ public enum CommandParser {
         target: String,
         ignores: IgnoreSet? = .empty,
         relayBots: RelayBotSet? = .empty,
+        modeSpec: ModeSpec? = nil,
+        hasBuffer: (String) -> Bool = { _ in false },
         now: Date = Date()
     ) -> ParsedInput {
         // The composer trims before it hands text over, but be total about it anyway.
@@ -85,7 +95,8 @@ public enum CommandParser {
 
         return .command(resolve(
             verb: verb, fullBody: body, argLine: argLine, rest: rest,
-            networkId: networkId, target: target, ignores: ignores, relayBots: relayBots, now: now
+            networkId: networkId, target: target, ignores: ignores, relayBots: relayBots,
+            modeSpec: modeSpec, hasBuffer: hasBuffer, now: now
         ))
     }
 
@@ -100,6 +111,8 @@ public enum CommandParser {
         target: String,
         ignores: IgnoreSet?,
         relayBots: RelayBotSet?,
+        modeSpec: ModeSpec?,
+        hasBuffer: (String) -> Bool,
         now: Date
     ) -> [CommandEffect] {
         // A lone `/` (or `/ `) has no verb — nudge rather than fall through to the raw
@@ -158,6 +171,12 @@ public enum CommandParser {
         case "react":
             let value = argLine.trimmingCharacters(in: .whitespaces)
             guard !value.isEmpty else { return [.info("usage: /react <emoji|text> — e.g. /react 👍")] }
+            // The web turns `:tada:` into 🎉 from its emoji table. This client has no table, and
+            // sending the name would react with the literal text, so it refuses instead. Only the
+            // closed form: `:D` and `:P` are reactions people type on purpose.
+            if isShortcode(value) {
+                return [.info("/react: emoji names like \(value) aren't supported here — use the emoji itself, e.g. /react 👍")]
+            }
             guard Reactions.isValidValue(value) else {
                 return [.info("a reaction can be at most \(Reactions.maxGraphemes) characters")]
             }
@@ -165,6 +184,13 @@ public enum CommandParser {
         case "slap":
             guard let who = rest.first else { return [.info("usage: /slap <nick>")] }
             return [.action(target: target, text: "slaps \(who) around a bit with a large trout")]
+        case "shrug":
+            // A message, not an action: `/shrug no idea` says "no idea ¯\_(ツ)_/¯", as on the web.
+            guard ChannelName.isChannelTarget(target) || isNickTarget(target) else {
+                return [.info("usage: /shrug [text] — run inside a channel or DM")]
+            }
+            let shrugText = argLine.isEmpty ? Self.shrug : "\(argLine) \(Self.shrug)"
+            return [.send(target: target, text: chatBody(shrugText))]
         case "msg", "query":
             guard let who = rest.first else { return [.info("usage: /msg <nick> [message]")] }
             let bodyText = rest.dropFirst().joined(separator: " ")
@@ -190,19 +216,19 @@ public enum CommandParser {
             return [.ctcp(target: who, type: "PING", args: "")]
 
         // Channels & buffers
-        case "join":
+        case "join", "j":
             // A bare `/join` is a no-op, like the web (it just keeps the buffer you're in).
             guard let first = rest.first else { return [] }
             let key = rest.count > 1 ? rest[1] : nil
             return [.join(channel: ChannelName.ensurePrefix(first), key: key)]
-        case "part", "leave":
+        case "part", "leave", "p":
             // `/part [reason]` leaves the current channel; `/part <#chan> [reason]` leaves a
-            // named one. Consistent with /kick and /topic: a leading channel sigil (`#`/`&`)
-            // marks a channel, anything else is a parting reason for the current channel — so
-            // `/part heading out` says goodbye here rather than parting a channel "heading".
+            // named one. A leading channel word marks a channel (see `leadsWithChannel`), anything
+            // else is a parting reason for the current channel — so `/part heading out` and
+            // `/part +brb` say goodbye here rather than parting a channel "heading" or "+brb".
             let partChannel: String?
             let partReason: String
-            if let first = rest.first, ChannelName.isChannelTarget(first) {
+            if let first = rest.first, leadsWithChannel(first, hasBuffer: hasBuffer) {
                 partChannel = first
                 partReason = body(after: first, in: argLine)
             } else {
@@ -236,10 +262,11 @@ public enum CommandParser {
             return [.clear(target: target, undo: arg == "off" || arg == "undo")]
         case "topic":
             // `/topic` reads the current channel's topic; `/topic text` sets it; a leading
-            // `#chan` retargets. Interior spacing of the body is preserved by slicing.
+            // channel word retargets (see `leadsWithChannel`, which keeps `/topic !!! down !!!` a
+            // topic). Interior spacing of the body is preserved by slicing.
             let channel: String
             let bodyText: String
-            if let first = rest.first, ChannelName.isChannelTarget(first) {
+            if let first = rest.first, leadsWithChannel(first, hasBuffer: hasBuffer) {
                 channel = first
                 bodyText = body(after: first, in: argLine)
             } else {
@@ -260,13 +287,26 @@ public enum CommandParser {
             guard !who.isEmpty else { return [.info("usage: /whois <nick>")] }
             return [.showProfile(nick: who)]
         case "invite":
-            guard let who = rest.first else { return [.info("usage: /invite <nick> [channel]")] }
+            // `/invite <nick> [#chan]`, or channel-first as /kick takes it: `/invite #chan <nick>`.
             // The channel defaults to the current buffer, but only if that's a channel — an
-            // /invite from a DM with no explicit channel would otherwise aim at the peer nick.
-            let channel = rest.count > 1 ? rest[1] : (ChannelName.isChannelTarget(target) ? target : nil)
-            guard let channel else {
-                return [.info("usage: /invite <nick> [channel] — no channel context")]
+            // /invite from a DM with no explicit channel would otherwise aim at the peer nick. A
+            // second word that isn't a channel is ignored rather than invited to.
+            let who: String?
+            let channel: String?
+            if let first = rest.first, ChannelName.isChannelTarget(first) {
+                channel = first
+                who = rest.count > 1 ? rest[1] : nil
+            } else {
+                who = rest.first
+                channel = rest.count > 1 && ChannelName.isChannelTarget(rest[1])
+                    ? rest[1]
+                    : (ChannelName.isChannelTarget(target) ? target : nil)
             }
+            guard let who else { return [.info("usage: /invite <nick> [#channel]")] }
+            guard let channel else {
+                return [.info("usage: /invite <nick> [#channel] — no channel context")]
+            }
+            // Wire order is nick first, whichever way round it was typed.
             return [.raw(line: "INVITE \(who) \(channel)")]
 
         // Moderation
@@ -292,22 +332,44 @@ public enum CommandParser {
             return [.raw(line: "KICK \(channel) \(who)\(trailer)")]
         case "mode":
             // `/mode <flags>` applies to the current channel; `/mode <target> <flags…>` is
-            // explicit. A leading `+`/`-` in a channel buffer is the flags-only form.
+            // explicit. A leading `+`/`-` in a channel buffer is the flags-only form — unless it
+            // names an open `+channel`, so `/mode +local +m` reaches +local (lurker#724).
             guard let first = rest.first else { return [.info("usage: /mode [target] <flags> [args]")] }
-            if (first.hasPrefix("+") || first.hasPrefix("-")), ChannelName.isChannelTarget(target) {
+            if (first.hasPrefix("+") || first.hasPrefix("-")), !leadsWithChannel(first, hasBuffer: hasBuffer),
+               ChannelName.isChannelTarget(target) {
                 return [.raw(line: "MODE \(target) \(rest.joined(separator: " "))")]
             }
             return [.raw(line: "MODE \(argLine)")]
-        case "op": return modeShortcut(verb, letter: "o", adding: true, rest: rest, target: target)
-        case "deop": return modeShortcut(verb, letter: "o", adding: false, rest: rest, target: target)
-        case "voice": return modeShortcut(verb, letter: "v", adding: true, rest: rest, target: target)
-        case "devoice": return modeShortcut(verb, letter: "v", adding: false, rest: rest, target: target)
-        case "halfop": return modeShortcut(verb, letter: "h", adding: true, rest: rest, target: target)
-        case "dehalfop": return modeShortcut(verb, letter: "h", adding: false, rest: rest, target: target)
-        case "ban": return modeShortcut(verb, letter: "b", adding: true, rest: rest, target: target)
-        case "unban": return modeShortcut(verb, letter: "b", adding: false, rest: rest, target: target)
-        case "quiet": return modeShortcut(verb, letter: "q", adding: true, rest: rest, target: target)
-        case "unquiet": return modeShortcut(verb, letter: "q", adding: false, rest: rest, target: target)
+        case "op": return modeShortcut(verb, letter: "o", adding: true, rest: rest, target: target, spec: modeSpec)
+        case "deop": return modeShortcut(verb, letter: "o", adding: false, rest: rest, target: target, spec: modeSpec)
+        case "voice": return modeShortcut(verb, letter: "v", adding: true, rest: rest, target: target, spec: modeSpec)
+        case "devoice": return modeShortcut(verb, letter: "v", adding: false, rest: rest, target: target, spec: modeSpec)
+        case "halfop": return modeShortcut(verb, letter: "h", adding: true, rest: rest, target: target, spec: modeSpec)
+        case "dehalfop": return modeShortcut(verb, letter: "h", adding: false, rest: rest, target: target, spec: modeSpec)
+        case "ban": return modeShortcut(verb, letter: "b", adding: true, rest: rest, target: target, spec: modeSpec)
+        case "unban": return modeShortcut(verb, letter: "b", adding: false, rest: rest, target: target, spec: modeSpec)
+        // `/quiet` speaks solanum's +q quiet LIST. On InspIRCd and Unreal +q is the owner rank,
+        // so `/quiet bob` would make bob an owner — refused unless the network lists q among its
+        // list modes. Before the vocabulary arrives there's nothing to check, so it goes through,
+        // as on the web.
+        case "quiet", "unquiet":
+            if noQuietList(modeSpec) { return [.info("this network has no +q quiet list")] }
+            return modeShortcut(verb, letter: "q", adding: verb == "quiet", rest: rest, target: target, spec: modeSpec)
+        case "kickban":
+            // Ban first, so they can't rejoin in the gap, then kick. A leading channel is optional.
+            var channel: String? = ChannelName.isChannelTarget(target) ? target : nil
+            var args = rest
+            if let first = args.first, ChannelName.isChannelTarget(first) {
+                channel = first
+                args.removeFirst()
+            }
+            guard let channel else {
+                return [.info("usage: /kickban [#chan] <nick> [reason] — no channel context")]
+            }
+            guard let who = args.first else { return [.info("usage: /kickban [#chan] <nick> [reason]")] }
+            let reason = args.dropFirst().joined(separator: " ")
+            let trailer = reason.isEmpty ? "" : " :\(reason)"
+            return [.raw(line: "MODE \(channel) +b \(who)"), .raw(line: "KICK \(channel) \(who)\(trailer)")]
 
         // Server / services
         case "raw", "quote":
@@ -352,10 +414,23 @@ public enum CommandParser {
             return [.disconnect(reason: reason.isEmpty ? nil : reason)]
         case "reconnect":
             return [.reconnect]
-        case "server":
+        case "server", "network", "net":
             // Intercepted rather than rawed: `SERVER` is a server-to-server command, and the
-            // thing people mean by it is a form on this client.
+            // thing people mean by it is a form on this client. The web's `/network` verbs are
+            // the same form.
             return [.info("Networks are added and edited in Settings → Networks.")]
+
+        // The web's commands this client has no screen for. Each would otherwise go out raw and
+        // come back as a 421 in the server log — or, for `/list`, as a LIST that only refreshes
+        // the server's cache and shows nothing.
+        case "list":
+            return [.info("The channel list isn't in the app yet — /join #channel if you know its name.")]
+        case "set", "get", "theme":
+            return [.info("/\(verb) is web-only — the app's own options are in Settings.")]
+        case "highlight", "hilight", "unhighlight", "dehilight":
+            return [.info("Highlight words are edited in the web client for now.")]
+        case "retention", "jitsi", "talk", "e2e":
+            return [.info("/\(verb) is web-only for now.")]
 
         default:
             // Anything unrecognized goes raw, exactly as the web's `default`. The original
@@ -736,16 +811,53 @@ public enum CommandParser {
 
     // MARK: - Helpers
 
+    /// `¯\_(ツ)_/¯`, as the web's `/shrug` says it.
+    private static let shrug = "¯\\_(ツ)_/¯"
+
+    /// Whether a command's leading word names a channel, for the commands whose first argument
+    /// may instead be free text: `/part [reason]`, `/topic [text]`, `/mode`. The web's
+    /// `isChannelArgAmbiguous`.
+    ///
+    /// ⚠ `#` always does: a sentence effectively never starts with one. The other three sigils do
+    /// only when this network has a buffer by that name, because `+` and `!` absolutely start
+    /// sentences — `/part +brb` would part a channel "+brb", `/topic !!! down !!!` would set the
+    /// topic of a channel "!!!". Commands whose first argument is never text (`/kick`, `/invite`,
+    /// the mode shortcuts) ask `ChannelName.isChannelTarget` instead.
+    private static func leadsWithChannel(_ token: String?, hasBuffer: (String) -> Bool) -> Bool {
+        guard let token, ChannelName.isChannelTarget(token) else { return false }
+        return token.hasPrefix("#") || hasBuffer(token)
+    }
+
+    /// A whole `:name:` in the gemoji character set — what the web's `reactionFromInput` would
+    /// look up. Closed only: `:D` is an emoticon, not a name.
+    private static func isShortcode(_ text: String) -> Bool {
+        guard text.count > 2, text.hasPrefix(":"), text.hasSuffix(":") else { return false }
+        return text.dropFirst().dropLast().allSatisfy { char in
+            char.isASCII && (char.isLetter || char.isNumber || "_+-".contains(char))
+        }
+    }
+
+    /// Whether the network is known to have no +q quiet list — an unknown spec isn't.
+    private static func noQuietList(_ spec: ModeSpec?) -> Bool {
+        spec.map { !$0.list.contains("q") } ?? false
+    }
+
+    /// How many param-taking changes one MODE line may carry before the network's 005 says: the
+    /// web's `DEFAULT_MAX_MODES`, and RFC 2812's floor.
+    private static let defaultMaxModes = 3
+
     /// The mode-shortcut family (`/op`, `/ban`, …): one mode letter repeated once per target,
-    /// against a leading channel arg (`#`/`&`) or the current channel buffer. `/op a b` →
-    /// `MODE #chan +oo a b`. Refuses outside a channel, rather than aiming a channel mode at
-    /// a DM peer.
+    /// against a leading channel arg (any sigil) or the current channel buffer. `/op a b` →
+    /// `MODE #chan +oo a b`, split into as many lines as the network's MODES allows — a server
+    /// drops the changes past its limit without a word. Refuses outside a channel, rather than
+    /// aiming a channel mode at a DM peer.
     private static func modeShortcut(
         _ verb: String,
         letter: Character,
         adding: Bool,
         rest: [String],
-        target: String
+        target: String,
+        spec: ModeSpec?
     ) -> [CommandEffect] {
         var channel: String? = ChannelName.isChannelTarget(target) ? target : nil
         var args = rest
@@ -760,8 +872,13 @@ public enum CommandParser {
             return [.info("usage: /\(verb) [#chan] <nick>…")]
         }
         let sign = adding ? "+" : "-"
-        let letters = String(repeating: letter, count: args.count)
-        return [.raw(line: "MODE \(channel) \(sign)\(letters) \(args.joined(separator: " "))")]
+        // A known spec with no MODES is no limit; an unknown spec is the default, as the web.
+        let perLine = max(spec.map { $0.maxModes ?? args.count } ?? defaultMaxModes, 1)
+        return stride(from: 0, to: args.count, by: perLine).map { start in
+            let batch = args[start..<min(start + perLine, args.count)]
+            let letters = String(repeating: letter, count: batch.count)
+            return .raw(line: "MODE \(channel) \(sign)\(letters) \(batch.joined(separator: " "))")
+        }
     }
 
     /// The body of a command after its first token, interior spacing preserved — the web's

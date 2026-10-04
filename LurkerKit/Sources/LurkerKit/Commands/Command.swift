@@ -313,6 +313,8 @@ public enum CommandRegistry {
                     args: [ArgSpec("emoji or text", .text, rest: true)]),
         CommandSpec(["slap"], .messaging, "Slap someone with a large trout",
                     args: [ArgSpec("nick", .nick)]),
+        CommandSpec(["shrug"], .messaging, "Say ¯\\_(ツ)_/¯, after your own text if any",
+                    args: [ArgSpec("text", .text, optional: true, rest: true)]),
         CommandSpec(["ctcp"], .messaging, "Send a CTCP request",
                     args: [ArgSpec("target", .nick), ArgSpec("type", .word), ArgSpec("args", .text, optional: true, rest: true)]),
         CommandSpec(["ping"], .messaging, "CTCP PING a user",
@@ -327,9 +329,9 @@ public enum CommandRegistry {
                     ]),
 
         // Channels
-        CommandSpec(["join"], .channels, "Join a channel",
+        CommandSpec(["join", "j"], .channels, "Join a channel",
                     args: [ArgSpec("channel", .channel), ArgSpec("key", .word, optional: true)]),
-        CommandSpec(["part", "leave"], .channels, "Leave a channel (keeps the buffer)",
+        CommandSpec(["part", "leave", "p"], .channels, "Leave a channel (keeps the buffer)",
                     args: [ArgSpec("channel", .channel, optional: true), ArgSpec("reason", .text, optional: true, rest: true)]),
         CommandSpec(["cycle", "hop"], .channels, "Part and rejoin this channel",
                     args: [ArgSpec("reason", .text, optional: true, rest: true)]),
@@ -350,6 +352,8 @@ public enum CommandRegistry {
 
         // Moderation
         CommandSpec(["kick"], .moderation, "Kick a user from this channel",
+                    args: [ArgSpec("nick", .nick), ArgSpec("reason", .text, optional: true, rest: true)]),
+        CommandSpec(["kickban"], .moderation, "Ban a user from this channel, then kick them",
                     args: [ArgSpec("nick", .nick), ArgSpec("reason", .text, optional: true, rest: true)]),
         CommandSpec(["mode"], .moderation, "Set channel or user modes",
                     args: [ArgSpec("modes", .text, rest: true)]),

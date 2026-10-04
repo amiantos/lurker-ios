@@ -23,6 +23,35 @@ final class CommandParserTests: XCTestCase {
         return effects
     }
 
+    /// The effects of a command typed in #chan on network 1, with the context the call site
+    /// supplies: the network's mode vocabulary and which buffers it has open.
+    private func context(
+        _ input: String,
+        target: String = "#chan",
+        modeSpec: ModeSpec? = nil,
+        hasBuffer: @escaping (String) -> Bool = { _ in false }
+    ) -> [CommandEffect] {
+        guard case .command(let effects) = CommandParser.parse(
+            input, networkId: 1, target: target, modeSpec: modeSpec, hasBuffer: hasBuffer)
+        else {
+            XCTFail("expected a command from \(input)")
+            return []
+        }
+        return effects
+    }
+
+    /// A network's vocabulary with the given list modes and MODES limit.
+    private func spec(list: String = "beI", maxModes: Int? = 3) -> ModeSpec {
+        ModeSpec(list: list, always: "k", onSet: "l", flags: "imnst",
+                 prefix: [PrefixMode(mode: "o", symbol: "@"), PrefixMode(mode: "v", symbol: "+")],
+                 maxModes: maxModes, topicLen: nil)
+    }
+
+    private func isInfo(_ effects: [CommandEffect]) -> Bool {
+        guard effects.count == 1, case .info = effects[0] else { return false }
+        return true
+    }
+
     // MARK: - Plain text vs commands
 
     func testPlainTextIsAMessage() {
@@ -215,9 +244,12 @@ final class CommandParserTests: XCTestCase {
         // `&` is a valid channel sigil (BufferKind.of), so it must be honored as an explicit
         // channel argument, not folded into a nick/reason/topic.
         XCTAssertEqual(effects("/kick &local bob"), [.raw(line: "KICK &local bob")])
-        XCTAssertEqual(effects("/topic &local hi"), [.raw(line: "TOPIC &local :hi")])
         XCTAssertEqual(effects("/op &local alice"), [.raw(line: "MODE &local +o alice")])
-        XCTAssertEqual(effects("/part &local bye"), [.part(channel: "&local", reason: "bye")])
+        // `/topic` and `/part` take free text first, so there `&local` is a channel only while
+        // it's open (see the sigil tests below).
+        let open = { (name: String) in name == "&local" }
+        XCTAssertEqual(context("/topic &local hi", hasBuffer: open), [.raw(line: "TOPIC &local :hi")])
+        XCTAssertEqual(context("/part &local bye", hasBuffer: open), [.part(channel: "&local", reason: "bye")])
     }
 
     // MARK: - Moderation
@@ -748,5 +780,119 @@ final class CommandParserTests: XCTestCase {
             return XCTFail("expected usage")
         }
         XCTAssertTrue(text.contains("index|mask"), text)
+    }
+
+    // MARK: - Client sweep: the web's guards (L01, L03, L04, L18, L19, L34)
+
+    func testQuietIsRefusedWhereQIsNotAListMode() {
+        // InspIRCd and Unreal: +q is the owner rank, so /quiet would make the target an owner.
+        let inspircd = spec(list: "beI")
+        XCTAssertEqual(context("/quiet troll", modeSpec: inspircd), [.info("this network has no +q quiet list")])
+        XCTAssertEqual(context("/unquiet troll", modeSpec: inspircd), [.info("this network has no +q quiet list")])
+    }
+
+    func testQuietGoesThroughOnAQuietListOrAnUnknownSpec() {
+        XCTAssertEqual(context("/quiet troll", modeSpec: spec(list: "eIbq")), [.raw(line: "MODE #chan +q troll")])
+        XCTAssertEqual(context("/unquiet troll", modeSpec: spec(list: "eIbq")), [.raw(line: "MODE #chan -q troll")])
+        // Before the burst ends there's nothing to check against, as on the web.
+        XCTAssertEqual(context("/quiet troll"), [.raw(line: "MODE #chan +q troll")])
+    }
+
+    func testModeShortcutsSplitAtTheNetworksModesLimit() {
+        XCTAssertEqual(context("/op a b c d e", modeSpec: spec(maxModes: 3)), [
+            .raw(line: "MODE #chan +ooo a b c"),
+            .raw(line: "MODE #chan +oo d e"),
+        ])
+        XCTAssertEqual(context("/devoice #other a b c d e", modeSpec: spec(maxModes: 4)), [
+            .raw(line: "MODE #other -vvvv a b c d"),
+            .raw(line: "MODE #other -v e"),
+        ])
+    }
+
+    func testModeShortcutsDefaultToThreeAndHonourNoLimit() {
+        // Unknown vocabulary: the web's DEFAULT_MAX_MODES.
+        XCTAssertEqual(context("/ban a b c d"), [
+            .raw(line: "MODE #chan +bbb a b c"),
+            .raw(line: "MODE #chan +b d"),
+        ])
+        // A known spec without MODES is no limit.
+        XCTAssertEqual(context("/op a b c d e", modeSpec: spec(maxModes: nil)),
+                       [.raw(line: "MODE #chan +ooooo a b c d e")])
+    }
+
+    func testInviteTakesTheChannelFirstAsKickDoes() {
+        XCTAssertEqual(effects("/invite #other bob"), [.raw(line: "INVITE bob #other")])
+        XCTAssertEqual(effects("/invite &local bob", target: "alice"), [.raw(line: "INVITE bob &local")])
+        XCTAssertTrue(isInfo(effects("/invite #other")))
+    }
+
+    func testInviteIgnoresASecondWordThatIsNotAChannel() {
+        XCTAssertEqual(effects("/invite bob notachan"), [.raw(line: "INVITE bob #chan")])
+        XCTAssertTrue(isInfo(effects("/invite bob notachan", target: "alice")))
+    }
+
+    func testPartAndTopicReadAPunctuatedFirstWordAsText() {
+        XCTAssertEqual(effects("/part +brb"), [.part(channel: "#chan", reason: "+brb")])
+        XCTAssertEqual(effects("/p !gone"), [.part(channel: "#chan", reason: "!gone")])
+        XCTAssertEqual(effects("/topic !!! maintenance !!!"), [.raw(line: "TOPIC #chan :!!! maintenance !!!")])
+        XCTAssertEqual(effects("/topic &more to come"), [.raw(line: "TOPIC #chan :&more to come")])
+    }
+
+    func testPartAndTopicTakeAPunctuatedChannelThatIsOpen() {
+        let open = { (name: String) in name == "+local" || name == "!ABCDEsafe" }
+        XCTAssertEqual(context("/part +local bye", hasBuffer: open), [.part(channel: "+local", reason: "bye")])
+        XCTAssertEqual(context("/topic !ABCDEsafe hi", hasBuffer: open), [.raw(line: "TOPIC !ABCDEsafe :hi")])
+        // `#` needs no buffer: a sentence effectively never starts with one.
+        XCTAssertEqual(effects("/part #elsewhere"), [.part(channel: "#elsewhere", reason: nil)])
+    }
+
+    func testModeAimsAtAnOpenPlusChannelRatherThanReadingItAsFlags() {
+        // lurker#724: `+local` is both a flag string and a channel name.
+        let open = { (name: String) in name == "+local" }
+        XCTAssertEqual(context("/mode +local +m", hasBuffer: open), [.raw(line: "MODE +local +m")])
+        XCTAssertEqual(context("/mode +m", hasBuffer: open), [.raw(line: "MODE #chan +m")])
+    }
+
+    func testJoinAndPartShortAliases() {
+        XCTAssertEqual(effects("/j #rust"), [.join(channel: "#rust", key: nil)])
+        XCTAssertEqual(effects("/p see ya"), [.part(channel: "#chan", reason: "see ya")])
+        XCTAssertEqual(CommandRegistry.spec(for: "j")?.name, "join")
+        XCTAssertEqual(CommandRegistry.spec(for: "p")?.name, "part")
+    }
+
+    func testShrugSaysTheKaomojiAfterAnyText() {
+        XCTAssertEqual(effects("/shrug"), [.send(target: "#chan", text: "¯\\_(ツ)_/¯")])
+        XCTAssertEqual(effects("/shrug no idea", target: "bob"), [.send(target: "bob", text: "no idea ¯\\_(ツ)_/¯")])
+        XCTAssertTrue(isInfo(effects("/shrug", target: ":server:")))
+    }
+
+    func testKickbanBansThenKicks() {
+        XCTAssertEqual(effects("/kickban troll spam"), [
+            .raw(line: "MODE #chan +b troll"),
+            .raw(line: "KICK #chan troll :spam"),
+        ])
+        XCTAssertEqual(effects("/kickban #other troll", target: "alice"), [
+            .raw(line: "MODE #other +b troll"),
+            .raw(line: "KICK #other troll"),
+        ])
+        XCTAssertTrue(isInfo(effects("/kickban troll", target: "alice")))
+        XCTAssertTrue(isInfo(effects("/kickban")))
+    }
+
+    func testWebOnlyCommandsAreAnsweredRatherThanSentRaw() {
+        for line in ["/list", "/list rust", "/set foo", "/get foo", "/theme dark", "/hilight word",
+                     "/dehilight word", "/highlight", "/unhighlight x", "/retention 30d", "/jitsi",
+                     "/talk", "/e2e on", "/network add", "/net list"] {
+            XCTAssertTrue(isInfo(effects(line)), "\(line) should be intercepted")
+        }
+    }
+
+    func testReactRefusesAnEmojiNameItCannotResolve() {
+        XCTAssertTrue(isInfo(effects("/react :tada:")))
+        XCTAssertTrue(isInfo(effects("/react :+1:")))
+        // Emoticons and the emoji itself still go out.
+        XCTAssertEqual(effects("/react :D"), [.react(value: ":D")])
+        XCTAssertEqual(effects("/react :-)"), [.react(value: ":-)")])
+        XCTAssertEqual(effects("/react 🎉"), [.react(value: "🎉")])
     }
 }

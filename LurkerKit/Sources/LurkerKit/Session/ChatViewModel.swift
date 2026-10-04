@@ -878,7 +878,13 @@ public final class ChatViewModel {
             ignores: store.state.backlogComplete ? store.state.ignores : nil,
             // Same latch, same reason: `/relay` with no arguments is a claim about which bots are
             // marked, and an empty set mid-burst would answer "none" for a network that has some.
-            relayBots: store.state.backlogComplete ? store.state.relayBots : nil
+            relayBots: store.state.backlogComplete ? store.state.relayBots : nil,
+            // `/quiet` and the mode shortcuts read the network's vocabulary; nil until its burst
+            // ends, which the parser reads as unknown rather than as the RFC defaults.
+            modeSpec: key.networkId.flatMap { store.state.networks[$0]?.modeSpec },
+            // Whether `/part &local` names a channel or gives a reason: a buffer by that name on
+            // this network says channel.
+            hasBuffer: { name in store.state.buffers[BufferKey(networkId: key.networkId, target: name).id] != nil }
         ) {
         case .message(let body):
             // ⚠⚠ The Bool matters. `LurkerClient.send` returns false when there is no socket at
