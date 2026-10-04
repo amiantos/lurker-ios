@@ -247,18 +247,30 @@ public struct CommandSpec: Equatable, Sendable {
     ///
     /// Resolved from what was typed rather than by counting, so a form's keywords can pick it and
     /// an optional flag can be there or not: `/dcc close chat b` and `/dcc chat -passive b` both
-    /// land on the nick. The first form the tokens fit answers. For a command with neither — every
-    /// command but `/dcc` — this is exactly a position count, with a trailing `rest` slot answering
-    /// past its end (so the third nick of `/op a b c` still reads as a nick).
+    /// land on the nick. The first form the tokens fit answers. For a command with one form — every
+    /// command but `/dcc`, `/invite` and `/kickban` — this is exactly a position count, with a
+    /// trailing `rest` slot answering past its end (so the third nick of `/op a b c` still reads as
+    /// a nick).
+    ///
+    /// A form whose filled slots agree with their tokens wins first: a channel in each channel
+    /// slot, and no channel in a nick slot. That's what picks `/invite #chan <nick>` over
+    /// `/invite <nick> [channel]`. Failing that, the first form the tokens fit at all, so
+    /// `/msg #chan hi` still completes as a message.
     public func argKind(after preceding: [String], typing: String = "") -> ArgKind {
-        for form in forms {
-            if let kind = Self.kind(in: form, after: preceding, typing: typing) { return kind }
+        for strict in [true, false] {
+            for form in forms {
+                if let kind = Self.kind(in: form, after: preceding, typing: typing, strict: strict) {
+                    return kind
+                }
+            }
         }
         return .none
     }
 
     /// Walk one form. Nil when the typed tokens don't fit it.
-    private static func kind(in form: [ArgSpec], after preceding: [String], typing: String) -> ArgKind? {
+    private static func kind(
+        in form: [ArgSpec], after preceding: [String], typing: String, strict: Bool
+    ) -> ArgKind? {
         // A flag slot is filled by a `-` token and skipped by anything else.
         func skipFlags(_ slot: inout Int, before token: String) {
             while slot < form.count, form[slot].kind == .flag, !token.hasPrefix("-") { slot += 1 }
@@ -273,6 +285,8 @@ public struct CommandSpec: Equatable, Sendable {
             }
             let arg = form[slot]
             if arg.kind == .keyword, token.lowercased() != arg.label.lowercased() { return nil }
+            if strict, arg.kind == .channel || arg.kind == .nick,
+               ChannelName.isChannelTarget(token) != (arg.kind == .channel) { return nil }
             slot += 1
         }
         skipFlags(&slot, before: typing)
@@ -347,8 +361,7 @@ public enum CommandRegistry {
                     args: [ArgSpec("newnick", .newNick)]),
         CommandSpec(["whois"], .channels, "Look up a user",
                     args: [ArgSpec("nick", .nick, optional: true)]),
-        // Channel-first too, as /kick takes it. Completion follows the first form: nothing in a
-        // form can say "this token is a channel", so the second is for `/commands` to show.
+        // Channel-first too, as /kick takes it; `argKind` picks that form when a channel leads.
         CommandSpec(["invite"], .channels, "Invite a user to a channel",
                     forms: [
                         [ArgSpec("nick", .nick), ArgSpec("channel", .channel, optional: true)],
@@ -359,7 +372,11 @@ public enum CommandRegistry {
         CommandSpec(["kick"], .moderation, "Kick a user from this channel",
                     args: [ArgSpec("nick", .nick), ArgSpec("reason", .text, optional: true, rest: true)]),
         CommandSpec(["kickban"], .moderation, "Ban a user from this channel, then kick them",
-                    args: [ArgSpec("nick", .nick), ArgSpec("reason", .text, optional: true, rest: true)]),
+                    forms: [
+                        [ArgSpec("nick", .nick), ArgSpec("reason", .text, optional: true, rest: true)],
+                        [ArgSpec("channel", .channel), ArgSpec("nick", .nick),
+                         ArgSpec("reason", .text, optional: true, rest: true)],
+                    ]),
         CommandSpec(["mode"], .moderation, "Set channel or user modes",
                     args: [ArgSpec("modes", .text, rest: true)]),
         CommandSpec(["op"], .moderation, "Give operator status",

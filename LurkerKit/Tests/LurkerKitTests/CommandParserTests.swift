@@ -872,6 +872,24 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(sent, masks)
     }
 
+    func testAMaskTooLongForAnyLineRefusesTheWholeCommand() {
+        // Unsplittable, and sending the others without it would half-apply the ban.
+        let long = "*!*@" + String(repeating: "h", count: 400)
+        XCTAssertEqual(context("/ban troll \(long)"), [.info("/ban: one of those is too long for a MODE line")])
+    }
+
+    func testCompletionFollowsAChannelFirstForm() {
+        let invite = CommandRegistry.spec(for: "invite")!
+        XCTAssertEqual(invite.argKind(after: ["bob"]), .channel)
+        XCTAssertEqual(invite.argKind(after: ["#other"]), .nick)
+        let kickban = CommandRegistry.spec(for: "kickban")!
+        XCTAssertEqual(kickban.argKind(after: []), .nick)
+        XCTAssertEqual(kickban.argKind(after: ["#other"]), .nick)
+        XCTAssertEqual(kickban.argKind(after: ["troll"]), .text)
+        // A single form still fits a channel in a nick slot: `/msg #chan hi` is a message.
+        XCTAssertEqual(CommandRegistry.spec(for: "msg")!.argKind(after: ["#chan"]), .text)
+    }
+
     func testAppCommandsAnswerInTheSystemBufferToo() {
         // Nothing about these is per-network, so "needs an active network" would send someone to
         // a channel only to be told the same thing there.

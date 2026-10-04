@@ -878,6 +878,11 @@ public enum CommandParser {
         func line(_ params: [String]) -> String {
             "MODE \(channel) \(sign)\(String(repeating: letter, count: params.count)) \(params.joined(separator: " "))"
         }
+        // One mask too long for a line of its own can't be split, and sending the rest without it
+        // would half-apply the command — so the whole command is refused.
+        if args.contains(where: { line([$0]).utf8.count > modeLineBudget }) {
+            return [.info("/\(verb): one of those is too long for a MODE line")]
+        }
         // A known spec with no MODES is no limit; an unknown spec is the default, as the web.
         let limit: Int? = if let spec { spec.maxModes } else { defaultMaxModes }
         var lines: [[String]] = []
