@@ -6,6 +6,10 @@ The native iOS and iPadOS client for [Lurker](https://github.com/amiantos/lurker
 
 Join the beta on [TestFlight](https://testflight.apple.com/join/tteEzxHe)!
 
+## Screenshots
+
+<img src="docs/assets/screenshots.png" alt="Lurker IRC client screenshots on iOS" width="100%">
+
 ## License
 
 [MPL-2.0](LICENSE), same as Lurker.
