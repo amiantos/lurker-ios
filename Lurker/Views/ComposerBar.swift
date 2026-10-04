@@ -38,7 +38,7 @@ final class ComposerBar: UIView {
     var onHeightChange: (() -> Void)?
 
     /// What kind of completion is live under the caret. The composer detects the *shape*
-    /// (`CommandCompletion` for a slash line, `NickCompletion` for an `@`) and reports the
+    /// (`CommandCompletion` for a slash line, `NickCompletion` for a nick) and reports the
     /// query; the owner turns that into candidates and floats the pills.
     enum Completion: Equatable {
         /// Typing the command verb — `/jo|`. `query` excludes the slash.
@@ -47,7 +47,8 @@ final class ComposerBar: UIView {
         case channelArg(query: String)
         /// Typing a nick argument of a command — `/msg al|`, `/whois b|`.
         case nickArg(query: String)
-        /// An `@`-mention anywhere free text is allowed, including inside `/me …`.
+        /// A nick being typed — `@al|`, or a bare `al|` (lurker-android#57) — anywhere free text is
+        /// allowed, including inside `/me …`.
         case mention(query: String)
     }
 
@@ -455,16 +456,22 @@ final class ComposerBar: UIView {
         textViewDidChange(textView)
     }
 
-    /// Replace the active @token with the picked nick plus its addressing suffix — the
-    /// web picker's exact insertion, so both clients send the same line. The `@` itself
-    /// goes: IRC addresses by bare nick, and the sent line highlights by containing it.
+    /// Replace the nick being typed — an `@…` or a bare word — with the picked nick plus its
+    /// addressing suffix: the web picker's exact insertion, so both clients send the same
+    /// line. An `@` goes: IRC addresses by bare nick, and the sent line highlights by
+    /// containing it.
+    ///
+    /// A pick the word under the caret no longer leads to is stale and inserts nothing. A
+    /// bare word makes nearly any word a token, so "is there one" no longer tells a pick
+    /// made for this word from one made for the word the caret just left.
     ///
     /// `punctuation` is the resolved `input.completion.nick_suffix`; the owner reads it,
     /// because the setting lives on the store and this view has no window onto it.
     func completeMention(with nick: String, punctuation: String) {
         let selection = textView.selectedRange
-        guard selection.length == 0,
-              let token = NickCompletion.activeMention(in: textView.text, caret: selection.location)
+        guard selection.length == 0, !isComposing,
+              let token = NickCompletion.activeMention(in: textView.text, caret: selection.location),
+              nick.lowercased().hasPrefix(token.query.lowercased())
         else { return }
         let replacement = nick + NickCompletion.addressingSuffix(
             beforeTokenAt: token.start, in: textView.text, punctuation: punctuation)
@@ -739,8 +746,8 @@ extension ComposerBar: UITextViewDelegate {
 
     /// Hand the owner the current completion context, only when it changed. A slash line is
     /// classified first (`CommandCompletion`); a channel/nick argument or the verb itself
-    /// wins, and anything else — free text, an unknown command — falls through to `@`-mention
-    /// detection, so `/me @al|` still completes a nick. A selection (length > 0) is editing,
+    /// wins, and anything else — free text, an unknown command — falls through to nick
+    /// detection, so `/me @al|` and `/me al|` still complete a nick. A selection (length > 0) is editing,
     /// never mid-token.
     private func emitCompletion() {
         let selection = textView.selectedRange
@@ -761,7 +768,9 @@ extension ComposerBar: UITextViewDelegate {
                 return kind == .channel ? .channelArg(query: query) : .nickArg(query: query)
             }
         }
-        if let token = NickCompletion.activeMention(in: text, caret: caret) {
+        // Not over marked text: a Pinyin or kana keyboard's unconverted letters are not a nick,
+        // and a pick would replace them mid-composition.
+        if !isComposing, let token = NickCompletion.activeMention(in: text, caret: caret) {
             return .mention(query: token.query)
         }
         return nil

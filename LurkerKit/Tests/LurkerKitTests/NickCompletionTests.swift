@@ -4,20 +4,26 @@
 import XCTest
 @testable import LurkerKit
 
-/// Locks the @‑mention logic to the web client's `nickCompletion.ts`: speakers before
+/// Locks nick completion to the web client's `nickCompletion.ts`: speakers before
 /// members, recency order, self excluded, departed speakers dropped in channels — plus
 /// the token scanner and the addressing suffix the composer inserts.
 final class NickCompletionTests: XCTestCase {
 
-    private func speech(_ id: Int, _ nick: String, isSelf: Bool = false) -> Message {
-        Message(id: id, type: .message, nick: nick, text: "hi", isSelf: isSelf)
+    /// A speaker map where each nick spoke at its index — so the LAST listed spoke most recently,
+    /// the way a buffer's history reads.
+    private func spoke(_ nicks: String...) -> SpeakerMap {
+        var map = SpeakerMap()
+        for (index, nick) in nicks.enumerated() {
+            map.record(nick: nick, at: Date(timeIntervalSince1970: TimeInterval(index + 1)))
+        }
+        return map
     }
 
     // MARK: - Candidates
 
     func testRecentSpeakersLeadNewestFirstThenMembersAlphabetically() {
         let candidates = NickCompletion.candidates(
-            messages: [speech(1, "alice"), speech(2, "bob")],
+            speakers: spoke("alice", "bob"),
             members: [Member(nick: "zoe"), Member(nick: "alice"), Member(nick: "bob"), Member(nick: "carol")],
             selfNick: "me",
             query: "",
@@ -29,7 +35,7 @@ final class NickCompletionTests: XCTestCase {
 
     func testFilteringIsCaseInsensitiveAndKeepsRecencyOrder() {
         let candidates = NickCompletion.candidates(
-            messages: [speech(1, "Anna"), speech(2, "arthur")],
+            speakers: spoke("Anna", "arthur"),
             members: [Member(nick: "Anna"), Member(nick: "arthur"), Member(nick: "AXEL"), Member(nick: "bob")],
             selfNick: nil,
             query: "a",
@@ -40,7 +46,7 @@ final class NickCompletionTests: XCTestCase {
 
     func testYouAreNeverACandidate() {
         let candidates = NickCompletion.candidates(
-            messages: [speech(1, "ME", isSelf: true), speech(2, "alice")],
+            speakers: spoke("ME", "alice"),
             members: [Member(nick: "me"), Member(nick: "alice")],
             selfNick: "me",
             query: "",
@@ -52,34 +58,36 @@ final class NickCompletionTests: XCTestCase {
     /// The web filters channel speakers by current membership: completing someone who
     /// left addresses nobody. A DM has no member list, so its speakers pass unfiltered.
     func testADepartedSpeakerIsDroppedInChannelsButNotDMs() {
-        let history = [speech(1, "ghost"), speech(2, "alice")]
+        let speakers = spoke("ghost", "alice")
         let inChannel = NickCompletion.candidates(
-            messages: history, members: [Member(nick: "alice")],
+            speakers: speakers, members: [Member(nick: "alice")],
             selfNick: nil, query: "", isChannel: true
         )
         XCTAssertEqual(inChannel, ["alice"])
 
         let inDM = NickCompletion.candidates(
-            messages: history, members: [],
+            speakers: speakers, members: [],
             selfNick: nil, query: "", isChannel: false
         )
         XCTAssertEqual(inDM, ["alice", "ghost"])
     }
 
-    func testOnlySpeechCountsAsSpeakingAndTheCapHolds() {
-        let noisy: [Message] = [
-            speech(1, "alice"),
-            Message(id: 2, type: .join, nick: "joiner", text: nil),
-            Message(id: 3, type: .notice, nick: "noticebot", text: "psa"),
-            Message(id: 4, type: .action, nick: "bob", text: "waves"),
-        ]
-        let members = ["alice", "bob", "joiner", "noticebot", "carol", "dave"].map { Member(nick: $0) }
+    func testTheCapHolds() {
+        let members = ["alice", "bob", "carol", "dave", "erin", "frank"].map { Member(nick: $0) }
         let candidates = NickCompletion.candidates(
-            messages: noisy, members: members, selfNick: nil, query: "", isChannel: true
+            speakers: spoke("alice", "bob"), members: members, selfNick: nil, query: "", isChannel: true
         )
-        XCTAssertEqual(candidates.count, 4, "capped at four")
-        XCTAssertEqual(Array(candidates.prefix(2)), ["bob", "alice"],
-                       "an action speaks; a join or notice does not")
+        XCTAssertEqual(candidates, ["bob", "alice", "carol", "dave"], "capped at four")
+    }
+
+    /// A speaker is offered as they last spelled their nick, not as the map's lowercased key.
+    func testASpeakerKeepsTheirSpelling() {
+        XCTAssertEqual(
+            NickCompletion.candidates(
+                speakers: spoke("Alice"), members: [], selfNick: nil, query: "al", isChannel: false
+            ),
+            ["Alice"]
+        )
     }
 
     // MARK: - Token scanning
@@ -106,9 +114,72 @@ final class NickCompletionTests: XCTestCase {
     }
 
     func testACaretOutsideTheTokenDeactivatesIt() {
-        XCTAssertNil(NickCompletion.activeMention(in: "@al done", caret: 8),
+        XCTAssertNil(NickCompletion.activeMention(in: "@al done ", caret: 9),
                      "past the token's word there is no active mention")
-        XCTAssertNil(NickCompletion.activeMention(in: "plain text", caret: 5))
+        XCTAssertNil(NickCompletion.activeMention(in: "plain text", caret: 0))
+    }
+
+    // MARK: - Bare words (lurker-android#57)
+
+    /// The web's mobile strip: two letters of a nick ask without an `@`, and completion
+    /// replaces the word from its first letter.
+    func testABareWordOfTwoLettersAsks() {
+        XCTAssertEqual(NickCompletion.activeMention(in: "hey al", caret: 6),
+                       NickCompletion.MentionToken(start: 4, end: 6, query: "al"))
+        XCTAssertEqual(NickCompletion.activeMention(in: "al", caret: 2),
+                       NickCompletion.MentionToken(start: 0, end: 2, query: "al"))
+        XCTAssertEqual(NickCompletion.activeMention(in: "al more", caret: 2)?.query, "al",
+                       "the end of a word, not of the text")
+    }
+
+    func testABareWordOfOneCharacterDoesNot() {
+        XCTAssertNil(NickCompletion.activeMention(in: "hey a", caret: 5),
+                     "every \"I\" and \"a\" would float the pills")
+        XCTAssertNil(NickCompletion.activeMention(in: "hey \u{1F44D}", caret: 6),
+                     "one emoji is one character, not its two UTF-16 units")
+    }
+
+    /// A caret placed inside a word is editing it: pills there would float over every typo
+    /// fix, and a pick would replace the rest of the word ("al|ready" → "alice ").
+    func testABareCaretInsideAWordDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "I already said", caret: 4))
+        XCTAssertNil(NickCompletion.activeMention(in: "thanks alice's idea", caret: 9))
+    }
+
+    /// Completion replaces the whole word, so a word holding an `@` past its start never
+    /// asks, in either shape: it would take the `@host` with it.
+    func testAWordWithAnAtPastItsStartDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "mail user@host", caret: 14))
+        XCTAssertNil(NickCompletion.activeMention(in: "@alice@host.com", caret: 3),
+                     "even after the caret, an @… would lose its tail")
+        XCTAssertNil(NickCompletion.activeMention(in: "@a@b", caret: 4))
+    }
+
+    func testACommandOrChannelWordDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "/jo", caret: 3))
+        XCTAssertNil(NickCompletion.activeMention(in: "//jo", caret: 4), "an escaped command")
+        for sigil in ["#", "&", "+", "!"] {
+            XCTAssertNil(NickCompletion.activeMention(in: "see \(sigil)li", caret: 7), sigil)
+        }
+    }
+
+    /// A command's arguments are keys, passwords and new nicks: a bare word stays out of them.
+    /// `/me`'s argument is speech, `//` escapes a command, and an `@` asks anywhere.
+    func testACommandLineAsksOnlyForMeOrAnAt() {
+        XCTAssertNil(NickCompletion.activeMention(in: "/msg NickServ IDENTIFY hu", caret: 25))
+        XCTAssertNil(NickCompletion.activeMention(in: "  /nick al", caret: 10),
+                     "the composer trims, so leading whitespace is still a command")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/me waves at al", caret: 15)?.query, "al")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/ME waves at al", caret: 15)?.query, "al")
+        XCTAssertNil(NickCompletion.activeMention(in: "/meow al", caret: 8), "a verb, not a prefix")
+        XCTAssertEqual(NickCompletion.activeMention(in: "//x al", caret: 6)?.query, "al")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/topic hi @al", caret: 13)?.query, "al")
+    }
+
+    func testAnAtStillAsksFromItsFirstKeystrokeAnywhereInTheWord() {
+        XCTAssertEqual(NickCompletion.activeMention(in: "hey @a", caret: 6)?.query, "a",
+                       "the bare threshold never applies to an @")
+        XCTAssertEqual(NickCompletion.activeMention(in: "@alice", caret: 3)?.query, "al")
     }
 
     // MARK: - Addressing suffix

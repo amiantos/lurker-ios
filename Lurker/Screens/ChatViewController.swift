@@ -139,7 +139,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// ahead of the buffer it is describing.
     private var rosterSettled = false
     /// Who has spoken in this buffer and when, as of the last apply — what the `.smart` event
-    /// tier (#63) judges churn against, and what ranks a truncated summary's names.
+    /// tier (#63) judges churn against, what ranks a truncated summary's names, and what
+    /// leads nick completion.
     ///
     /// Snapshotted like `settings` and `awayState` above, and for the same reason.
     private var speakers = SpeakerMap()
@@ -416,7 +417,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             self?.updateSuggestions()
         }
         // A pick means different things per context: a command inserts its verb, a channel
-        // or nick argument inserts that value, an `@`-mention inserts the nick with its
+        // or nick argument inserts that value, a nick being typed inserts the nick with its
         // addressing suffix. The composer owns each insertion; this only routes to it.
         suggestions.onPick = { [weak self] suggestion in
             guard let self else { return }
@@ -2819,7 +2820,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func nickCandidates(matching query: String) -> [String] {
         NickCompletion.candidates(
-            messages: messages,
+            speakers: speakers,
             members: viewModel.state.visibleMembers(in: buffer.key),
             selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
             query: query,

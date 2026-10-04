@@ -90,4 +90,34 @@ final class SpeakersTests: XCTestCase {
     func testTheCapLeavesRoomForAFullServerSeed() {
         XCTAssertGreaterThan(SpeakerMap.cap, 20)
     }
+
+    // MARK: - Recent (nick completion)
+
+    /// Most recent first, each as they last spelled their nick — what nick completion offers.
+    /// A tie falls back to the case-folded nick, so the order never rides on the dictionary's.
+    func testRecentIsNewestFirstInTheirOwnSpelling() {
+        var map = SpeakerMap([
+            Speaker(nick: "Carol", lastSpoke: Self.t0),
+            Speaker(nick: "bob", lastSpoke: Self.t0),
+        ])
+        map.record(nick: "ALICE", at: Self.at(5))
+        XCTAssertEqual(map.recent.map(\.nick), ["ALICE", "bob", "Carol"])
+        map.record(nick: "alice", at: Self.at(6))
+        XCTAssertEqual(map.recent.first?.nick, "alice", "a newer line respells the entry")
+    }
+
+    func testARenameCarriesTheNewSpelling() {
+        var map = SpeakerMap([Speaker(nick: "alice", lastSpoke: Self.t0)])
+        map.rename(from: "alice", to: "Alice_AFK")
+        XCTAssertEqual(map.recent, [Speaker(nick: "Alice_AFK", lastSpoke: Self.t0)])
+    }
+
+    /// The folded key doesn't move, but the spelling completion offers does.
+    func testACaseOnlyRenameRespellsTheEntry() {
+        var map = SpeakerMap([Speaker(nick: "alice", lastSpoke: Self.t0)])
+        map.rename(from: "alice", to: "Alice")
+        XCTAssertEqual(map.recent, [Speaker(nick: "Alice", lastSpoke: Self.t0)])
+        map.rename(from: "bob", to: "Bob")
+        XCTAssertEqual(map.recent.count, 1, "an unknown nick is still a no-op")
+    }
 }
