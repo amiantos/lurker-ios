@@ -285,14 +285,24 @@ public struct CommandSpec: Equatable, Sendable {
             }
             let arg = form[slot]
             if arg.kind == .keyword, token.lowercased() != arg.label.lowercased() { return nil }
-            if strict, arg.kind == .channel || arg.kind == .nick,
-               ChannelName.isChannelTarget(token) != (arg.kind == .channel) { return nil }
+            if strict, !agrees(arg, token) { return nil }
             slot += 1
         }
         skipFlags(&slot, before: typing)
-        if slot < form.count { return form[slot].kind }
+        if slot < form.count {
+            // The half-typed token counts too, once there is one: `/invite #ot` is a channel.
+            if strict, !typing.isEmpty, !agrees(form[slot], typing) { return nil }
+            return form[slot].kind
+        }
         if let last = form.last, last.rest { return last.kind }
         return nil
+    }
+
+    /// Whether `token` can fill `arg` for the strict pass: a channel in a channel slot, no channel
+    /// in a nick slot. Any other slot takes anything.
+    private static func agrees(_ arg: ArgSpec, _ token: String) -> Bool {
+        guard arg.kind == .channel || arg.kind == .nick else { return true }
+        return ChannelName.isChannelTarget(token) == (arg.kind == .channel)
     }
 
     /// The usage line shown by `/commands`, e.g. `/msg <nick> [message]` — one per form, joined.

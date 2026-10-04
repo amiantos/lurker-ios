@@ -886,6 +886,12 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(kickban.argKind(after: []), .nick)
         XCTAssertEqual(kickban.argKind(after: ["#other"]), .nick)
         XCTAssertEqual(kickban.argKind(after: ["troll"]), .text)
+        // The first argument while it's still being typed: a sigil means the channel-first form.
+        XCTAssertEqual(invite.argKind(after: [], typing: "#ot"), .channel)
+        XCTAssertEqual(kickban.argKind(after: [], typing: "#ot"), .channel)
+        XCTAssertEqual(invite.argKind(after: [], typing: "bo"), .nick)
+        XCTAssertEqual(invite.argKind(after: [], typing: ""), .nick)
+        XCTAssertEqual(invite.argKind(after: ["bob"], typing: "#o"), .channel)
         // A single form still fits a channel in a nick slot: `/msg #chan hi` is a message.
         XCTAssertEqual(CommandRegistry.spec(for: "msg")!.argKind(after: ["#chan"]), .text)
     }
