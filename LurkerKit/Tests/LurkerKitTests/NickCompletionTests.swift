@@ -111,7 +111,7 @@ final class NickCompletionTests: XCTestCase {
         XCTAssertNil(NickCompletion.activeMention(in: "plain text", caret: 0))
     }
 
-    // MARK: - Bare words (#57)
+    // MARK: - Bare words (lurker-android#57)
 
     /// The web's mobile strip: two letters of a nick ask without an `@`, and completion
     /// replaces the word from its first letter.
@@ -120,25 +120,31 @@ final class NickCompletionTests: XCTestCase {
                        NickCompletion.MentionToken(start: 4, end: 6, query: "al"))
         XCTAssertEqual(NickCompletion.activeMention(in: "al", caret: 2),
                        NickCompletion.MentionToken(start: 0, end: 2, query: "al"))
+        XCTAssertEqual(NickCompletion.activeMention(in: "al more", caret: 2)?.query, "al",
+                       "the end of a word, not of the text")
     }
 
-    func testABareWordOfOneLetterDoesNot() {
+    func testABareWordOfOneCharacterDoesNot() {
         XCTAssertNil(NickCompletion.activeMention(in: "hey a", caret: 5),
                      "every \"I\" and \"a\" would float the pills")
-        XCTAssertNil(NickCompletion.activeMention(in: "hey alice", caret: 5),
-                     "the threshold counts what's typed BEFORE the caret, not the word")
+        XCTAssertNil(NickCompletion.activeMention(in: "hey \u{1F44D}", caret: 6),
+                     "one emoji is one character, not its two UTF-16 units")
     }
 
-    func testABareCaretMidWordFiltersToTheCaretButSpansTheWord() {
-        XCTAssertEqual(NickCompletion.activeMention(in: "alice more", caret: 2),
-                       NickCompletion.MentionToken(start: 0, end: 5, query: "al"))
+    /// A caret placed inside a word is editing it: pills there would float over every typo
+    /// fix, and a pick would replace the rest of the word ("al|ready" → "alice ").
+    func testABareCaretInsideAWordDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "I already said", caret: 4))
+        XCTAssertNil(NickCompletion.activeMention(in: "thanks alice's idea", caret: 9))
     }
 
-    /// Completion replaces the whole word, so a bare word holding an `@` anywhere — even
-    /// after the caret — never asks: it would take the `@host` with it.
-    func testABareWordWithAnAtAnywhereDoesNotAsk() {
-        XCTAssertNil(NickCompletion.activeMention(in: "mail user@host", caret: 9))
-        XCTAssertNil(NickCompletion.activeMention(in: "mail user@host", caret: 7))
+    /// Completion replaces the whole word, so a word holding an `@` past its start never
+    /// asks, in either shape: it would take the `@host` with it.
+    func testAWordWithAnAtPastItsStartDoesNotAsk() {
+        XCTAssertNil(NickCompletion.activeMention(in: "mail user@host", caret: 14))
+        XCTAssertNil(NickCompletion.activeMention(in: "@alice@host.com", caret: 3),
+                     "even after the caret, an @… would lose its tail")
+        XCTAssertNil(NickCompletion.activeMention(in: "@a@b", caret: 4))
     }
 
     func testACommandOrChannelWordDoesNotAsk() {
@@ -149,11 +155,23 @@ final class NickCompletionTests: XCTestCase {
         }
     }
 
-    func testAnAtStillAsksFromItsFirstKeystroke() {
+    /// A command's arguments are keys, passwords and new nicks: a bare word stays out of them.
+    /// `/me`'s argument is speech, `//` escapes a command, and an `@` asks anywhere.
+    func testACommandLineAsksOnlyForMeOrAnAt() {
+        XCTAssertNil(NickCompletion.activeMention(in: "/msg NickServ IDENTIFY hu", caret: 25))
+        XCTAssertNil(NickCompletion.activeMention(in: "  /nick al", caret: 10),
+                     "the composer trims, so leading whitespace is still a command")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/me waves at al", caret: 15)?.query, "al")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/ME waves at al", caret: 15)?.query, "al")
+        XCTAssertNil(NickCompletion.activeMention(in: "/meow al", caret: 8), "a verb, not a prefix")
+        XCTAssertEqual(NickCompletion.activeMention(in: "//x al", caret: 6)?.query, "al")
+        XCTAssertEqual(NickCompletion.activeMention(in: "/topic hi @al", caret: 13)?.query, "al")
+    }
+
+    func testAnAtStillAsksFromItsFirstKeystrokeAnywhereInTheWord() {
         XCTAssertEqual(NickCompletion.activeMention(in: "hey @a", caret: 6)?.query, "a",
                        "the bare threshold never applies to an @")
-        XCTAssertNil(NickCompletion.activeMention(in: "@a@b", caret: 4),
-                     "a second @ before the caret is still email-shaped")
+        XCTAssertEqual(NickCompletion.activeMention(in: "@alice", caret: 3)?.query, "al")
     }
 
     // MARK: - Addressing suffix

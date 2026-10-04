@@ -4,7 +4,7 @@
 import Foundation
 
 /// Nick completion: the pure logic behind the pill strip the composer floats when the
-/// user types `@`, or the first letters of a nick (#57). A faithful port of the web client's `nickCompletion.ts`, so the
+/// user types `@`, or the first letters of a nick (lurker-android#57). A faithful port of the web client's `nickCompletion.ts`, so the
 /// two clients can't disagree about who leads the list:
 ///
 ///  - recent speakers first, most recent first — the people you're most likely answering;
@@ -22,9 +22,9 @@ public enum NickCompletion {
 
     // MARK: - Candidates
 
-    /// Who `@query` offers, best first, capped at `limit`. `messages` supplies recency
-    /// (newest last, as buffers hold them); `members` supplies the fallback pool and the
-    /// still-here check.
+    /// Who a nick query offers — after an `@`, or a bare word — best first, capped at
+    /// `limit`. `messages` supplies recency (newest last, as buffers hold them); `members`
+    /// supplies the fallback pool and the still-here check.
     ///
     /// `ignores`/`networkId` strip ignored candidates. Taken as the shared type rather than an
     /// injected predicate: `IgnoreSet` lives in this module, is immutable, and already carries
@@ -82,11 +82,14 @@ public enum NickCompletion {
 
         // Then everyone else who's here, in case-folded alphabetical order — the same
         // nick tiebreaker MemberPrefix's sort uses (rank doesn't apply here: completion
-        // is about who you're addressing, not who has ops).
-        for member in members.sorted(by: { $0.nick.lowercased() < $1.nick.lowercased() }) {
+        // is about who you're addressing, not who has ops). Filtered before the sort: a
+        // bare word asks on most keystrokes, and a big channel's whole member list
+        // shouldn't be sorted for the handful that match.
+        let matching = members.filter { $0.nick.lowercased().hasPrefix(prefix) }
+        for member in matching.sorted(by: { $0.nick.lowercased() < $1.nick.lowercased() }) {
             guard out.count < limit else { return out }
             let lc = member.nick.lowercased()
-            guard !seen.contains(lc), lc.hasPrefix(prefix) else { continue }
+            guard !seen.contains(lc) else { continue }
             seen.insert(lc)
             if isIgnored(member.nick, member.userhost) { continue }
             out.append(member.nick)
@@ -115,34 +118,36 @@ public enum NickCompletion {
     }
 
     /// How much of a bare word must be typed before it asks for nicks — the web's mobile
-    /// strip threshold, so a one-letter word ("I", "a") never floats the pills.
+    /// strip threshold, so a one-letter word ("I", "a") never floats the pills. Counted in
+    /// Unicode scalars, so one emoji is one, not the two UTF-16 units it occupies.
     public static let bareWordMinimum = 2
 
     /// The nick being typed at `caret`, or nil. A token is the whitespace-delimited run the
     /// caret sits in, and it asks in one of two shapes:
     ///
-    ///  - `@…`, explicit, so it asks from the first keystroke — a lone `@` lists everyone;
-    ///  - a bare word with at least `bareWordMinimum` characters before the caret, the
-    ///    web's mobile suggestion strip (#57), so a nick can be finished without the `@`.
-    ///    A word that opens with `/` (a command, or `//` escaping one) or a channel sigil
-    ///    is never a nick, so it never asks.
+    ///  - `@…`, explicit, so it asks from the first keystroke — a lone `@` lists everyone —
+    ///    on any line, and with the caret anywhere in the word;
+    ///  - a bare word of at least `bareWordMinimum` characters, the web's mobile suggestion
+    ///    strip (lurker-android#57), so a nick can be finished without the `@`. Narrower than
+    ///    the `@`, because it fires on words the user never meant as nicks: only with the
+    ///    caret at the word's END (a caret placed inside a word is editing it, and a pick
+    ///    would replace the rest of it), never in a word opening with `/` or a channel sigil,
+    ///    and never on a command line but `/me` — a command's arguments are keys, passwords
+    ///    and new nicks, where a nick pick is only ever a mistake.
     ///
-    /// An `@` anywhere but the word's start disqualifies it — `user@host` is an
-    /// email-shaped word, not a mention, exactly as the web treats it. For an `@…` only the
-    /// part before the caret counts (the `@` must be the nearest one behind it); a bare
-    /// word may not hold one at all, because completion replaces the whole word and would
-    /// take an `@host` after the caret with it.
+    /// An `@` anywhere but the word's start disqualifies the word in both shapes: `user@host`
+    /// is an email-shaped word, not a mention, exactly as the web treats it — and completion
+    /// replaces the whole word, so it would take an `@host` after the caret with it.
     public static func activeMention(in text: String, caret: Int) -> MentionToken? {
         let chars = Array(text.utf16)
         guard caret >= 0, caret <= chars.count else { return nil }
-        let at = UInt16(UnicodeScalar("@").value)
         var start = caret
         while start > 0, !isWhitespace(chars[start - 1]) { start -= 1 }
         var end = caret
         while end < chars.count, !isWhitespace(chars[end]) { end += 1 }
+        guard start < caret, !chars[(start + 1)..<end].contains(atSign) else { return nil }
 
-        if start < caret, chars[start] == at {
-            guard !chars[(start + 1)..<caret].contains(at) else { return nil }
+        if chars[start] == atSign {
             return MentionToken(
                 start: start,
                 end: end,
@@ -150,14 +155,27 @@ public enum NickCompletion {
             )
         }
 
-        guard caret - start >= bareWordMinimum, !chars[start..<end].contains(at) else { return nil }
+        guard caret == end, !isCommandLine(chars) else { return nil }
         let word = String(decoding: chars[start..<end], as: UTF16.self)
-        guard !word.hasPrefix("/"), !ChannelName.isChannelTarget(word) else { return nil }
-        return MentionToken(
-            start: start,
-            end: end,
-            query: String(decoding: chars[start..<caret], as: UTF16.self)
-        )
+        guard word.unicodeScalars.count >= bareWordMinimum,
+              !word.hasPrefix("/"), !ChannelName.isChannelTarget(word)
+        else { return nil }
+        return MentionToken(start: start, end: end, query: word)
+    }
+
+    private static let atSign = UInt16(UnicodeScalar("@").value)
+
+    /// Whether the draft is a command whose arguments a bare word must stay out of: it opens
+    /// (after any whitespace, which the composer trims before sending) with `/` and a verb
+    /// other than `me`. `//` escapes a command, so that line is text.
+    private static func isCommandLine(_ chars: [UInt16]) -> Bool {
+        var index = 0
+        while index < chars.count, isWhitespace(chars[index]) { index += 1 }
+        let slash = UInt16(UnicodeScalar("/").value)
+        guard index < chars.count, chars[index] == slash else { return false }
+        let verb = chars[(index + 1)...].prefix { !isWhitespace($0) }
+        if verb.first == slash { return false }
+        return String(decoding: verb, as: UTF16.self).lowercased() != "me"
     }
 
     /// What a completed nick carries after it: the addressing form when the mention opens
