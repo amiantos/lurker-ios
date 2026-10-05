@@ -449,6 +449,57 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertEqual(drafts.topicChange(live: "New"), "Hello", "the new one landed: typed-back is a change again")
     }
 
+    /// A value row: +l 50, Save +l 60, type it back to 50 while that's out.
+    func testAValueTypedBackWhileItsSaveIsOutSurvivesTheEcho() {
+        let fifty = ChannelModeForm.Live(modes: "l", params: ["l": "50"])
+        var drafts = ChannelModeDrafts()
+        drafts.setValue("l", "60", live: fifty)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: fifty)
+        drafts.noteSending(sending)
+        drafts.settle(sending, wentOut: true)
+        drafts.setValue("l", " 50 ", live: fifty)
+        drafts.reconcile(live: fifty, liveTopic: "")
+        XCTAssertEqual(drafts.rows["l"]?.value, " 50 ", "kept while the +l 60 is out")
+        let sixty = ChannelModeForm.Live(modes: "l", params: ["l": "60"])
+        drafts.reconcile(live: sixty, liveTopic: "")
+        XCTAssertEqual(
+            try! ChannelModeForm.changes(spec: spec, live: sixty, draft: drafts.rows).get(),
+            [OutgoingModeChange(sign: "+", letter: "l", param: "50")]
+        )
+    }
+
+    /// ⚠⚠ A refused Save never moves the channel. Without `refused`, the kept undo lingered — and
+    /// when another op later made the same change, it turned into a revert of theirs.
+    func testARefusedSaveLetsAKeptUndoGo() {
+        let before = ChannelModeForm.Live(modes: "nt", params: [:])
+        var drafts = ChannelModeDrafts()
+        drafts.setOn("m", true, live: before)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: before)
+        drafts.noteSending(sending)
+        drafts.settle(sending, wentOut: true)
+        drafts.setOn("m", false, live: before)
+        drafts.reconcile(live: before, liveTopic: "")
+        XCTAssertNotNil(drafts.rows["m"])
+        drafts.refused()
+        drafts.reconcile(live: before, liveTopic: "")
+        XCTAssertNil(drafts.rows["m"], "the channel won't move for a refused Save")
+        let otherOp = ChannelModeForm.Live(modes: "ntm", params: [:])
+        drafts.reconcile(live: otherOp, liveTopic: "")
+        XCTAssertEqual(try! ChannelModeForm.changes(spec: spec, live: otherOp, draft: drafts.rows).get(), [],
+                       "another op's +m stands")
+
+        var topic = ChannelModeDrafts()
+        topic.setTopic("New")
+        topic.noteTopicSending("New", liveTopic: "Hello")
+        topic.settleTopic("New", wentOut: true)
+        topic.setTopic("Hello")
+        topic.reconcile(live: before, liveTopic: "Hello")
+        XCTAssertEqual(topic.topic, "Hello")
+        topic.refused()
+        topic.reconcile(live: before, liveTopic: "Hello")
+        XCTAssertNil(topic.topic)
+    }
+
     /// A send that never left has nothing for an undo to outlive; and re-ticking what's on its way
     /// ends quietly once it lands.
     func testAnUndoOfASaveThatNeverLeftDissolvesAndARetickEndsQuietly() {

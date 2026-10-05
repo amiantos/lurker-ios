@@ -420,6 +420,11 @@ public enum ChannelModeForm {
 /// was saved — when that row's live state moves at all, since a server may echo a value
 /// normalized (`+l 050` comes back as 50). A refusal moves nothing, so the edit stands beside
 /// the error.
+///
+/// ⚠ One exception to "goes when it matches": an edit made while its row's Save is still out,
+/// which matches the channel only because the channel hasn't answered yet — an undo. It stays
+/// until the channel moves, or until the Save is known not to be coming (`settle` unsent,
+/// `refused`).
 public struct ChannelModeDrafts: Equatable, Sendable {
     public private(set) var rows: [String: ChannelModeForm.DraftRow] = [:]
     /// The topic as typed; nil until the user types, and the field shows the live topic.
@@ -518,6 +523,19 @@ public struct ChannelModeDrafts: Equatable, Sendable {
         topicDissolvedWhilePending = nil
     }
 
+    /// The channel refused the Save — an error row inside its window (`ChannelRefusals`) — or
+    /// the socket that carried it is gone. Either way the channel won't move for it, so nothing
+    /// waits on it any more: an undo kept while it was out goes on the next reconcile, rather than
+    /// lingering until somebody else's change of the same mode turns it into a revert of theirs.
+    ///
+    /// ⚠ Every row's record, not just the refused one's: an error row doesn't say which change it
+    /// answers. An undo of a change in the same Save that did land is lost with it — the narrow
+    /// price of never reverting another op.
+    public mutating func refused() {
+        savedRows = [:]
+        savedTopic = nil
+    }
+
     /// …and the answer came.
     public mutating func settleTopic(_ topic: String, wentOut: Bool) {
         if !wentOut {
@@ -543,9 +561,10 @@ public struct ChannelModeDrafts: Equatable, Sendable {
                 // the untick matches the channel as it still is; dropped here, the +m then lands
                 // and the switch turns back on, the undo lost. Kept until the channel moves off
                 // the state it was saved from: then it's a real difference, shown, and Save sends
-                // it. (A send that never left is taken back by `settle`, and the edit goes then.)
-                let undoWhileOut = saved.map { !moved && $0.sent != want } ?? false
-                if !undoWhileOut { rows[letter] = nil }
+                // it. (A send that never left is taken back by `settle`, and a refused one by
+                // `refused`; the edit goes then.) A matching edit whose saved row hasn't moved IS
+                // that undo: it equals the row's baseline, which is never what the Save sent.
+                if saved == nil || moved { rows[letter] = nil }
             } else if moved, saved?.sent == want {
                 if pendingLetters.contains(letter) { dissolvedWhilePending[letter] = want }
                 rows[letter] = nil
@@ -557,8 +576,7 @@ public struct ChannelModeDrafts: Equatable, Sendable {
         if sending == liveTopic {
             // Typed back to the old topic while the new one is out: kept until the new one lands,
             // as for the modes above.
-            let undoWhileOut = savedTopic.map { !moved && $0.sent != sending } ?? false
-            if !undoWhileOut { self.topic = nil }
+            if savedTopic == nil || moved { self.topic = nil }
         } else if moved, savedTopic?.sent == sending {
             if topicPending { topicDissolvedWhilePending = topic }
             self.topic = nil

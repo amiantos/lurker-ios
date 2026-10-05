@@ -14,20 +14,23 @@ final class ComposerTextView: UITextView {
     /// re-encoded `UIImage`, so a PNG screenshot stays a lossless PNG and the server sees
     /// exactly what was copied. Empty tuple positions are (data, mime, filename).
     var onPasteImage: ((Data, String, String) -> Void)?
+    /// Whether an image paste uploads. Off where the buffer takes no files (a server log, the
+    /// Lurker buffer): there a paste is an ordinary text paste, rather than an image swallowed.
+    var acceptsImages = true
 
     /// Offer "Paste" whenever the pasteboard holds an image, even with no text on it — so a
     /// copied screenshot is pasteable into an empty field. `hasImages` is a detection
     /// property, so probing it here doesn't trip the "pasted from" privacy banner; only the
     /// real read in `paste(_:)` does.
     override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(paste(_:)), UIPasteboard.general.hasImages {
+        if action == #selector(paste(_:)), acceptsImages, UIPasteboard.general.hasImages {
             return true
         }
         return super.canPerformAction(action, withSender: sender)
     }
 
     override func paste(_ sender: Any?) {
-        if let pasted = Self.imageFromPasteboard() {
+        if acceptsImages, let pasted = Self.imageFromPasteboard() {
             onPasteImage?(pasted.data, pasted.mime, pasted.filename)
             return
         }

@@ -2470,7 +2470,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// staging the pasteboard bytes to a temp file, so it flows through the same progress,
     /// URL-insert, and cleanup — including the shrink, which a big screenshot can use.
     private func uploadPastedImage(data: Data, mime: String, filename: String) {
-        guard takesUploads, !isUploadBusy else { return }
+        guard !isUploadBusy else { return }
         let ext = (filename as NSString).pathExtension.isEmpty ? "png" : (filename as NSString).pathExtension
         let url = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("lurker-paste-\(UUID().uuidString).\(ext)")

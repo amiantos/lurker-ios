@@ -1,7 +1,6 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import Combine
 import LurkerKit
 import UIKit
 
@@ -17,11 +16,7 @@ import UIKit
 final class NickNoteViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private let networkId: Int
-    /// Whose note this is, following them through a nick change — see `NickFollower`. The draft
-    /// carries over: it's still about them.
-    private var follower: NickFollower
-    private var nick: String { follower.nick }
-    private var cancellables = Set<AnyCancellable>()
+    private let nick: String
 
     /// The note as typed. Seeded once from the store and then owned by the editor — a live
     /// subscription here would rewrite the field under someone mid-sentence if another device
@@ -34,7 +29,7 @@ final class NickNoteViewController: UITableViewController {
     init(viewModel: ChatViewModel, networkId: Int, nick: String) {
         self.viewModel = viewModel
         self.networkId = networkId
-        follower = NickFollower(state: viewModel.state, networkId: networkId, nick: nick)
+        self.nick = nick
         let existing = viewModel.state.nickNotes.note(networkId: networkId, nick: nick)?.note ?? ""
         self.draft = existing
         self.original = existing
@@ -53,16 +48,6 @@ final class NickNoteViewController: UITableViewController {
             systemItem: .save,
             primaryAction: UIAction { [weak self] _ in self?.save() }
         )
-        // Only the buffer index: a rename is the one thing here that follows the store.
-        viewModel.statePublisher
-            .map(\.keysById)
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else { return }
-                _ = follower.follow(viewModel.state)
-            }
-            .store(in: &cancellables)
     }
 
     override func viewDidAppear(_ animated: Bool) {

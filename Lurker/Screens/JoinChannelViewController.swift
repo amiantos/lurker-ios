@@ -21,9 +21,6 @@ final class JoinChannelViewController: UITableViewController {
     private let onJoin: (Network, String) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var networks: [Network] = []
-    /// Lurker's own socket can carry a write (`ChatState.socketWritable`). While it's reconnecting
-    /// every network's state is last-known, so none of them can be joined on.
-    private var socketWritable = false
     private var selected: Int?
     private var channel = ""
 
@@ -49,7 +46,6 @@ final class JoinChannelViewController: UITableViewController {
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "network")
 
         networks = BufferOrder.networks(viewModel.state.networks)
-        socketWritable = viewModel.state.socketWritable
         selectDefault()
 
         // A network finishing its connect while this sheet is open makes it selectable, so the
@@ -65,7 +61,6 @@ final class JoinChannelViewController: UITableViewController {
             .sink { [weak self] slice in
                 guard let self else { return }
                 networks = BufferOrder.networks(slice.networks)
-                socketWritable = slice.socketWritable
                 // ⚠ Re-picked, not merely validated. The default is "the first connected
                 // one", and that answer changes: two disconnected networks open the sheet
                 // with the first one checked, and when the *second* finishes connecting the
@@ -73,7 +68,11 @@ final class JoinChannelViewController: UITableViewController {
                 // over a working socket. A selection that has been deleted from the web is
                 // the same problem from the other end — nothing checked at all, against a
                 // picker whose rule is that something always is.
-                if target == nil { selectDefault() } else { updateJoinButton() }
+                //
+                // ⚠ But not while Lurker's own socket is down: then NO network is joinable, and
+                // re-picking would drop the user's choice for the first network, never to return
+                // when the socket does. The choice stands, with Join disabled.
+                if target == nil, slice.socketWritable { selectDefault() } else { updateJoinButton() }
                 tableView.reloadSections(IndexSet(integer: 1), with: .none)
             }
             .store(in: &cancellables)
@@ -166,9 +165,10 @@ final class JoinChannelViewController: UITableViewController {
     }
 
     /// Whether a JOIN could travel on this network now — `ChatState.canWrite(networkId:)`, the
-    /// test `requestJoin` makes, over the sheet's copy of the state.
+    /// test `requestJoin` makes. While Lurker's own socket is reconnecting every network's state
+    /// is last-known, so none of them can be joined on.
     private func joinable(_ network: Network) -> Bool {
-        socketWritable && network.state == .connected
+        viewModel.state.canWrite(networkId: network.id)
     }
 
     /// The network this would join on, when there is one that could actually carry it.

@@ -685,8 +685,8 @@ final class SettingsViewController: UITableViewController {
             // stranded Settings sheet floating over the sign-in root. Naming the presenter is
             // unambiguous whichever order those two finish in.
             guard let self else { return }
-            // Before the session ends, so a stepper run still settling goes out under it.
-            flushWrites()
+            // (A stepper run still settling goes out in `viewWillDisappear`, which the dismiss
+            // runs before its completion ends the session.)
             let presenter = presentingViewController
             presenter?.dismiss(animated: true) { [weak self] in self?.viewModel.logout() }
         })

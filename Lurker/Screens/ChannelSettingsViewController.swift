@@ -179,11 +179,18 @@ final class ChannelSettingsViewController: UITableViewController {
             // Whatever changed in the gap came as backlog, not live rows, so a `±k` seen before it
             // may be stale: forget them, and ask the config again.
             forgetKey()
+            // The socket that carried an outstanding Save is gone: nothing waits on it.
+            drafts.refused()
         case .line(let lineKey, let message):
             guard lineKey.id == key.id else { return }
             switch message.type {
             case .mode: modeRowsSeen.append(message)
-            case .error: refusals.note(message.text ?? "")
+            case .error:
+                let answered = refusals.current.count
+                refusals.note(message.text ?? "")
+                // An error inside the Save's window is its answer: the channel won't move for it,
+                // so nothing waits on it (`ChannelModeDrafts.refused`).
+                if refusals.current.count > answered { drafts.refused() }
             default: return
             }
         }

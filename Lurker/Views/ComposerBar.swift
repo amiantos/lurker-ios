@@ -92,6 +92,8 @@ final class ComposerBar: UIView {
         didSet {
             guard showsAttach != oldValue else { return }
             attachGlass.isHidden = !showsAttach
+            // No paperclip, no image paste either — the same rule, from the keyboard.
+            textView.acceptsImages = showsAttach
             // Deactivate before activate, or the two leading constraints briefly conflict.
             (showsAttach ? fieldFlushLeading : fieldAfterAttach)?.isActive = false
             (showsAttach ? fieldAfterAttach : fieldFlushLeading)?.isActive = true

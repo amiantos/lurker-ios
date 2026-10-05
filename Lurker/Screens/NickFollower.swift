@@ -3,13 +3,17 @@
 
 import LurkerKit
 
-/// A page about a person — their profile, their note — following them through a nick change.
+/// A person's profile following them through a nick change.
 ///
 /// Pages about a buffer follow a rename by its id (`ChatViewController.handleBufferDisappeared`),
 /// but a person's page is keyed by a nick, which has no id. Their conversation does: a DM or DCC
 /// chat's rename IS their nick change, so the page follows that buffer's id through `keysById`.
-/// Left on the old nick, a note editor saved under a name nobody holds any more, and the profile's
-/// whois said they'd gone. (Android's `DialogRenames.nick`, which follows the same renames.)
+/// Left on the old nick, the profile's whois said they'd gone. (Android's `DialogRenames.nick`,
+/// which follows the same renames.)
+///
+/// ⚠⚠ The note editor does NOT follow. The server keeps a nick note under the nick it was written
+/// for (`NICK_KEYED_TABLES` in lurker's `server/db/bufferKeyedTables.ts`), so the note on screen is
+/// still the old nick's row: following would make Delete miss it and Save write a second one.
 ///
 /// ⚠ Someone with no conversation open has no rename to follow — the same limit as Android's.
 struct NickFollower {
@@ -35,7 +39,9 @@ struct NickFollower {
               buffer.kind == .dm || buffer.kind == .dcc
         else { return false }
         let peer = DccChat.peer(buffer.target)
-        guard peer != nick else { return false }
+        // Folded, as the buffer key is: a profile opened as `Bob` over a DM keyed `bob` is no
+        // rename.
+        guard peer.lowercased() != nick.lowercased() else { return false }
         nick = peer
         return true
     }

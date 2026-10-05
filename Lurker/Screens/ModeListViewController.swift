@@ -120,10 +120,11 @@ final class ModeListViewController: UITableViewController {
         lastSlice = slice
         // A fetched list stops being kept current the moment readiness is lost — a part, or an IRC
         // reconnect under a live socket, neither of which is a new snapshot — since the changes in
-        // the gap won't arrive as live rows. A REFUSED fetch isn't owed again: losing readiness is
-        // no reason to ask a server that said no. (Android's ModeListModel.linkMoved.)
-        if wasReady, !slice.ready, case .ready = status {
-            fetchOwed = true
+        // the gap won't arrive as live rows. So is one still LOADING: its answer may describe the
+        // channel from before. A REFUSED fetch isn't owed again: losing readiness is no reason to
+        // ask a server that said no. (Android's ModeListModel.linkMoved, plus the loading case.)
+        if wasReady, !slice.ready {
+            if case .failed = status {} else { fetchOwed = true }
         }
         if fetchOwed, slice.ready, !wasReady {
             fetchOwed = false
