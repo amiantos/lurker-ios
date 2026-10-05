@@ -22,6 +22,9 @@ final class JoinChannelViewController: UITableViewController {
     private var cancellables = Set<AnyCancellable>()
     private var networks: [Network] = []
     private var selected: Int?
+    /// The user tapped a network. Their pick stands through any blip — of that network or of
+    /// Lurker's own socket — with Join disabled until it's back (sweep L48).
+    private var userPicked = false
     private var channel = ""
 
     init(viewModel: ChatViewModel, onJoin: @escaping (Network, String) -> Void) {
@@ -69,10 +72,17 @@ final class JoinChannelViewController: UITableViewController {
                 // the same problem from the other end — nothing checked at all, against a
                 // picker whose rule is that something always is.
                 //
-                // ⚠ But not while Lurker's own socket is down: then NO network is joinable, and
-                // re-picking would drop the user's choice for the first network, never to return
-                // when the socket does. The choice stands, with Join disabled.
-                if target == nil, slice.socketWritable { selectDefault() } else { updateJoinButton() }
+                // ⚠⚠ But never over the user's own pick while that network still exists: a blip
+                // (its own, or of Lurker's socket, which downs them all) moved the checkmark to the
+                // first connected network, and when theirs came back the join went somewhere they
+                // never chose. Their pick stands with Join disabled; only a default re-picks.
+                let pickGone = selected.map { id in !self.networks.contains { $0.id == id } } ?? true
+                if target == nil, slice.socketWritable, !userPicked || pickGone {
+                    userPicked = false
+                    selectDefault()
+                } else {
+                    updateJoinButton()
+                }
                 tableView.reloadSections(IndexSet(integer: 1), with: .none)
             }
             .store(in: &cancellables)
@@ -153,6 +163,7 @@ final class JoinChannelViewController: UITableViewController {
         let network = networks[indexPath.row]
         guard joinable(network) else { return }
         selected = network.id
+        userPicked = true
         updateJoinButton()
         tableView.reloadSections(IndexSet(integer: 1), with: .none)
     }
