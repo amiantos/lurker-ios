@@ -1600,8 +1600,10 @@ final class BufferListViewController: UICollectionViewController {
         let parted = state.isParted(buffer.key)
         let leaveTitle = buffer.kind == .channel && !parted ? "Leave" : "Close"
         // Read as the menu opens, like the rest of it: a drop while the menu sits open leaves
-        // Join enabled, and that JOIN goes nowhere — as a typed `/join` would.
-        let canJoin = state.networks[networkId]?.state == .connected
+        // Join enabled, and that JOIN goes nowhere — as a typed `/join` would. `canWrite`, the
+        // test `requestJoin` makes: while Lurker's own socket is reconnecting the network's state
+        // is last-known, and offering Join then only earns a "not connected" toast.
+        let canJoin = state.canWrite(networkId: networkId)
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             var children: [UIMenuElement] = []
             // A parted channel keeps its row and its history, and getting back in is the usual

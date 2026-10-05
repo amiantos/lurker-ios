@@ -72,8 +72,8 @@ final class ComposerBar: UIView {
     /// The away strip's Back (#135).
     var onBack: (() -> Void)?
 
-    /// The draft as of the last `onDraftChange`, so a re-measure that changes no text doesn't
-    /// masquerade as an edit. See `textViewDidChange`.
+    /// The draft as of the last `onDraftChange` (or `restore`), so a re-measure that changes no
+    /// text doesn't masquerade as an edit. See `textViewDidChange`.
     private var lastEmittedDraft = ""
 
     /// Set while `restore(_:)` is putting a refused line back — see its note.
@@ -92,6 +92,8 @@ final class ComposerBar: UIView {
         didSet {
             guard showsAttach != oldValue else { return }
             attachGlass.isHidden = !showsAttach
+            // No paperclip, no image paste either — the same rule, from the keyboard.
+            textView.acceptsImages = showsAttach
             // Deactivate before activate, or the two leading constraints briefly conflict.
             (showsAttach ? fieldFlushLeading : fieldAfterAttach)?.isActive = false
             (showsAttach ? fieldAfterAttach : fieldFlushLeading)?.isActive = true
@@ -536,9 +538,14 @@ final class ComposerBar: UIView {
         // in the middle of writing. Same hazard the method's own comment names for the Dynamic
         // Type path, arriving down a different road.
         //
-        // ⚠ `lastEmittedDraft` is deliberately NOT advanced. It mirrors what the channel was last
-        // told, and the channel was told nothing — so deleting the restored line back to empty
-        // still correctly emits no change, and typing one character still correctly emits.
+        // ⚠⚠ `lastEmittedDraft` IS advanced, to the restored text: the owner ends any typing claim
+        // before a restore, so the channel's picture is "not typing" over THIS text. Left at the
+        // old value, a restore that lands one keystroke away from it swallowed the next one —
+        // type "hello" (paused), another device trims it to "hell", type "o": the draft equals
+        // what was last emitted, nothing goes out, and the channel keeps seeing "paused" while
+        // you type. Deleting the restored text to empty emits an empty draft, which ends a claim
+        // that isn't there: silent.
+        lastEmittedDraft = text
         textViewDidChange(textView)
     }
 

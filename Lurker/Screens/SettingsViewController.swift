@@ -249,6 +249,13 @@ final class SettingsViewController: UITableViewController {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        // Done, a swipe down, or a push to Networks: a run still settling goes now. Early is
+        // harmless — it's the value on screen — and late is never.
+        flushWrites()
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Settings"
@@ -601,15 +608,30 @@ final class SettingsViewController: UITableViewController {
         writeTimers[key] = timer
     }
 
+    /// Send every run that hasn't settled, now — the screen is going. The timer holds the screen
+    /// weakly and would die with it, dropping a value the user left on screen and meant. (Android's
+    /// `SettingsWriter.flush`.)
+    private func flushWrites() {
+        let pending = writeTimers
+        writeTimers = [:]
+        for timer in pending.values where timer.isValid {
+            timer.fire()
+            timer.invalidate()
+        }
+    }
+
     /// Write one setting.
     ///
     /// The store is updated from the server's reply (`LurkerClient.updateSettings` applies the
     /// returned values), so a rejected write leaves the control exactly where the server still
     /// holds it rather than showing a state it never accepted.
     private func write(_ key: String, _ value: SettingValue) {
-        Task { [weak self] in
+        // ⚠ `viewModel` strongly, `self` weakly: the PATCH goes out even when the screen has
+        // already gone (a flush at close); only the reply's redraw needs the screen.
+        Task { [weak self, viewModel] in
+            let failure = await viewModel.updateSettings([key: value])
             guard let self else { return }
-            guard let failure = await viewModel.updateSettings([key: value]) else {
+            guard let failure else {
                 // Success: the client applied the reply's values, so the store changed and the
                 // subscription has already rebuilt (and cleared any error). Rebuilding again
                 // here would just be a second table reload for the same event.
@@ -663,6 +685,8 @@ final class SettingsViewController: UITableViewController {
             // stranded Settings sheet floating over the sign-in root. Naming the presenter is
             // unambiguous whichever order those two finish in.
             guard let self else { return }
+            // (A stepper run still settling goes out in `viewWillDisappear`, which the dismiss
+            // runs before its completion ends the session.)
             let presenter = presentingViewController
             presenter?.dismiss(animated: true) { [weak self] in self?.viewModel.logout() }
         })

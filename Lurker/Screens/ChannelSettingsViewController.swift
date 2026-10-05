@@ -53,6 +53,11 @@ final class ChannelSettingsViewController: UITableViewController {
     /// applying (the channel loses `+k`, the socket resyncs), so a slow read from before can't
     /// put back a key the channel has since moved on from.
     private var keyLookup = 0
+    /// Whether the network is up and we're in the channel, as of the last render. A FALLING edge
+    /// means the channel went on without us — an IRC reconnect, or a part and rejoin on the same
+    /// socket, neither of which is a new snapshot — so a `±k` seen before, and the config's answer,
+    /// may no longer be the channel's key. (Android's `KeyLookup.linkMoved`.)
+    private var keyReady = true
 
     /// This channel's live `mode` rows since the screen opened (or the socket last reopened), off
     /// the socket rather than out of the buffer's log: a detached buffer holds live lines out of
@@ -113,17 +118,30 @@ final class ChannelSettingsViewController: UITableViewController {
         let modes: ChannelModeState?
         let topic: String?
         let access: ChannelAccess
+        /// The IRC network is connected — the store's word, which a new socket's snapshot corrects.
+        let linkUp: Bool
 
         init(_ state: ChatState, _ key: BufferKey) {
             modes = state.channelModes[key.id]
             topic = state.buffers[key.id]?.topic
             access = state.channelAccess(key)
+            linkUp = key.networkId.flatMap { state.networks[$0] }?.state == .connected
         }
+
+        /// Whether what this screen knows about the key can still be current — see `keyReady`.
+        var keyReady: Bool { linkUp && access.joined }
     }
 
     /// The key lives only in the network config, and the copy any other screen read is as old as
     /// that screen — so it's asked afresh, once per stretch of the channel being keyed.
-    private func askForKeyIfKeyed(_ modes: String) {
+    private func askForKeyIfKeyed(_ slice: Slice) {
+        let wasReady = keyReady
+        keyReady = slice.keyReady
+        if wasReady, !keyReady { forgetKey() }
+        // Nothing asked while not ready: the next rising edge's render asks, and a read now would
+        // only be thrown away by the edge.
+        guard keyReady else { return }
+        let modes = slice.modes?.modes ?? ""
         guard modes.contains("k") else {
             if keyAsked { keyLookup += 1 }
             keyAsked = false
@@ -142,6 +160,15 @@ final class ChannelSettingsViewController: UITableViewController {
         }
     }
 
+    /// Forget every sighting of the key — the live `±k` rows and the config's answer — so the next
+    /// ready render asks again, and a read already out can't answer.
+    private func forgetKey() {
+        modeRowsSeen.removeAll()
+        configKey = nil
+        keyAsked = false
+        keyLookup += 1
+    }
+
     private lazy var saveButton = UIBarButtonItem(
         systemItem: .save, primaryAction: UIAction { [weak self] _ in self?.save() }
     )
@@ -151,15 +178,19 @@ final class ChannelSettingsViewController: UITableViewController {
         case .resynced:
             // Whatever changed in the gap came as backlog, not live rows, so a `±k` seen before it
             // may be stale: forget them, and ask the config again.
-            modeRowsSeen.removeAll()
-            configKey = nil
-            keyAsked = false
-            keyLookup += 1
+            forgetKey()
+            // The socket that carried an outstanding Save is gone: nothing waits on it.
+            drafts.refused()
         case .line(let lineKey, let message):
             guard lineKey.id == key.id else { return }
             switch message.type {
             case .mode: modeRowsSeen.append(message)
-            case .error: refusals.note(message.text ?? "")
+            case .error:
+                let answered = refusals.current.count
+                refusals.note(message.text ?? "")
+                // An error inside the Save's window is its answer: the channel won't move for it,
+                // so nothing waits on it (`ChannelModeDrafts.refused`).
+                if refusals.current.count > answered { drafts.refused() }
             default: return
             }
         }
@@ -375,7 +406,7 @@ final class ChannelSettingsViewController: UITableViewController {
     private func render(animated: Bool = true) {
         guard isViewLoaded else { return }
         let state = viewModel.state
-        askForKeyIfKeyed(state.channelModes[key.id]?.modes ?? "")
+        askForKeyIfKeyed(Slice(state, key))
         drafts.reconcile(live: live(state), liveTopic: liveTopic(state))
         let access = state.channelAccess(key)
         let (changes, topic, error) = pending(state)

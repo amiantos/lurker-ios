@@ -376,9 +376,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         composer.translatesAutoresizingMaskIntoConstraints = false
         // Every buffer composes — the system buffer too, as the app's command console
-        // (#355 on the web; commands themselves are #10 here). It just has nothing to
-        // attach, so the paperclip goes and the field takes the width.
-        composer.showsAttach = buffer.networkId != nil
+        // (#355 on the web; commands themselves are #10 here) — but only a conversation takes
+        // files, so elsewhere the paperclip goes and the field takes the width.
+        composer.showsAttach = takesUploads
         view.addSubview(composer)
 
         uploadStatus.onCancel = { [weak self] in self?.cancelUpload() }
@@ -715,6 +715,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // leaves the field empty, and the restored line would go out as THAT reply rather than
         // the one it was sent as. It waits for the next free moment, like a line held behind text.
         guard composer.isEmpty, pendingReply == nil, let line = viewModel.takeUnsent(buffer.key) else { return }
+        // A restore is never typing, and the composer takes it as the channel's picture.
+        endTyping()
         composer.restore(line.text)
         // With the reply it went out as, if any.
         pendingReply = line.reply
@@ -2404,8 +2406,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The paperclip: offer the two sources and, on a pick, run the upload. One at a time —
     /// the status readout and `viewModel.upload`'s single-flight both assume it.
+    /// Whether this buffer takes uploads at all: the conversations — channels, DMs and DCC chats.
+    /// Not a server log or the Lurker buffer, which take commands, not files. One rule for every
+    /// place it's asked — the paperclip, a pasted image, Add to Message and where a finished link
+    /// lands — so a buffer can't be offered by one and refused by another. (Android's
+    /// `UploadTargets`.)
+    var takesUploads: Bool {
+        switch buffer.kind {
+        case .channel, .dm, .dcc: true
+        case .server, .system: false
+        }
+    }
+
     private func presentAttachmentSources() {
-        guard !isUploadBusy else { return }
+        guard takesUploads, !isUploadBusy else { return }
         let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
         sheet.addAction(UIAlertAction(title: "Photo Library", style: .default) { [weak self] _ in
             self?.pick { $0.pickFromPhotoLibrary(completion: $1) }
@@ -2577,7 +2591,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // There may be no buffer on screen at all now that the list is a place you
                     // can back out to (#49) — and a successful upload whose link goes nowhere,
                     // silently, is the worst of the outcomes. Hold it for the clipboard below.
-                    if let chat = Self.activeChat() {
+                    //
+                    // A server log on screen takes commands, not files: the link goes to the
+                    // clipboard there too.
+                    if let chat = Self.activeChat(), chat.takesUploads {
                         // Only the first URL claims the caret and the keyboard; the rest of a
                         // long run append at the end, so they don't cut a caption in half or
                         // shove the keyboard back up minutes later.
@@ -2974,7 +2991,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         self?.afterColumnSearch { $0.showUploadsHere() }
     }
 
+    /// Browsing uploads works from any buffer; Add to Message only where a link may land.
     private func showUploadsHere() {
+        guard takesUploads else { return showUploads(viewModel: viewModel) }
         showUploads(viewModel: viewModel) { [weak self] url in
             self?.composer.insert(url)
         }
@@ -3507,7 +3526,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         isShowingDraft = true
         defer { isShowingDraft = false }
         let draft = draft ?? ComposerDraft()
-        if composer.text != draft.body { composer.restore(draft.body) }
+        if composer.text != draft.body {
+            // What the channel was told about is gone: another device's draft replaced it, and a
+            // `paused` would describe text nobody is writing. (Android's ComposerState.restore.)
+            endTyping()
+            composer.restore(draft.body)
+        }
         pendingReply = draft.reply
     }
 

@@ -22,7 +22,9 @@ import UIKit
 final class UserProfileViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private let networkId: Int
-    private let nick: String
+    /// Who this page is about, following them through a nick change — see `NickFollower`.
+    private var follower: NickFollower
+    private var nick: String { follower.nick }
     private var cancellables = Set<AnyCancellable>()
 
     private var sections: [Section] = []
@@ -37,7 +39,7 @@ final class UserProfileViewController: UITableViewController {
     init(viewModel: ChatViewModel, networkId: Int, nick: String) {
         self.viewModel = viewModel
         self.networkId = networkId
-        self.nick = DccChat.peer(nick)
+        follower = NickFollower(state: viewModel.state, networkId: networkId, nick: DccChat.peer(nick))
         super.init(style: .insetGrouped)
     }
 
@@ -59,6 +61,17 @@ final class UserProfileViewController: UITableViewController {
             )
         }
 
+        subscribe()
+
+        // After the first render, so the cached reply (if any) is already on screen when the
+        // request goes out rather than a frame behind it.
+        viewModel.requestWhois(networkId: networkId, nick: nick)
+    }
+
+    /// Draw from the store, for the nick this page is about NOW: the dedupe captures it, so a
+    /// rename re-subscribes (`apply`).
+    private func subscribe() {
+        cancellables.removeAll()
         viewModel.statePublisher
             .removeDuplicates { [networkId, nick] old, new in
                 // Every input this screen draws from, and nothing else — a profile open over a
@@ -81,15 +94,13 @@ final class UserProfileViewController: UITableViewController {
                     // Send Message is offered at all. A `/nick` while this is open would
                     // otherwise leave the row inviting you to DM yourself.
                     && old.networks[networkId]?.nick == new.networks[networkId]?.nick
+                    // Their conversation's rename is their nick change — see `NickFollower`.
+                    && old.keysById == new.keysById
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
         apply(viewModel.state)
-
-        // After the first render, so the cached reply (if any) is already on screen when the
-        // request goes out rather than a frame behind it.
-        viewModel.requestWhois(networkId: networkId, nick: nick)
     }
 
     // MARK: - Model
@@ -115,6 +126,14 @@ final class UserProfileViewController: UITableViewController {
     }
 
     private func apply(_ state: ChatState) {
+        if follower.follow(state) {
+            // They changed nick: this is still their page, under the new name, and the old name's
+            // whois says nothing about them any more.
+            title = nick
+            subscribe()
+            viewModel.requestWhois(networkId: networkId, nick: nick)
+            return
+        }
         let whois = state.whoisResult(networkId: networkId, nick: nick)
         let selfNick = state.networks[networkId]?.nick ?? ""
         status = ProfileStatus.resolve(

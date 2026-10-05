@@ -414,6 +414,115 @@ final class ChannelModesTests: XCTestCase {
         XCTAssertNotNil(drafts.rows["s"], "a row nobody answered stands")
     }
 
+    /// ⚠⚠ The same undo, reconciled BEFORE the echo too — which is what a screen does, on every
+    /// state change. The untick matches the channel as it still is, and was dropped there; then +m
+    /// landed and the switch turned back on. (L52; Android carried this app-side as EditsInFlight.)
+    func testAnUndoWhileTheSaveIsOutSurvivesTheEcho() {
+        let before = ChannelModeForm.Live(modes: "nt", params: [:])
+        var drafts = ChannelModeDrafts()
+        drafts.setOn("m", true, live: before)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: before)
+        drafts.noteSending(sending)
+        drafts.settle(sending, wentOut: true)
+        drafts.setOn("m", false, live: before)
+        drafts.reconcile(live: before, liveTopic: "")
+        XCTAssertEqual(drafts.shown("m", live: before).on, false)
+        XCTAssertNotNil(drafts.rows["m"], "kept while the +m is still out")
+
+        let after = ChannelModeForm.Live(modes: "ntm", params: [:])
+        drafts.reconcile(live: after, liveTopic: "")
+        XCTAssertEqual(drafts.shown("m", live: after).on, false, "the switch stays off")
+        let changes = try! ChannelModeForm.changes(spec: spec, live: after, draft: drafts.rows).get()
+        XCTAssertEqual(changes, [OutgoingModeChange(sign: "-", letter: "m")], "and Save takes it back off")
+    }
+
+    func testATopicTypedBackWhileTheNewOneIsOutSurvivesItsEcho() {
+        var drafts = ChannelModeDrafts()
+        let live = ChannelModeForm.Live(modes: "", params: [:])
+        drafts.setTopic("New")
+        drafts.noteTopicSending("New", liveTopic: "Hello")
+        drafts.settleTopic("New", wentOut: true)
+        drafts.setTopic("Hello")
+        drafts.reconcile(live: live, liveTopic: "Hello")
+        XCTAssertEqual(drafts.topic, "Hello", "kept while the new topic is out")
+        drafts.reconcile(live: live, liveTopic: "New")
+        XCTAssertEqual(drafts.topicChange(live: "New"), "Hello", "the new one landed: typed-back is a change again")
+    }
+
+    /// A value row: +l 50, Save +l 60, type it back to 50 while that's out.
+    func testAValueTypedBackWhileItsSaveIsOutSurvivesTheEcho() {
+        let fifty = ChannelModeForm.Live(modes: "l", params: ["l": "50"])
+        var drafts = ChannelModeDrafts()
+        drafts.setValue("l", "60", live: fifty)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "l", param: "60")], live: fifty)
+        drafts.noteSending(sending)
+        drafts.settle(sending, wentOut: true)
+        drafts.setValue("l", " 50 ", live: fifty)
+        drafts.reconcile(live: fifty, liveTopic: "")
+        XCTAssertEqual(drafts.rows["l"]?.value, " 50 ", "kept while the +l 60 is out")
+        let sixty = ChannelModeForm.Live(modes: "l", params: ["l": "60"])
+        drafts.reconcile(live: sixty, liveTopic: "")
+        XCTAssertEqual(
+            try! ChannelModeForm.changes(spec: spec, live: sixty, draft: drafts.rows).get(),
+            [OutgoingModeChange(sign: "+", letter: "l", param: "50")]
+        )
+    }
+
+    /// ⚠⚠ A refused Save never moves the channel. Without `refused`, the kept undo lingered — and
+    /// when another op later made the same change, it turned into a revert of theirs.
+    func testARefusedSaveLetsAKeptUndoGo() {
+        let before = ChannelModeForm.Live(modes: "nt", params: [:])
+        var drafts = ChannelModeDrafts()
+        drafts.setOn("m", true, live: before)
+        let sending = drafts.sending([OutgoingModeChange(sign: "+", letter: "m")], live: before)
+        drafts.noteSending(sending)
+        drafts.settle(sending, wentOut: true)
+        drafts.setOn("m", false, live: before)
+        drafts.reconcile(live: before, liveTopic: "")
+        XCTAssertNotNil(drafts.rows["m"])
+        drafts.refused()
+        drafts.reconcile(live: before, liveTopic: "")
+        XCTAssertNil(drafts.rows["m"], "the channel won't move for a refused Save")
+        let otherOp = ChannelModeForm.Live(modes: "ntm", params: [:])
+        drafts.reconcile(live: otherOp, liveTopic: "")
+        XCTAssertEqual(try! ChannelModeForm.changes(spec: spec, live: otherOp, draft: drafts.rows).get(), [],
+                       "another op's +m stands")
+
+        var topic = ChannelModeDrafts()
+        topic.setTopic("New")
+        topic.noteTopicSending("New", liveTopic: "Hello")
+        topic.settleTopic("New", wentOut: true)
+        topic.setTopic("Hello")
+        topic.reconcile(live: before, liveTopic: "Hello")
+        XCTAssertEqual(topic.topic, "Hello")
+        topic.refused()
+        topic.reconcile(live: before, liveTopic: "Hello")
+        XCTAssertNil(topic.topic)
+    }
+
+    /// A send that never left has nothing for an undo to outlive; and re-ticking what's on its way
+    /// ends quietly once it lands.
+    func testAnUndoOfASaveThatNeverLeftDissolvesAndARetickEndsQuietly() {
+        let before = ChannelModeForm.Live(modes: "nt", params: [:])
+        var unsent = ChannelModeDrafts()
+        unsent.setOn("m", true, live: before)
+        let sending = unsent.sending([OutgoingModeChange(sign: "+", letter: "m")], live: before)
+        unsent.noteSending(sending)
+        unsent.settle(sending, wentOut: false)
+        unsent.setOn("m", false, live: before)
+        unsent.reconcile(live: before, liveTopic: "")
+        XCTAssertNil(unsent.rows["m"])
+
+        var retick = ChannelModeDrafts()
+        retick.setOn("m", true, live: before)
+        let out = retick.sending([OutgoingModeChange(sign: "+", letter: "m")], live: before)
+        retick.noteSending(out)
+        retick.setOn("m", false, live: before)
+        retick.setOn("m", true, live: before)
+        retick.reconcile(live: ChannelModeForm.Live(modes: "ntm", params: [:]), liveTopic: "")
+        XCTAssertNil(retick.rows["m"], "nothing left to send")
+    }
+
     func testTheTopicDraft() {
         var drafts = ChannelModeDrafts()
         XCTAssertNil(drafts.topicChange(live: "old"), "untouched")
