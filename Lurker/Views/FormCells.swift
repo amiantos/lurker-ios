@@ -225,6 +225,9 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
     /// Called when the intrinsic height changes, so the table can re-measure without a
     /// full reload — which would resign the keyboard mid-typing.
     var onHeightChange: (() -> Void)?
+    /// Whether the box may hold this text, asked before an edit lands. Nil takes anything. An
+    /// edit it refuses doesn't happen — a cap, the way a web `maxlength` is one.
+    var accepts: ((String) -> Bool)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -289,6 +292,7 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         super.prepareForReuse()
         onChange = nil
         onHeightChange = nil
+        accepts = nil
         textView.autocapitalizationType = .none
         textView.autocorrectionType = .no
         textView.spellCheckingType = .no
@@ -321,6 +325,11 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
     func focus() {
         textView.becomeFirstResponder()
         textView.selectedRange = NSRange(location: textView.text.utf16.count, length: 0)
+    }
+
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        guard let accepts, let current = textView.text, let range = Range(range, in: current) else { return true }
+        return accepts(current.replacingCharacters(in: range, with: text))
     }
 
     func textViewDidChange(_ textView: UITextView) {

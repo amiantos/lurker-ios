@@ -23,6 +23,18 @@ final class ToastView: FloatingGlassControl {
     /// read rather than glance at (#57).
     static let readingHoldSeconds: TimeInterval = 4
 
+    /// What a write says when it couldn't go out. Nothing queues a verb behind a dropped socket, so
+    /// the screen that tried says so rather than looking like it worked (the client sweep's
+    /// offline-writes batch). One sentence everywhere, so it reads as one rule.
+    static let notConnected = "Not connected — try again when you're back online"
+
+    /// `notConnected` (or a more specific sentence), held long enough to read.
+    static func showNotConnected(
+        _ message: String = notConnected, over host: UIView, above anchor: NSLayoutYAxisAnchor? = nil
+    ) {
+        show(message, symbol: "exclamationmark.circle", over: host, above: anchor, hold: readingHoldSeconds)
+    }
+
     /// The toast currently up, if any. One at a time: rapid taps REPLACE rather than stack, or a
     /// column of identical capsules climbs the screen for something that happened once per tap.
     private static weak var current: ToastView?

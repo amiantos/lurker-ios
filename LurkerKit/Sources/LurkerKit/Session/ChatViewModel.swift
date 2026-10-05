@@ -195,6 +195,7 @@ public final class ChatViewModel {
             client.restore(server: server, token: token)
             sessionSubject.value = .loggedIn
             Task { await loadConfig() }
+            store.setSocketOpening()
             await client.start()
             return true
         case .unknownClient:
@@ -525,7 +526,7 @@ public final class ChatViewModel {
             // The server takes this build again: it was rolled back, or updated.
             store.clearIncompatible()
             guard isForeground else { return }
-            client.reconnect(since: store.state.maxEventId)
+            reconnectSocket()
         }
     }
 
@@ -630,8 +631,16 @@ public final class ChatViewModel {
     /// see the Bookmarks list's swipe.
     @discardableResult
     public func setBookmark(messageId: Int, saved: Bool) -> Bool {
-        client.setBookmark(messageId: messageId, saved: saved)
+        canWrite && client.setBookmark(messageId: messageId, saved: saved)
     }
+
+    /// Whether a write the user made can reach the server now (`ChatState.socketWritable`). Asked
+    /// before every user write that reports its fate (sweep L02…L53), because the send's own answer
+    /// can't see two windows:
+    /// - a reconnect's new socket takes writes before its upgrade succeeds — deliberately, for the
+    ///   connect burst — and loses them if the attempt fails;
+    /// - airplane mode flips `reachable` while the old socket still reads `.connected`.
+    private var canWrite: Bool { store.state.socketWritable }
 
     /// React with `value` on a line, or take ours back when it's already there (iOS #183).
     ///
@@ -893,7 +902,7 @@ public final class ChatViewModel {
             // #128, in the window the ConnectionBanner is pointing at. The ack path covers a live
             // socket the cell refuses on; this covers not reaching the cell.
             let id = unsent.track(key, line: text, reply: reply)
-            if !client.sendMessage(
+            if !canWrite || !client.sendMessage(
                 networkId: key.networkId, target: key.target, text: body, clientId: id,
                 replyTo: reply?.messageId)
             {
@@ -932,25 +941,37 @@ public final class ChatViewModel {
         // Recorded rather than acted on inline so the remaining effects still run: a command that
         // is half machinery should not stop halfway because one send found no socket.
         var wentNowhere = false
+        // Every wire effect goes through here, and goes out only if it can (`canWrite`). The message
+        // verbs mint their correlator before sending, since it rides the verb; the rest — `/topic`,
+        // `/nick`, `/part`, `/away` — have no `send-result`, so theirs is minted only for a failure,
+        // to carry the line back. Before sweep L02 those were dropped without a word.
+        let writable = canWrite
+        func wire(_ send: () -> Bool) {
+            guard !(writable && send()) else { return }
+            _ = correlator()
+            wentNowhere = true
+        }
         for effect in effects {
             switch effect {
             case .send(let target, let text):
                 let clientId = correlator()
-                let went = sendMessageSeam?(target, text)
-                    ?? client.sendMessage(networkId: networkId, target: target, text: text, clientId: clientId)
-                wentNowhere = !went || wentNowhere
+                wire {
+                    sendMessageSeam?(target, text)
+                        ?? client.sendMessage(networkId: networkId, target: target, text: text, clientId: clientId)
+                }
             case .action(let target, let text):
                 // A `/me` can be the reply — `reply` is nil for every other command (see `send`).
-                wentNowhere = !client.sendAction(
-                    networkId: networkId, target: target, text: text, clientId: correlator(),
-                    replyTo: target == key.target ? reply?.messageId : nil)
-                    || wentNowhere
+                let clientId = correlator()
+                wire {
+                    client.sendAction(
+                        networkId: networkId, target: target, text: text, clientId: clientId,
+                        replyTo: target == key.target ? reply?.messageId : nil)
+                }
             case .notice(let target, let text):
-                wentNowhere = !client.sendNotice(
-                    networkId: networkId, target: target, text: text, clientId: correlator())
-                    || wentNowhere
+                let clientId = correlator()
+                wire { client.sendNotice(networkId: networkId, target: target, text: text, clientId: clientId) }
             case .raw(let line):
-                client.sendRaw(networkId: networkId, line: line)
+                wire { client.sendRaw(networkId: networkId, line: line) }
             case .showProfile(let who):
                 // Nothing goes out here — the screen asks when it opens. A `/whois` typed in
                 // the system buffer has no connection to ask on and is silently no-op'd, the
@@ -959,29 +980,37 @@ public final class ChatViewModel {
             case .join(let channel, let joinKey):
                 // The one join path: it opens the channel once we're in it, and says why when we
                 // aren't (#57). Typed in a buffer on that network, so opening it is what `/join`
-                // means.
-                if let networkId {
+                // means. Not after a send in the same line went nowhere (`/cycle`'s part): the line
+                // is coming back to the composer, and a join notice on top would say it twice.
+                if let networkId, !wentNowhere {
                     requestJoin(networkId: networkId, channel: channel, key: joinKey, opens: true)
                 }
             case .part(let channel, let reason):
-                client.part(networkId: networkId, channel: channel, reason: reason)
+                wire { client.part(networkId: networkId, channel: channel, reason: reason) }
             case .close(let target):
                 // As `closeBuffer` does: a `/close` stands down a pending open for that buffer.
                 _ = pendingOpens.closing(BufferKey(networkId: networkId, target: target))
-                client.closeBuffer(networkId: networkId, target: target)
+                // The server log can't be closed: nothing goes out, so there's nothing to hand back.
+                switch BufferKind.of(networkId: networkId, target: target) {
+                case .server, .system: break
+                default: wire { client.closeBuffer(networkId: networkId, target: target) }
+                }
             case .clear(let target, let undo):
                 // Nothing is written locally, deliberately. The server picks the exact boundary
                 // id (the current tail) and fans a `buffer-cleared` back to every device
                 // including this one, so the marker this screen draws is always the
                 // authoritative one — an optimistic local clear would have to guess the id and
                 // would be wrong for anything that landed in between.
-                client.clearBuffer(networkId: networkId, target: target, undo: undo)
+                wire { client.clearBuffer(networkId: networkId, target: target, undo: undo) }
             case .away(let message, let all):
-                client.setAway(message, networkId: networkId, all: all)
+                wire { client.setAway(message, networkId: networkId, all: all) }
             case .back(let all):
-                client.setBack(networkId: networkId, all: all)
+                wire { client.setBack(networkId: networkId, all: all) }
             case .ctcp(let target, let type, let args):
-                client.sendCTCP(networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args)
+                wire {
+                    client.sendCTCP(
+                        networkId: networkId, target: target, issuingTarget: key.target, ctcpType: type, args: args)
+                }
             case .activate(let target):
                 guard let networkId else { break }
                 let to = BufferKey(networkId: networkId, target: target)
@@ -1240,12 +1269,18 @@ public final class ChatViewModel {
     /// Mark a buffer read up to its latest loaded message. Server-authoritative and
     /// MAX-clamped, and deduped here, so calling it on every state change while viewing a
     /// buffer is cheap. The `read-state` echo updates the counts.
+    ///
+    /// ⚠ Recorded only once it has gone out. A mark with no socket goes nowhere, and recording it
+    /// anyway had the dedupe skip the same id after the reconnect — the pointer never moved, on
+    /// this device's badge or anyone else's (sweep L23).
     public func markRead(_ key: BufferKey) {
-        guard let latest = store.state.messages[key.id]?.compactMap({ $0.id != 0 ? $0.id : nil }).max(),
+        guard canWrite,
+              let latest = store.state.messages[key.id]?.compactMap({ $0.id != 0 ? $0.id : nil }).max(),
               latest > (lastMarked[key.id] ?? 0)
         else { return }
-        lastMarked[key.id] = latest
-        client.markRead(networkId: key.networkId, target: key.target, messageId: latest)
+        if client.markRead(networkId: key.networkId, target: key.target, messageId: latest) {
+            lastMarked[key.id] = latest
+        }
     }
 
     public func markAllRead() {
@@ -1508,13 +1543,20 @@ public final class ChatViewModel {
     }
 
     /// Close a buffer (part a channel / drop a DM) and remove its row immediately.
-    public func closeBuffer(_ key: BufferKey) {
+    ///
+    /// False, with the row and its draft left alone, when the close couldn't go out. Removing the
+    /// row anyway left the channel joined and the draft unsent, and the reconnect's snapshot put
+    /// the row straight back with no account of why (sweep L16) — so the caller says so instead.
+    @discardableResult
+    public func closeBuffer(_ key: BufferKey) -> Bool {
         // A close stands down a wait for the same buffer: a DM closed while its open is pending
         // would otherwise be minted again by the late backlog and taken back into (iOS #201).
+        // Whether or not the close goes out — the user has said they're done with it.
         _ = pendingOpens.closing(key)
-        client.closeBuffer(networkId: key.networkId, target: key.target)
+        guard canWrite, client.closeBuffer(networkId: key.networkId, target: key.target) else { return false }
         dropDraft(key)
         store.removeBuffer(key)
+        return true
     }
 
     /// The networks the user is on, unordered.
@@ -1549,9 +1591,10 @@ public final class ChatViewModel {
     /// `/back` from a control rather than the composer — the away strip's Back (#135), on the
     /// network the strip is showing, scoped as a typed `/back` is (lurker#994). No local
     /// mutation: the strip comes down when the server's `away-state` echo folds in, on every
-    /// device at once.
-    public func setBack(networkId: Int?) {
-        client.setBack(networkId: networkId, all: nil)
+    /// device at once. False when it went nowhere.
+    @discardableResult
+    public func setBack(networkId: Int?) -> Bool {
+        canWrite && client.setBack(networkId: networkId, all: nil)
     }
 
     /// Ask the network who `nick` is (#12) — what the profile screen sends on open, and what
@@ -1602,13 +1645,18 @@ public final class ChatViewModel {
     /// ⚠ A `=bob` DCC chat is a conversation with bob, so its note IS bob's note. The server
     /// stores whatever nick it is handed, so without this a note written from the chat would be
     /// filed under `=bob` — a second note about the same person that the DM with bob never shows.
-    public func setNickNote(networkId: Int, nick: String, note: String) {
-        client.setNickNote(networkId: networkId, nick: DccChat.peer(nick), note: note)
+    ///
+    /// False when it went nowhere: the editor stays open with what was typed (sweep L14).
+    @discardableResult
+    public func setNickNote(networkId: Int, nick: String, note: String) -> Bool {
+        canWrite && client.setNickNote(networkId: networkId, nick: DccChat.peer(nick), note: note)
     }
 
     /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
-    public func reorderFavorites(bufferIds: [Int]) {
-        client.reorderFavorites(bufferIds: bufferIds)
+    /// False when it went nowhere, and then no echo is coming to settle a drop (sweep L29).
+    @discardableResult
+    public func reorderFavorites(bufferIds: [Int]) -> Bool {
+        canWrite && client.reorderFavorites(bufferIds: bufferIds)
     }
 
     public func clearError() { store.clearError() }
@@ -1753,6 +1801,7 @@ public final class ChatViewModel {
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
         Task { await loadConfig() }
+        store.setSocketOpening()
         Task { await client.start() }
     }
 
@@ -1903,6 +1952,10 @@ public final class ChatViewModel {
                 client.dropSocket()
                 return
             }
+            // A new socket asks every read mark again. The drop clears them too, but a foreground
+            // reconnect can replace a socket that died without saying so, and its close is never
+            // heard — a mark lost on it would be deduped for good (sweep L23).
+            lastMarked.removeAll()
             store.apply(frame)
             reconnectAttempt = 0 // a clean connection resets the backoff
         case .socketClosed:
@@ -1919,6 +1972,10 @@ public final class ChatViewModel {
             // banner already names the outage, and a "No response" for each would only pile up
             // behind it (#57).
             pendingJoins.removeAll()
+            // And the read marks are asked again. One written into a socket that had died without
+            // saying so was recorded as sent, and the dedupe would skip it for good (sweep L23).
+            // The server MAX-clamps, so a mark that did land costs one redundant write.
+            lastMarked.removeAll()
             store.apply(frame)
             onSocketDropped()
         case .channelJoined(let networkId, let target):
@@ -2128,6 +2185,14 @@ public final class ChatViewModel {
         // Every attempt re-reads the config, not only while it's unanswered: it carries the
         // server's version, which moves exactly when a deploy drops the socket. See `loadConfig`.
         Task { await loadConfig() }
+        reconnectSocket()
+    }
+
+    /// Open a new socket in place of the old one, resuming from the last event. The one door every
+    /// reconnect goes through, so user writes wait for the new socket (`ChatState.socketOpening`) —
+    /// a forced one included, which replaces a stale socket while the state still reads `.connected`.
+    func reconnectSocket() {
+        store.setSocketOpening()
         client.reconnect(since: store.state.maxEventId)
     }
 

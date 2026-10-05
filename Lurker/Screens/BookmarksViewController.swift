@@ -93,13 +93,9 @@ final class BookmarksViewController: HistoryFeedViewController {
     /// The swipe couldn't be delivered, so the row stays. Said out loud rather than left as a
     /// gesture that visibly did nothing: an un-animating swipe reads as a missed touch, and
     /// the user would just try again against the same dead socket.
+    /// The same toast and sentence as the message sheet's Remove Bookmark.
     private func reportRemoveFailed() {
-        let alert = UIAlertController(
-            title: "Not Connected",
-            message: "This bookmark couldn't be removed right now. Try again once you're back online.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
+        ToastView.showNotConnected(
+            "Not connected — the bookmark didn't change.", over: navigationController?.view ?? view)
     }
 }

@@ -252,6 +252,8 @@ final class BufferListViewController: UICollectionViewController {
     /// store snapshot it permutes — see `orderedFavorites(_:)`.
     private var optimisticFavoriteOrder: [Int]?
     private var favoritesAtDrop: [FavoriteEntry]?
+    /// The burst the drop was made in. A new one releases the shadow — see `apply`.
+    private var burstAtDrop = 0
     /// The store's favorites when the live drag lifted. A drop is refused if they've moved
     /// since — see `performDropWith`.
     private var favoritesAtDragStart: [FavoriteEntry]?
@@ -457,6 +459,16 @@ final class BufferListViewController: UICollectionViewController {
     /// but the rebuild itself waits until anyone can see the result.
     private func apply(_ state: ChatState) {
         self.state = state
+        // A drop's shadow order waits for an echo, and a socket that ends takes the echo with it
+        // — the reconnect's burst re-sends the list unchanged, which releases nothing (sweep L29).
+        // So a new burst releases it: its snapshot is the server's whole favorites order, which is
+        // what the echo would have said. That covers a drop written into a socket that died
+        // without saying so, a forced foreground reconnect included, and a drop that did go out
+        // keeps its place until then rather than snapping home when the old socket goes.
+        if optimisticFavoriteOrder != nil, state.burstGeneration != burstAtDrop {
+            optimisticFavoriteOrder = nil
+            favoritesAtDrop = nil
+        }
         // The title is in the bar, not the list, so it tracks connection regardless of
         // whether the roster below is worth rebuilding. `apply` no-ops when nothing it shows
         // has moved.
@@ -1519,8 +1531,8 @@ final class BufferListViewController: UICollectionViewController {
         // A parted channel has nothing to leave, so it's Close — as on the long-press menu.
         let title = buffer.kind == .channel && !state.isParted(buffer.key) ? "Leave" : "Close"
         let close = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, done in
-            self?.close(buffer)
-            done(true)
+            // False leaves the row where it is, swipe and all: it's still there.
+            done(self?.close(buffer) ?? false)
         }
         return UISwipeActionsConfiguration(actions: [close])
     }
@@ -1528,12 +1540,20 @@ final class BufferListViewController: UICollectionViewController {
     /// Leave a channel / close a DM. Shared by the swipe and the context menu rather than
     /// written twice: the `forgetLastBuffer` half is easy to leave out of a second copy and
     /// impossible to notice missing until a relaunch strands someone on a spinner.
-    private func close(_ buffer: Buffer) {
-        viewModel.closeBuffer(buffer.key)
+    ///
+    /// Offline it says so and leaves the row (sweep L16). Removing it anyway sent no PART, so the
+    /// reconnect's snapshot put the row back and the channel had never been left.
+    @discardableResult
+    private func close(_ buffer: Buffer) -> Bool {
+        guard viewModel.closeBuffer(buffer.key) else {
+            ToastView.showNotConnected(over: navigationController?.view ?? view)
+            return false
+        }
         // Leaving here is the one moment the client *knows* a buffer is gone. Restoring into
         // one that isn't there lands on a spinner that never resolves (see
         // `SceneDelegate.launchBuffer`), and that path can't detect it — so tell it.
         UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
+        return true
     }
 
     /// Long-press to pin. The Favorites section is only as real as the way to fill it, and
@@ -1794,11 +1814,19 @@ extension BufferListViewController: UICollectionViewDragDelegate, UICollectionVi
         guard reordered != stored else { return }
         let idByKey = Dictionary(state.favorites.map { ($0.key.id, $0.bufferId) }, uniquingKeysWith: { a, _ in a })
         let reorderedIds = reordered.compactMap { idByKey[$0] }
-        viewModel.reorderFavorites(bufferIds: reorderedIds)
+        // ⚠ Only a drop that went out is kept. The shadow order below lasts until favorites
+        // change, and a reorder that went nowhere has no echo coming to change them — the reconnect
+        // re-sends the same list — so this device kept an order nobody else had (sweep L29). The
+        // row goes home instead, which is the truth.
+        guard viewModel.reorderFavorites(bufferIds: reorderedIds) else {
+            ToastView.showNotConnected(over: navigationController?.view ?? view)
+            return
+        }
         // Shadow the new order until the echo folds — the deferred rebuild released at
         // drag end would otherwise restore the store's pre-drop order (a visible snap
         // home, and a corrupt base for a quick second drag). See orderedFavorites(_:).
         favoritesAtDrop = state.favorites
+        burstAtDrop = state.burstGeneration
         optimisticFavoriteOrder = reorderedIds
 
         // The model moves with the view rather than being rebuilt: the echo would reach the

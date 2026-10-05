@@ -60,7 +60,18 @@ final class NickNoteViewController: UITableViewController {
         // ⚠ Sent verbatim; the server trims and decides. A whitespace-only note is a DELETE
         // there, so pre-trimming here would only hide which of the two happened — the
         // `nick-note-updated` echo is what settles it either way.
-        viewModel.setNickNote(networkId: networkId, nick: nick, note: draft)
+        send(draft)
+    }
+
+    /// Put a note (or the delete, an empty one) on the wire and close — or, when it can't go
+    /// out, stay open with what was typed and say so (sweep L14). Nothing locally holds a note,
+    /// so closing on a write that went nowhere lost it outright. The toast sits above the
+    /// keyboard, which is up: the field has focus from the moment the screen opens.
+    private func send(_ note: String) {
+        guard viewModel.setNickNote(networkId: networkId, nick: nick, note: note) else {
+            let host: UIView = navigationController?.view ?? view
+            return ToastView.showNotConnected(over: host, above: host.keyboardLayoutGuide.topAnchor)
+        }
         navigationController?.popViewController(animated: true)
     }
 
@@ -95,6 +106,7 @@ final class NickNoteViewController: UITableViewController {
         ) as! FormTextViewCell
         cell.configure(label: "Note about \(nick)", value: draft, placeholder: "Anything worth remembering.")
         cell.onChange = { [weak self] text in self?.draft = text }
+        cell.accepts = { NickNote.fits($0) }
         cell.onHeightChange = { [weak tableView] in
             // Re-measure without reloading, which would resign the keyboard mid-typing.
             tableView?.beginUpdates()
@@ -116,8 +128,7 @@ final class NickNoteViewController: UITableViewController {
             guard let self else { return }
             // An empty note IS the delete verb — one frame shape for both, which is the
             // server's own encoding rather than a convention chosen here.
-            viewModel.setNickNote(networkId: networkId, nick: nick, note: "")
-            navigationController?.popViewController(animated: true)
+            send("")
         })
         present(confirm, animated: true)
     }

@@ -364,20 +364,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.onCancelReply = { [weak self] in self?.cancelReply() }
         composer.onBack = { [weak self] in
             guard let self else { return }
-            // ⚠ Asked of the connection, not of the send: a dropped socket stays non-nil until
-            // the reconnect replaces it, so a write onto it "succeeds" and goes nowhere. And of
-            // BOTH signals: airplane mode flips `reachable` while the socket still reads
-            // `.connected`, for as long as it takes to notice. Nothing retries a Back, so say so,
-            // or the strip staying put reads as a Back that ignored you.
-            let state = viewModel.state
-            guard !state.reachable || state.connection != .connected else {
-                return viewModel.setBack(networkId: buffer.key.networkId)
-            }
-            ToastView.show(
-                "Not connected — try again when you're back online",
-                symbol: "exclamationmark.circle",
-                over: view, above: noticeAnchor, hold: ToastView.readingHoldSeconds
-            )
+            // False when it couldn't reach the server — the kit asks both connection signals and
+            // the send. Nothing retries a Back, so say so, or the strip staying put reads as a
+            // Back that ignored you.
+            if viewModel.setBack(networkId: buffer.key.networkId) { return }
+            ToastView.showNotConnected(over: view, above: noticeAnchor)
         }
         composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
         composer.onPasteImage = { [weak self] data, mime, name in
@@ -1205,6 +1196,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // buffer before the backlog that would have said where the boundary was. The wait is
         // short and self-clearing — the frame that answers the hydrate latches the boundary
         // above, and this fires on that same pass.
+        // Offline the kit sends nothing and records nothing (sweep L23); coming back online is a
+        // state change, so this runs again then.
         if view.window != nil, dividerAfterId != nil { viewModel.markRead(buffer.key) }
 
         // Following the tail decides everything here (see `followsTail`): preserving your
@@ -3397,7 +3390,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 reply: { [weak self] message in self?.reply(to: message) },
                 copy: { UIPasteboard.general.string = $0 },
                 setBookmark: { [weak self] id, saved in
-                    self?.viewModel.setBookmark(messageId: id, saved: saved)
+                    // Nothing changes on screen until the server's echo, so a save that went
+                    // nowhere has to say so or it reads as a tap that missed (sweep L53).
+                    guard let self else { return }
+                    if viewModel.setBookmark(messageId: id, saved: saved) { return }
+                    ToastView.showNotConnected(
+                        "Not connected — the bookmark didn't change.", over: view, above: noticeAnchor)
                 },
                 showProfile: { [weak self] nick in
                     // Safe to present straight away: the action sheet runs this from its own
