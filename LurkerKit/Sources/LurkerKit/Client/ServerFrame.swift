@@ -31,7 +31,13 @@ enum ServerFrame: Equatable, Sendable {
     /// They belong to the account rather than to any network, so they ride the frame the way
     /// `globalIgnores` does — grouped as one struct, because a third and fourth positional
     /// value is where a tuple stops being readable.
-    case snapshot([NetworkSnapshot], globalIgnores: [IgnoreRule], uploadLimits: UploadLimits)
+    ///
+    /// `cursor` is the global max message id, sent on a fresh connect only (§4.3). The shell
+    /// backlogs that follow carry no rows, so it is the only thing that moves the resume
+    /// cursor past the server logs; nil on a resume, which already has one.
+    case snapshot(
+        [NetworkSnapshot], globalIgnores: [IgnoreRule], uploadLimits: UploadLimits, cursor: Int? = nil
+    )
 
     /// WS `backlog-complete`: the terminal frame of a snapshot burst (lurker #635).
     ///
@@ -113,7 +119,10 @@ enum ServerFrame: Equatable, Sendable {
     /// server sends it on our own join and re-broadcasts it whenever it re-learns the
     /// list wholesale (a prefix-mode change, a WHO ident/host backfill, an away flip via
     /// away-notify). Ephemeral and silent, like `channelTopic` — state, not a line.
-    case channelMembers(networkId: Int?, target: String, members: [Member])
+    ///
+    /// `pending` is the server's `membersPending` (§9.1): it hasn't heard this channel's NAMES
+    /// since it last connected or attached, so `members` is only who it has learned of so far.
+    case channelMembers(networkId: Int?, target: String, members: [Member], pending: Bool = false)
 
     /// A `member-update` event: one member's current snapshot, patched onto the list in
     /// place. The server's incremental alternative to re-broadcasting `names` for a
@@ -331,6 +340,12 @@ enum ServerFrame: Equatable, Sendable {
     /// also rides every snapshot, which is what a fresh connect reads.
     case dccChatState(networkId: Int, nick: String, live: Bool)
 
+    /// An `invite` ephemeral naming us: `from` invited us to `channel`. Network-scoped via a
+    /// `:server:<id>` carrier, like the DCC offer. Nothing is stored; the system buffer's line
+    /// is the record, and this is only the moment to offer a Join. `userhost` is the inviter's,
+    /// for the ignore check.
+    case invited(networkId: Int, channel: String, from: String, userhost: String? = nil)
+
     /// WS `pins-changed`: this network's pinned buffers, in the user's order.
     ///
     /// Authoritative and wholesale — the server re-sends the whole list on every pin, unpin
@@ -460,6 +475,8 @@ struct ChannelSnapshot: Equatable, Sendable {
     let members: [Member]
     /// Modes, param values, creation time and the topic's setter — never the key.
     var modeState = ChannelModeState()
+    /// The server's `membersPending` (§9.1) — see `ServerFrame.channelMembers`.
+    var membersPending = false
 }
 
 /// Who set a channel's topic and when — 333, or a live TOPIC. Either half may be nil.

@@ -470,7 +470,8 @@ enum FrameParser {
         return .snapshot(
             networks,
             globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule),
-            uploadLimits: advertisedUploadLimits(obj)
+            uploadLimits: advertisedUploadLimits(obj),
+            cursor: obj.intOrNull("cursor")
         )
     }
 
@@ -653,7 +654,8 @@ enum FrameParser {
                 createdAt: ISOTime.parse(channel.stringOrNull("createdAt")),
                 topicSetBy: channel.stringOrNull("topicSetBy"),
                 topicSetAt: ISOTime.parse(channel.stringOrNull("topicSetAt"))
-            )
+            ),
+            membersPending: channel.bool("membersPending")
         )
     }
 
@@ -925,6 +927,19 @@ enum FrameParser {
         default:
             break
         }
+        // The `invite` that names us (lurker#261) is the same shape again: a `:server:<id>`
+        // carrier, the inviter in `from`, the channel in `channel`. Below the guard it has no
+        // `nick` or `invited`, so `isRenderable` drops it — and with it the only chance to offer
+        // a Join. The other `invite`, someone else invited on a channel we're in, is a real
+        // channel line with neither field, and falls through.
+        if obj.string("type") == "invite", let from = obj.stringOrNull("from"), !from.isEmpty {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let channel = obj.string("channel")
+            if channel.isEmpty { return .ignored }
+            return .invited(
+                networkId: networkId, channel: channel, from: from, userhost: obj.stringOrNull("userhost")
+            )
+        }
         // `react-support` is network-scoped state on a `:server:<id>` carrier, like those above.
         if obj.string("type") == "react-support" {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }
@@ -1043,7 +1058,8 @@ enum FrameParser {
             return .channelMembers(
                 networkId: obj.intOrNull("networkId"),
                 target: target,
-                members: obj.objects("members").map(parseMember)
+                members: obj.objects("members").map(parseMember),
+                pending: obj.bool("membersPending")
             )
         }
         // `typing` is ephemeral state like the three around it — no id, nothing to render —
@@ -1169,7 +1185,9 @@ enum FrameParser {
             // Absent means none stand — the server omits the field rather than sending `[]`.
             reactions: (event["reactions"] as? [[String: Any]]).map(parseReactions),
             replyTo: parseReplyContext(event["replyTo"]),
-            replyToSelf: event.bool("replyToSelf")
+            replyToSelf: event.bool("replyToSelf"),
+            // Only a 421 carries it, naming the verb the ircd didn't know.
+            unknownCommand: type == .error ? event.stringOrNull("unknownCommand") : nil
         )
     }
 

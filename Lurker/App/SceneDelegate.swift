@@ -29,6 +29,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Asks about DCC chat offers (lurker#270). Built in `scene(_:willConnectTo:)`, where the
     /// window it presents over exists.
     private var dccOfferPrompt: DccOfferPrompt?
+    private var invitePrompt: InvitePrompt?
     /// Same shape once more: LurkerKit decides the number, the app makes the
     /// `UserNotifications` call.
     private let badge = AppBadge { count in
@@ -75,15 +76,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         viewModel.onBufferOpened = { [weak self] key in self?.land(on: key) }
         // …and a join that didn't happen, or a DM that couldn't be asked for, says why.
         viewModel.onJoinNotice = { [weak self] notice in self?.showNotice(notice.message) }
-        // A DCC chat offer asks, over whatever is on screen (lurker#270).
+        // A DCC chat offer asks, over whatever is on screen (lurker#270)…
         dccOfferPrompt = DccOfferPrompt(
             viewModel: viewModel,
-            host: { [weak self] in
-                guard let self, viewModel.session == .loggedIn else { return nil }
-                return presentedSheet() ?? self.window?.rootViewController
-            },
+            host: { [weak self] in self?.promptHost() },
             onRefusal: { [weak self] message in self?.showNotice(message) }
         )
+        // …and so does an invitation, offering a Join (lurker#261).
+        invitePrompt = InvitePrompt(viewModel: viewModel, host: { [weak self] in self?.promptHost() })
+        viewModel.onInvited = { [weak self] networkId, channel, from in
+            self?.invitePrompt?.offer(networkId: networkId, channel: channel, from: from)
+        }
 
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
@@ -382,6 +385,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         } else {
             navigation?.dismiss(animated: false)
         }
+    }
+
+    /// What a prompt (a DCC offer, an invitation) presents over: the sheet on top, else the root.
+    /// Nil while signed out — there is no one to ask.
+    private func promptHost() -> UIViewController? {
+        guard viewModel.session == .loggedIn else { return nil }
+        return presentedSheet() ?? window?.rootViewController
     }
 
     /// The sheet on top, wherever it was presented from: `dismissPresented`'s counterpart, for

@@ -72,6 +72,22 @@ public final class ChatViewModel {
     /// navigates, the same move as `onJoinOpened`. Fired with the stored row's key.
     public var onBufferOpened: ((_ key: BufferKey) -> Void)?
 
+    /// Someone invited us to a channel we aren't in (lurker#261). The app offers a Join, which is
+    /// `requestJoin(…, opens: true)`; the system buffer already holds the line, so a prompt that
+    /// is never answered loses nothing. Not fired for a channel we're already in.
+    public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
+
+    /// Where each raw line this device sent was typed, and when, by network and verb, oldest
+    /// first, until a 421 names that verb — see `noteUnknownCommand`. A queue rather than the
+    /// latest send: `/foo` in #a then in #b answers twice, in that order, and each answer belongs
+    /// where its line was typed. Entries past `unknownCommandWindow` are dropped as it's touched.
+    private var rawCommandOrigins: [String: [(key: BufferKey, sentAt: Date)]] = [:]
+
+    /// How long a raw line waits for its 421. The ircd answers within a round trip; past this
+    /// the line was accepted, or its answer was lost with the socket, and a 421 that matches now
+    /// is someone else's — another device typing the same verb.
+    static let unknownCommandWindow: TimeInterval = 30
+
     /// The buffer we just opened, until its row exists — see `PendingOpens`. Giving up is quiet.
     /// A DCC chat's notices say what happened, in a buffer the list will show; a DM's refused
     /// `open-buffer` comes back as the server's `error` frame, which already says so.
@@ -257,6 +273,8 @@ public final class ChatViewModel {
         unsent.abandonAll()
         // Drafts are account data too, and a timer left armed would flush into the next session.
         resetDrafts()
+        // A raw line's origin names a buffer of this account; the next one's ids may reuse it.
+        rawCommandOrigins.removeAll()
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
@@ -342,6 +360,9 @@ public final class ChatViewModel {
     /// Test seam: stands in for the socket a command's PRIVMSG goes out on (`/msg bob hi`), so a
     /// test can have a line that went — target and text in, whether it went out.
     var sendMessageSeam: ((String, String) -> Bool)?
+
+    /// Test seam: stands in for the socket a raw line goes out on (`/frobnicate`).
+    var sendRawSeam: ((String) -> Bool)?
 
     /// Open a DM and go there once its row exists (iOS #201): Send Message on a profile, a Friends
     /// row whose DM is closed. The app is taken there through `onBufferOpened` — at once if the row
@@ -971,7 +992,15 @@ public final class ChatViewModel {
                 let clientId = correlator()
                 wire { client.sendNotice(networkId: networkId, target: target, text: text, clientId: clientId) }
             case .raw(let line):
-                wire { client.sendRaw(networkId: networkId, line: line) }
+                wire {
+                    guard sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line) else { return false }
+                    if let networkId, let verb = Self.rawVerb(line) {
+                        let now = Date()
+                        let pending = live(rawCommandOrigins[Self.rawCommandKey(networkId, verb)] ?? [], now: now)
+                        rawCommandOrigins[Self.rawCommandKey(networkId, verb)] = pending + [(key, now)]
+                    }
+                    return true
+                }
             case .showProfile(let who):
                 // Nothing goes out here — the screen asks when it opens. A `/whois` typed in
                 // the system buffer has no connection to ask on and is silently no-op'd, the
@@ -2107,11 +2136,61 @@ public final class ChatViewModel {
         switch frame {
         case .live(let networkId, let target, let message):
             channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
+            noteUnknownCommand(networkId: networkId, message)
         case .snapshot:
             channelEventsSubject.send(.resynced)
+        case .invited(let networkId, let channel, let from, let userhost):
+            guard store.state.buffers[BufferKey(networkId: networkId, target: channel).id]?.joined != true,
+                  // Someone ignored outright doesn't get to put an alert in front of us; their
+                  // invitation is still in the system buffer. There's no INVITES level, so only
+                  // a whole-identity rule counts — scoped to the channel they invited us to.
+                  !store.state.ignores.isIgnored(
+                      networkId: networkId, nick: from, userhost: userhost, channel: channel
+                  )
+            else { break }
+            onInvited?(networkId, channel, from)
         default:
             break
         }
+    }
+
+    /// A 421 for a command this device sent raw: say so where it was typed. The server's own
+    /// line goes to the network's server log, which isn't where anyone is looking when
+    /// `/frobnicate` in a channel seems to do nothing. A 421 for a line sent from another device
+    /// matches nothing here (past `unknownCommandWindow`), and that device says so itself.
+    func noteUnknownCommand(networkId: Int?, _ message: Message, now: Date = Date()) {
+        guard let networkId, let verb = message.unknownCommand else { return }
+        let rawKey = Self.rawCommandKey(networkId, verb)
+        var pending = live(rawCommandOrigins[rawKey] ?? [], now: now)
+        let origin = pending.isEmpty ? nil : pending.removeFirst()
+        rawCommandOrigins[rawKey] = pending.isEmpty ? nil : pending
+        guard let origin,
+              // Typed in the server log: the server's own line is already right there.
+              origin.key.target != Buffer.serverTarget(networkId),
+              // Closed since: a line for a buffer that's gone would sit in the side table unseen.
+              store.state.buffers[origin.key.id] != nil
+        else { return }
+        store.appendLocal(origin.key, text: "Unknown command: /\(verb.lowercased())")
+    }
+
+    /// `origins` without the ones too old to be answered now.
+    private func live(
+        _ origins: [(key: BufferKey, sentAt: Date)], now: Date
+    ) -> [(key: BufferKey, sentAt: Date)] {
+        origins.filter { now.timeIntervalSince($0.sentAt) <= Self.unknownCommandWindow }
+    }
+
+    /// The command of a raw line: its first word, past any IRCv3 tag block (`@label=x`) or
+    /// source prefix (`:me`) that `/raw` let the user type in front of it.
+    static func rawVerb(_ line: String) -> String? {
+        line.split(separator: " ")
+            .first { !$0.hasPrefix("@") && !$0.hasPrefix(":") }
+            .map(String.init)
+    }
+
+    /// IRC verbs are case-insensitive, and the ircd echoes one in whatever case it likes.
+    private static func rawCommandKey(_ networkId: Int, _ verb: String) -> String {
+        "\(networkId) \(verb.uppercased())"
     }
 
     /// Whether a roster re-read is already in flight. Without it a burst of `state` events
@@ -2235,6 +2314,8 @@ public final class ChatViewModel {
         unsent.abandonAll()
         // Drafts are account data too, and a timer left armed would flush into the next session.
         resetDrafts()
+        // A raw line's origin names a buffer of this account; the next one's ids may reuse it.
+        rawCommandOrigins.removeAll()
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
