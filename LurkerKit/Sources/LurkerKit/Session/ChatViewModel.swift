@@ -1834,32 +1834,46 @@ public final class ChatViewModel {
     /// name it, but revoking it would sign the user out from under themselves, so it's checked
     /// rather than assumed.
     func retryPendingRevokes(now: Date = Date()) {
+        // Almost always empty — checked before the live session's Keychain read.
+        let owed = sessions.pendingRevokes()
+        guard !owed.isEmpty else { return }
         let live = client.currentSession?.token ?? sessions.load()?.token
-        for pending in sessions.pendingRevokes() where pending.token != live {
+        for pending in owed where pending.token != live {
             guard !revoking.contains(pending.token) else {
                 retryWanted.insert(pending.token)
                 continue
             }
-            guard now.timeIntervalSince(pending.since) < Self.revokeRetryWindow else {
-                sessions.removePendingRevoke(token: pending.token)
-                continue
-            }
-            revoking.insert(pending.token)
-            Task { [weak self] in
-                guard let self else { return }
-                let outcome = await self.client.revoke(server: pending.server, token: pending.token)
-                self.revokeFinished(pending.token, outcome)
-            }
+            send(pending, now: now)
         }
     }
 
+    /// One owed revoke: dropped if it has outlived `revokeRetryWindow`, otherwise sent.
+    private func send(_ pending: PendingRevoke, now: Date = Date()) {
+        guard now.timeIntervalSince(pending.since) < Self.revokeRetryWindow else {
+            sessions.removePendingRevoke(token: pending.token)
+            return
+        }
+        revoking.insert(pending.token)
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.client.revoke(server: pending.server, token: pending.token)
+            self.revokeFinished(pending.token, outcome)
+        }
+    }
+
+    /// ⚠⚠ A wanted replay sends THIS token again, never every owed one. Re-running
+    /// `retryPendingRevokes` here marked each other token still out as wanted — a trigger it never
+    /// got — and two failing tokens then re-marked each other forever: a request loop for as long
+    /// as the app runs, tight when offline makes each fail at once. A normal launch set it off,
+    /// with two owed: the launch retry is still out when the scene's activation calls
+    /// `enterForeground`.
     private func revokeFinished(_ token: String, _ outcome: LurkerClient.RevokeOutcome) {
         revoking.remove(token)
         let wanted = retryWanted.remove(token) != nil
         if outcome == .done {
             sessions.removePendingRevoke(token: token)
-        } else if wanted {
-            retryPendingRevokes()
+        } else if wanted, let pending = sessions.pendingRevokes().first(where: { $0.token == token }) {
+            send(pending)
         }
     }
 

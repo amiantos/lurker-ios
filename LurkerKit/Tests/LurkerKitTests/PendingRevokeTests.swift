@@ -124,7 +124,7 @@ final class PendingRevokeTests: XCTestCase {
     /// The network comes back while a revoke is already out: if that one fails, it's asked again
     /// at once rather than waiting for the next trigger.
     func testATriggerDuringARequestIsNotLost() async throws {
-        let server = try await OneStatusServer(status: 503, delay: .milliseconds(400))
+        let server = try await OneStatusServer(status: 503, gated: true)
         let sessions = SessionStore(service: service)
         sessions.addPendingRevoke(PersistedSession(server: server.url, token: "old"))
         let model = ChatViewModel(
@@ -132,13 +132,35 @@ final class PendingRevokeTests: XCTestCase {
             settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
         )
         try await waitUntil { server.requests.count == 1 }
-        XCTAssertEqual(model.revoking, ["old"])
+        // Held open by the gate: the network comes back while it's still out.
         model.setReachable(false)
         model.setReachable(true)
-        // The first is still out, so nothing new yet; once it fails, the replay goes.
+        XCTAssertEqual(server.requests.count, 1)
+        server.open()
+        // It fails, and the trigger it swallowed is replayed — once.
         try await waitUntil { server.requests.count == 2 && model.revoking.isEmpty }
-        try await Task.sleep(for: .milliseconds(600))
+        try await Task.sleep(for: .milliseconds(300))
         XCTAssertEqual(server.requests.count, 2)
+    }
+
+    /// Two owed revokes, both out when a foreground arrives: each is replayed once when it fails,
+    /// and then the retries stop. Replaying by re-running the whole retry marked the OTHER token,
+    /// still out, as wanted too — and the two re-marked each other in a loop for good.
+    func testTwoOwedRevokesDoNotFeedEachOther() async throws {
+        let server = try await OneStatusServer(status: 503, gated: true)
+        let sessions = SessionStore(service: service)
+        sessions.addPendingRevoke(PersistedSession(server: server.url, token: "a"))
+        sessions.addPendingRevoke(PersistedSession(server: server.url, token: "b"))
+        let model = ChatViewModel(
+            sessions: sessions,
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
+        )
+        try await waitUntil { server.requests.count == 2 }
+        _ = model.enterForeground()
+        server.open()
+        try await waitUntil { server.requests.count == 4 && model.revoking.isEmpty }
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(server.requests.count, 4)
     }
 
     /// A month unanswered and the server is taken to be gone: dropped without asking it.
@@ -193,7 +215,15 @@ private final class OneStatusServer: @unchecked Sendable {
 
     var requests: [String] { lock.withLock { heads } }
 
-    init(status: Int, body: String = "", delay: Duration = .zero) async throws {
+    /// Released once by `open()` (or at init when not gated); each waiter passes it on.
+    private let gate = DispatchSemaphore(value: 0)
+
+    func open() { gate.signal() }
+
+    /// With `gated`, each connection waits for `open()` before it's answered: the test decides how
+    /// long a request is in flight, not the clock.
+    init(status: Int, body: String = "", gated: Bool = false) async throws {
+        if !gated { gate.signal() }
         let listener = try NWListener(using: .tcp, on: .any)
         self.listener = listener
         let ready = AsyncStream<UInt16> { continuation in
@@ -201,7 +231,7 @@ private final class OneStatusServer: @unchecked Sendable {
                 if case .ready = state, let port = listener.port?.rawValue { continuation.yield(port); continuation.finish() }
             }
         }
-        let pause = Double(delay.components.seconds) + Double(delay.components.attoseconds) / 1e18
+        let gate = self.gate
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .global())
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
@@ -210,7 +240,8 @@ private final class OneStatusServer: @unchecked Sendable {
                 }
                 let response = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\n"
                     + "Content-Length: \(Data(body.utf8).count)\r\nConnection: close\r\n\r\n\(body)"
-                if pause > 0 { Thread.sleep(forTimeInterval: pause) }
+                gate.wait()
+                gate.signal()
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
             }
         }
