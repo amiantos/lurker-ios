@@ -15,6 +15,20 @@ public struct PersistedSession: Codable, Equatable, Sendable {
     }
 }
 
+/// A session signed out of on this device whose server hasn't confirmed the revoke (#218), and
+/// since when — an owed revoke is given up after `ChatViewModel.revokeRetryWindow`.
+public struct PendingRevoke: Codable, Equatable, Sendable {
+    public let server: String
+    public let token: String
+    public let since: Date
+
+    public init(server: String, token: String, since: Date) {
+        self.server = server
+        self.token = token
+        self.since = since
+    }
+}
+
 /// Persists the session token in the **Keychain** — which encrypts at rest and is
 /// scoped to this app — so a relaunch reconnects without re-login. Unlike Android
 /// (which rolls its own AES-GCM over the Keystore), the Keychain *is* the encrypted
@@ -31,6 +45,8 @@ public final class SessionStore: Sendable {
     static let account = "oauth-session"
     /// Where the password sign-in kept its session.
     static let legacyAccount = "session"
+    /// Sessions signed out of whose server revoke hasn't been answered yet (#218).
+    static let pendingRevokesAccount = "pending-revokes"
 
     public init(service: String = "chat.lurker.session") {
         self.service = service
@@ -38,16 +54,7 @@ public final class SessionStore: Sendable {
 
     public func save(_ session: PersistedSession) {
         guard let data = SessionCodec.encode(session) else { return }
-        // Replace any existing item (Keychain add fails on a duplicate).
-        SecItemDelete(baseQuery(Self.account) as CFDictionary)
-        var attributes = baseQuery(Self.account)
-        attributes[kSecValueData as String] = data
-        // Available after the first unlock post-boot — survives a locked screen, which a
-        // background reconnect (#4) will need. `ThisDeviceOnly` keeps the bearer token
-        // out of encrypted backups and off a migrated device, so a restored backup can't
-        // silently carry a live session onto new hardware (the user re-signs-in there).
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(attributes as CFDictionary, nil)
+        write(data, Self.account)
     }
 
     public func load() -> PersistedSession? {
@@ -70,6 +77,53 @@ public final class SessionStore: Sendable {
 
     public func clear() {
         SecItemDelete(baseQuery(Self.account) as CFDictionary)
+    }
+
+    // MARK: - Revokes owed (#218)
+
+    /// Sessions signed out of on this device whose server hasn't confirmed the revoke yet.
+    ///
+    /// A sign-out forgets the token at once and revokes it in the background. If that request never
+    /// lands — offline, the server down, the app killed first — the token stays live on the server
+    /// for good (OAuth tokens don't expire; revoking deletes them), and so do the push registrations
+    /// made through it, so the departing account's DMs keep arriving on this phone. Each one waits
+    /// here, in the Keychain beside the live session, until the server answers.
+    public func pendingRevokes() -> [PendingRevoke] {
+        guard let data = read(Self.pendingRevokesAccount) else { return [] }
+        return SessionCodec.decodeList(data)
+    }
+
+    func addPendingRevoke(_ session: PersistedSession, at now: Date = Date()) {
+        var pending = pendingRevokes()
+        guard !pending.contains(where: { $0.token == session.token }) else { return }
+        pending.append(PendingRevoke(server: session.server, token: session.token, since: now))
+        writePendingRevokes(pending)
+    }
+
+    func removePendingRevoke(token: String) {
+        writePendingRevokes(pendingRevokes().filter { $0.token != token })
+    }
+
+    private func writePendingRevokes(_ pending: [PendingRevoke]) {
+        guard !pending.isEmpty else {
+            SecItemDelete(baseQuery(Self.pendingRevokesAccount) as CFDictionary)
+            return
+        }
+        guard let data = SessionCodec.encodeList(pending) else { return }
+        write(data, Self.pendingRevokesAccount)
+    }
+
+    private func write(_ data: Data, _ account: String) {
+        // Replace any existing item (Keychain add fails on a duplicate).
+        SecItemDelete(baseQuery(account) as CFDictionary)
+        var attributes = baseQuery(account)
+        attributes[kSecValueData as String] = data
+        // Available after the first unlock post-boot — survives a locked screen, which a
+        // background reconnect (#4) will need. `ThisDeviceOnly` keeps the bearer token
+        // out of encrypted backups and off a migrated device, so a restored backup can't
+        // silently carry a live session onto new hardware (the user re-signs-in there).
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        SecItemAdd(attributes as CFDictionary, nil)
     }
 
     private func read(_ account: String) -> Data? {
@@ -103,5 +157,16 @@ enum SessionCodec {
               !session.server.isEmpty, !session.token.isEmpty
         else { return nil }
         return session
+    }
+
+    static func encodeList(_ pending: [PendingRevoke]) -> Data? {
+        try? JSONEncoder().encode(pending)
+    }
+
+    /// The same tolerance per entry: one with an empty server or token is dropped, and an
+    /// unreadable blob is an empty list — there's nothing to revoke with either.
+    static func decodeList(_ data: Data) -> [PendingRevoke] {
+        guard let pending = try? JSONDecoder().decode([PendingRevoke].self, from: data) else { return [] }
+        return pending.filter { !$0.server.isEmpty && !$0.token.isEmpty }
     }
 }

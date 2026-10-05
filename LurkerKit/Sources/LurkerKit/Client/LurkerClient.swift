@@ -1686,11 +1686,22 @@ final class LurkerClient {
     ///
     /// `drafts` are saved first, over HTTP with the session being ended: a socket write queued
     /// now would be cancelled by the `close()` below before it went out.
-    func logout(deviceToken: String? = nil, drafts: [(key: BufferKey, draft: ComposerDraft)] = []) {
+    ///
+    /// `onRevoked` hears whether the server has given its final answer (#218): the caller keeps
+    /// the session owed a revoke until it has, and retries it with `revoke(server:token:)`.
+    func logout(
+        deviceToken: String? = nil,
+        drafts: [(key: BufferKey, draft: ComposerDraft)] = [],
+        onRevoked: ((RevokeOutcome) -> Void)? = nil
+    ) {
         let revokeToken = token
         let base = baseURL
         close()
-        guard let revokeToken, let url = URL(string: base + "/api/auth/logout") else { return }
+        guard let revokeToken else {
+            // Nothing to revoke from here; the caller's owed entry, if any, is retried later.
+            onRevoked?(.retry)
+            return
+        }
         let session = self.session
         Task {
             if !drafts.isEmpty {
@@ -1701,11 +1712,62 @@ final class LurkerClient {
                     session: session, baseURL: base, sessionToken: revokeToken, deviceToken: deviceToken
                 )
             }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
-            _ = try? await session.data(for: request)
+            let outcome = await Self.revoke(session: session, baseURL: base, token: revokeToken)
+            onRevoked?(outcome)
         }
+    }
+
+    /// Whether a revoke needs asking again (#218).
+    enum RevokeOutcome: Equatable {
+        /// The server has answered for good: the token is gone, was already gone, or this address
+        /// no longer has a Lurker server to ask.
+        case done
+        /// Nothing final yet — no answer at all, or a temporary one.
+        case retry
+    }
+
+    /// A revoke's verdict from the response, nil status for none at all (offline, DNS, TLS).
+    ///
+    /// Only Lurker's own answer counts. `POST /api/auth/logout` takes any bearer and always says
+    /// `{"ok":true}` — it has no auth check, so a token already gone gets the same answer — which
+    /// makes every other response someone else's: a captive portal's 200, a WAF's 403, a
+    /// maintenance 404, an auth gateway's 401 in front of a self-hosted server. None of them says
+    /// anything about the token, so it's asked again (until `revokeRetryWindow`). That includes
+    /// lurker.chat's proxy refusing a token it can't route — a 401 looks the same from a gateway.
+    nonisolated static func revokeOutcome(status: Int?, body: Data?) -> RevokeOutcome {
+        guard let status, (200..<300).contains(status), let body,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              json["ok"] as? Bool == true
+        else { return .retry }
+        return .done
+    }
+
+    /// The session this client holds, if any — what a sign-out owes a revoke for (#218). From
+    /// the client rather than the Keychain, whose writes are best-effort.
+    var currentSession: PersistedSession? {
+        token.map { PersistedSession(server: baseURL, token: $0) }
+    }
+
+    /// The sign-out request, for both the revoke and the password-era session's end.
+    nonisolated static func logoutRequest(baseURL: String, token: String) -> URLRequest? {
+        guard let url = URL(string: baseURL + "/api/auth/logout") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+
+    /// Revoke a session this device signed out of, through this client's HTTP session (no
+    /// cookies, as every bearer call). Retried by the caller until it's `.done` (#218).
+    func revoke(server: String, token: String) async -> RevokeOutcome {
+        await Self.revoke(session: session, baseURL: ServerAddress.normalize(server), token: token)
+    }
+
+    private static func revoke(session: URLSession, baseURL: String, token: String) async -> RevokeOutcome {
+        // An address that isn't a URL can never be asked.
+        guard let request = logoutRequest(baseURL: baseURL, token: token) else { return .done }
+        guard let (body, response) = try? await session.data(for: request) else { return .retry }
+        return revokeOutcome(status: (response as? HTTPURLResponse)?.statusCode, body: body)
     }
 
     /// Ends a session from the password sign-in this app had before OAuth, then empties the
@@ -1713,10 +1775,7 @@ final class LurkerClient {
     /// jar holds the cell session the proxy minted for the old token, and that's the session
     /// the cell has to delete. Best effort; the token is already off the device.
     nonisolated static func endPasswordSession(server: String, token: String) {
-        guard let url = URL(string: ServerAddress.normalize(server) + "/api/auth/logout") else { return }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let request = logoutRequest(baseURL: ServerAddress.normalize(server), token: token) else { return }
         Task.detached { [request] in
             _ = try? await URLSession.shared.data(for: request)
             HTTPCookieStorage.shared.removeCookies(since: .distantPast)
