@@ -125,6 +125,7 @@ final class PendingRevokeTests: XCTestCase {
     /// at once rather than waiting for the next trigger.
     func testATriggerDuringARequestIsNotLost() async throws {
         let server = try await OneStatusServer(status: 503, gated: true)
+        defer { server.open() }
         let sessions = SessionStore(service: service)
         sessions.addPendingRevoke(PersistedSession(server: server.url, token: "old"))
         let model = ChatViewModel(
@@ -132,6 +133,7 @@ final class PendingRevokeTests: XCTestCase {
             settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
         )
         try await waitUntil { server.requests.count == 1 }
+        XCTAssertEqual(model.revoking, ["old"])
         // Held open by the gate: the network comes back while it's still out.
         model.setReachable(false)
         model.setReachable(true)
@@ -148,6 +150,7 @@ final class PendingRevokeTests: XCTestCase {
     /// still out, as wanted too — and the two re-marked each other in a loop for good.
     func testTwoOwedRevokesDoNotFeedEachOther() async throws {
         let server = try await OneStatusServer(status: 503, gated: true)
+        defer { server.open() }
         let sessions = SessionStore(service: service)
         sessions.addPendingRevoke(PersistedSession(server: server.url, token: "a"))
         sessions.addPendingRevoke(PersistedSession(server: server.url, token: "b"))
