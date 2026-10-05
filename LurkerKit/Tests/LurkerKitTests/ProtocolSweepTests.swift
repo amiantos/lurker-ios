@@ -152,6 +152,34 @@ final class ProtocolSweepTests: XCTestCase {
         XCTAssertEqual(model.state.messages[channel.id]?.count, count, "one send, one notice")
     }
 
+    /// The same unknown command typed in two buffers before either answer: the 421s come back in
+    /// send order, and each lands where its own line was typed.
+    func testTwoSendsOfOneVerbAnswerInTheirOwnBuffers() {
+        let model = ChatViewModel(
+            sessions: SessionStore(service: "chat.lurker.tests.protocolsweep"),
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.protocolsweep")!)
+        )
+        model.handle(.socketOpen)
+        model.handle(.snapshot(
+            [NetworkSnapshot(
+                id: 1, state: .connected, nick: "me",
+                channels: [
+                    ChannelSnapshot(name: "#lurker", topic: nil, members: []),
+                    ChannelSnapshot(name: "#other", topic: nil, members: []),
+                ]
+            )],
+            globalIgnores: [], uploadLimits: .unstated
+        ))
+        let other = BufferKey(networkId: 1, target: "#other")
+        model.sendRawSeam = { _ in true }
+        model.send(channel, text: "/frobnicate")
+        model.send(other, text: "/frobnicate")
+        model.handle(unknownCommand("FROBNICATE", id: 50))
+        model.handle(unknownCommand("FROBNICATE", id: 51))
+        XCTAssertEqual(model.state.messages[channel.id]?.map(\.text), ["Unknown command: /frobnicate"])
+        XCTAssertEqual(model.state.messages[other.id]?.map(\.text), ["Unknown command: /frobnicate"])
+    }
+
     /// Another device's `/frobnicate` 421s on this socket too; that device says so, not this one.
     func testA421ForALineThisDeviceDidntSendSaysNothing() {
         let model = viewModel()

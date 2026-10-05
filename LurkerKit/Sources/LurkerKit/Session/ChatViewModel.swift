@@ -77,9 +77,11 @@ public final class ChatViewModel {
     /// is never answered loses nothing. Not fired for a channel we're already in.
     public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
 
-    /// Where each raw line this device sent was typed, and when, by network and verb, until a
-    /// 421 names that verb — see `noteUnknownCommand`. One entry per verb, the latest send's.
-    private var rawCommandOrigins: [String: (key: BufferKey, sentAt: Date)] = [:]
+    /// Where each raw line this device sent was typed, and when, by network and verb, oldest
+    /// first, until a 421 names that verb — see `noteUnknownCommand`. A queue rather than the
+    /// latest send: `/foo` in #a then in #b answers twice, in that order, and each answer belongs
+    /// where its line was typed. Entries past `unknownCommandWindow` are dropped as it's touched.
+    private var rawCommandOrigins: [String: [(key: BufferKey, sentAt: Date)]] = [:]
 
     /// How long a raw line waits for its 421. The ircd answers within a round trip; past this
     /// the line was accepted, or its answer was lost with the socket, and a 421 that matches now
@@ -271,6 +273,8 @@ public final class ChatViewModel {
         unsent.abandonAll()
         // Drafts are account data too, and a timer left armed would flush into the next session.
         resetDrafts()
+        // A raw line's origin names a buffer of this account; the next one's ids may reuse it.
+        rawCommandOrigins.removeAll()
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
@@ -991,7 +995,9 @@ public final class ChatViewModel {
                 wire {
                     guard sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line) else { return false }
                     if let networkId, let verb = Self.rawVerb(line) {
-                        rawCommandOrigins[Self.rawCommandKey(networkId, verb)] = (key, Date())
+                        let now = Date()
+                        let pending = live(rawCommandOrigins[Self.rawCommandKey(networkId, verb)] ?? [], now: now)
+                        rawCommandOrigins[Self.rawCommandKey(networkId, verb)] = pending + [(key, now)]
                     }
                     return true
                 }
@@ -2153,15 +2159,25 @@ public final class ChatViewModel {
     /// `/frobnicate` in a channel seems to do nothing. A 421 for a line sent from another device
     /// matches nothing here (past `unknownCommandWindow`), and that device says so itself.
     func noteUnknownCommand(networkId: Int?, _ message: Message, now: Date = Date()) {
-        guard let networkId, let verb = message.unknownCommand,
-              let origin = rawCommandOrigins.removeValue(forKey: Self.rawCommandKey(networkId, verb)),
-              now.timeIntervalSince(origin.sentAt) <= Self.unknownCommandWindow,
+        guard let networkId, let verb = message.unknownCommand else { return }
+        let rawKey = Self.rawCommandKey(networkId, verb)
+        var pending = live(rawCommandOrigins[rawKey] ?? [], now: now)
+        let origin = pending.isEmpty ? nil : pending.removeFirst()
+        rawCommandOrigins[rawKey] = pending.isEmpty ? nil : pending
+        guard let origin,
               // Typed in the server log: the server's own line is already right there.
               origin.key.target != Buffer.serverTarget(networkId),
               // Closed since: a line for a buffer that's gone would sit in the side table unseen.
               store.state.buffers[origin.key.id] != nil
         else { return }
         store.appendLocal(origin.key, text: "Unknown command: /\(verb.lowercased())")
+    }
+
+    /// `origins` without the ones too old to be answered now.
+    private func live(
+        _ origins: [(key: BufferKey, sentAt: Date)], now: Date
+    ) -> [(key: BufferKey, sentAt: Date)] {
+        origins.filter { now.timeIntervalSince($0.sentAt) <= Self.unknownCommandWindow }
     }
 
     /// The command of a raw line: its first word, past any IRCv3 tag block (`@label=x`) or
@@ -2298,6 +2314,8 @@ public final class ChatViewModel {
         unsent.abandonAll()
         // Drafts are account data too, and a timer left armed would flush into the next session.
         resetDrafts()
+        // A raw line's origin names a buffer of this account; the next one's ids may reuse it.
+        rawCommandOrigins.removeAll()
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
