@@ -88,7 +88,7 @@ final class ContactsAndPresenceTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":2,"state":"connected","nick":"me","channels":[],"peerPresence":{"darc":{"nick":"darc","state":"away","stateAt":null,"awayMessage":"brb"}}}]}"##
         )
-        guard case let .snapshot(networks, _, _) = frame else {
+        guard case let .snapshot(networks, _, _, _) = frame else {
             return XCTFail("expected snapshot, got \(frame)")
         }
         XCTAssertEqual(networks.first?.peerPresence["darc"], .away)

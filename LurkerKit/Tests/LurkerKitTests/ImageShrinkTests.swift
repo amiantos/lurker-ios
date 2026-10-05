@@ -139,7 +139,7 @@ struct ImageShrinkTests {
         let frame = FrameParser.parseWs(
             #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxUploadBytes":26214400,"maxStaticImageDimension":2048}"#
         )
-        guard case let .snapshot(_, _, limits) = frame else {
+        guard case let .snapshot(_, _, limits, _) = frame else {
             Issue.record("expected a snapshot, got \(frame)")
             return
         }
@@ -151,7 +151,7 @@ struct ImageShrinkTests {
         let frame = FrameParser.parseWs(
             #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxUploadBytes":26214400}"#
         )
-        guard case let .snapshot(_, _, limits) = frame else {
+        guard case let .snapshot(_, _, limits, _) = frame else {
             Issue.record("expected a snapshot, got \(frame)")
             return
         }
@@ -166,7 +166,7 @@ struct ImageShrinkTests {
                 #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxStaticImageDimension":"#
                     + value + "}"
             )
-            guard case let .snapshot(_, _, limits) = frame else {
+            guard case let .snapshot(_, _, limits, _) = frame else {
                 Issue.record("expected a snapshot")
                 return
             }

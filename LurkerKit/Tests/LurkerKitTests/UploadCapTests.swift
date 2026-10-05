@@ -45,7 +45,7 @@ struct UploadCapTests {
         let frame = snapshotFrame(
             #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxUploadBytes":26214400}"#
         )
-        guard case let .snapshot(_, _, limits) = frame else {
+        guard case let .snapshot(_, _, limits, _) = frame else {
             Issue.record("expected a snapshot, got \(frame)")
             return
         }
@@ -55,7 +55,7 @@ struct UploadCapTests {
     @Test("a snapshot from a server too old to advertise says nothing, not zero")
     func anOldSnapshotSaysNothing() {
         let frame = snapshotFrame(#"{"kind":"snapshot","networks":[],"globalIgnores":[]}"#)
-        guard case let .snapshot(_, _, limits) = frame else {
+        guard case let .snapshot(_, _, limits, _) = frame else {
             Issue.record("expected a snapshot, got \(frame)")
             return
         }
@@ -74,7 +74,7 @@ struct UploadCapTests {
                 #"{"kind":"snapshot","networks":[],"globalIgnores":[],"maxUploadBytes":"# + value
                     + "}"
             )
-            guard case let .snapshot(_, _, limits) = frame else {
+            guard case let .snapshot(_, _, limits, _) = frame else {
                 Issue.record("expected a snapshot")
                 return
             }

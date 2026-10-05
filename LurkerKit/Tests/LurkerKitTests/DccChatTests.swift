@@ -192,7 +192,7 @@ final class DccChatTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":1,"state":"disconnected","nick":"me","channels":[],"dccChats":["Bob",""],"dccChatOffers":["carol"]}]}"##
         )
-        guard case let .snapshot(networks, _, _) = frame else { return XCTFail("got \(frame)") }
+        guard case let .snapshot(networks, _, _, _) = frame else { return XCTFail("got \(frame)") }
         XCTAssertEqual(networks.first?.dccChats, ["Bob"], "an empty peer names no one")
         XCTAssertEqual(networks.first?.dccChatOffers, ["carol"])
     }

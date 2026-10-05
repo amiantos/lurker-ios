@@ -271,7 +271,7 @@ final class RelayBotsTests: XCTestCase {
         {"kind":"snapshot","networks":[{"networkId":7,"state":"connected","nick":"me","channels":[],
          "relayBots":[{"nick":"bridge","pattern":"{nick}: {message}"},{"nick":"","pattern":"x"}]}]}
         """##)
-        guard case let .snapshot(networks, _, _) = frame else { return XCTFail("expected a snapshot") }
+        guard case let .snapshot(networks, _, _, _) = frame else { return XCTFail("expected a snapshot") }
         // The nick-less row is dropped rather than becoming a mark keyed on the empty string,
         // which would then "match" every nick-less line the client renders.
         XCTAssertEqual(networks.first?.relayBots, [RelayBot(nick: "bridge", pattern: "{nick}: {message}")])

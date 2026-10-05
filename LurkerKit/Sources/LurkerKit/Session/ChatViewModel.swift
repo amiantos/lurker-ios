@@ -72,6 +72,16 @@ public final class ChatViewModel {
     /// navigates, the same move as `onJoinOpened`. Fired with the stored row's key.
     public var onBufferOpened: ((_ key: BufferKey) -> Void)?
 
+    /// Someone invited us to a channel we aren't in (lurker#261). The app offers a Join, which is
+    /// `requestJoin(…, opens: true)`; the system buffer already holds the line, so a prompt that
+    /// is never answered loses nothing. Not fired for a channel we're already in.
+    public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
+
+    /// Where each raw line this device sent was typed, by network and verb, until a 421 names
+    /// that verb — see `noteUnknownCommand`. One entry per verb, the latest send's buffer, so it
+    /// stays as small as the set of raw verbs anyone types.
+    private var rawCommandOrigins: [String: BufferKey] = [:]
+
     /// The buffer we just opened, until its row exists — see `PendingOpens`. Giving up is quiet.
     /// A DCC chat's notices say what happened, in a buffer the list will show; a DM's refused
     /// `open-buffer` comes back as the server's `error` frame, which already says so.
@@ -342,6 +352,9 @@ public final class ChatViewModel {
     /// Test seam: stands in for the socket a command's PRIVMSG goes out on (`/msg bob hi`), so a
     /// test can have a line that went — target and text in, whether it went out.
     var sendMessageSeam: ((String, String) -> Bool)?
+
+    /// Test seam: stands in for the socket a raw line goes out on (`/frobnicate`).
+    var sendRawSeam: ((String) -> Bool)?
 
     /// Open a DM and go there once its row exists (iOS #201): Send Message on a profile, a Friends
     /// row whose DM is closed. The app is taken there through `onBufferOpened` — at once if the row
@@ -971,7 +984,13 @@ public final class ChatViewModel {
                 let clientId = correlator()
                 wire { client.sendNotice(networkId: networkId, target: target, text: text, clientId: clientId) }
             case .raw(let line):
-                wire { client.sendRaw(networkId: networkId, line: line) }
+                wire {
+                    guard sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line) else { return false }
+                    if let networkId, let verb = line.split(separator: " ").first {
+                        rawCommandOrigins[Self.rawCommandKey(networkId, String(verb))] = key
+                    }
+                    return true
+                }
             case .showProfile(let who):
                 // Nothing goes out here — the screen asks when it opens. A `/whois` typed in
                 // the system buffer has no connection to ask on and is silently no-op'd, the
@@ -2107,11 +2126,34 @@ public final class ChatViewModel {
         switch frame {
         case .live(let networkId, let target, let message):
             channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
+            noteUnknownCommand(networkId: networkId, message)
         case .snapshot:
             channelEventsSubject.send(.resynced)
+        case .invited(let networkId, let channel, let from):
+            guard store.state.buffers[BufferKey(networkId: networkId, target: channel).id]?.joined != true
+            else { break }
+            onInvited?(networkId, channel, from)
         default:
             break
         }
+    }
+
+    /// A 421 for a command this device sent raw: say so where it was typed. The server's own
+    /// line goes to the network's server log, which isn't where anyone is looking when
+    /// `/frobnicate` in a channel seems to do nothing. A 421 for a line sent from another device
+    /// matches nothing here, and that device says so itself.
+    private func noteUnknownCommand(networkId: Int?, _ message: Message) {
+        guard let networkId, let verb = message.unknownCommand,
+              let key = rawCommandOrigins.removeValue(forKey: Self.rawCommandKey(networkId, verb)),
+              // Closed since: a line for a buffer that's gone would sit in the side table unseen.
+              store.state.buffers[key.id] != nil
+        else { return }
+        store.appendLocal(key, text: "Unknown command: /\(verb.lowercased())")
+    }
+
+    /// IRC verbs are case-insensitive, and the ircd echoes one in whatever case it likes.
+    private static func rawCommandKey(_ networkId: Int, _ verb: String) -> String {
+        "\(networkId) \(verb.uppercased())"
     }
 
     /// Whether a roster re-read is already in flight. Without it a burst of `state` events

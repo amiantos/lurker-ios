@@ -29,6 +29,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Asks about DCC chat offers (lurker#270). Built in `scene(_:willConnectTo:)`, where the
     /// window it presents over exists.
     private var dccOfferPrompt: DccOfferPrompt?
+    private var invitePrompt: InvitePrompt?
     /// Same shape once more: LurkerKit decides the number, the app makes the
     /// `UserNotifications` call.
     private let badge = AppBadge { count in
@@ -84,6 +85,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             },
             onRefusal: { [weak self] message in self?.showNotice(message) }
         )
+        // …and so does an invitation, offering a Join (lurker#261).
+        invitePrompt = InvitePrompt(
+            viewModel: viewModel,
+            host: { [weak self] in
+                guard let self, viewModel.session == .loggedIn else { return nil }
+                return presentedSheet() ?? self.window?.rootViewController
+            }
+        )
+        viewModel.onInvited = { [weak self] networkId, channel, from in
+            self?.invitePrompt?.offer(networkId: networkId, channel: channel, from: from)
+        }
 
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here

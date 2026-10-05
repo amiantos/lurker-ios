@@ -229,7 +229,7 @@ final class IgnoreScopeTests: XCTestCase {
            "levels":["ALL"],"isExcept":false,"expiresAt":null}
         ]}
         """##)
-        guard case let .snapshot(_, globalIgnores, _) = frame else {
+        guard case let .snapshot(_, globalIgnores, _, _) = frame else {
             return XCTFail("expected snapshot, got \(frame)")
         }
         XCTAssertEqual(globalIgnores.count, 1)

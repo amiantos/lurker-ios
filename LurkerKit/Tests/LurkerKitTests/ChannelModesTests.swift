@@ -27,7 +27,7 @@ final class ChannelModesTests: XCTestCase {
           "channels":[{"name":"#c","topic":"hi","topicSetBy":"alice!a@h","topicSetAt":"2026-09-01T10:00:00.000Z",
             "modes":"ntkl","modeParams":{"l":"50"},"createdAt":"2020-01-01T00:00:00.000Z","members":[]}]}]}
         """##)
-        guard case let .snapshot(networks, _, _) = frame, let network = networks.first else {
+        guard case let .snapshot(networks, _, _, _) = frame, let network = networks.first else {
             return XCTFail("expected snapshot, got \(frame)")
         }
         let parsed = network.modeSpec
@@ -48,7 +48,7 @@ final class ChannelModesTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":1,"state":"connected","nick":"me","modeSpec":null,"channels":[]}]}"##
         )
-        guard case let .snapshot(networks, _, _) = frame else { return XCTFail("expected snapshot") }
+        guard case let .snapshot(networks, _, _, _) = frame else { return XCTFail("expected snapshot") }
         XCTAssertNil(networks.first?.modeSpec)
     }
 

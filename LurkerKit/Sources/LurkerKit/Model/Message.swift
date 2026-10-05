@@ -96,6 +96,9 @@ public struct Message: Equatable, Sendable {
     /// only way the web's tint could lose a reply and why the web ORs this in. Kept so the row
     /// says what it is, and for the day this client does evaluate rules itself.
     public let replyToSelf: Bool
+    /// On an `error` line from a 421, the command the ircd didn't know (`FROBNICATE`). The line
+    /// lands in the server log; this is what lets the buffer the command was typed in say so too.
+    public let unknownCommand: String?
     /// The reply's quote as it should SHOW — set by `showingReply`, the one producer, from
     /// `Replies.shown`: nil on a reply means "original message unavailable" (gone, never held, or
     /// from someone ignored since). Meaningless on a line that isn't a reply.
@@ -140,7 +143,8 @@ public struct Message: Equatable, Sendable {
         isE2E: Bool = false,
         reactions: [MessageReaction]? = nil,
         replyTo: ReplyContext? = nil,
-        replyToSelf: Bool = false
+        replyToSelf: Bool = false,
+        unknownCommand: String? = nil
     ) {
         self.id = id
         self.type = type
@@ -166,6 +170,7 @@ public struct Message: Equatable, Sendable {
         self.reactions = reactions
         self.replyTo = replyTo
         self.replyToSelf = replyToSelf
+        self.unknownCommand = unknownCommand
     }
 
     /// This line with its highlight taken off — what a `NOHIGHLIGHT` ignore rule leaves behind

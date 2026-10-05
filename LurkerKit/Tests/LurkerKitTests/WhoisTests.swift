@@ -453,7 +453,7 @@ final class WhoisTests: XCTestCase {
          "nickNotes":[{"nick":"Alice","note":"lives in Berlin","updatedAt":"2026-08-29 12:00:00"},
                       {"nick":"","note":"x"},{"nick":"bob","note":""}]}]}
         """##)
-        guard case let .snapshot(networks, _, _) = frame else { return XCTFail("expected a snapshot") }
+        guard case let .snapshot(networks, _, _, _) = frame else { return XCTFail("expected a snapshot") }
         XCTAssertEqual(networks.first?.nickNotes.map(\.nick), ["Alice"])
         XCTAssertEqual(
             networks.first?.nickNotes.first?.updatedAt,

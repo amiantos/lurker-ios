@@ -1059,7 +1059,7 @@ final class LurkerStore {
         switch frame {
         case .networks(let networks):
             return applyNetworks(state, networks)
-        case .snapshot(let networks, let globalIgnores, let uploadLimits):
+        case .snapshot(let networks, let globalIgnores, let uploadLimits, let cursor):
             // Frame 1 of every burst (CLIENT_PROTOCOL.md §4.3), so this is where the
             // roster reconciliation window opens. Start collecting the keys the server
             // names; `backlog-complete` closes the window and prunes the rest.
@@ -1079,6 +1079,10 @@ final class LurkerStore {
             // the fallback rather than leave a number from the last server in force.
             next.maxUploadBytes = uploadLimits.maxUploadBytes
             next.maxStaticImageDimension = uploadLimits.maxStaticImageDimension
+            // A fresh connect's channels arrive as shells, so without this the cursor stops at
+            // the newest server-log row, and a drop before anything live lands resumes from
+            // there — a resume slice for every buffer, the cost shells exist to avoid (#469).
+            if let cursor { next.maxEventId = max(next.maxEventId, cursor) }
             return applySnapshot(next, networks, globalIgnores: globalIgnores)
         case .backlogComplete:
             // The burst is over, so whatever `buffers` holds now is the whole roster — even
@@ -1144,8 +1148,10 @@ final class LurkerStore {
                 next.messages[key] = next.messages[key]?.filter { $0.id != 0 }
             }
             return next
-        case .channelMembers(let networkId, let target, let members):
-            return applyChannelMembers(state, networkId: networkId, target: target, members: members)
+        case .channelMembers(let networkId, let target, let members, let pending):
+            return applyChannelMembers(
+                state, networkId: networkId, target: target, members: members, pending: pending
+            )
         case .memberUpdate(let networkId, let target, let member):
             return applyMemberUpdate(state, networkId: networkId, target: target, member: member)
         case .channelJoined(let networkId, let target):
@@ -1438,6 +1444,10 @@ final class LurkerStore {
             if live { peers.append(nick) }
             next.dccChats[networkId] = peers.isEmpty ? nil : peers
             return next
+        case .invited:
+            // A moment, not state: the view model offers the Join, and the system buffer's line
+            // is the record.
+            return state
         case .typing(let networkId, let target, let nick, let activity, let userhost):
             return applyTyping(
                 state, networkId: networkId, target: target,
@@ -1725,7 +1735,7 @@ final class LurkerStore {
                 buffer.joined = true
                 buffer.topic = channel.topic
                 next.buffers[key] = buffer
-                next.members[key] = channel.members
+                next.members[key] = membersAfter(next.members[key], channel.members, pending: channel.membersPending)
                 next.channelModes[key] = channel.modeState
                 // Third path that can materialize a row, so it owes `burstSeen` an entry
                 // like the other two — otherwise the burst's closing prune could drop a
@@ -2038,11 +2048,23 @@ final class LurkerStore {
         _ state: ChatState,
         networkId: Int?,
         target: String,
-        members: [Member]
+        members: [Member],
+        pending: Bool
     ) -> ChatState {
         var next = state
-        next.members[BufferKey(networkId: networkId, target: target).id] = members
+        let key = BufferKey(networkId: networkId, target: target).id
+        next.members[key] = membersAfter(next.members[key], members, pending: pending)
         return next
+    }
+
+    /// The member list to hold once the server sends `incoming` — which is the list, unless it is
+    /// `pending` (`membersPending`, §9.1, lurker#863): then the server hasn't heard the channel's
+    /// NAMES since it last attached, and `incoming` is only us plus whoever has joined since.
+    /// Taking it would read as everyone leaving, so a list already held stands; with none held,
+    /// something beats nothing. The definitive `names` follows within seconds.
+    private static func membersAfter(_ held: [Member]?, _ incoming: [Member], pending: Bool) -> [Member] {
+        if pending, let held, !held.isEmpty { return held }
+        return incoming
     }
 
     /// A `member-update` patch: replace the matching member with the server's snapshot.

@@ -89,7 +89,7 @@ final class ReactionsTests: XCTestCase {
         let snapshot = FrameParser.parseWs(
             ##"{"kind":"snapshot","networks":[{"networkId":3,"state":"connected","nick":"me","channels":[],"canReact":true}]}"##
         )
-        guard case let .snapshot(networks, _, _) = snapshot else { return XCTFail("\(snapshot)") }
+        guard case let .snapshot(networks, _, _, _) = snapshot else { return XCTFail("\(snapshot)") }
         XCTAssertTrue(networks[0].canReact)
     }
 
