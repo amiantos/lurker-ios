@@ -21,6 +21,9 @@ final class JoinChannelViewController: UITableViewController {
     private let onJoin: (Network, String) -> Void
     private var cancellables = Set<AnyCancellable>()
     private var networks: [Network] = []
+    /// Lurker's own socket can carry a write (`ChatState.socketWritable`). While it's reconnecting
+    /// every network's state is last-known, so none of them can be joined on.
+    private var socketWritable = false
     private var selected: Int?
     private var channel = ""
 
@@ -46,6 +49,7 @@ final class JoinChannelViewController: UITableViewController {
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "network")
 
         networks = BufferOrder.networks(viewModel.state.networks)
+        socketWritable = viewModel.state.socketWritable
         selectDefault()
 
         // A network finishing its connect while this sheet is open makes it selectable, so the
@@ -55,12 +59,13 @@ final class JoinChannelViewController: UITableViewController {
         // field above it and take the keyboard down mid-word — the same trap the network form
         // works around when a clear row changes.
         viewModel.statePublisher
-            .map(\.networks)
+            .map { NetworksSlice(networks: $0.networks, socketWritable: $0.socketWritable) }
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
+            .sink { [weak self] slice in
                 guard let self else { return }
-                networks = BufferOrder.networks(state)
+                networks = BufferOrder.networks(slice.networks)
+                socketWritable = slice.socketWritable
                 // ⚠ Re-picked, not merely validated. The default is "the first connected
                 // one", and that answer changes: two disconnected networks open the sheet
                 // with the first one checked, and when the *second* finishes connecting the
@@ -118,7 +123,7 @@ final class JoinChannelViewController: UITableViewController {
 
         let cell = tableView.dequeueReusableCell(withIdentifier: "network", for: indexPath)
         let network = networks[indexPath.row]
-        let connected = network.state == .connected
+        let connected = joinable(network)
         var content = cell.defaultContentConfiguration()
         content.text = network.displayName
         // Not disabled-looking-but-tappable: a JOIN with no socket to travel down goes
@@ -147,7 +152,7 @@ final class JoinChannelViewController: UITableViewController {
         tableView.deselectRow(at: indexPath, animated: true)
         guard indexPath.section == 1 else { return }
         let network = networks[indexPath.row]
-        guard network.state == .connected else { return }
+        guard joinable(network) else { return }
         selected = network.id
         updateJoinButton()
         tableView.reloadSections(IndexSet(integer: 1), with: .none)
@@ -155,10 +160,21 @@ final class JoinChannelViewController: UITableViewController {
 
     // MARK: - Joining
 
+    private struct NetworksSlice: Equatable {
+        let networks: [Int: Network]
+        let socketWritable: Bool
+    }
+
+    /// Whether a JOIN could travel on this network now — `ChatState.canWrite(networkId:)`, the
+    /// test `requestJoin` makes, over the sheet's copy of the state.
+    private func joinable(_ network: Network) -> Bool {
+        socketWritable && network.state == .connected
+    }
+
     /// The network this would join on, when there is one that could actually carry it.
     private var target: Network? {
         guard let selected, let network = networks.first(where: { $0.id == selected }),
-              network.state == .connected
+              joinable(network)
         else { return nil }
         return network
     }
@@ -167,7 +183,7 @@ final class JoinChannelViewController: UITableViewController {
     /// back to the first of any kind rather than to nothing, so the picker always shows a
     /// selection and Join stays disabled to say why it can't be used yet.
     private func selectDefault() {
-        selected = (networks.first { $0.state == .connected } ?? networks.first)?.id
+        selected = (networks.first { joinable($0) } ?? networks.first)?.id
         updateJoinButton()
     }
 

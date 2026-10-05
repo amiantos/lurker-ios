@@ -13,7 +13,7 @@ import UIKit
 /// op's ban or our own. Never refetched after an add or a remove: a fetch on the wire claims a
 /// 482 aimed at the MODE just sent (`server/services/modeList.ts`), and the list would read
 /// "Only channel operators can see this list" because a ban was refused. Pull to refresh is the
-/// user's own ask, and a reconnect refetches, since the gap arrives as backlog, not live rows.
+/// user's own ask, and a reconnect or a rejoin refetches, since the gap never arrives as live rows.
 final class ModeListViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private let key: BufferKey
@@ -38,8 +38,8 @@ final class ModeListViewController: UITableViewController {
     private var refusals = ChannelRefusals()
 
     /// A fetch is owed once the link is up: a new socket resynced (the gap arrived as backlog,
-    /// so the list can't be patched up to date) while the network wasn't ready, or the last fetch
-    /// found it down.
+    /// so the list can't be patched up to date) while the network wasn't ready, the last fetch
+    /// found it down, or a fetched list lost readiness (a rejoin or an IRC-level reconnect).
     ///
     /// ⚠ Paid on the link's RISING edge — connected and in the channel, after not being. Never
     /// straight off a resync whose network is still registering (after a server restart): that
@@ -118,6 +118,13 @@ final class ModeListViewController: UITableViewController {
     private func linkMoved(_ slice: Slice) {
         let wasReady = lastSlice?.ready ?? false
         lastSlice = slice
+        // A fetched list stops being kept current the moment readiness is lost — a part, or an IRC
+        // reconnect under a live socket, neither of which is a new snapshot — since the changes in
+        // the gap won't arrive as live rows. A REFUSED fetch isn't owed again: losing readiness is
+        // no reason to ask a server that said no. (Android's ModeListModel.linkMoved.)
+        if wasReady, !slice.ready, case .ready = status {
+            fetchOwed = true
+        }
         if fetchOwed, slice.ready, !wasReady {
             fetchOwed = false
             load()

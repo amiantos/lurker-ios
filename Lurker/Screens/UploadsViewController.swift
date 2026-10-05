@@ -65,6 +65,12 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     /// that lands under a newer generation is dropped — the list it was fetched for no longer
     /// exists. The counter is the correctness mechanism; cancelling the task is the cost saving.
     private var loadGeneration = 0
+    /// Files deleted while this screen is up: a star refused after the delete must not put one back.
+    private var deletedIds: Set<Int> = []
+    /// Per row, the token of its newest star toggle still out. Answers can land out of order — star,
+    /// unstar, star in a second — and an older refusal must not undo a newer toggle.
+    private var pendingStars: [Int: Int] = [:]
+    private var starTokens = 0
     private var loadTask: Task<Void, Never>?
     /// The keystroke waiting to become a query, cancelled and replaced by the next one.
     private var debounce: Task<Void, Never>?
@@ -586,14 +592,23 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         // longer exists. Star a row, switch the filter to Video, then have the request fail: the
         // image lands in the video grid and the next page is fetched from its id.
         let generation = loadGeneration
+        starTokens += 1
+        let token = starTokens
+        pendingStars[item.id] = token
         Task { [weak self] in
-            guard let self, let message = await viewModel.setUploadFavorite(id: item.id, favorite: wanted)
-            else { return }
+            guard let self else { return }
+            let message = await viewModel.setUploadFavorite(id: item.id, favorite: wanted)
+            // ⚠⚠ Only while this toggle is still the row's newest. A newer one owns the row (and
+            // its answer will settle it); a delete since means the file is gone, and putting the
+            // row back would also reset `cursor` from it. (Android's UploadsGrid.revert.)
+            let latest = pendingStars[item.id] == token && !deletedIds.contains(item.id)
+            if latest { pendingStars[item.id] = nil }
+            guard let message else { return }
             // It didn't take. Put the row back exactly as it was and say why — a star that
             // silently un-flips a second later is worse than one that never moved. The row is only
             // restored into the list it came from; the failure is reported either way, because the
             // server state is unchanged whichever list is on screen now.
-            if generation == loadGeneration { restore(original, at: index) }
+            if latest, generation == loadGeneration { restore(original, at: index) }
             report(title: wanted ? "Couldn't Star" : "Couldn't Unstar", message: message)
         }
     }
@@ -625,6 +640,9 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
                 report(title: "Couldn't Delete", message: message)
                 return
             }
+            // Any star change still out for it is void now.
+            deletedIds.insert(item.id)
+            pendingStars[item.id] = nil
             guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
             removeRow(at: index)
         }

@@ -427,7 +427,8 @@ public struct ChannelModeDrafts: Equatable, Sendable {
 
     /// Per saved row: the live state it was saved from, and the edit that went out. Only that
     /// edit is the echo's to clear — the fields stay editable while the ack is out, and a newer
-    /// edit (untick +m again before +m comes back) is the user's to keep.
+    /// edit (untick +m again before +m comes back) is the user's to keep, even when it matches
+    /// the channel as it still is — see `reconcile`.
     private var savedRows: [String: SavedRow] = [:]
     private var savedTopic: (live: String, sent: String)?
 
@@ -537,8 +538,14 @@ public struct ChannelModeDrafts: Equatable, Sendable {
             let moved = saved.map { $0.live != was } ?? false
             if moved { savedRows[letter] = nil }
             if matches {
-                // The channel is as the user wanted, whatever happens to the send.
-                rows[letter] = nil
+                // The channel is as the user wanted, whatever happens to the send — unless that
+                // send is still out and this is an undo of it. Untick +m before +m comes back and
+                // the untick matches the channel as it still is; dropped here, the +m then lands
+                // and the switch turns back on, the undo lost. Kept until the channel moves off
+                // the state it was saved from: then it's a real difference, shown, and Save sends
+                // it. (A send that never left is taken back by `settle`, and the edit goes then.)
+                let undoWhileOut = saved.map { !moved && $0.sent != want } ?? false
+                if !undoWhileOut { rows[letter] = nil }
             } else if moved, saved?.sent == want {
                 if pendingLetters.contains(letter) { dissolvedWhilePending[letter] = want }
                 rows[letter] = nil
@@ -548,7 +555,10 @@ public struct ChannelModeDrafts: Equatable, Sendable {
         let sending = ChannelModeForm.topicToSend(topic)
         let moved = savedTopic.map { $0.live != liveTopic } ?? false
         if sending == liveTopic {
-            self.topic = nil
+            // Typed back to the old topic while the new one is out: kept until the new one lands,
+            // as for the modes above.
+            let undoWhileOut = savedTopic.map { !moved && $0.sent != sending } ?? false
+            if !undoWhileOut { self.topic = nil }
         } else if moved, savedTopic?.sent == sending {
             if topicPending { topicDissolvedWhilePending = topic }
             self.topic = nil
