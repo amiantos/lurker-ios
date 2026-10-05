@@ -243,7 +243,17 @@ public final class ChatViewModel {
         draftFlushes.removeAll()
         let drafts = draftSync.takeAll().map { ($0.key, $0.draft) }
         cancelReconnect()
-        client.logout(deviceToken: deviceToken, drafts: drafts)
+        // Owed a revoke until the server confirms it (#218), so a sign-out made offline still
+        // reaches the server later instead of leaving the token, and its pushes, live for good.
+        let ending = sessions.load()
+        if let ending {
+            sessions.addPendingRevoke(ending)
+            revoking.insert(ending.token)
+        }
+        client.logout(deviceToken: deviceToken, drafts: drafts) { [weak self] outcome in
+            guard let self, let ending else { return }
+            self.revokeFinished(ending, outcome)
+        }
         deviceToken = nil
         // The next sign-in may be against a different server, whose answer differs.
         apnsSupported = nil
@@ -1792,11 +1802,39 @@ public final class ChatViewModel {
     public func setReachable(_ reachable: Bool) {
         let was = store.state.reachable
         store.setReachable(reachable)
+        // Signed in or not: the case this is for is a sign-out made offline (#218).
+        if reachable, !was { retryPendingRevokes() }
         guard reachable, !was, session == .loggedIn, isForeground else { return }
         reconnectAttempt = 0
         reconnectTask?.cancel()
         reconnectTask = nil
         doReconnect(force: false)
+    }
+
+    // MARK: - Revokes owed (#218)
+
+    /// Tokens with a revoke request out now, so a launch and a reachability change (or the
+    /// sign-out's own attempt) don't send the same one twice.
+    private var revoking: Set<String> = []
+
+    /// Ask again for every revoke this device still owes: on launch, and whenever the network comes
+    /// back. Never the live session's token — a pending entry can't name it, but revoking it would
+    /// sign the user out from under themselves, so it's checked rather than assumed.
+    func retryPendingRevokes() {
+        let live = sessions.load()?.token
+        for pending in sessions.pendingRevokes() where pending.token != live && !revoking.contains(pending.token) {
+            revoking.insert(pending.token)
+            Task { [weak self] in
+                guard let self else { return }
+                let outcome = await self.client.revoke(server: pending.server, token: pending.token)
+                self.revokeFinished(pending, outcome)
+            }
+        }
+    }
+
+    private func revokeFinished(_ session: PersistedSession, _ outcome: LurkerClient.RevokeOutcome) {
+        revoking.remove(session.token)
+        if outcome == .done { sessions.removePendingRevoke(token: session.token) }
     }
 
     // MARK: - Session restore
@@ -1806,6 +1844,7 @@ public final class ChatViewModel {
     /// afterward and deterministically wins the bounce back to sign-in rather than racing a
     /// `loggedIn` that arrives later.
     private func restoreSession() {
+        retryPendingRevokes()
         // A session from the password sign-in this app had before OAuth isn't restored:
         // everyone signs in again once, through the approval page.
         if let legacy = sessions.takeLegacySession() {

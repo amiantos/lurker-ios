@@ -1686,11 +1686,22 @@ final class LurkerClient {
     ///
     /// `drafts` are saved first, over HTTP with the session being ended: a socket write queued
     /// now would be cancelled by the `close()` below before it went out.
-    func logout(deviceToken: String? = nil, drafts: [(key: BufferKey, draft: ComposerDraft)] = []) {
+    ///
+    /// `onRevoked` hears whether the server has given its final answer (#218): the caller keeps
+    /// the session owed a revoke until it has, and retries it with `revoke(server:token:)`.
+    func logout(
+        deviceToken: String? = nil,
+        drafts: [(key: BufferKey, draft: ComposerDraft)] = [],
+        onRevoked: ((RevokeOutcome) -> Void)? = nil
+    ) {
         let revokeToken = token
         let base = baseURL
         close()
-        guard let revokeToken, let url = URL(string: base + "/api/auth/logout") else { return }
+        guard let revokeToken else {
+            // Nothing to revoke from here; the caller's owed entry, if any, is retried later.
+            onRevoked?(.retry)
+            return
+        }
         let session = self.session
         Task {
             if !drafts.isEmpty {
@@ -1701,11 +1712,45 @@ final class LurkerClient {
                     session: session, baseURL: base, sessionToken: revokeToken, deviceToken: deviceToken
                 )
             }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(revokeToken)", forHTTPHeaderField: "Authorization")
-            _ = try? await session.data(for: request)
+            let outcome = await Self.revoke(session: session, baseURL: base, token: revokeToken)
+            onRevoked?(outcome)
         }
+    }
+
+    /// Whether a revoke needs asking again (#218).
+    enum RevokeOutcome: Equatable {
+        /// The server has answered for good: the token is gone, was already gone, or this address
+        /// no longer has a Lurker server to ask.
+        case done
+        /// Nothing final yet — no answer at all, or a temporary one.
+        case retry
+    }
+
+    /// A revoke's verdict from the HTTP status, nil for no response at all (offline, DNS, TLS).
+    /// A 401 is done: the token is already invalid, which is all a revoke was for. Any other 4xx
+    /// is done too — a 404 means this address no longer serves the route, and asking it again
+    /// can't succeed — except the two that say "later" (408, 429).
+    nonisolated static func revokeOutcome(status: Int?) -> RevokeOutcome {
+        guard let status else { return .retry }
+        if (200..<300).contains(status) { return .done }
+        if status == 408 || status == 429 { return .retry }
+        if (400..<500).contains(status) { return .done }
+        return .retry
+    }
+
+    /// Revoke a session this device signed out of, through this client's HTTP session (no
+    /// cookies, as every bearer call). Retried by the caller until it's `.done` (#218).
+    func revoke(server: String, token: String) async -> RevokeOutcome {
+        await Self.revoke(session: session, baseURL: ServerAddress.normalize(server), token: token)
+    }
+
+    private static func revoke(session: URLSession, baseURL: String, token: String) async -> RevokeOutcome {
+        guard let url = URL(string: baseURL + "/api/auth/logout") else { return .done }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let response = try? await session.data(for: request).1
+        return revokeOutcome(status: (response as? HTTPURLResponse)?.statusCode)
     }
 
     /// Ends a session from the password sign-in this app had before OAuth, then empties the
