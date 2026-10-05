@@ -77,10 +77,14 @@ public final class ChatViewModel {
     /// is never answered loses nothing. Not fired for a channel we're already in.
     public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
 
-    /// Where each raw line this device sent was typed, by network and verb, until a 421 names
-    /// that verb — see `noteUnknownCommand`. One entry per verb, the latest send's buffer, so it
-    /// stays as small as the set of raw verbs anyone types.
-    private var rawCommandOrigins: [String: BufferKey] = [:]
+    /// Where each raw line this device sent was typed, and when, by network and verb, until a
+    /// 421 names that verb — see `noteUnknownCommand`. One entry per verb, the latest send's.
+    private var rawCommandOrigins: [String: (key: BufferKey, sentAt: Date)] = [:]
+
+    /// How long a raw line waits for its 421. The ircd answers within a round trip; past this
+    /// the line was accepted, or its answer was lost with the socket, and a 421 that matches now
+    /// is someone else's — another device typing the same verb.
+    static let unknownCommandWindow: TimeInterval = 30
 
     /// The buffer we just opened, until its row exists — see `PendingOpens`. Giving up is quiet.
     /// A DCC chat's notices say what happened, in a buffer the list will show; a DM's refused
@@ -986,8 +990,8 @@ public final class ChatViewModel {
             case .raw(let line):
                 wire {
                     guard sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line) else { return false }
-                    if let networkId, let verb = line.split(separator: " ").first {
-                        rawCommandOrigins[Self.rawCommandKey(networkId, String(verb))] = key
+                    if let networkId, let verb = Self.rawVerb(line) {
+                        rawCommandOrigins[Self.rawCommandKey(networkId, verb)] = (key, Date())
                     }
                     return true
                 }
@@ -2129,8 +2133,14 @@ public final class ChatViewModel {
             noteUnknownCommand(networkId: networkId, message)
         case .snapshot:
             channelEventsSubject.send(.resynced)
-        case .invited(let networkId, let channel, let from):
-            guard store.state.buffers[BufferKey(networkId: networkId, target: channel).id]?.joined != true
+        case .invited(let networkId, let channel, let from, let userhost):
+            guard store.state.buffers[BufferKey(networkId: networkId, target: channel).id]?.joined != true,
+                  // Someone ignored outright doesn't get to put an alert in front of us; their
+                  // invitation is still in the system buffer. There's no INVITES level, so only
+                  // a whole-identity rule counts — scoped to the channel they invited us to.
+                  !store.state.ignores.isIgnored(
+                      networkId: networkId, nick: from, userhost: userhost, channel: channel
+                  )
             else { break }
             onInvited?(networkId, channel, from)
         default:
@@ -2141,14 +2151,25 @@ public final class ChatViewModel {
     /// A 421 for a command this device sent raw: say so where it was typed. The server's own
     /// line goes to the network's server log, which isn't where anyone is looking when
     /// `/frobnicate` in a channel seems to do nothing. A 421 for a line sent from another device
-    /// matches nothing here, and that device says so itself.
-    private func noteUnknownCommand(networkId: Int?, _ message: Message) {
+    /// matches nothing here (past `unknownCommandWindow`), and that device says so itself.
+    func noteUnknownCommand(networkId: Int?, _ message: Message, now: Date = Date()) {
         guard let networkId, let verb = message.unknownCommand,
-              let key = rawCommandOrigins.removeValue(forKey: Self.rawCommandKey(networkId, verb)),
+              let origin = rawCommandOrigins.removeValue(forKey: Self.rawCommandKey(networkId, verb)),
+              now.timeIntervalSince(origin.sentAt) <= Self.unknownCommandWindow,
+              // Typed in the server log: the server's own line is already right there.
+              origin.key.target != Buffer.serverTarget(networkId),
               // Closed since: a line for a buffer that's gone would sit in the side table unseen.
-              store.state.buffers[key.id] != nil
+              store.state.buffers[origin.key.id] != nil
         else { return }
-        store.appendLocal(key, text: "Unknown command: /\(verb.lowercased())")
+        store.appendLocal(origin.key, text: "Unknown command: /\(verb.lowercased())")
+    }
+
+    /// The command of a raw line: its first word, past any IRCv3 tag block (`@label=x`) or
+    /// source prefix (`:me`) that `/raw` let the user type in front of it.
+    static func rawVerb(_ line: String) -> String? {
+        line.split(separator: " ")
+            .first { !$0.hasPrefix("@") && !$0.hasPrefix(":") }
+            .map(String.init)
     }
 
     /// IRC verbs are case-insensitive, and the ircd echoes one in whatever case it likes.

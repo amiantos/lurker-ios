@@ -12,7 +12,7 @@ final class ProtocolSweepTests: XCTestCase {
 
     private let channel = BufferKey(networkId: 1, target: "#lurker")
 
-    private func viewModel() -> ChatViewModel {
+    private func viewModel(ignoring: [IgnoreRule] = []) -> ChatViewModel {
         let model = ChatViewModel(
             sessions: SessionStore(service: "chat.lurker.tests.protocolsweep"),
             settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.protocolsweep")!)
@@ -21,7 +21,8 @@ final class ProtocolSweepTests: XCTestCase {
         model.handle(.snapshot(
             [NetworkSnapshot(
                 id: 1, state: .connected, nick: "me",
-                channels: [ChannelSnapshot(name: "#lurker", topic: nil, members: [])]
+                channels: [ChannelSnapshot(name: "#lurker", topic: nil, members: [])],
+                ignoredMasks: ignoring
             )],
             globalIgnores: [], uploadLimits: .unstated
         ))
@@ -158,6 +159,38 @@ final class ProtocolSweepTests: XCTestCase {
         XCTAssertNil(model.state.messages[channel.id]?.last)
     }
 
+    /// Typed in the server log, the 421 already shows where it was typed: one line, not two.
+    func testA421ForALineTypedInTheServerLogAddsNothing() {
+        let model = viewModel()
+        model.sendRawSeam = { _ in true }
+        let server = BufferKey(networkId: 1, target: ":server:1")
+        model.send(server, text: "/frobnicate")
+        model.handle(unknownCommand("FROBNICATE"))
+        XCTAssertNotNil(model.state.buffers[server.id], "the 421 made the row, so only the guard is left to say no")
+        XCTAssertEqual(model.state.messages[server.id]?.filter { $0.id == 0 }.count ?? 0, 0, "only the server's own line")
+    }
+
+    /// A raw line the ircd accepted, or whose 421 was lost with the socket, doesn't wait forever:
+    /// past the window, a 421 for that verb is another device's.
+    func testA421PastTheWindowIsSomeoneElses() {
+        let model = viewModel()
+        model.sendRawSeam = { _ in true }
+        model.send(channel, text: "/frobnicate")
+        guard case let .live(networkId, _, message) = unknownCommand("FROBNICATE") else { return XCTFail() }
+        model.noteUnknownCommand(
+            networkId: networkId, message, now: Date().addingTimeInterval(ChatViewModel.unknownCommandWindow + 1)
+        )
+        XCTAssertNil(model.state.messages[channel.id]?.last)
+    }
+
+    /// `/raw` lets a tag block or a source prefix come first; the command is the word after them.
+    func testTheRawVerbSkipsTagsAndPrefix() {
+        XCTAssertEqual(ChatViewModel.rawVerb("frobnicate now"), "frobnicate")
+        XCTAssertEqual(ChatViewModel.rawVerb("@label=x FROBNICATE now"), "FROBNICATE")
+        XCTAssertEqual(ChatViewModel.rawVerb("@label=x :me FROBNICATE"), "FROBNICATE")
+        XCTAssertNil(ChatViewModel.rawVerb("@label=x"))
+    }
+
     /// A line that went nowhere came back to the composer; there is no 421 to wait for.
     func testARawLineThatWentNowhereIsntWaitedOn() {
         let model = viewModel()
@@ -172,9 +205,9 @@ final class ProtocolSweepTests: XCTestCase {
     func testAnInviteNamingUsIsItsOwnFrameAndAChannelsInviteLineIsALine() {
         XCTAssertEqual(
             FrameParser.parseWs(
-                ##"{"kind":"irc","networkId":1,"target":":server:1","type":"invite","channel":"#secret","from":"bob","userhost":"bob@example.org"}"##
+                ##"{"kind":"irc","networkId":1,"target":":server:1","type":"invite","channel":"#secret","from":"bob","userhost":"bob!b@example.org"}"##
             ),
-            .invited(networkId: 1, channel: "#secret", from: "bob")
+            .invited(networkId: 1, channel: "#secret", from: "bob", userhost: "bob!b@example.org")
         )
         let line = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"invite","id":9,"nick":"alice","invited":"carol"}"##
@@ -192,5 +225,15 @@ final class ProtocolSweepTests: XCTestCase {
         model.handle(.invited(networkId: 1, channel: "#secret", from: "bob"))
         model.handle(.invited(networkId: 1, channel: "#lurker", from: "bob"))
         XCTAssertEqual(offered, ["1 #secret bob"])
+    }
+
+    /// Someone ignored outright doesn't get a prompt; the system buffer still has the line.
+    func testAnIgnoredInvitersInvitationIsNotOffered() {
+        let model = viewModel(ignoring: [IgnoreRule(mask: "troll!*@*")])
+        var offered: [String] = []
+        model.onInvited = { _, channel, from in offered.append("\(channel) \(from)") }
+        model.handle(.invited(networkId: 1, channel: "#spam", from: "troll", userhost: "troll!t@example.org"))
+        model.handle(.invited(networkId: 1, channel: "#secret", from: "bob", userhost: "bob!b@example.org"))
+        XCTAssertEqual(offered, ["#secret bob"])
     }
 }

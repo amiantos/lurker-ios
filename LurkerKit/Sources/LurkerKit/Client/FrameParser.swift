@@ -936,7 +936,9 @@ enum FrameParser {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }
             let channel = obj.string("channel")
             if channel.isEmpty { return .ignored }
-            return .invited(networkId: networkId, channel: channel, from: from)
+            return .invited(
+                networkId: networkId, channel: channel, from: from, userhost: obj.stringOrNull("userhost")
+            )
         }
         // `react-support` is network-scoped state on a `:server:<id>` carrier, like those above.
         if obj.string("type") == "react-support" {

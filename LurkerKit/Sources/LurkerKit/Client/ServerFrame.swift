@@ -342,8 +342,9 @@ enum ServerFrame: Equatable, Sendable {
 
     /// An `invite` ephemeral naming us: `from` invited us to `channel`. Network-scoped via a
     /// `:server:<id>` carrier, like the DCC offer. Nothing is stored; the system buffer's line
-    /// is the record, and this is only the moment to offer a Join.
-    case invited(networkId: Int, channel: String, from: String)
+    /// is the record, and this is only the moment to offer a Join. `userhost` is the inviter's,
+    /// for the ignore check.
+    case invited(networkId: Int, channel: String, from: String, userhost: String? = nil)
 
     /// WS `pins-changed`: this network's pinned buffers, in the user's order.
     ///
