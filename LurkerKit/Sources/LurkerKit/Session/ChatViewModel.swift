@@ -1819,6 +1819,12 @@ public final class ChatViewModel {
     /// sign-out's own attempt) don't send the same one twice.
     private(set) var revoking: Set<String> = []
 
+    /// Tokens a retry trigger (a foreground, the network coming back) skipped because their
+    /// request was already out. If that request then fails, the trigger is replayed at once —
+    /// the moment it stood for (the network is back) has already happened, and nothing else may
+    /// come along to ask again.
+    private var retryWanted: Set<String> = []
+
     /// How long an owed revoke is asked for. A server unreachable for a month is taken to be
     /// gone; without a bound, every launch would ask every dead address forever.
     static let revokeRetryWindow: TimeInterval = 30 * 24 * 60 * 60
@@ -1829,7 +1835,11 @@ public final class ChatViewModel {
     /// rather than assumed.
     func retryPendingRevokes(now: Date = Date()) {
         let live = client.currentSession?.token ?? sessions.load()?.token
-        for pending in sessions.pendingRevokes() where pending.token != live && !revoking.contains(pending.token) {
+        for pending in sessions.pendingRevokes() where pending.token != live {
+            guard !revoking.contains(pending.token) else {
+                retryWanted.insert(pending.token)
+                continue
+            }
             guard now.timeIntervalSince(pending.since) < Self.revokeRetryWindow else {
                 sessions.removePendingRevoke(token: pending.token)
                 continue
@@ -1845,7 +1855,12 @@ public final class ChatViewModel {
 
     private func revokeFinished(_ token: String, _ outcome: LurkerClient.RevokeOutcome) {
         revoking.remove(token)
-        if outcome == .done { sessions.removePendingRevoke(token: token) }
+        let wanted = retryWanted.remove(token) != nil
+        if outcome == .done {
+            sessions.removePendingRevoke(token: token)
+        } else if wanted {
+            retryPendingRevokes()
+        }
     }
 
     // MARK: - Session restore

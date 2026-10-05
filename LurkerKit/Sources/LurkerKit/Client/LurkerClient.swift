@@ -1730,15 +1730,12 @@ final class LurkerClient {
     ///
     /// Only Lurker's own answer counts. `POST /api/auth/logout` takes any bearer and always says
     /// `{"ok":true}` — it has no auth check, so a token already gone gets the same answer — which
-    /// makes a 2xx without that body someone else's: a captive portal, a proxy's page. The one
-    /// other final answer is a 401, which only lurker.chat's proxy gives, for a token it can't
-    /// route to any cell: one nothing can use. Every other status comes from something in front
-    /// of the server (a WAF, a maintenance page, a redirect turned GET) and says nothing about
-    /// the token, so it's asked again.
+    /// makes every other response someone else's: a captive portal's 200, a WAF's 403, a
+    /// maintenance 404, an auth gateway's 401 in front of a self-hosted server. None of them says
+    /// anything about the token, so it's asked again (until `revokeRetryWindow`). That includes
+    /// lurker.chat's proxy refusing a token it can't route — a 401 looks the same from a gateway.
     nonisolated static func revokeOutcome(status: Int?, body: Data?) -> RevokeOutcome {
-        guard let status else { return .retry }
-        if status == 401 { return .done }
-        guard (200..<300).contains(status), let body,
+        guard let status, (200..<300).contains(status), let body,
               let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
               json["ok"] as? Bool == true
         else { return .retry }

@@ -36,8 +36,9 @@ final class PendingRevokeTests: XCTestCase {
         let ok = Data(#"{"ok":true}"#.utf8)
         // The cell's answer, for a token revoked now or long ago alike.
         XCTAssertEqual(LurkerClient.revokeOutcome(status: 200, body: ok), .done)
-        // lurker.chat's proxy, for a token it can't route to any cell: nothing can use it.
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 401, body: nil), .done)
+        // A 401 isn't Lurker's either: an auth gateway in front of a self-hosted server sends one
+        // without the request ever reaching it.
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 401, body: nil), .retry)
         // A 200 that isn't Lurker's (a captive portal), and every status from something in
         // front of the server: none of them says anything about the token.
         XCTAssertEqual(LurkerClient.revokeOutcome(status: 200, body: Data("<html>".utf8)), .retry)
@@ -120,6 +121,26 @@ final class PendingRevokeTests: XCTestCase {
         try await waitUntil { server.requests.count == 3 }
     }
 
+    /// The network comes back while a revoke is already out: if that one fails, it's asked again
+    /// at once rather than waiting for the next trigger.
+    func testATriggerDuringARequestIsNotLost() async throws {
+        let server = try await OneStatusServer(status: 503, delay: .milliseconds(400))
+        let sessions = SessionStore(service: service)
+        sessions.addPendingRevoke(PersistedSession(server: server.url, token: "old"))
+        let model = ChatViewModel(
+            sessions: sessions,
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
+        )
+        try await waitUntil { server.requests.count == 1 }
+        XCTAssertEqual(model.revoking, ["old"])
+        model.setReachable(false)
+        model.setReachable(true)
+        // The first is still out, so nothing new yet; once it fails, the replay goes.
+        try await waitUntil { server.requests.count == 2 && model.revoking.isEmpty }
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(server.requests.count, 2)
+    }
+
     /// A month unanswered and the server is taken to be gone: dropped without asking it.
     func testAnOwedRevokeExpires() async throws {
         let server = try await OneStatusServer(status: 503)
@@ -172,7 +193,7 @@ private final class OneStatusServer: @unchecked Sendable {
 
     var requests: [String] { lock.withLock { heads } }
 
-    init(status: Int, body: String = "") async throws {
+    init(status: Int, body: String = "", delay: Duration = .zero) async throws {
         let listener = try NWListener(using: .tcp, on: .any)
         self.listener = listener
         let ready = AsyncStream<UInt16> { continuation in
@@ -180,6 +201,7 @@ private final class OneStatusServer: @unchecked Sendable {
                 if case .ready = state, let port = listener.port?.rawValue { continuation.yield(port); continuation.finish() }
             }
         }
+        let pause = Double(delay.components.seconds) + Double(delay.components.attoseconds) / 1e18
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .global())
             connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
@@ -188,6 +210,7 @@ private final class OneStatusServer: @unchecked Sendable {
                 }
                 let response = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\n"
                     + "Content-Length: \(Data(body.utf8).count)\r\nConnection: close\r\n\r\n\(body)"
+                if pause > 0 { Thread.sleep(forTimeInterval: pause) }
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
             }
         }
