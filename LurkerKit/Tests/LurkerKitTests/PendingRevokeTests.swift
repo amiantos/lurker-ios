@@ -32,20 +32,22 @@ final class PendingRevokeTests: XCTestCase {
 
     // MARK: - The verdict
 
-    func testOnlyAFinalAnswerEndsTheRetries() {
-        // Revoked, or already gone: done.
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 200), .done)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 204), .done)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 401), .done)
-        // No Lurker server at this address any more: asking again can't succeed.
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 404), .done)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 403), .done)
-        // No answer, or "later": ask again.
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: nil), .retry)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 408), .retry)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 429), .retry)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 500), .retry)
-        XCTAssertEqual(LurkerClient.revokeOutcome(status: 503), .retry)
+    func testOnlyLurkersOwnAnswerEndsTheRetries() {
+        let ok = Data(#"{"ok":true}"#.utf8)
+        // The cell's answer, for a token revoked now or long ago alike.
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 200, body: ok), .done)
+        // lurker.chat's proxy, for a token it can't route to any cell: nothing can use it.
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 401, body: nil), .done)
+        // A 200 that isn't Lurker's (a captive portal), and every status from something in
+        // front of the server: none of them says anything about the token.
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 200, body: Data("<html>".utf8)), .retry)
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 200, body: Data(#"{"ok":false}"#.utf8)), .retry)
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 403, body: nil), .retry)
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 404, body: nil), .retry)
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 429, body: nil), .retry)
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: 503, body: nil), .retry)
+        // No answer at all: offline.
+        XCTAssertEqual(LurkerClient.revokeOutcome(status: nil, body: nil), .retry)
     }
 
     // MARK: - The queue
@@ -57,10 +59,10 @@ final class PendingRevokeTests: XCTestCase {
         SessionStore(service: service).addPendingRevoke(a)
         SessionStore(service: service).addPendingRevoke(b)
         SessionStore(service: service).addPendingRevoke(a)
-        XCTAssertEqual(SessionStore(service: service).pendingRevokes(), [a, b])
+        XCTAssertEqual(SessionStore(service: service).pendingRevokes().map(\.token), ["ta", "tb"])
 
         SessionStore(service: service).removePendingRevoke(token: "ta")
-        XCTAssertEqual(SessionStore(service: service).pendingRevokes(), [b])
+        XCTAssertEqual(SessionStore(service: service).pendingRevokes().map(\.server), ["https://b.example"])
     }
 
     func testTheQueueIsSeparateFromTheLiveSession() {
@@ -75,15 +77,15 @@ final class PendingRevokeTests: XCTestCase {
 
     func testAnUnreadableQueueIsEmptyNotACrash() {
         XCTAssertEqual(SessionCodec.decodeList(Data("garbage".utf8)), [])
-        let mixed = #"[{"server":"https://a","token":"t"},{"server":"","token":"x"}]"#
-        XCTAssertEqual(SessionCodec.decodeList(Data(mixed.utf8)), [PersistedSession(server: "https://a", token: "t")])
+        let mixed = #"[{"server":"https://a","token":"t","since":0},{"server":"","token":"x","since":0}]"#
+        XCTAssertEqual(SessionCodec.decodeList(Data(mixed.utf8)).map(\.token), ["t"])
     }
 
     // MARK: - The retry, against a server that answers
 
-    /// A launch retries what's owed; a final answer (here 401: the token's already gone) ends it.
+    /// A launch retries what's owed, and Lurker's answer ends it.
     func testALaunchRetriesAndAFinalAnswerEndsIt() async throws {
-        let server = try await OneStatusServer(status: 401)
+        let server = try await OneStatusServer(status: 200, body: #"{"ok":true}"#)
         let sessions = SessionStore(service: service)
         sessions.addPendingRevoke(PersistedSession(server: server.url, token: "old"))
         let model = ChatViewModel(
@@ -105,14 +107,33 @@ final class PendingRevokeTests: XCTestCase {
             sessions: sessions,
             settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
         )
-        try await waitUntil { server.requests.count == 1 }
-        try await Task.sleep(for: .milliseconds(200))
+        try await waitUntil { server.requests.count == 1 && model.revoking.isEmpty }
         XCTAssertEqual(sessions.pendingRevokes().map(\.token), ["old"])
 
         model.setReachable(false)
         model.setReachable(true)
-        try await waitUntil { server.requests.count == 2 }
+        try await waitUntil { server.requests.count == 2 && model.revoking.isEmpty }
         XCTAssertEqual(sessions.pendingRevokes().map(\.token), ["old"])
+
+        // And a foreground asks again, for a server that was down while the phone stayed online.
+        _ = model.enterForeground()
+        try await waitUntil { server.requests.count == 3 }
+    }
+
+    /// A month unanswered and the server is taken to be gone: dropped without asking it.
+    func testAnOwedRevokeExpires() async throws {
+        let server = try await OneStatusServer(status: 503)
+        let sessions = SessionStore(service: service)
+        let longAgo = Date().addingTimeInterval(-ChatViewModel.revokeRetryWindow - 60)
+        sessions.addPendingRevoke(PersistedSession(server: server.url, token: "ancient"), at: longAgo)
+        sessions.addPendingRevoke(PersistedSession(server: server.url, token: "recent"))
+        let model = ChatViewModel(
+            sessions: sessions,
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
+        )
+        try await waitUntil { server.requests.count == 1 && model.revoking.isEmpty }
+        XCTAssertEqual(sessions.pendingRevokes().map(\.token), ["recent"])
+        XCTAssertEqual(server.requests.first?.contains("Bearer recent"), true)
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
@@ -123,9 +144,9 @@ final class PendingRevokeTests: XCTestCase {
     // MARK: - Sign-out
 
     func testASignOutTheServerNeverHeardStaysOwed() async throws {
-        // `.invalid` never resolves (RFC 2606), so the revoke gets no answer — the offline case.
+        // Nothing listens on port 1, so the revoke gets no answer at all — the offline case.
         let sessions = SessionStore(service: service)
-        sessions.save(PersistedSession(server: "https://revoke.invalid", token: "departing"))
+        sessions.save(PersistedSession(server: "http://127.0.0.1:1", token: "departing"))
         let model = ChatViewModel(
             sessions: sessions,
             settingsCache: SettingsCache(defaults: UserDefaults(suiteName: service)!)
@@ -136,7 +157,7 @@ final class PendingRevokeTests: XCTestCase {
         XCTAssertEqual(sessions.pendingRevokes().map(\.token), ["departing"])
 
         // And still owed once the request has failed.
-        try await Task.sleep(for: .seconds(3))
+        try await waitUntil { model.revoking.isEmpty }
         XCTAssertEqual(sessions.pendingRevokes().map(\.token), ["departing"])
     }
 }
@@ -151,7 +172,7 @@ private final class OneStatusServer: @unchecked Sendable {
 
     var requests: [String] { lock.withLock { heads } }
 
-    init(status: Int) async throws {
+    init(status: Int, body: String = "") async throws {
         let listener = try NWListener(using: .tcp, on: .any)
         self.listener = listener
         let ready = AsyncStream<UInt16> { continuation in
@@ -165,7 +186,8 @@ private final class OneStatusServer: @unchecked Sendable {
                 if let data, let head = String(data: data, encoding: .utf8) {
                     self?.lock.withLock { self?.heads.append(head) }
                 }
-                let response = "HTTP/1.1 \(status) X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                let response = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\n"
+                    + "Content-Length: \(Data(body.utf8).count)\r\nConnection: close\r\n\r\n\(body)"
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
             }
         }

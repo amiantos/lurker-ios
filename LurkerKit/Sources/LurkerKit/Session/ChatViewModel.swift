@@ -245,14 +245,14 @@ public final class ChatViewModel {
         cancelReconnect()
         // Owed a revoke until the server confirms it (#218), so a sign-out made offline still
         // reaches the server later instead of leaving the token, and its pushes, live for good.
-        let ending = sessions.load()
+        let ending = client.currentSession
         if let ending {
             sessions.addPendingRevoke(ending)
             revoking.insert(ending.token)
         }
         client.logout(deviceToken: deviceToken, drafts: drafts) { [weak self] outcome in
             guard let self, let ending else { return }
-            self.revokeFinished(ending, outcome)
+            self.revokeFinished(ending.token, outcome)
         }
         deviceToken = nil
         // The next sign-in may be against a different server, whose answer differs.
@@ -1715,6 +1715,8 @@ public final class ChatViewModel {
     @discardableResult
     public func enterForeground() -> Bool {
         isForeground = true
+        // A server that was down while the phone stayed online gets asked again here (#218).
+        retryPendingRevokes()
         guard session == .loggedIn else { return false }
         // Tell the server we're looking, so it stops pushing (#490). Sent before the
         // reconnect check below because the common case is a LIVE socket — we're back and
@@ -1815,26 +1817,35 @@ public final class ChatViewModel {
 
     /// Tokens with a revoke request out now, so a launch and a reachability change (or the
     /// sign-out's own attempt) don't send the same one twice.
-    private var revoking: Set<String> = []
+    private(set) var revoking: Set<String> = []
 
-    /// Ask again for every revoke this device still owes: on launch, and whenever the network comes
-    /// back. Never the live session's token — a pending entry can't name it, but revoking it would
-    /// sign the user out from under themselves, so it's checked rather than assumed.
-    func retryPendingRevokes() {
-        let live = sessions.load()?.token
+    /// How long an owed revoke is asked for. A server unreachable for a month is taken to be
+    /// gone; without a bound, every launch would ask every dead address forever.
+    static let revokeRetryWindow: TimeInterval = 30 * 24 * 60 * 60
+
+    /// Ask again for every revoke this device still owes: on launch, on every foreground, and
+    /// whenever the network comes back. Never the live session's token — a pending entry can't
+    /// name it, but revoking it would sign the user out from under themselves, so it's checked
+    /// rather than assumed.
+    func retryPendingRevokes(now: Date = Date()) {
+        let live = client.currentSession?.token ?? sessions.load()?.token
         for pending in sessions.pendingRevokes() where pending.token != live && !revoking.contains(pending.token) {
+            guard now.timeIntervalSince(pending.since) < Self.revokeRetryWindow else {
+                sessions.removePendingRevoke(token: pending.token)
+                continue
+            }
             revoking.insert(pending.token)
             Task { [weak self] in
                 guard let self else { return }
                 let outcome = await self.client.revoke(server: pending.server, token: pending.token)
-                self.revokeFinished(pending, outcome)
+                self.revokeFinished(pending.token, outcome)
             }
         }
     }
 
-    private func revokeFinished(_ session: PersistedSession, _ outcome: LurkerClient.RevokeOutcome) {
-        revoking.remove(session.token)
-        if outcome == .done { sessions.removePendingRevoke(token: session.token) }
+    private func revokeFinished(_ token: String, _ outcome: LurkerClient.RevokeOutcome) {
+        revoking.remove(token)
+        if outcome == .done { sessions.removePendingRevoke(token: token) }
     }
 
     // MARK: - Session restore
