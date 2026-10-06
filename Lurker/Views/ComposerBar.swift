@@ -541,7 +541,7 @@ final class ComposerBar: UIView {
 
     /// Whether the field is empty — nothing typed, nothing but whitespace.
     var isEmpty: Bool {
-        (textView.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        CommandParser.sendable(textView.text ?? "") == nil
     }
 
     /// Put a refused line back, as typed (#128) — or a draft, which may be empty: another device
@@ -781,7 +781,8 @@ final class ComposerBar: UIView {
     }
 
     private func updateSendEnabled() {
-        let hasText = !textView.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // The send's own rule (`fire`), so the button never lights for a draft it won't send.
+        let hasText = CommandParser.sendable(textView.text ?? "") != nil
         sendButton.isEnabled = hasText
         // Take the accent color when there's something to send, clear glass when not — the
         // same "lights up when it goes live" the Messages send button does, here through the

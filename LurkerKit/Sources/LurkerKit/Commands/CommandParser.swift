@@ -31,6 +31,23 @@ public enum CommandParser {
         SpoilerMarkup.apply(to: text)
     }
 
+    /// The line a composer sends for `draft`, or nil when there's nothing to send (empty, or only
+    /// whitespace). LEADING whitespace stays, because it decides what the line is: ` /whois bob` is
+    /// text to the channel, as on the web (`raw.startsWith('/')` on the untrimmed draft), irssi
+    /// (`cmdchars` on the first character) and gamja (lurker-ios#210). Trailing whitespace goes, as
+    /// it always has here — a stray return at the end (the web sends it untouched). The composers
+    /// send through this, so `OutgoingTyping`'s rule matches what they send.
+    ///
+    /// ⚠ The convention cuts both ways: a command typed after an accidental leading space or
+    /// newline goes to the channel as text, arguments and all — the same on the web.
+    public static func sendable(_ draft: String) -> String? {
+        var line = draft
+        while let last = line.unicodeScalars.last, CharacterSet.whitespacesAndNewlines.contains(last) {
+            line.unicodeScalars.removeLast()
+        }
+        return line.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) ? line : nil
+    }
+
     /// Classify `input` typed in the buffer identified by (`networkId`, `target`).
     ///
     /// The rules, in order (matching the web's `submit`):
@@ -59,20 +76,6 @@ public enum CommandParser {
     /// word as text.
     ///
     /// `now` is likewise injected, for `/ignore -time` and for lapsed rules.
-    /// The line a composer sends for `draft`, or nil when there's nothing to send (empty, or only
-    /// whitespace). Trailing whitespace goes; LEADING stays, because it decides what the line is:
-    /// ` /whois bob` is text to the channel, as on the web (`raw.startsWith('/')` on the untrimmed
-    /// draft), irssi (`cmdchars` on the first character) and gamja (lurker-ios#210). Both composers
-    /// send through this, and `OutgoingTyping` asks it too, so the typing a draft announces matches
-    /// what it sends.
-    public static func sendable(_ draft: String) -> String? {
-        var line = draft
-        while let last = line.unicodeScalars.last, CharacterSet.whitespacesAndNewlines.contains(last) {
-            line.unicodeScalars.removeLast()
-        }
-        return line.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) ? line : nil
-    }
-
     public static func parse(
         _ input: String,
         networkId: Int?,
