@@ -12,7 +12,27 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // One view model for the app's lifetime. It owns the client (session token + socket)
     // and the store. The token now survives relaunch in the Keychain (#3), so a returning
     // user lands straight on their buffers.
-    private let viewModel = ChatViewModel()
+    private let viewModel: ChatViewModel = {
+        let viewModel = ChatViewModel()
+        // Which APNs gateway issued our token, from how this build was actually signed: the
+        // App Store and TestFlight strip the profile and are production; a build installed
+        // from Xcode carries one that says (RELAY_PLAN.md §6.2).
+        // A simulator has no profile and gets sandbox tokens, so it's development.
+        #if targetEnvironment(simulator)
+        viewModel.apnsEnvironment = .development
+        #else
+        viewModel.apnsEnvironment = ProvisioningProfile.apnsEnvironment(
+            embeddedProfile: Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+                .flatMap { try? Data(contentsOf: $0) }
+        )
+        #endif
+        // A Debug build may talk to a relay under development (LURKER_PUSH_RELAY_URL);
+        // everything else trusts only push.lurker.chat.
+        #if DEBUG
+        viewModel.allowAnyHTTPSRelay = true
+        #endif
+        return viewModel
+    }()
     private var cancellables = Set<AnyCancellable>()
     /// The navigation controller the buffer list lives in: the split's primary column, which
     /// is the whole stack while it's collapsed. `showBuffer` forwards to the split from it.
@@ -176,16 +196,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         pushEnableTask = Task { [weak self] in
             defer { self?.pushEnableTask = nil }
             guard let self else { return }
-            let outcome = await push.enable(serverSupportsAPNs: { [viewModel] in
-                await viewModel.serverSupportsAPNs()
+            let outcome = await push.enable(route: { [viewModel] in
+                await viewModel.resolvePushRoute()
             })
             switch outcome {
             case .registering:
                 break // the token lands in AppDelegate.didRegister…
             case .unsupportedByServer:
-                // Expected on a self-hosted server: it has no Apple key and never will.
-                // Not an error, and not the user's problem — the PWA is their push path.
-                NSLog("[push] this server delivers Web Push only, not APNs; not registering")
+                // A self-hosted server with no relay turned on. Not an error — Settings
+                // tells the user it's their admin's switch.
+                NSLog("[push] this server can't push to the app (no APNs key, no relay); not registering")
+            case .relayUnsupported:
+                NSLog("[push] this server's push relay isn't one this app trusts; not registering")
             case .serverUnreachable:
                 // Says nothing about the server's config — we never got an answer. Worded
                 // so nobody reads this and goes auditing LURKER_APNS_* on a healthy box.
@@ -477,7 +499,15 @@ extension SceneDelegate: NotificationTapHandling {
     }
 
     func registerPushToken(_ token: String) async {
-        let ok = await viewModel.registerPushDevice(token: token)
-        if !ok { NSLog("[push] server rejected this device token") }
+        switch await viewModel.registerPushDevice(token: token) {
+        case .registered:
+            break
+        case .relayOff:
+            NSLog("[push] the server's admin turned the push relay off; not registered")
+        case .unavailable:
+            NSLog("[push] this server can't push to the app; not registered")
+        case .failed(let reason):
+            NSLog("[push] registration failed: %@", reason)
+        }
     }
 }

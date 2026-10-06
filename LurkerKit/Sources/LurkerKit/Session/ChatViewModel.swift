@@ -250,13 +250,11 @@ public final class ChatViewModel {
             sessions.addPendingRevoke(PersistedSession(server: ending.server, token: ending.token), at: ending.since)
             revoking.insert(ending.token)
         }
-        client.logout(deviceToken: deviceToken, drafts: drafts) { [weak self] outcome in
+        client.logout(deviceToken: deviceToken, relayEndpoint: relayEndpoint, drafts: drafts) { [weak self] outcome in
             guard let self, let ending else { return }
             self.revokeFinished(ending, outcome)
         }
-        deviceToken = nil
-        // The next sign-in may be against a different server, whose answer differs.
-        apnsSupported = nil
+        resetPush()
         sessions.clear()
         // The next account's preferences are not this one's — and a privacy switch in
         // particular must not carry across users. Both this and the deliberate sign-out clear
@@ -304,36 +302,150 @@ public final class ChatViewModel {
     /// remember.
     private var deviceToken: String?
 
-    /// Cached answer to "does this server speak APNs". Fixed for a given server, and the
-    /// question is asked on every activation — without this that's an HTTP round trip every
-    /// time the user opens the app, to re-learn something that cannot have changed.
-    /// Only a real answer is cached: a failed ask stays unknown and is retried.
-    private var apnsSupported: Bool?
+    /// The server's `/api/push/config` — kept only when it says the server pushes over APNs
+    /// itself (hosted), which is fixed for a server. Any other answer is asked again on the
+    /// next activation: the admin can turn the relay on or off, or the key can change, and
+    /// the app has to notice without a restart.
+    private(set) var pushConfig: PushConfig?
 
-    /// Does this server speak APNs at all? A self-hosted server holds no Apple key and
-    /// says so via `/api/push/config`, in which case asking the user for notification
-    /// permission would be a lie — we'd get the grant and never deliver anything.
+    /// How this install gets pushes from the signed-in server, once decided. Settings
+    /// follows it through `pushRoutePublisher`.
+    public var pushRoute: PushRoute? { pushRouteSubject.value }
+    public var pushRoutePublisher: AnyPublisher<PushRoute?, Never> {
+        pushRouteSubject.eraseToAnyPublisher()
+    }
+    private let pushRouteSubject = CurrentValueSubject<PushRoute?, Never>(nil)
+
+    /// The relay endpoint this install registered, so sign-out can drop it. Recorded before
+    /// the request goes out: a registration whose answer was lost may still have landed.
+    private(set) var relayEndpoint: String?
+    /// The token filed directly over APNs, so moving to the relay can drop it. Otherwise a
+    /// server that changed routes would push both ways.
+    private(set) var directToken: String?
+
+    /// Bumped by every teardown. A push request captures it, and a reply that lands after
+    /// the session it belonged to has ended changes nothing: a late 403 from the last
+    /// account must not clear the next one's route.
+    private var pushGeneration = 0
+
+    /// Where the relay keys live: the Keychain group the app's Notification Service
+    /// Extension shares, or nil for an unsigned build, which has no group to share. Tests
+    /// swap in memory.
+    public var pushKeyStore: (any WebPushKeyStore)? = KeychainWebPushKeyStore.forMainBundle()
+    /// Which APNs gateway issued this build's token — from its signing, see
+    /// `ProvisioningProfile`. Part of the relay endpoint.
+    public var apnsEnvironment: APNsEnvironment = .production
+    /// Debug builds may use any https relay (for a relay under development); release
+    /// builds only push.lurker.chat (RELAY_PLAN.md §6.2).
+    public var allowAnyHTTPSRelay = false
+
+    /// Can this server push to the app, and how? A self-hosted server holds no Apple key;
+    /// it pushes through push.lurker.chat only when its admin turned that on. Asking the
+    /// user for notification permission when it can't would be a lie — we'd get the grant
+    /// and never deliver anything.
     ///
-    /// `nil` means we couldn't ask. Deliberately NOT folded into `false`: the two are one
-    /// wifi blip apart and would read identically at the call site, so collapsing them
-    /// makes a transient failure report a permanent fact about the server's configuration
-    /// — and sends whoever reads that line off auditing env vars on a box that was fine.
-    /// Only a real answer is cached, so an unreachable server is asked again next time.
-    public func serverSupportsAPNs() async -> Bool? {
-        if let apnsSupported { return apnsSupported }
-        guard let transports = await client.pushTransports() else { return nil }
-        let supported = transports.contains("apns")
-        apnsSupported = supported
-        return supported
+    /// `nil` means we couldn't ask. Deliberately NOT folded into `.unavailable`: the two are
+    /// one wifi blip apart, and collapsing them makes a transient failure report a permanent
+    /// fact about the server's configuration. The last real answer stands meanwhile.
+    public func resolvePushRoute() async -> PushRoute? {
+        let generation = pushGeneration
+        let config: PushConfig
+        if let cached = pushConfig {
+            config = cached
+        } else {
+            guard let fetched = await client.pushConfig(), generation == pushGeneration else { return nil }
+            config = fetched
+        }
+        let route = PushRoute.decide(config, allowAnyHTTPSRelay: allowAnyHTTPSRelay)
+        pushConfig = route == .apns ? config : nil
+        pushRouteSubject.value = route
+        return route
     }
 
-    /// Hand the OS-issued device token to the server. Idempotent — iOS re-issues the same
-    /// token on most launches, and the server upserts.
+    /// Drop the kept APNs answer, as a new session would. Tests only: a server can't move a
+    /// signed-in session from hosted to the relay.
+    func forgetPushConfigForTests() { pushConfig = nil }
+
+    /// What a device registration came to.
+    public enum PushRegistration: Equatable, Sendable {
+        case registered
+        /// The admin turned the relay off since the config was read.
+        case relayOff
+        /// This server can't push to the app (or isn't signed in).
+        case unavailable
+        case failed(String)
+    }
+
+    /// Hand the OS-issued device token to the server: directly for a server holding our
+    /// APNs key, or as a relay endpoint for one whose admin turned on push.lurker.chat.
+    /// Idempotent — iOS re-issues the same token on most launches, and the server upserts.
     @discardableResult
-    public func registerPushDevice(token: String) async -> Bool {
+    ///
+    /// Re-files on every call rather than remembering it already did: iOS hands the app its
+    /// token on every activation, and the server's upsert is what restores a subscription
+    /// the admin's relay switch deleted while the app was in the background.
+    public func registerPushDevice(token: String) async -> PushRegistration {
         deviceToken = token
-        guard session == .loggedIn else { return false }
-        return await client.registerDevice(token: token)
+        guard session == .loggedIn else { return .unavailable }
+        let generation = pushGeneration
+        let route: PushRoute?
+        if let pushRoute { route = pushRoute } else { route = await resolvePushRoute() }
+        guard generation == pushGeneration else { return .unavailable }
+        switch route {
+        case .apns:
+            // Moved off the relay: drop its subscription, or the server pushes both ways.
+            if let old = relayEndpoint {
+                relayEndpoint = nil
+                await client.deregisterWebPush(endpoint: old)
+            }
+            directToken = token
+            let ok = await client.registerDevice(token: token)
+            guard generation == pushGeneration else { return .unavailable }
+            return ok ? .registered : .failed("the server refused the device token")
+        case .relay(let origin, let serverKey):
+            guard let keys = pushKeyStore?.loadOrCreate() else {
+                return .failed("couldn't store push keys where the notification extension can read them")
+            }
+            // Moved onto the relay: drop the direct registration, for the same reason.
+            if let old = directToken {
+                directToken = nil
+                await client.deregisterDevice(token: old)
+            }
+            let endpoint = RelayEndpoint.apns(
+                origin: origin, environment: apnsEnvironment, token: token, serverKey: serverKey
+            )
+            relayEndpoint = endpoint
+            let result = await client.registerWebPush(endpoint: endpoint, keys: keys)
+            guard generation == pushGeneration else { return .unavailable }
+            switch result {
+            case .registered:
+                return .registered
+            case .relayOff:
+                pushConfig = nil
+                pushRouteSubject.value = .unavailable
+                return .relayOff
+            case .failed:
+                return .failed("the server refused the relay subscription")
+            }
+        case .unavailable, .relayUnsupported, nil:
+            return .unavailable
+        }
+    }
+
+    /// Both teardowns — sign-out and a lost session — leave push in the same state. The relay
+    /// keys go too: a push for this account already queued at APNs, or still filed after an
+    /// offline sign-out, can't then be decrypted for whoever signs in next — it shows only
+    /// the relay's placeholder. The next registration makes new keys, and the server's rebind
+    /// replaces the old ones.
+    private func resetPush() {
+        pushGeneration += 1
+        pushKeyStore?.delete()
+        deviceToken = nil
+        directToken = nil
+        relayEndpoint = nil
+        // The next sign-in may be against a different server, whose answer differs.
+        pushConfig = nil
+        pushRouteSubject.value = nil
     }
 
     /// Fill in a shell's contents — what a screen calls when it opens on a buffer we already
@@ -2430,6 +2542,9 @@ public final class ChatViewModel {
         cancelReconnect()
         client.close()
         sessions.clear()
+        // Kept in step with logout(): the device token and relay endpoint go too. There's no
+        // session left to deregister them with — the server drops them with the token.
+        resetPush()
         // The next account's preferences are not this one's — and a privacy switch in
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.

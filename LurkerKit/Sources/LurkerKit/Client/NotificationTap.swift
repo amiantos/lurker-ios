@@ -47,11 +47,15 @@ public struct NotificationTap: Equatable, Sendable {
     /// JSON number (an NSNumber that `as? Int` bridges), FCM's data dictionary sends a string.
     /// The String arm is NOT redundant — the two payloads are one mistake apart, and routing is
     /// the wrong place to be strict about which of our own servers sent this.
-    private static func intField(_ value: Any?) -> Int? {
+    ///
+    /// Shared with `RelayNotification`, which reads the same keys out of a relayed push. A JSON
+    /// boolean bridges to an NSNumber that `as? Int` would happily read as 0 or 1; it isn't an id.
+    static func intField(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
         switch value {
-        case let value as Int: value
-        case let value as String: Int(value)
-        default: nil
+        case let value as Int: return value
+        case let value as String: return Int(value)
+        default: return nil
         }
     }
 }

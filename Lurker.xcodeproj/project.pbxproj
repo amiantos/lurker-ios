@@ -8,10 +8,37 @@
 
 /* Begin PBXBuildFile section */
 		44E100032FDE0000000F8303 /* LurkerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 44E100022FDE0000000F8302 /* LurkerKit */; };
+		44F3000C2FDF0000000F840C /* LurkerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 44F3000B2FDF0000000F840B /* LurkerKit */; };
+		44F3000D2FDF0000000F840D /* LurkerNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 44F300012FDF0000000F8401 /* LurkerNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		44F3000F2FDF0000000F840F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 44D29C672FDD4EED000F839D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 44F300042FDF0000000F8404;
+			remoteInfo = LurkerNotificationService;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		44F3000E2FDF0000000F840E /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				44F3000D2FDF0000000F840D /* LurkerNotificationService.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		44D29C6F2FDD4EED000F839D /* Lurker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Lurker.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		44F300012FDF0000000F8401 /* LurkerNotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = LurkerNotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -22,6 +49,13 @@
 			);
 			target = 44D29C6E2FDD4EED000F839D /* Lurker */;
 		};
+		44F300032FDF0000000F8403 /* Exceptions for "LurkerNotificationService" folder in "LurkerNotificationService" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 44F300042FDF0000000F8404 /* LurkerNotificationService */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -31,6 +65,14 @@
 				44D29C842FDD4EEE000F839D /* Exceptions for "Lurker" folder in "Lurker" target */,
 			);
 			path = Lurker;
+			sourceTree = "<group>";
+		};
+		44F300022FDF0000000F8402 /* LurkerNotificationService */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				44F300032FDF0000000F8403 /* Exceptions for "LurkerNotificationService" folder in "LurkerNotificationService" target */,
+			);
+			path = LurkerNotificationService;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -44,6 +86,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		44F300062FDF0000000F8406 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				44F3000C2FDF0000000F840C /* LurkerKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -51,6 +101,7 @@
 			isa = PBXGroup;
 			children = (
 				44D29C712FDD4EED000F839D /* Lurker */,
+				44F300022FDF0000000F8402 /* LurkerNotificationService */,
 				44D29C702FDD4EED000F839D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -59,6 +110,7 @@
 			isa = PBXGroup;
 			children = (
 				44D29C6F2FDD4EED000F839D /* Lurker.app */,
+				44F300012FDF0000000F8401 /* LurkerNotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -73,10 +125,12 @@
 				44D29C6B2FDD4EED000F839D /* Sources */,
 				44D29C6C2FDD4EED000F839D /* Frameworks */,
 				44D29C6D2FDD4EED000F839D /* Resources */,
+				44F3000E2FDF0000000F840E /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				44F300102FDF0000000F8410 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				44D29C712FDD4EED000F839D /* Lurker */,
@@ -88,6 +142,29 @@
 			productName = Lurker;
 			productReference = 44D29C6F2FDD4EED000F839D /* Lurker.app */;
 			productType = "com.apple.product-type.application";
+		};
+		44F300042FDF0000000F8404 /* LurkerNotificationService */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 44F300082FDF0000000F8408 /* Build configuration list for PBXNativeTarget "LurkerNotificationService" */;
+			buildPhases = (
+				44F300052FDF0000000F8405 /* Sources */,
+				44F300062FDF0000000F8406 /* Frameworks */,
+				44F300072FDF0000000F8407 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				44F300022FDF0000000F8402 /* LurkerNotificationService */,
+			);
+			name = LurkerNotificationService;
+			packageProductDependencies = (
+				44F3000B2FDF0000000F840B /* LurkerKit */,
+			);
+			productName = LurkerNotificationService;
+			productReference = 44F300012FDF0000000F8401 /* LurkerNotificationService.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -101,6 +178,9 @@
 				TargetAttributes = {
 					44D29C6E2FDD4EED000F839D = {
 						CreatedOnToolsVersion = 26.0;
+					};
+					44F300042FDF0000000F8404 = {
+						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
@@ -122,12 +202,20 @@
 			projectRoot = "";
 			targets = (
 				44D29C6E2FDD4EED000F839D /* Lurker */,
+				44F300042FDF0000000F8404 /* LurkerNotificationService */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		44D29C6D2FDD4EED000F839D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		44F300072FDF0000000F8407 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -144,7 +232,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		44F300052FDF0000000F8405 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		44F300102FDF0000000F8410 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 44F300042FDF0000000F8404 /* LurkerNotificationService */;
+			targetProxy = 44F3000F2FDF0000000F840F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		44D29C862FDD4EEE000F839D /* Debug */ = {
@@ -155,7 +258,6 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Lurker/Lurker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 2Y9M69QJKZ;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Lurker/Info.plist;
@@ -170,7 +272,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.amiantos.Lurker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -195,7 +296,6 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_ENTITLEMENTS = Lurker/Lurker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 2Y9M69QJKZ;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Lurker/Info.plist;
@@ -210,7 +310,6 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.amiantos.Lurker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -261,6 +360,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 2Y9M69QJKZ;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -282,6 +382,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -326,6 +427,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 2Y9M69QJKZ;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -341,12 +443,69 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		44F300092FDF0000000F8409 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = LurkerNotificationService/LurkerNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 2Y9M69QJKZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LurkerNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = LurkerNotificationService;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.amiantos.Lurker.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		44F3000A2FDF0000000F840A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = LurkerNotificationService/LurkerNotificationService.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 2Y9M69QJKZ;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = LurkerNotificationService/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = LurkerNotificationService;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = net.amiantos.Lurker.NotificationService;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -371,6 +530,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		44F300082FDF0000000F8408 /* Build configuration list for PBXNativeTarget "LurkerNotificationService" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				44F300092FDF0000000F8409 /* Debug */,
+				44F3000A2FDF0000000F840A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -382,6 +550,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		44E100022FDE0000000F8302 /* LurkerKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = LurkerKit;
+		};
+		44F3000B2FDF0000000F840B /* LurkerKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = LurkerKit;
 		};
