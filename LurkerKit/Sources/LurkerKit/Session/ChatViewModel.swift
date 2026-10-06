@@ -374,6 +374,24 @@ public final class ChatViewModel {
     /// Test seam: stands in for the socket a raw line goes out on (`/frobnicate`).
     var sendRawSeam: ((String) -> Bool)?
 
+    /// Test seam: stands in for the settings write `syncTimeZone` makes.
+    var timeZoneWriteSeam: ((String) -> Void)?
+
+    /// The phone's time zone, written to `system.timezone` when the server's differs (sweep L08), as
+    /// the web's `syncDetectedTimezone` does. The server formats in it with no client connected: push
+    /// quiet hours, and the "since …" others see in the auto-away message. A phone that never wrote
+    /// it left both on the zone of whichever browser bootstrapped last, or on the server's clock.
+    ///
+    /// On each settings bootstrap — every start and every reconnect — so a phone that has travelled
+    /// corrects it on its next foreground. Never in answer to a `settings` frame: another device's
+    /// write isn't answered, so two devices in different zones can't trade it back and forth.
+    func syncTimeZone(_ detected: String = TimeZone.current.identifier) {
+        guard !detected.isEmpty, store.state.settings.values["system.timezone"] != .string(detected) else { return }
+        if let timeZoneWriteSeam { return timeZoneWriteSeam(detected) }
+        // Not worth a word on failure: the next bootstrap asks again.
+        Task { _ = await client.updateSettings(["system.timezone": .string(detected)]) }
+    }
+
     /// Open a DM and go there once its row exists (iOS #201): Send Message on a profile, a Friends
     /// row whose DM is closed. The app is taken there through `onBufferOpened` — at once if the row
     /// is already here, else as soon as the server's answer mints it, and not at all if that hasn't
@@ -2047,6 +2065,7 @@ public final class ChatViewModel {
             // Persist after folding, not from the frame: a `settingsChanged` patch carries only
             // what moved, so the cache has to mirror the merged result rather than the delta.
             settingsCache.save(store.state.settings.values)
+            if case .settingsBootstrap = frame { syncTimeZone() }
         case .unauthorized:
             onAuthLost()
         case .incompatible(let incompatibility):

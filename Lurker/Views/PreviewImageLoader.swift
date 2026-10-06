@@ -118,8 +118,12 @@ final class PreviewImageLoader {
     /// whether or not anybody is watching. A still costs exactly what a JPEG costs.
     nonisolated private static func decode(_ data: Data) async -> (image: UIImage?, frames: Int) {
         await Task.detached(priority: .userInitiated) {
-            let count = CGImageSourceCreateWithData(data as CFData, nil)
-                .map { CGImageSourceGetCount($0) } ?? 1
+            // Frames that animate: a multi-image JPEG (an HDR gain map, a stereo MPO) is a still.
+            let count = CGImageSourceCreateWithData(data as CFData, nil).map { source in
+                let frames = CGImageSourceGetCount(source)
+                let type = CGImageSourceGetType(source) as String?
+                return ImageShrink.isAnimation(frameCount: frames, typeIdentifier: type) ? frames : 1
+            } ?? 1
             guard let image = UIImage(data: data) else { return (nil as UIImage?, count) }
             // Force the decode now rather than on first draw, which would otherwise happen on
             // the main thread at exactly the wrong moment.
@@ -179,7 +183,9 @@ final class PreviewImageLoader {
         await Task.detached(priority: .userInitiated) {
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
             let count = CGImageSourceGetCount(source)
-            guard count > 1 else { return nil }
+            guard ImageShrink.isAnimation(frameCount: count, typeIdentifier: CGImageSourceGetType(source) as String?) else {
+                return nil
+            }
 
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,

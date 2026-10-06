@@ -92,11 +92,11 @@ enum MessageRenderer {
         case .part:
             line.append(actor)
             line.append(muted(host + " left", base: base))
-            appendReason(message.text, to: line, base: base)
+            appendReason(message, to: line, base: base)
         case .quit:
             line.append(actor)
             line.append(muted(host + " quit", base: base))
-            appendReason(message.text, to: line, base: base)
+            appendReason(message, to: line, base: base)
         case .nick:
             line.append(actor)
             line.append(muted(" is now ", base: base))
@@ -106,7 +106,7 @@ enum MessageRenderer {
             line.append(nickToken(message.kicked, base: base))
             line.append(muted(" was kicked by ", base: base))
             line.append(actor)
-            appendReason(message.text, to: line, base: base)
+            appendReason(message, to: line, base: base)
         case .mode:
             line.append(actor)
             for segment in ModeNarration.describe(message.modes, rawText: message.text) {
@@ -543,10 +543,14 @@ enum MessageRenderer {
         NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: Palette.fgMuted])
     }
 
-    /// A part/quit reason in parentheses, or nothing when there isn't one.
-    private static func appendReason(_ text: String?, to line: NSMutableAttributedString, base: UIFont) {
-        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        line.append(muted(" (" + text + ")", base: base))
+    /// A part, quit or kick reason in parentheses, or nothing when there isn't one. Through `body`,
+    /// as a topic is (sweep L06): a reason carries mIRC colours and links like any message, and
+    /// as plain text its colour digits leaked ("(04Leaving") and its URLs couldn't be tapped.
+    private static func appendReason(_ message: Message, to line: NSMutableAttributedString, base: UIFont) {
+        guard let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        line.append(muted(" (", base: base))
+        line.append(body(message, base: base, fallback: Palette.fgMuted))
+        line.append(muted(")", base: base))
     }
 
     /// One summary category as "alice, bob and carol joined" — the names as nick tokens, the
