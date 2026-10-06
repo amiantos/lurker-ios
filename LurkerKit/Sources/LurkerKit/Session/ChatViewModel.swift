@@ -250,13 +250,15 @@ public final class ChatViewModel {
             sessions.addPendingRevoke(PersistedSession(server: ending.server, token: ending.token), at: ending.since)
             revoking.insert(ending.token)
         }
-        client.logout(deviceToken: deviceToken, drafts: drafts) { [weak self] outcome in
+        client.logout(deviceToken: deviceToken, relayEndpoint: relayEndpoint, drafts: drafts) { [weak self] outcome in
             guard let self, let ending else { return }
             self.revokeFinished(ending, outcome)
         }
         deviceToken = nil
+        relayEndpoint = nil
         // The next sign-in may be against a different server, whose answer differs.
-        apnsSupported = nil
+        pushConfig = nil
+        pushRoute = nil
         sessions.clear()
         // The next account's preferences are not this one's — and a privacy switch in
         // particular must not carry across users. Both this and the deliberate sign-out clear
@@ -304,36 +306,80 @@ public final class ChatViewModel {
     /// remember.
     private var deviceToken: String?
 
-    /// Cached answer to "does this server speak APNs". Fixed for a given server, and the
-    /// question is asked on every activation — without this that's an HTTP round trip every
-    /// time the user opens the app, to re-learn something that cannot have changed.
-    /// Only a real answer is cached: a failed ask stays unknown and is retried.
-    private var apnsSupported: Bool?
+    /// The server's `/api/push/config`, cached: the transports are fixed for a server, and
+    /// the question is asked on every activation — without this that's an HTTP round trip
+    /// every time the user opens the app. Only a real answer is cached: a failed ask stays
+    /// unknown and is retried. Dropped when a relay registration is refused, since the
+    /// admin's relay switch is the one part that can change.
+    private var pushConfig: PushConfig?
 
-    /// Does this server speak APNs at all? A self-hosted server holds no Apple key and
-    /// says so via `/api/push/config`, in which case asking the user for notification
-    /// permission would be a lie — we'd get the grant and never deliver anything.
+    /// How this install gets pushes from the signed-in server, once decided.
+    public private(set) var pushRoute: PushRoute?
+
+    /// The relay endpoint registered for this install, so sign-out can drop it.
+    private var relayEndpoint: String?
+
+    /// Where the relay keys live. The app's default is the Keychain group its Notification
+    /// Service Extension shares; tests swap in memory.
+    public var pushKeyStore: any WebPushKeyStore = KeychainWebPushKeyStore()
+    /// Which APNs gateway issued this build's token: the app passes `.development` for
+    /// Debug builds. Part of the relay endpoint.
+    public var apnsEnvironment: APNsEnvironment = .production
+    /// Debug builds may use any https relay (for a relay under development); release
+    /// builds only push.lurker.chat (RELAY_PLAN.md §6.2).
+    public var allowAnyHTTPSRelay = false
+
+    /// Can this server push to the app, and how? A self-hosted server holds no Apple key;
+    /// it pushes through push.lurker.chat only when its admin turned that on. Asking the
+    /// user for notification permission when the answer is `.unavailable` would be a lie — we'd
+    /// get the grant and never deliver anything.
     ///
-    /// `nil` means we couldn't ask. Deliberately NOT folded into `false`: the two are one
-    /// wifi blip apart and would read identically at the call site, so collapsing them
-    /// makes a transient failure report a permanent fact about the server's configuration
-    /// — and sends whoever reads that line off auditing env vars on a box that was fine.
-    /// Only a real answer is cached, so an unreachable server is asked again next time.
-    public func serverSupportsAPNs() async -> Bool? {
-        if let apnsSupported { return apnsSupported }
-        guard let transports = await client.pushTransports() else { return nil }
-        let supported = transports.contains("apns")
-        apnsSupported = supported
-        return supported
+    /// `nil` means we couldn't ask. Deliberately NOT folded into `.unavailable`: the two are one
+    /// wifi blip apart, and collapsing them makes a transient failure report a permanent
+    /// fact about the server's configuration.
+    public func resolvePushRoute() async -> PushRoute? {
+        if pushConfig == nil { pushConfig = await client.pushConfig() }
+        guard let pushConfig else { return nil }
+        let route = PushRoute.decide(pushConfig, allowAnyHTTPSRelay: allowAnyHTTPSRelay)
+        pushRoute = route
+        return route
     }
 
-    /// Hand the OS-issued device token to the server. Idempotent — iOS re-issues the same
-    /// token on most launches, and the server upserts.
+    /// The server answered, and nothing can push to the app: Settings says so.
+    public var serverCannotPushToApp: Bool { pushRoute == PushRoute.unavailable }
+
+    /// Hand the OS-issued device token to the server: directly for a server holding our
+    /// APNs key, or as a relay endpoint for one whose admin turned on push.lurker.chat.
+    /// Idempotent — iOS re-issues the same token on most launches, and the server upserts.
     @discardableResult
     public func registerPushDevice(token: String) async -> Bool {
         deviceToken = token
         guard session == .loggedIn else { return false }
-        return await client.registerDevice(token: token)
+        let route: PushRoute?
+        if let pushRoute { route = pushRoute } else { route = await resolvePushRoute() }
+        switch route {
+        case .apns:
+            return await client.registerDevice(token: token)
+        case .relay(let origin, let serverKey):
+            let keys = pushKeyStore.loadOrCreate()
+            let endpoint = RelayEndpoint.apns(
+                origin: origin, environment: apnsEnvironment, token: token, serverKey: serverKey
+            )
+            switch await client.registerWebPush(endpoint: endpoint, keys: keys) {
+            case .registered:
+                relayEndpoint = endpoint
+                return true
+            case .relayOff:
+                // Turned off since we read the config: no push, and ask afresh next time.
+                pushConfig = nil
+                pushRoute = PushRoute.unavailable
+                return false
+            case .failed:
+                return false
+            }
+        case .unavailable, nil:
+            return false
+        }
     }
 
     /// Fill in a shell's contents — what a screen calls when it opens on a buffer we already

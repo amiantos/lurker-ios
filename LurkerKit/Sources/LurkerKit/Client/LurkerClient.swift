@@ -1406,16 +1406,22 @@ final class LurkerClient {
     /// that was fine.
     ///
     /// An older server (pre-#490) has no `transports` key and correctly reads as `[]` —
-    /// it answered, and it has no native push.
-    func pushTransports() async -> [String]? {
-        guard let token, let url = URL(string: baseURL + "/api/push/config") else { return nil }
+    /// it answered, and it has no native push. The same answer carries the server's VAPID
+    /// key and, when its admin has turned it on, the relay (RELAY_PLAN.md §6.2).
+    func pushConfig() async -> PushConfig? {
+        guard let token else { return nil }
+        return await Self.pushConfig(session: session, baseURL: baseURL, sessionToken: token)
+    }
+
+    static func pushConfig(session: URLSession, baseURL: String, sessionToken: String) async -> PushConfig? {
+        guard let url = URL(string: baseURL + "/api/push/config") else { return nil }
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
         guard let (data, response) = try? await session.data(for: request),
               (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0),
               let body = FrameParser.jsonObject(from: data)
         else { return nil }
-        return body["transports"] as? [String] ?? []
+        return PushConfig.parse(body)
     }
 
     /// Fetch a page of recent highlights (`GET /api/highlights`). `before` is the cursor
@@ -1493,6 +1499,64 @@ final class LurkerClient {
         ])
         guard let (_, response) = try? await session.data(for: request) else { return false }
         return (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0)
+    }
+
+    /// What the server said to a relay registration.
+    public enum WebPushRegistration: Equatable, Sendable {
+        case registered
+        /// 403: the admin turned the relay off since the config was read. No push, for now.
+        case relayOff
+        case failed
+    }
+
+    /// File this install's relay endpoint as a Web Push subscription (RELAY_PLAN.md §6.2).
+    /// The server pushes to it like any browser's, and the relay forwards to APNs.
+    func registerWebPush(endpoint: String, keys: WebPushKeys) async -> WebPushRegistration {
+        guard let token else { return .failed }
+        return await Self.registerWebPush(
+            session: session, baseURL: baseURL, sessionToken: token, endpoint: endpoint, keys: keys
+        )
+    }
+
+    static func registerWebPush(
+        session: URLSession, baseURL: String, sessionToken: String, endpoint: String, keys: WebPushKeys
+    ) async -> WebPushRegistration {
+        guard let request = webPushRequest(
+            "POST", baseURL: baseURL, sessionToken: sessionToken, body: [
+                "endpoint": endpoint,
+                "keys": ["p256dh": keys.p256dh, "auth": keys.auth],
+                "userAgent": "Lurker iOS",
+            ]
+        ) else { return .failed }
+        guard let (_, response) = try? await session.data(for: request) else { return .failed }
+        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 200..<300: return .registered
+        case 403: return .relayOff
+        default: return .failed
+        }
+    }
+
+    /// Drop this device's relay subscription — the Web Push twin of `deregisterDevice`, and
+    /// called at the same moment, for the same reason.
+    static func deregisterWebPush(
+        session: URLSession, baseURL: String, sessionToken: String, endpoint: String
+    ) async {
+        guard let request = webPushRequest(
+            "DELETE", baseURL: baseURL, sessionToken: sessionToken, body: ["endpoint": endpoint]
+        ) else { return }
+        _ = try? await session.data(for: request)
+    }
+
+    nonisolated static func webPushRequest(
+        _ method: String, baseURL: String, sessionToken: String, body: [String: Any]
+    ) -> URLRequest? {
+        guard let url = URL(string: baseURL + "/api/push/subscriptions") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("Bearer \(sessionToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return request
     }
 
     /// Drop this device's registration. Called BEFORE sign-out revokes the session, since
@@ -1702,7 +1766,8 @@ final class LurkerClient {
     /// session to authenticate, so it cannot happen after the revoke. Best-effort: if it
     /// fails (offline, crash, force-quit) the token stays filed against this account, and
     /// the server's native rebind rule is what stops that stranding whoever signs in next
-    /// on this phone (#490).
+    /// on this phone (#490). A relay endpoint goes the same way, and the server rebinds it
+    /// the same way (RELAY_PLAN.md §6.2).
     ///
     /// `drafts` are saved first, over HTTP with the session being ended: a socket write queued
     /// now would be cancelled by the `close()` below before it went out.
@@ -1711,6 +1776,7 @@ final class LurkerClient {
     /// the session owed a revoke until it has, and retries it with `revoke(server:token:)`.
     func logout(
         deviceToken: String? = nil,
+        relayEndpoint: String? = nil,
         drafts: [(key: BufferKey, draft: ComposerDraft)] = [],
         onRevoked: ((RevokeOutcome) -> Void)? = nil
     ) {
@@ -1730,6 +1796,11 @@ final class LurkerClient {
             if let deviceToken {
                 await Self.deregisterDevice(
                     session: session, baseURL: base, sessionToken: revokeToken, deviceToken: deviceToken
+                )
+            }
+            if let relayEndpoint {
+                await Self.deregisterWebPush(
+                    session: session, baseURL: base, sessionToken: revokeToken, endpoint: relayEndpoint
                 )
             }
             let outcome = await Self.revoke(session: session, baseURL: base, token: revokeToken)

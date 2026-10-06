@@ -21,7 +21,13 @@ let package = Package(
         // picker's data and the channel-suggestion rules are testable with `swift test` on
         // the host, like everything else in this package.
         .target(name: "LurkerKit", resources: [.process("Resources")]),
-        .testTarget(name: "LurkerKitTests", dependencies: ["LurkerKit"]),
+        // relayVectors.json is a copy of lurker's server/services/push/relayVectors.json — the
+        // push relay's test vectors, which the server, the relay and both apps decrypt alike.
+        .testTarget(
+            name: "LurkerKitTests",
+            dependencies: ["LurkerKit"],
+            resources: [.copy("Resources/relayVectors.json")]
+        ),
     ],
     swiftLanguageModes: [.v5]
 )
