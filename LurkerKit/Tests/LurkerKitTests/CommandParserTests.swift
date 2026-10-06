@@ -58,6 +58,23 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(parse("hello there"), .message("hello there"))
     }
 
+    /// lurker-ios#210: a leading space is how you say "/whatever" to a channel without the `//`
+    /// escape — the web, irssi and gamja decide on the untrimmed line's first character.
+    func testALeadingSpaceMakesASlashLineAMessage() {
+        XCTAssertEqual(parse(" /whois bob"), .message(" /whois bob"))
+        XCTAssertEqual(parse("\t/join #x"), .message("\t/join #x"))
+    }
+
+    /// What a composer sends: nothing for a blank draft, and trailing whitespace dropped — never
+    /// leading, which decides whether the line is a command (lurker-ios#210).
+    func testSendableKeepsLeadingWhitespaceAndDropsTrailing() {
+        XCTAssertNil(CommandParser.sendable(""))
+        XCTAssertNil(CommandParser.sendable("  \n\t "))
+        XCTAssertEqual(CommandParser.sendable(" /whois bob \n"), " /whois bob")
+        XCTAssertEqual(CommandParser.sendable("/join #x  "), "/join #x")
+        XCTAssertEqual(CommandParser.sendable("line one\n  line two\n"), "line one\n  line two")
+    }
+
     func testDoubleSlashEscapesToALiteralMessage() {
         // `//foo` sends the literal `/foo` — one slash stripped — so you can start a line with
         // a slash without invoking a command.

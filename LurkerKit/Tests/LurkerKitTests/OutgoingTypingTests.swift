@@ -87,13 +87,15 @@ final class OutgoingTypingTests: XCTestCase {
         XCTAssertFalse(typing.isSignalling)
     }
 
-    func testACommandAfterLeadingWhitespaceIsStillACommand() {
-        // lurker-ios#202: the composer trims before sending, so ` /whois al` runs as a command;
-        // announcing typing for it would be the same leak as for `/whois al`.
+    func testALeadingSpaceMakesASlashLineAMessageAndIsAnnounced() {
+        // lurker-ios#210: ` /whois al` goes to the channel as text, as on the web, irssi and gamja
+        // (the composer keeps leading whitespace, `CommandParser.sendable`), so it is composing like
+        // any other line. lurker-ios#202 had it the other way round, to match a send that trimmed.
         var typing = OutgoingTyping()
-        XCTAssertNil(typing.draftChanged(to: " /whois al", at: t0))
-        XCTAssertNil(typing.draftChanged(to: "\n/join #x", at: t0.addingTimeInterval(1)))
-        XCTAssertFalse(typing.isSignalling)
+        XCTAssertEqual(typing.draftChanged(to: " /whois al", at: t0), .active)
+        XCTAssertTrue(typing.isSignalling)
+        var newline = OutgoingTyping()
+        XCTAssertEqual(newline.draftChanged(to: "\n/join #x", at: t0), .active)
     }
 
     func testADoubleSlashEscapeIsAMessageAndIsAnnounced() {

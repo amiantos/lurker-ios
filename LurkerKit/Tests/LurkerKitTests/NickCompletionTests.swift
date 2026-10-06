@@ -167,8 +167,8 @@ final class NickCompletionTests: XCTestCase {
     /// `/me`'s argument is speech, `//` escapes a command, and an `@` asks anywhere.
     func testACommandLineAsksOnlyForMeOrAnAt() {
         XCTAssertNil(NickCompletion.activeMention(in: "/msg NickServ IDENTIFY hu", caret: 25))
-        XCTAssertNil(NickCompletion.activeMention(in: "  /nick al", caret: 10),
-                     "the composer trims, so leading whitespace is still a command")
+        XCTAssertEqual(NickCompletion.activeMention(in: "  /nick al", caret: 10)?.query, "al",
+                       "a leading space makes the line text to the channel (lurker-ios#210)")
         XCTAssertEqual(NickCompletion.activeMention(in: "/me waves at al", caret: 15)?.query, "al")
         XCTAssertEqual(NickCompletion.activeMention(in: "/ME waves at al", caret: 15)?.query, "al")
         XCTAssertEqual(NickCompletion.activeMention(in: "/shrug ask al", caret: 13)?.query, "al",

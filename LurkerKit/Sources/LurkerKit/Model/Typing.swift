@@ -110,9 +110,9 @@ public enum TypingSignal: String, Sendable {
 ///
 /// A leading `/` counts as not-composing on purpose: a command is not a message to the
 /// channel, and telling everyone you're typing while you run `/whois` leaks that you're doing
-/// *something* and then never delivers a line to justify it. "Leading" is judged on the trimmed
-/// text the composer sends, so ` /whois` is a command (the web checks the raw draft, and
-/// announces it), and a `//`-escaped line is a message, so it is announced.
+/// *something* and then never delivers a line to justify it. "Leading" means the draft's very
+/// first character, as the send decides it: ` /whois` goes to the channel as text and is announced
+/// (lurker-ios#210, as on the web), and a `//`-escaped line is a message, so it is announced too.
 public struct OutgoingTyping: Sendable {
     /// How often an ongoing `active` is re-sent. The peer's `active` lease is 6s, so a 3s
     /// refresh keeps it alive with a full period to spare against a dropped tag.
@@ -130,12 +130,17 @@ public struct OutgoingTyping: Sendable {
     /// to say anything.
     public var isSignalling: Bool { sent != nil }
 
-    /// Whether `draft` is something we'd tell the network we're composing. Asked of the
-    /// trimmed text, which is what the composer sends: ` /whois bob` runs as a command, and
-    /// `//shrug` goes to the channel as `/shrug`.
+    /// Whether `draft` is something we'd tell the network we're composing: what the composer sends
+    /// as a line to the channel (`CommandParser.sendable`, then `CommandParser.parse`). Decided on
+    /// the untrimmed draft, as the send is: ` /whois bob` goes to the channel as text
+    /// (lurker-ios#210), and `//shrug` as `/shrug`; only a draft that opens with a lone `/` is a
+    /// command.
     private static func isComposing(_ draft: String) -> Bool {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && (!trimmed.hasPrefix("/") || trimmed.hasPrefix("//"))
+        // `sendable`'s blank test, without its copy: this runs on every keystroke.
+        guard draft.unicodeScalars.contains(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else {
+            return false
+        }
+        return !draft.hasPrefix("/") || draft.hasPrefix("//")
     }
 
     /// The draft changed. Returns the signal to send, or nil to stay quiet.

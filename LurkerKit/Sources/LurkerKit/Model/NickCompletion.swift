@@ -169,16 +169,14 @@ public enum NickCompletion {
 
     private static let atSign = UInt16(UnicodeScalar("@").value)
 
-    /// Whether the draft is a command whose arguments a bare word must stay out of: it opens
-    /// (after any whitespace, which the composer trims before sending) with `/` and a verb
-    /// other than `me` or `shrug`, whose arguments are chat text. `//` escapes a command, so
-    /// that line is text.
+    /// Whether the draft is a command whose arguments a bare word must stay out of: its very first
+    /// character is `/`, as `CommandParser` decides it (" /nick al" is text to the channel,
+    /// lurker-ios#210), and its verb isn't `me` or `shrug`, whose arguments are chat text. `//`
+    /// escapes a command, so that line is text.
     private static func isCommandLine(_ chars: [UInt16]) -> Bool {
-        var index = 0
-        while index < chars.count, isWhitespace(chars[index]) { index += 1 }
         let slash = UInt16(UnicodeScalar("/").value)
-        guard index < chars.count, chars[index] == slash else { return false }
-        let verb = chars[(index + 1)...].prefix { !isWhitespace($0) }
+        guard chars.first == slash else { return false }
+        let verb = chars.dropFirst().prefix { !isWhitespace($0) }
         if verb.first == slash { return false }
         return !["me", "shrug"].contains(String(decoding: verb, as: UTF16.self).lowercased())
     }
