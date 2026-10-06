@@ -189,22 +189,27 @@ final class SettingsViewController: UITableViewController {
     /// account setting that mysteriously failed to follow you to the desktop.
     private enum DeviceSetting: CaseIterable {
         case autocapitalize
+        /// lurker-android#64 — the on-screen keyboard's Return; a hardware Enter always sends.
+        case enterSends
 
         var label: String {
             switch self {
             case .autocapitalize: "Autocapitalize messages"
+            case .enterSends: "Enter to send"
             }
         }
 
         var isOn: Bool {
             switch self {
             case .autocapitalize: UserPreferences.standard.composerAutocapitalizes
+            case .enterSends: UserPreferences.standard.composerEnterSends
             }
         }
 
         func write(_ isOn: Bool) {
             switch self {
             case .autocapitalize: UserPreferences.standard.set(composerAutocapitalizes: isOn)
+            case .enterSends: UserPreferences.standard.set(composerEnterSends: isOn)
             }
         }
     }
@@ -369,7 +374,13 @@ final class SettingsViewController: UITableViewController {
     /// explain itself.
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         switch sections[section] {
-        case .device: "Applies to this device only — not shared with your other Lurker clients."
+        // Enter to send's note rides here: rows on this screen carry no help text of their own.
+        case .device: """
+            Enter to send: Return on the on-screen keyboard sends the message. A hardware \
+            keyboard's Enter always sends; Shift-Enter starts a new line.
+
+            Applies to this device only — not shared with your other Lurker clients.
+            """
         case .smartFilter: "Used when Event filter is set to Smart."
         default: nil
         }
