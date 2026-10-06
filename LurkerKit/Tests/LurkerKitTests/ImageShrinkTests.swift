@@ -68,19 +68,6 @@ struct ImageShrinkTests {
             == .shrink(maxPixelSize: 2048, format: .jpeg))
     }
 
-    @Test("⚠ only a non-JPEG with several images moves (sweep L13)")
-    func theAnimationRule() {
-        // An Ultra HDR photo from a Pixel or Samsung reads as two images: the photo and its gain
-        // map. Badged and played, it flickered between the two.
-        #expect(!ImageShrink.isAnimation(frameCount: 2, typeIdentifier: "public.jpeg"))
-        #expect(ImageShrink.isAnimation(frameCount: 12, typeIdentifier: "com.compuserve.gif"))
-        #expect(ImageShrink.isAnimation(frameCount: 12, typeIdentifier: "org.webmproject.webp"))
-        #expect(ImageShrink.isAnimation(frameCount: 12, typeIdentifier: "public.png"))
-        // ImageIO couldn't name the type: the count decides, as it always did.
-        #expect(ImageShrink.isAnimation(frameCount: 12, typeIdentifier: nil))
-        #expect(!ImageShrink.isAnimation(frameCount: 1, typeIdentifier: "com.compuserve.gif"))
-    }
-
     @Test("a shrink past the decode budget leaves the shrinking to the server")
     func aHugeDecodeIsLeftToTheServer() {
         // 12000×9000 to an 8192 edge is 8192×6144 — ~200 MB of bitmap. The server can shrink it;

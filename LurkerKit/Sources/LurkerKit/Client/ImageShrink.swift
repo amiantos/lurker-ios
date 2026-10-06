@@ -114,10 +114,12 @@ public enum ImageShrink {
         // ⚠⚠ An animation goes up verbatim. The server skips the resize for it, so it keeps
         // every frame — and a redraw here would flatten it to the first one, with no error.
         //
-        // ⚠ But a JPEG with more than one image is not an animation (`isAnimation`): to the
-        // server's decoder it is one page, resized like any photo. Skipping it would quietly
-        // upload the full original.
-        guard !isAnimation(frameCount: source.frameCount, typeIdentifier: source.typeIdentifier) else { return .leave }
+        // ⚠ But a JPEG with more than one image is not an animation. An MPO (stereo cameras)
+        // or a JPEG carrying an HDR gain map stores its extra images in an MPF segment, which
+        // ImageIO counts and the server's decoder doesn't — to sharp it is one page, resized
+        // like any photo. Skipping it would quietly upload the full original.
+        let animated = source.frameCount > 1 && source.typeIdentifier != Format.jpeg.typeIdentifier
+        guard !animated else { return .leave }
 
         // ⚠⚠ No dimension, no shrink. The server didn't say what it keeps, so nothing tells us
         // which pixels are waste; a guessed 2048 would cost a user on a 4096 instance half
@@ -147,16 +149,5 @@ public enum ImageShrink {
 
     static func isHEIC(_ typeIdentifier: String) -> Bool {
         typeIdentifier == "public.heic" || typeIdentifier == "public.heif"
-    }
-
-    /// Whether an image ImageIO reads as `frameCount` images of type `typeIdentifier` moves.
-    ///
-    /// ⚠ More than one image is not enough: a JPEG never animates. An MPO (stereo cameras) or a
-    /// JPEG carrying an HDR gain map (Pixel and Samsung Ultra HDR, iPhone HDR exports) stores its
-    /// extra images in an MPF segment, which ImageIO counts. Played as frames it flickers between
-    /// the photo and its greyscale gain map (sweep L13). One rule for the upload's shrink and the
-    /// preview's badge and player, so the two never disagree about the same file.
-    public static func isAnimation(frameCount: Int, typeIdentifier: String?) -> Bool {
-        frameCount > 1 && typeIdentifier != Format.jpeg.typeIdentifier
     }
 }

@@ -56,6 +56,13 @@ final class TimeZoneSyncTests: XCTestCase {
         XCTAssertEqual(written(), [])
     }
 
+    func testABootstrapWhileTheWriteIsOutSendsNoSecond() {
+        let (model, written) = makeModel()
+        model.handle(.settingsBootstrap(registry: [:], values: ["system.timezone": .string(elsewhere)]))
+        model.handle(.settingsBootstrap(registry: [:], values: ["system.timezone": .string(elsewhere)]))
+        XCTAssertEqual(written(), [here])
+    }
+
     func testAnEmptyZoneIsNeverWritten() {
         let (model, written) = makeModel()
         model.syncTimeZone("")

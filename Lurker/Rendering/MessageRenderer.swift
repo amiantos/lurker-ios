@@ -74,8 +74,11 @@ enum MessageRenderer {
     /// A structural line — "alice joined", "bob is now bob_afk", "chan set +o dave". The
     /// actor and any nicks it names are colored; the connective words are muted, so the line
     /// reads as narration about the room rather than something someone said in it.
+    ///
+    /// `revealed` reaches the one body a line can carry — a topic or a reason — so a spoiler in it
+    /// opens like one in a message.
     private static func renderActivity(
-        _ message: Message, base: UIFont, settings: Settings = Settings()
+        _ message: Message, base: UIFont, settings: Settings = Settings(), revealed: Set<Int> = []
     ) -> NSAttributedString {
         let line = NSMutableAttributedString()
         let actor = nickToken(message.nick, isSelf: message.isSelf, base: base)
@@ -92,11 +95,11 @@ enum MessageRenderer {
         case .part:
             line.append(actor)
             line.append(muted(host + " left", base: base))
-            appendReason(message, to: line, base: base)
+            appendReason(message, to: line, base: base, revealed: revealed)
         case .quit:
             line.append(actor)
             line.append(muted(host + " quit", base: base))
-            appendReason(message, to: line, base: base)
+            appendReason(message, to: line, base: base, revealed: revealed)
         case .nick:
             line.append(actor)
             line.append(muted(" is now ", base: base))
@@ -106,7 +109,7 @@ enum MessageRenderer {
             line.append(nickToken(message.kicked, base: base))
             line.append(muted(" was kicked by ", base: base))
             line.append(actor)
-            appendReason(message, to: line, base: base)
+            appendReason(message, to: line, base: base, revealed: revealed)
         case .mode:
             line.append(actor)
             for segment in ModeNarration.describe(message.modes, rawText: message.text) {
@@ -132,7 +135,7 @@ enum MessageRenderer {
                 line.append(muted(": ", base: base))
                 // The same muted as the ": " immediately before it — two greys mid-sentence read
                 // as a seam, and the topic text is a continuation of the narration, not a quote.
-                line.append(body(message, base: base, fallback: Palette.fgMuted))
+                line.append(body(message, base: base, fallback: Palette.fgMuted, revealed: revealed))
             }
         case .invite:
             line.append(actor)
@@ -426,7 +429,7 @@ enum MessageRenderer {
             // column of punctuation buying nothing.
             return spaced(
                 NSMutableAttributedString(
-                    attributedString: renderActivity(message, base: base, settings: settings)
+                    attributedString: renderActivity(message, base: base, settings: settings, revealed: revealed)
                 ),
                 flushFirstLine: true, traits: traits
             )
@@ -546,10 +549,16 @@ enum MessageRenderer {
     /// A part, quit or kick reason in parentheses, or nothing when there isn't one. Through `body`,
     /// as a topic is (sweep L06): a reason carries mIRC colours and links like any message, and
     /// as plain text its colour digits leaked ("(04Leaving") and its URLs couldn't be tapped.
-    private static func appendReason(_ message: Message, to line: NSMutableAttributedString, base: UIFont) {
-        guard let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// Judged empty on its visible text: a reason of nothing but formatting codes has no words to
+    /// put in the parentheses.
+    private static func appendReason(
+        _ message: Message, to line: NSMutableAttributedString, base: UIFont, revealed: Set<Int>
+    ) {
+        guard let text = message.text,
+              !IRCFormatting.strip(text).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return }
         line.append(muted(" (", base: base))
-        line.append(body(message, base: base, fallback: Palette.fgMuted))
+        line.append(body(message, base: base, fallback: Palette.fgMuted, revealed: revealed))
         line.append(muted(")", base: base))
     }
 

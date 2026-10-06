@@ -385,12 +385,26 @@ public final class ChatViewModel {
     /// On each settings bootstrap — every start and every reconnect — so a phone that has travelled
     /// corrects it on its next foreground. Never in answer to a `settings` frame: another device's
     /// write isn't answered, so two devices in different zones can't trade it back and forth.
-    func syncTimeZone(_ detected: String = TimeZone.current.identifier) {
-        guard !detected.isEmpty, store.state.settings.values["system.timezone"] != .string(detected) else { return }
+    ///
+    /// `autoupdatingCurrent`, not `current`: `current` is a snapshot that can outlive a zone change
+    /// in a process that stayed alive through a flight.
+    func syncTimeZone(_ detected: String = TimeZone.autoupdatingCurrent.identifier) {
+        guard !detected.isEmpty, store.state.settings.values["system.timezone"] != .string(detected),
+              timeZoneWriting != detected
+        else { return }
+        // One write out at a time: bootstraps from a flapping reconnect would each send their own.
+        timeZoneWriting = detected
+        // The seam's write never finishes, so a test sees it as still out.
         if let timeZoneWriteSeam { return timeZoneWriteSeam(detected) }
-        // Not worth a word on failure: the next bootstrap asks again.
-        Task { _ = await client.updateSettings(["system.timezone": .string(detected)]) }
+        Task {
+            // Not worth a word on failure: the next bootstrap asks again.
+            _ = await client.updateSettings(["system.timezone": .string(detected)])
+            if timeZoneWriting == detected { timeZoneWriting = nil }
+        }
     }
+
+    /// The zone `syncTimeZone` has a write out for, if any.
+    private var timeZoneWriting: String?
 
     /// Open a DM and go there once its row exists (iOS #201): Send Message on a profile, a Friends
     /// row whose DM is closed. The app is taken there through `onBufferOpened` — at once if the row
