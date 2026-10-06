@@ -1719,8 +1719,9 @@ final class LurkerClient {
 
     /// Whether a revoke needs asking again (#218).
     enum RevokeOutcome: Equatable {
-        /// The server has answered for good: the token is gone, was already gone, or this address
-        /// no longer has a Lurker server to ask.
+        /// Lurker answered — the token is gone, or was already — or the address isn't a URL at
+        /// all, so there is nothing that could ever be asked. Not "the server confirmed": don't hang
+        /// anything on it that needs that.
         case done
         /// Nothing final yet — no answer at all, or a temporary one.
         case retry

@@ -245,14 +245,14 @@ public final class ChatViewModel {
         cancelReconnect()
         // Owed a revoke until the server confirms it (#218), so a sign-out made offline still
         // reaches the server later instead of leaving the token, and its pushes, live for good.
-        let ending = client.currentSession
+        let ending = client.currentSession.map { PendingRevoke(server: $0.server, token: $0.token, since: Date()) }
         if let ending {
-            sessions.addPendingRevoke(ending)
+            sessions.addPendingRevoke(PersistedSession(server: ending.server, token: ending.token), at: ending.since)
             revoking.insert(ending.token)
         }
         client.logout(deviceToken: deviceToken, drafts: drafts) { [weak self] outcome in
             guard let self, let ending else { return }
-            self.revokeFinished(ending.token, outcome)
+            self.revokeFinished(ending, outcome)
         }
         deviceToken = nil
         // The next sign-in may be against a different server, whose answer differs.
@@ -1834,32 +1834,46 @@ public final class ChatViewModel {
     /// name it, but revoking it would sign the user out from under themselves, so it's checked
     /// rather than assumed.
     func retryPendingRevokes(now: Date = Date()) {
-        let live = client.currentSession?.token ?? sessions.load()?.token
-        for pending in sessions.pendingRevokes() where pending.token != live {
+        // Almost always empty — checked before `sendRevoke`'s Keychain read of the live session.
+        for pending in sessions.pendingRevokes() {
             guard !revoking.contains(pending.token) else {
                 retryWanted.insert(pending.token)
                 continue
             }
-            guard now.timeIntervalSince(pending.since) < Self.revokeRetryWindow else {
-                sessions.removePendingRevoke(token: pending.token)
-                continue
-            }
-            revoking.insert(pending.token)
-            Task { [weak self] in
-                guard let self else { return }
-                let outcome = await self.client.revoke(server: pending.server, token: pending.token)
-                self.revokeFinished(pending.token, outcome)
-            }
+            sendRevoke(pending, now: now)
         }
     }
 
-    private func revokeFinished(_ token: String, _ outcome: LurkerClient.RevokeOutcome) {
-        revoking.remove(token)
-        let wanted = retryWanted.remove(token) != nil
+    /// One owed revoke: dropped if it has outlived `revokeRetryWindow`, otherwise sent. The one
+    /// door every revoke request goes through, so the live-session check covers the first try and
+    /// every replay alike.
+    private func sendRevoke(_ pending: PendingRevoke, now: Date = Date()) {
+        guard pending.token != (client.currentSession?.token ?? sessions.load()?.token) else { return }
+        guard now.timeIntervalSince(pending.since) < Self.revokeRetryWindow else {
+            sessions.removePendingRevoke(token: pending.token)
+            return
+        }
+        revoking.insert(pending.token)
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.client.revoke(server: pending.server, token: pending.token)
+            self.revokeFinished(pending, outcome)
+        }
+    }
+
+    /// ⚠⚠ A wanted replay sends THIS token again, never every owed one. Re-running
+    /// `retryPendingRevokes` here marked each other token still out as wanted — a trigger it never
+    /// got — and two failing tokens then re-marked each other forever: a request loop for as long
+    /// as the app runs, tight when offline makes each fail at once. A normal launch set it off,
+    /// with two owed: the launch retry is still out when the scene's activation calls
+    /// `enterForeground`.
+    private func revokeFinished(_ pending: PendingRevoke, _ outcome: LurkerClient.RevokeOutcome) {
+        revoking.remove(pending.token)
+        let wanted = retryWanted.remove(pending.token) != nil
         if outcome == .done {
-            sessions.removePendingRevoke(token: token)
+            sessions.removePendingRevoke(token: pending.token)
         } else if wanted {
-            retryPendingRevokes()
+            sendRevoke(pending)
         }
     }
 
