@@ -225,7 +225,7 @@ final class LurkerClient {
     ///
     /// `reportingUnauthorized` is true for the connect-time and reconnect reads, which are the
     /// token checks — see `refreshNetworks` for why every other caller wants it off.
-    private func fetchNetworks(reportingUnauthorized: Bool = true) async -> Bool {
+    func fetchNetworks(reportingUnauthorized: Bool = true) async -> Bool {
         guard let token, let url = URL(string: baseURL + "/api/networks") else { return true }
         rosterGeneration += 1
         let generation = rosterGeneration
@@ -243,7 +243,7 @@ final class LurkerClient {
             // check still reports, superseded or not.
             guard generation == rosterGeneration else { return true }
             if (200..<300).contains(code), let text = String(data: data, encoding: .utf8) {
-                onFrame(FrameParser.parseNetworks(text))
+                deliver(FrameParser.parseNetworks(text), sentWith: token)
             }
             return true
         } catch {
@@ -258,7 +258,8 @@ final class LurkerClient {
     /// mean the token died in the intervening milliseconds, and treating it as an auth failure
     /// would bounce the user to sign-in over a settings fetch. The socket upgrade is the next
     /// thing to run and it will find out for itself.
-    private func fetchSettings() async {
+    /// Internal for tests.
+    func fetchSettings() async {
         guard let token, let url = URL(string: baseURL + "/api/settings/bootstrap") else { return }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -266,7 +267,7 @@ final class LurkerClient {
             let (data, response) = try await session.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return }
-            onFrame(FrameParser.parseSettingsBootstrap(text))
+            deliver(FrameParser.parseSettingsBootstrap(text), sentWith: token)
         } catch {
             // Registry defaults carry the app until the next launch.
         }
@@ -278,7 +279,9 @@ final class LurkerClient {
     /// changed" whether it came from this phone, the browser, or another device, and means a
     /// rejected write simply never takes effect rather than needing a rollback.
     ///
-    /// Returns the server's error message on failure, nil on success.
+    /// Returns the server's error message on failure, nil on success. Also nil, with nothing
+    /// applied, when the session that asked ended while the write was out: its screen is gone, and its
+    /// reply must not reach the next session.
     func updateSettings(_ changes: [String: SettingValue]) async -> String? {
         guard let token, let url = URL(string: baseURL + "/api/settings") else { return "Not signed in." }
         var request = URLRequest(url: url)
@@ -292,6 +295,9 @@ final class LurkerClient {
         request.httpBody = payload
         do {
             let (data, response) = try await session.data(for: request)
+            // A session that ended while this was out hears nothing of it — its screen is gone, and
+            // nothing of the departing account may land in the next one's store (see `deliver`).
+            guard self.token == token else { return nil }
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
                 reportUnauthorized(sentWith: token)
@@ -311,9 +317,9 @@ final class LurkerClient {
                 // `values` is the full stored set, and the reducer patches rather than
                 // replaces, so applying it is idempotent with the echo that follows.
                 if let text = String(data: data, encoding: .utf8) {
-                    onFrame(.settingsValues(FrameParser.parseSettingValues(
+                    deliver(.settingsValues(FrameParser.parseSettingValues(
                         FrameParser.jsonObject(from: text)?["values"]
-                    )))
+                    )), sentWith: token)
                 }
                 return nil
             }
@@ -321,6 +327,7 @@ final class LurkerClient {
             let text = String(data: data, encoding: .utf8) ?? ""
             return FrameParser.errorMessage(from: text) ?? "Couldn't save that setting."
         } catch {
+            guard self.token == token else { return nil }
             return "Couldn't reach the server."
         }
     }
@@ -1639,6 +1646,18 @@ final class LurkerClient {
         for timeout in replyTimeouts.values { timeout.cancel() }
         replyTimeouts = [:]
         for continuation in waiting.values { continuation.resume(returning: .connectionLost) }
+    }
+
+    /// Hand a REST reply on as a frame, but only if it answers the token in use now. A read or a write
+    /// still out when the session ended (a sign-out, a 401) can answer after the store and the
+    /// settings cache were cleared, or after a new sign-in, and the departing account's roster,
+    /// settings or values must not land in them. Every REST reply that becomes a frame comes through
+    /// here — the settings bootstrap goes out at every start and reconnect, and the phone's time
+    /// zone write at every bootstrap, so the window is an ordinary one. `reportUnauthorized` is the
+    /// same rule for a 401.
+    private func deliver(_ frame: ServerFrame, sentWith requestToken: String) {
+        guard requestToken == token else { return }
+        onFrame(frame)
     }
 
     /// Report a 401 as the end of the session, but only if it answered the token in use now.

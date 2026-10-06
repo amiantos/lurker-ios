@@ -182,11 +182,6 @@ final class PendingRevokeTests: XCTestCase {
         XCTAssertEqual(server.requests.first?.contains("Bearer recent"), true)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        for _ in 0..<100 where !condition() { try await Task.sleep(for: .milliseconds(50)) }
-        XCTAssertTrue(condition(), "timed out")
-    }
-
     // MARK: - Sign-out
 
     func testASignOutTheServerNeverHeardStaysOwed() async throws {
@@ -206,53 +201,4 @@ final class PendingRevokeTests: XCTestCase {
         try await waitUntil { model.revoking.isEmpty }
         XCTAssertEqual(sessions.pendingRevokes().map(\.token), ["departing"])
     }
-}
-
-/// A loopback HTTP server that answers every request with one status and records each request's
-/// head. Just enough HTTP for URLSession.
-private final class OneStatusServer: @unchecked Sendable {
-    private(set) var url = ""
-    private let listener: NWListener
-    private let lock = NSLock()
-    private var heads: [String] = []
-
-    var requests: [String] { lock.withLock { heads } }
-
-    /// Released once by `open()` (or at init when not gated); each waiter passes it on.
-    private let gate = DispatchSemaphore(value: 0)
-
-    func open() { gate.signal() }
-
-    /// With `gated`, each connection waits for `open()` before it's answered: the test decides how
-    /// long a request is in flight, not the clock.
-    init(status: Int, body: String = "", gated: Bool = false) async throws {
-        if !gated { gate.signal() }
-        let listener = try NWListener(using: .tcp, on: .any)
-        self.listener = listener
-        let ready = AsyncStream<UInt16> { continuation in
-            listener.stateUpdateHandler = { state in
-                if case .ready = state, let port = listener.port?.rawValue { continuation.yield(port); continuation.finish() }
-            }
-        }
-        let gate = self.gate
-        listener.newConnectionHandler = { [weak self] connection in
-            connection.start(queue: .global())
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, _ in
-                if let data, let head = String(data: data, encoding: .utf8) {
-                    self?.lock.withLock { self?.heads.append(head) }
-                }
-                let response = "HTTP/1.1 \(status) X\r\nContent-Type: application/json\r\n"
-                    + "Content-Length: \(Data(body.utf8).count)\r\nConnection: close\r\n\r\n\(body)"
-                gate.wait()
-                gate.signal()
-                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
-            }
-        }
-        listener.start(queue: .global())
-        var port: UInt16 = 0
-        for await p in ready { port = p }
-        url = "http://127.0.0.1:\(port)"
-    }
-
-    deinit { listener.cancel() }
 }
