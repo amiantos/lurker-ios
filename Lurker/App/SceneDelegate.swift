@@ -12,7 +12,18 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // One view model for the app's lifetime. It owns the client (session token + socket)
     // and the store. The token now survives relaunch in the Keychain (#3), so a returning
     // user lands straight on their buffers.
-    private let viewModel = ChatViewModel()
+    private let viewModel: ChatViewModel = {
+        let viewModel = ChatViewModel()
+        // A Debug build is signed with a development profile, so its APNs token is a
+        // sandbox one, and it may talk to a relay under development (LURKER_PUSH_RELAY_URL).
+        // Release builds — TestFlight and the App Store — are production, and trust only
+        // push.lurker.chat (RELAY_PLAN.md §6.2).
+        #if DEBUG
+        viewModel.apnsEnvironment = .development
+        viewModel.allowAnyHTTPSRelay = true
+        #endif
+        return viewModel
+    }()
     private var cancellables = Set<AnyCancellable>()
     /// The navigation controller the buffer list lives in: the split's primary column, which
     /// is the whole stack while it's collapsed. `showBuffer` forwards to the split from it.
@@ -176,16 +187,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         pushEnableTask = Task { [weak self] in
             defer { self?.pushEnableTask = nil }
             guard let self else { return }
-            let outcome = await push.enable(serverSupportsAPNs: { [viewModel] in
-                await viewModel.serverSupportsAPNs()
+            let outcome = await push.enable(route: { [viewModel] in
+                await viewModel.resolvePushRoute()
             })
             switch outcome {
             case .registering:
                 break // the token lands in AppDelegate.didRegister…
             case .unsupportedByServer:
-                // Expected on a self-hosted server: it has no Apple key and never will.
-                // Not an error, and not the user's problem — the PWA is their push path.
-                NSLog("[push] this server delivers Web Push only, not APNs; not registering")
+                // A self-hosted server with no relay turned on. Not an error — Settings
+                // tells the user it's their admin's switch.
+                NSLog("[push] this server can't push to the app (no APNs key, no relay); not registering")
             case .serverUnreachable:
                 // Says nothing about the server's config — we never got an answer. Worded
                 // so nobody reads this and goes auditing LURKER_APNS_* on a healthy box.

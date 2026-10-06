@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import LurkerKit
 import UIKit
 import UserNotifications
 
@@ -14,7 +15,8 @@ import UserNotifications
 ///
 /// The order below is deliberate and is the point of the class:
 ///
-///   1. ask the SERVER whether it can deliver APNs at all,
+///   1. ask the SERVER whether it can push to this app at all — directly over APNs, or
+///      through push.lurker.chat when its admin turned that on (RELAY_PLAN.md §6.2),
 ///   2. only then ask the USER for permission,
 ///   3. only then register with Apple.
 ///
@@ -26,8 +28,8 @@ final class PushRegistrar {
     enum Outcome: Equatable {
         /// Registered with Apple; the token is on its way to `didRegister`.
         case registering
-        /// The server answered, and it can't deliver APNs (self-hosted, or older
-        /// than #490). A permanent fact about that server.
+        /// The server answered, and it can't push to the app: no APNs key, and no relay
+        /// turned on. A fact about that server until its admin changes it.
         case unsupportedByServer
         /// We couldn't ask the server. Distinct from `unsupportedByServer` because it's
         /// transient and says nothing about the server's configuration — conflating them
@@ -48,11 +50,12 @@ final class PushRegistrar {
     /// Run the sequence. Safe to call on every foreground: iOS re-issues the same token,
     /// the server upserts, and an already-granted authorization doesn't re-prompt.
     ///
-    /// `serverSupportsAPNs` returns nil when it couldn't ask — which is not the same
-    /// answer as "no", and must not prompt either way.
-    func enable(serverSupportsAPNs: @Sendable () async -> Bool?) async -> Outcome {
-        guard let supported = await serverSupportsAPNs() else { return .serverUnreachable }
-        guard supported else { return .unsupportedByServer }
+    /// `route` returns nil when it couldn't ask — which is not the same answer as "no",
+    /// and must not prompt either way. Both the direct and the relay route need an APNs
+    /// token: the relay forwards to it.
+    func enable(route: @Sendable () async -> PushRoute?) async -> Outcome {
+        guard let route = await route() else { return .serverUnreachable }
+        guard route != .unavailable else { return .unsupportedByServer }
 
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
