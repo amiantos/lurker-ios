@@ -80,6 +80,34 @@ final class SettingsWriteTests: XCTestCase {
         XCTAssertEqual(count(frames) { if case .networks = $0 { true } else { false } }, 0)
     }
 
+    /// Not just a sign-out: a sign-in to another account while the read was out, too.
+    func testARosterForAReplacedSessionIsDropped() async throws {
+        let server = try await OneStatusServer(status: 200, body: #"{"networks":[]}"#, gated: true)
+        var frames: [ServerFrame] = []
+        let client = LurkerClient(onFrame: { frames.append($0) })
+        client.restore(server: server.url, token: "departing")
+        let read = Task { await client.fetchNetworks() }
+        try await waitUntil { server.requests.count == 1 }
+        client.logout()
+        client.restore(server: server.url, token: "next")
+        server.open()
+        _ = await read.value
+        XCTAssertEqual(count(frames) { if case .networks = $0 { true } else { false } }, 0)
+    }
+
+    /// The phone's time zone write: the server stores it and echoes it; its reply, the whole stored
+    /// set, would replace the store's and could undo a setting changed meanwhile.
+    func testAWriteThatAppliesNoReplyLeavesTheStoreToTheEcho() async throws {
+        let server = try await OneStatusServer(status: 200, body: #"{"values":{"system.timezone":"Asia/Tokyo"}}"#)
+        var frames: [ServerFrame] = []
+        let client = LurkerClient(onFrame: { frames.append($0) })
+        client.restore(server: server.url, token: "live")
+        let error = await client.updateSettings(["system.timezone": .string("Asia/Tokyo")], applyingReply: false)
+        XCTAssertNil(error)
+        XCTAssertEqual(server.requests.count, 1)
+        XCTAssertEqual(count(frames, isValues), 0)
+    }
+
     /// The control for the two above: the same reads, answered while the session lives, do land.
     func testReadsLandInTheSessionThatAsked() async throws {
         let server = try await OneStatusServer(status: 200, body: #"{"registry":[],"values":{},"networks":[]}"#)

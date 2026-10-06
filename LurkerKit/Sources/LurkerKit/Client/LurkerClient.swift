@@ -282,7 +282,12 @@ final class LurkerClient {
     /// Returns the server's error message on failure, nil on success. Also nil, with nothing
     /// applied, when the session that asked ended while the write was out: its screen is gone, and its
     /// reply must not reach the next session.
-    func updateSettings(_ changes: [String: SettingValue]) async -> String? {
+    ///
+    /// `applyingReply: false` leaves the reply unapplied, for a write the app makes unasked (the
+    /// phone's time zone): the reply is the whole stored set and REPLACES the store's, so landing
+    /// after a write the user made meanwhile it would put back the value they just changed. The
+    /// server's `settings` echo patches only what moved, and that is enough.
+    func updateSettings(_ changes: [String: SettingValue], applyingReply: Bool = true) async -> String? {
         guard let token, let url = URL(string: baseURL + "/api/settings") else { return "Not signed in." }
         var request = URLRequest(url: url)
         request.httpMethod = "PATCH"
@@ -316,7 +321,7 @@ final class LurkerClient {
                 //
                 // `values` is the full stored set, and the reducer patches rather than
                 // replaces, so applying it is idempotent with the echo that follows.
-                if let text = String(data: data, encoding: .utf8) {
+                if applyingReply, let text = String(data: data, encoding: .utf8) {
                     deliver(.settingsValues(FrameParser.parseSettingValues(
                         FrameParser.jsonObject(from: text)?["values"]
                     )), sentWith: token)
