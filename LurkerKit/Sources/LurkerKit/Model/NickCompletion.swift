@@ -174,8 +174,9 @@ public enum NickCompletion {
     /// other than `me` or `shrug`, whose arguments are chat text. `//` escapes a command, so
     /// that line is text.
     private static func isCommandLine(_ chars: [UInt16]) -> Bool {
-        var index = 0
-        while index < chars.count, isWhitespace(chars[index]) { index += 1 }
+        // The very first character, as `CommandParser` decides it: " /nick al" is text to the
+        // channel (lurker-ios#210), so `al` there is a nick like any other.
+        let index = 0
         let slash = UInt16(UnicodeScalar("/").value)
         guard index < chars.count, chars[index] == slash else { return false }
         let verb = chars[(index + 1)...].prefix { !isWhitespace($0) }

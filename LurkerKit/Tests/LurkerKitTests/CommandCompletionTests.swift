@@ -18,6 +18,12 @@ final class CommandCompletionTests: XCTestCase {
         )
     }
 
+    /// lurker-ios#210: ` /jo` sends as text, so it offers no commands.
+    func testALeadingSpaceIsNotACommand() {
+        XCTAssertNil(CommandCompletion.context(in: " /jo", caret: 4))
+        XCTAssertNil(CommandCompletion.context(in: "\n/join #l", caret: 9))
+    }
+
     func testTypingTheVerbFiltersCommands() {
         XCTAssertEqual(
             CommandCompletion.context(in: "/jo", caret: 3),

@@ -130,12 +130,14 @@ public struct OutgoingTyping: Sendable {
     /// to say anything.
     public var isSignalling: Bool { sent != nil }
 
-    /// Whether `draft` is something we'd tell the network we're composing. Asked of the
-    /// trimmed text, which is what the composer sends: ` /whois bob` runs as a command, and
-    /// `//shrug` goes to the channel as `/shrug`.
+    /// Whether `draft` is something we'd tell the network we're composing: what the composer sends
+    /// as a line to the channel (`CommandParser.sendable`, then `CommandParser.parse`). Decided on
+    /// the untrimmed draft, as the send is: ` /whois bob` goes to the channel as text
+    /// (lurker-ios#210), and `//shrug` as `/shrug`; only a draft that opens with a lone `/` is a
+    /// command.
     private static func isComposing(_ draft: String) -> Bool {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && (!trimmed.hasPrefix("/") || trimmed.hasPrefix("//"))
+        guard CommandParser.sendable(draft) != nil else { return false }
+        return !draft.hasPrefix("/") || draft.hasPrefix("//")
     }
 
     /// The draft changed. Returns the signal to send, or nil to stay quiet.

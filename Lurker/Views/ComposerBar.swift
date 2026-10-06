@@ -23,7 +23,8 @@ import UIKit
 /// Shift-Enter starts a line (lurker-android#63) — there's a Shift key to ask for the newline with.
 final class ComposerBar: UIView {
 
-    /// Called with the trimmed text when the send button is tapped, or a key sends (`fire()`).
+    /// Called with the line to send (`CommandParser.sendable`) when the send button is tapped, or a
+    /// key sends (`fire()`).
     /// The bar does not clear itself — the owner does, once the send is accepted, via `clear()`.
     var onSend: ((String) -> Void)?
 
@@ -735,8 +736,8 @@ final class ComposerBar: UIView {
     /// (lurker-android#63), or the on-screen Return under "Enter to send" (lurker-android#64). One
     /// path, so one set of checks.
     private func fire() {
-        let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        // Trailing whitespace only: a leading space keeps ` /whois bob` text (lurker-ios#210).
+        guard let text = CommandParser.sendable(textView.text ?? "") else { return }
         onSend?(text)
     }
 
