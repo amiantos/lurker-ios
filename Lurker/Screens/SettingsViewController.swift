@@ -235,10 +235,11 @@ final class SettingsViewController: UITableViewController {
         case appearance([SettingRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
-        /// The server answered and can't push to the app: no APNs key, and its admin hasn't
-        /// turned on push.lurker.chat (RELAY_PLAN.md §6.1). Said here, rather than only logged,
-        /// so the user knows it's a server switch and not something broken on the phone.
-        case pushUnavailable
+        /// The server answered and can't push to the app (RELAY_PLAN.md §6.1). Said here,
+        /// rather than only logged, so the user knows it's the server and not the phone —
+        /// and which of the two reasons it is: the admin's relay switch, or a relay this app
+        /// won't use.
+        case pushUnavailable(PushRoute)
         case device
         case account
         case about
@@ -288,6 +289,14 @@ final class SettingsViewController: UITableViewController {
                 self?.rebuild()
             }
             .store(in: &cancellables)
+        // The push notice follows the route: it's asked again on every activation, so the
+        // admin turning the relay on (or off) shows here without reopening Settings.
+        viewModel.pushRoutePublisher
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebuild() }
+            .store(in: &cancellables)
         rebuild()
     }
 
@@ -328,7 +337,7 @@ final class SettingsViewController: UITableViewController {
         // The device section is unconditional — it needs no registry, and it's the one part of
         // this screen that still works on a server too old (or too unreachable) to describe
         // itself.
-        let push: [Section] = viewModel.serverCannotPushToApp ? [.pushUnavailable] : []
+        let push: [Section] = viewModel.pushRoute.flatMap { $0.delivers ? nil : [.pushUnavailable($0)] } ?? []
         sections = rows.isEmpty
             ? [.networks, .unavailable] + push + [.device, .account, .about]
             : [.networks, .chat(rows)]
@@ -440,8 +449,10 @@ final class SettingsViewController: UITableViewController {
                 ? "This server doesn't offer the settings this app can change."
                 : "Check your connection and reopen Settings."
             content.secondaryTextProperties.numberOfLines = 0
-        case .pushUnavailable:
-            content.text = "Your server's admin hasn't turned on push for the apps."
+        case .pushUnavailable(let route):
+            content.text = route == .relayUnsupported
+                ? "This server's push relay isn't supported by this app."
+                : "Your server's admin hasn't turned on push for the apps."
             content.textProperties.color = .secondaryLabel
             content.textProperties.numberOfLines = 0
         case .account:

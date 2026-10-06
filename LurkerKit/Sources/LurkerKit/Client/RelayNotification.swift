@@ -38,25 +38,19 @@ public struct RelayNotification: Sendable, Equatable {
         guard let body = try? JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
               let title = body["title"] as? String, !title.isEmpty,
               let tag = body["tag"] as? String, !tag.isEmpty,
-              let networkId = intField(body["networkId"]),
+              let networkId = NotificationTap.intField(body["networkId"]),
               let target = body["target"] as? String, !target.isEmpty
         else { return nil }
         return RelayNotification(
             title: title,
             body: body["body"] as? String ?? "",
             tag: tag,
-            badge: intField(body["badge"]),
+            badge: NotificationTap.intField(body["badge"]),
             networkId: networkId,
             target: target,
-            messageId: intField(body["messageId"]),
-            bufferId: intField(body["bufferId"]),
+            messageId: NotificationTap.intField(body["messageId"]),
+            bufferId: NotificationTap.intField(body["bufferId"]),
             kind: body["kind"] as? String
         )
-    }
-
-    /// JSON numbers arrive as NSNumber; a Bool is one too, and isn't an id.
-    private static func intField(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        return number.intValue
     }
 }

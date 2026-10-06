@@ -4,8 +4,14 @@
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<!-- The FIRST group is the app's default: where every Keychain item written without
+	     kSecAttrAccessGroup goes, the session included. It must stay the app's own group (where
+	     the session already lives), never the shared one, or the bearer token would land where
+	     the Notification Service Extension can read it. Only the push keys name the shared
+	     group explicitly (KeychainWebPushKeyStore). -->
 	<key>keychain-access-groups</key>
 	<array>
+		<string>$(AppIdentifierPrefix)net.amiantos.Lurker</string>
 		<string>$(AppIdentifierPrefix)net.amiantos.Lurker.shared</string>
 	</array>
 </dict>

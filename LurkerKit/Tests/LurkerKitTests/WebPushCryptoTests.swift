@@ -114,17 +114,51 @@ final class WebPushCryptoTests: XCTestCase {
         XCTAssertNil(WebPushKeyCodec.decode(Data("{}".utf8)))
     }
 
-    func testKeysAreCreatedOnceAndKept() {
-        final class Memory: WebPushKeyStore, @unchecked Sendable {
-            var stored: WebPushKeys?
-            var saves = 0
-            func load() -> WebPushKeys? { stored }
-            func save(_ keys: WebPushKeys) { stored = keys; saves += 1 }
-        }
-        let store = Memory()
-        let first = store.loadOrCreate()
-        let second = store.loadOrCreate()
+    func testKeysAreCreatedOnceAndKept() throws {
+        let store = MemoryKeyStore()
+        let first = try XCTUnwrap(store.loadOrCreate())
+        let second = try XCTUnwrap(store.loadOrCreate())
         XCTAssertEqual(first.p256dh, second.p256dh)
         XCTAssertEqual(store.saves, 1)
+    }
+
+    /// Keys the extension can't load would turn every push into the placeholder, so they're
+    /// never handed out to register.
+    func testKeysThatDidntStoreAreNeverHandedOut() {
+        let refuses = MemoryKeyStore()
+        refuses.refuseSaves = true
+        XCTAssertNil(refuses.loadOrCreate())
+
+        let garbles = MemoryKeyStore()
+        garbles.garblesAfterSave = true
+        XCTAssertNil(garbles.loadOrCreate())
+    }
+
+    func testTheSharedGroupComesFromTheSigningTeam() {
+        XCTAssertEqual(
+            PushKeychain.accessGroup(infoDictionary: ["AppIdentifierPrefix": "2Y9M69QJKZ."]),
+            "2Y9M69QJKZ.net.amiantos.Lurker.shared"
+        )
+        // Unsigned, or the build setting never expanded: no group, so no relay keys.
+        for value in ["", ".", "$(AppIdentifierPrefix)", "2Y9M69QJKZ"] {
+            XCTAssertNil(PushKeychain.accessGroup(infoDictionary: ["AppIdentifierPrefix": value]), value)
+        }
+        XCTAssertNil(PushKeychain.accessGroup(infoDictionary: nil))
+    }
+}
+
+/// An in-memory key store, with the failures the Keychain can produce.
+final class MemoryKeyStore: WebPushKeyStore, @unchecked Sendable {
+    var stored: WebPushKeys?
+    var saves = 0
+    var refuseSaves = false
+    /// Reports a save as done but reads back different keys, as a Keychain mix-up would.
+    var garblesAfterSave = false
+    func load() -> WebPushKeys? { stored }
+    func save(_ keys: WebPushKeys) -> Bool {
+        guard !refuseSaves else { return false }
+        stored = garblesAfterSave ? .generate() : keys
+        saves += 1
+        return true
     }
 }

@@ -30,7 +30,7 @@ final class NotificationService: UNNotificationServiceExtension {
         }
         guard let p = request.content.userInfo["p"] as? String,
               let body = WebPushCrypto.base64URLDecode(p),
-              let keys = KeychainWebPushKeyStore().load(),
+              let keys = KeychainWebPushKeyStore.forMainBundle()?.load(),
               let plaintext = try? WebPushCrypto.decrypt(body, keys: keys),
               let notification = RelayNotification.parse(plaintext),
               let content = request.content.mutableCopy() as? UNMutableNotificationContent

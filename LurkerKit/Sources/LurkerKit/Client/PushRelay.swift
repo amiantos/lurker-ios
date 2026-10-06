@@ -38,8 +38,13 @@ public enum PushRoute: Equatable, Sendable {
     /// A self-hosted server whose admin turned on push.lurker.chat. Carries what the endpoint
     /// is built from: the relay's origin and the server's VAPID key.
     case relay(origin: String, serverKey: String)
-    /// Neither: the server can't push to the app. Settings says so.
+    /// Neither: the server can't push to the app, and its admin hasn't turned on the relay.
+    /// Settings says so.
     case unavailable
+    /// The server advertises a relay this app can't use: one it doesn't trust, or with no
+    /// server key to bind the endpoint to. Settings says that instead — it's not the admin's
+    /// switch that's off.
+    case relayUnsupported
 
     /// The only relay a release build talks to. A server names its relay, so without this a
     /// server could point the app — and its device token — at any URL it liked.
@@ -50,10 +55,19 @@ public enum PushRoute: Equatable, Sendable {
     /// `officialRelay`, or (Debug builds, for `LURKER_PUSH_RELAY_URL`) any https origin.
     public static func decide(_ config: PushConfig, allowAnyHTTPSRelay: Bool) -> PushRoute {
         if config.transports.contains("apns") { return .apns }
-        guard let relay = config.relay, let key = config.publicKey,
+        guard let relay = config.relay else { return .unavailable }
+        guard let key = config.publicKey,
               let origin = trustedOrigin(relay, allowAnyHTTPSRelay: allowAnyHTTPSRelay)
-        else { return .unavailable }
+        else { return .relayUnsupported }
         return .relay(origin: origin, serverKey: key)
+    }
+
+    /// Whether this route ends in the app getting pushes.
+    public var delivers: Bool {
+        switch self {
+        case .apns, .relay: true
+        case .unavailable, .relayUnsupported: false
+        }
     }
 
     static func trustedOrigin(_ relay: String, allowAnyHTTPSRelay: Bool) -> String? {
@@ -61,8 +75,10 @@ public enum PushRoute: Equatable, Sendable {
               url.user == nil, url.password == nil
         else { return nil }
         // Rebuilt from parts, so a path, query or fragment the server tacked on can't ride
-        // into the endpoint.
-        let origin = "https://\(host.lowercased())" + (url.port.map { ":\($0)" } ?? "")
+        // into the endpoint — and with https's default port dropped, as a URL origin would,
+        // so `https://push.lurker.chat:443` is the official relay too.
+        let port = url.port.flatMap { $0 == 443 ? nil : $0 }
+        let origin = "https://\(host.lowercased())" + (port.map { ":\($0)" } ?? "")
         if origin == officialRelay { return origin }
         return allowAnyHTTPSRelay ? origin : nil
     }

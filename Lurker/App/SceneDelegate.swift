@@ -14,12 +14,16 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     // user lands straight on their buffers.
     private let viewModel: ChatViewModel = {
         let viewModel = ChatViewModel()
-        // A Debug build is signed with a development profile, so its APNs token is a
-        // sandbox one, and it may talk to a relay under development (LURKER_PUSH_RELAY_URL).
-        // Release builds — TestFlight and the App Store — are production, and trust only
-        // push.lurker.chat (RELAY_PLAN.md §6.2).
+        // Which APNs gateway issued our token, from how this build was actually signed: the
+        // App Store and TestFlight strip the profile and are production; a build installed
+        // from Xcode carries one that says (RELAY_PLAN.md §6.2).
+        viewModel.apnsEnvironment = ProvisioningProfile.apnsEnvironment(
+            embeddedProfile: Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
+                .flatMap { try? Data(contentsOf: $0) }
+        )
+        // A Debug build may talk to a relay under development (LURKER_PUSH_RELAY_URL);
+        // everything else trusts only push.lurker.chat.
         #if DEBUG
-        viewModel.apnsEnvironment = .development
         viewModel.allowAnyHTTPSRelay = true
         #endif
         return viewModel
@@ -197,6 +201,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 // A self-hosted server with no relay turned on. Not an error — Settings
                 // tells the user it's their admin's switch.
                 NSLog("[push] this server can't push to the app (no APNs key, no relay); not registering")
+            case .relayUnsupported:
+                NSLog("[push] this server's push relay isn't one this app trusts; not registering")
             case .serverUnreachable:
                 // Says nothing about the server's config — we never got an answer. Worded
                 // so nobody reads this and goes auditing LURKER_APNS_* on a healthy box.
@@ -488,7 +494,15 @@ extension SceneDelegate: NotificationTapHandling {
     }
 
     func registerPushToken(_ token: String) async {
-        let ok = await viewModel.registerPushDevice(token: token)
-        if !ok { NSLog("[push] server rejected this device token") }
+        switch await viewModel.registerPushDevice(token: token) {
+        case .registered:
+            break
+        case .relayOff:
+            NSLog("[push] the server's admin turned the push relay off; not registered")
+        case .unavailable:
+            NSLog("[push] this server can't push to the app; not registered")
+        case .failed(let reason):
+            NSLog("[push] registration failed: %@", reason)
+        }
     }
 }

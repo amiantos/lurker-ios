@@ -39,9 +39,28 @@ final class PushRelayTests: XCTestCase {
     }
 
     func testAReleaseBuildTrustsOnlyTheOfficialRelay() {
+        // Advertised but unusable: its own answer, since it isn't the admin's switch that's off.
         for relay in ["https://evil.example", "https://push.lurker.chat.evil.example", "http://push.lurker.chat"] {
-            XCTAssertEqual(PushRoute.decide(config(relay: relay), allowAnyHTTPSRelay: false), .unavailable, relay)
+            XCTAssertEqual(PushRoute.decide(config(relay: relay), allowAnyHTTPSRelay: false), .relayUnsupported, relay)
         }
+    }
+
+    func testAnExplicitDefaultPortIsTheSameOrigin() {
+        XCTAssertEqual(
+            PushRoute.decide(config(relay: "https://push.lurker.chat:443"), allowAnyHTTPSRelay: false),
+            .relay(origin: "https://push.lurker.chat", serverKey: key)
+        )
+        XCTAssertEqual(
+            PushRoute.decide(config(relay: "https://push.lurker.chat:8443"), allowAnyHTTPSRelay: false),
+            .relayUnsupported
+        )
+    }
+
+    func testOnlyARelayOrAPNsDelivers() {
+        XCTAssertTrue(PushRoute.apns.delivers)
+        XCTAssertTrue(PushRoute.relay(origin: "https://push.lurker.chat", serverKey: key).delivers)
+        XCTAssertFalse(PushRoute.unavailable.delivers)
+        XCTAssertFalse(PushRoute.relayUnsupported.delivers)
     }
 
     func testADebugBuildTakesAnyHTTPSRelayButNeverPlainHTTP() {
@@ -49,7 +68,7 @@ final class PushRelayTests: XCTestCase {
             PushRoute.decide(config(relay: "https://relay.test:8443"), allowAnyHTTPSRelay: true),
             .relay(origin: "https://relay.test:8443", serverKey: key)
         )
-        XCTAssertEqual(PushRoute.decide(config(relay: "http://relay.test"), allowAnyHTTPSRelay: true), .unavailable)
+        XCTAssertEqual(PushRoute.decide(config(relay: "http://relay.test"), allowAnyHTTPSRelay: true), .relayUnsupported)
     }
 
     func testOnlyTheOriginIsKept() {
@@ -57,12 +76,12 @@ final class PushRelayTests: XCTestCase {
             PushRoute.decide(config(relay: "https://PUSH.lurker.chat/some/path?x=1#y"), allowAnyHTTPSRelay: false),
             .relay(origin: "https://push.lurker.chat", serverKey: key)
         )
-        XCTAssertEqual(PushRoute.decide(config(relay: "https://me:pw@push.lurker.chat"), allowAnyHTTPSRelay: false), .unavailable)
+        XCTAssertEqual(PushRoute.decide(config(relay: "https://me:pw@push.lurker.chat"), allowAnyHTTPSRelay: false), .relayUnsupported)
     }
 
     func testNoServerKeyNoRelay() {
         let noKey = PushConfig(publicKey: nil, transports: ["webpush"], relay: "https://push.lurker.chat")
-        XCTAssertEqual(PushRoute.decide(noKey, allowAnyHTTPSRelay: false), .unavailable)
+        XCTAssertEqual(PushRoute.decide(noKey, allowAnyHTTPSRelay: false), .relayUnsupported)
     }
 
     func testTheEndpointIsTheContractsShape() {
@@ -117,6 +136,14 @@ final class RelayNotificationTests: XCTestCase {
         ] {
             XCTAssertNil(RelayNotification.parse(Data(json.utf8)), json)
         }
+    }
+
+    func testIdsMayArriveAsStringsLikeEveryOtherPush() throws {
+        let n = try XCTUnwrap(RelayNotification.parse(Data(
+            #"{"networkId":"7","target":"bob","title":"t","tag":"x","messageId":"12"}"#.utf8
+        )))
+        XCTAssertEqual(n.networkId, 7)
+        XCTAssertEqual(n.messageId, 12)
     }
 
     func testAMissingBadgeOrBodyIsFine() throws {
@@ -191,5 +218,43 @@ final class WebPushRegistrationTests: XCTestCase {
             session: URLSession(configuration: .ephemeral), baseURL: server.url, sessionToken: "tok"
         )
         XCTAssertEqual(config, PushConfig(publicKey: "k", transports: ["webpush"], relay: "https://push.lurker.chat"))
+    }
+}
+
+/// The APNs gateway comes from how the build was signed (RELAY_PLAN.md §6.2).
+final class ProvisioningProfileTests: XCTestCase {
+    /// A profile is a CMS envelope around an XML plist; stand-in binary on both sides is
+    /// enough for the parser, which only looks for the plist.
+    private func profile(_ entitlements: String) -> Data {
+        var data = Data([0x30, 0x82, 0x1f, 0x00, 0x06, 0x09])
+        data.append(Data("""
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0"><dict>
+            <key>Name</key><string>iOS Team Provisioning Profile</string>
+            <key>Entitlements</key><dict>\(entitlements)</dict>
+            </dict></plist>
+            """.utf8))
+        data.append(Data([0xa0, 0x82, 0x0b, 0x00, 0x00]))
+        return data
+    }
+
+    func testTheStoreStripsTheProfileSoNoProfileIsProduction() {
+        XCTAssertEqual(ProvisioningProfile.apnsEnvironment(embeddedProfile: nil), .production)
+    }
+
+    func testADevelopmentProfileIsTheSandbox() {
+        let data = profile("<key>aps-environment</key><string>development</string>")
+        XCTAssertEqual(ProvisioningProfile.apnsEnvironment(embeddedProfile: data), .development)
+    }
+
+    func testAnAdHocProfileIsProduction() {
+        let data = profile("<key>aps-environment</key><string>production</string>")
+        XCTAssertEqual(ProvisioningProfile.apnsEnvironment(embeddedProfile: data), .production)
+    }
+
+    func testAProfileWithoutPushIsDevelopment() {
+        XCTAssertEqual(ProvisioningProfile.apnsEnvironment(embeddedProfile: profile("")), .development)
+        XCTAssertEqual(ProvisioningProfile.apnsEnvironment(embeddedProfile: Data("junk".utf8)), .development)
     }
 }

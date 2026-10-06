@@ -31,6 +31,8 @@ final class PushRegistrar {
         /// The server answered, and it can't push to the app: no APNs key, and no relay
         /// turned on. A fact about that server until its admin changes it.
         case unsupportedByServer
+        /// The server advertises a relay this app won't use (untrusted, or no server key).
+        case relayUnsupported
         /// We couldn't ask the server. Distinct from `unsupportedByServer` because it's
         /// transient and says nothing about the server's configuration — conflating them
         /// turns a wifi blip into a log line accusing a healthy server.
@@ -55,7 +57,11 @@ final class PushRegistrar {
     /// token: the relay forwards to it.
     func enable(route: @Sendable () async -> PushRoute?) async -> Outcome {
         guard let route = await route() else { return .serverUnreachable }
-        guard route != .unavailable else { return .unsupportedByServer }
+        switch route {
+        case .unavailable: return .unsupportedByServer
+        case .relayUnsupported: return .relayUnsupported
+        case .apns, .relay: break
+        }
 
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
