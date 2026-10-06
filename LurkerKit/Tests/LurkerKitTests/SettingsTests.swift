@@ -223,6 +223,25 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(state.settings.bool("chat.consolidate_joins", default: true), false)
     }
 
+    /// A write of several keys: each takes its stored value, or no override when the reply omits
+    /// it, and a key the write didn't send stays as held.
+    func testAWriteOfSeveralKeysTakesEachAsStored() {
+        var state = bootstrapped()
+        state = LurkerStore.reduce(
+            state, .settingsChanged(["chat.smart_filter": .bool(true)], uploadLimits: .unstated))
+        state = LurkerStore.reduce(
+            state,
+            .settingsValues(
+                ["chat.consolidate_max_names": .int(3)],
+                keys: ["chat.consolidate_max_names", "chat.consolidate_joins"]))
+        // Present: it moves, 9 → 3.
+        XCTAssertEqual(state.settings.values["chat.consolidate_max_names"], .int(3))
+        // Absent: back to no override.
+        XCTAssertNil(state.settings.values["chat.consolidate_joins"])
+        // Not written, and absent from the reply: kept.
+        XCTAssertEqual(state.settings.values["chat.smart_filter"], .bool(true))
+    }
+
     /// A mixed array can't be represented exactly, and `compactMap`-ing the strings out of it
     /// would mean writing back a different list than the server sent.
     func testMixedArrayDoesNotDecodeToAPartialList() {
