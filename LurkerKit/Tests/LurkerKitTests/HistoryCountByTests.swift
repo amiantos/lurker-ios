@@ -15,7 +15,7 @@ final class HistoryCountByTests: XCTestCase {
     private func settings(consolidate: Bool?) -> Settings {
         var s = Settings()
         guard let consolidate else { return s }
-        s.replaceValues(["chat.consolidate_joins": .bool(consolidate)])
+        s.apply(changes: ["chat.consolidate_joins": .bool(consolidate)])
         return s
     }
 

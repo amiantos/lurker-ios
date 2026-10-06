@@ -224,17 +224,20 @@ public struct Settings: Equatable, Sendable {
         for (key, value) in changes { values[key] = value }
     }
 
-    /// Replace the stored values with an authoritative full set — the `{values}` a REST reply
-    /// carries.
+    /// Take the written `keys` from a write's reply — the `{values}` a REST reply carries, the
+    /// whole stored set — each as the server now stores it: its value, or no override at all.
     ///
-    /// Distinct from `apply(changes:)` because a full set can be *smaller* than what we hold,
-    /// and merging would miss that. The server drops a row when a key is set back to its
-    /// default — "no override" (`settingsService.ts:72`) — so a `PATCH` that returns to the
-    /// default comes back as an ABSENCE, not as a value. Merged, the old override would
-    /// survive locally (and get persisted to the cache) while the server has none; that's a
-    /// setting stuck at a value the user has just cleared, for as long as it takes another
-    /// bootstrap to land.
-    public mutating func replaceValues(_ next: [String: SettingValue]) {
-        values = next
+    /// Not `apply(changes:)`, because the server drops a row when a key is set back to its default
+    /// — "no override" (`settingsService.ts:72`) — so a `PATCH` that returns to the default comes
+    /// back as an ABSENCE, not as a value. Merged, the old override would survive locally (and get
+    /// persisted to the cache) while the server has none; that's a setting stuck at a value the
+    /// user has just cleared, for as long as it takes another bootstrap to land.
+    ///
+    /// And only the written keys, never the whole set: the rest is no newer than what we hold. Two
+    /// writes out together (two steppers flushing, the phone's own time zone write at a bootstrap)
+    /// can answer in either order, and a reply that replaced everything would put back the value
+    /// the other write — or another device, by echo — had just changed.
+    public mutating func applyStored(_ stored: [String: SettingValue], for keys: Set<String>) {
+        for key in keys { values[key] = stored[key] }
     }
 }

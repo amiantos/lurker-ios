@@ -407,9 +407,7 @@ public final class ChatViewModel {
         if let timeZoneWriteSeam { return timeZoneWriteSeam(detected) }
         Task {
             // Not worth a word on failure: the next bootstrap asks again.
-            // Its reply unapplied: it is the whole stored set, and landing after a setting the user
-            // changed meanwhile it would put the old value back. The echo patches the zone in.
-            _ = await client.updateSettings(["system.timezone": .string(detected)], applyingReply: false)
+            _ = await client.updateSettings(["system.timezone": .string(detected)])
             // A sign-out since then ended it; the next session starts clean.
             if timeZoneWrite == write { timeZoneWriteFinished() }
         }
