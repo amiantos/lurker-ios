@@ -131,12 +131,9 @@ enum MessageRenderer {
         case .topic:
             line.append(actor)
             line.append(muted(" set the topic", base: base))
-            if let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                line.append(muted(": ", base: base))
-                // The same muted as the ": " immediately before it — two greys mid-sentence read
-                // as a seam, and the topic text is a continuation of the narration, not a quote.
-                line.append(body(message, base: base, fallback: Palette.fgMuted, revealed: revealed))
-            }
+            // The same muted as the ": " before it — two greys mid-sentence read as a seam, and the
+            // topic text is a continuation of the narration, not a quote.
+            appendActivityBody(message, to: line, base: base, revealed: revealed, open: ": ")
         case .invite:
             line.append(actor)
             line.append(muted(" invited ", base: base))
@@ -546,20 +543,28 @@ enum MessageRenderer {
         NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: Palette.fgMuted])
     }
 
-    /// A part, quit or kick reason in parentheses, or nothing when there isn't one. Through `body`,
-    /// as a topic is (sweep L06): a reason carries mIRC colours and links like any message, and
-    /// as plain text its colour digits leaked ("(04Leaving") and its URLs couldn't be tapped.
-    /// Judged empty on its visible text: a reason of nothing but formatting codes has no words to
-    /// put in the parentheses.
+    /// A part, quit or kick reason in parentheses, or nothing when there isn't one.
     private static func appendReason(
         _ message: Message, to line: NSMutableAttributedString, base: UIFont, revealed: Set<Int>
     ) {
-        guard let text = message.text,
-              !IRCFormatting.strip(text).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return }
-        line.append(muted(" (", base: base))
-        line.append(body(message, base: base, fallback: Palette.fgMuted, revealed: revealed))
-        line.append(muted(")", base: base))
+        appendActivityBody(message, to: line, base: base, revealed: revealed, open: " (", close: ")")
+    }
+
+    /// The text an activity line carries — a topic, a reason — between `open` and `close` in the
+    /// narration's grey, or nothing at all when it has no visible text. Through `body` (sweep L06):
+    /// it carries mIRC colours and links like any message, and as plain text its colour digits
+    /// leaked ("(04Leaving") and its URLs couldn't be tapped. Judged on what `body` drew, so a text
+    /// of nothing but formatting codes leaves no empty "()" or dangling ": ".
+    private static func appendActivityBody(
+        _ message: Message, to line: NSMutableAttributedString, base: UIFont, revealed: Set<Int>,
+        open: String, close: String = ""
+    ) {
+        guard let text = message.text, !text.isEmpty else { return }
+        let drawn = body(message, base: base, fallback: Palette.fgMuted, revealed: revealed)
+        guard !drawn.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        line.append(muted(open, base: base))
+        line.append(drawn)
+        if !close.isEmpty { line.append(muted(close, base: base)) }
     }
 
     /// One summary category as "alice, bob and carol joined" — the names as nick tokens, the
