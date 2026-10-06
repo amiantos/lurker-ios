@@ -43,6 +43,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         /// and iOS follows. Empty for every header that isn't a channel member's — a network,
         /// a notice's `-mark-`, or the highlights feed, which doesn't resolve the nicklist.
         let modePrefix: String
+        /// The glyph's colour tier — by the mode letter's role, which the glyph alone can't say on a
+        /// network whose symbols aren't the conventional ones (lurker-ios#191). Nil with no glyph.
+        let modeTier: MemberPrefix.Tier?
         /// Where a re-attributed relay line was bridged from (#277) — "Discord", "github", the
         /// source network. Nil on every header that isn't one, which is nearly all of them.
         ///
@@ -51,11 +54,15 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         /// author block, which is where a run of one speaker's lines wants it.
         let relaySource: String?
 
-        init(nick: String, color: UIColor, time: String?, modePrefix: String = "", relaySource: String? = nil) {
+        init(
+            nick: String, color: UIColor, time: String?, modePrefix: String = "", modeTier: MemberPrefix.Tier? = nil,
+            relaySource: String? = nil
+        ) {
             self.nick = nick
             self.color = color
             self.time = time
             self.modePrefix = modePrefix
+            self.modeTier = modeTier
             self.relaySource = relaySource
         }
     }
@@ -295,7 +302,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             // Bold via `withTrait`, the only weight that takes on this monospaced face (`semibold`
             // resolves to the same Regular). The glyph needs the weight for contrast: the rank hues
             // are ~3.5-4:1 on the light canvas.
-            if let rank = Palette.memberPrefix(header.modePrefix), header.nick.hasPrefix(header.modePrefix) {
+            if let tier = header.modeTier, !header.modePrefix.isEmpty, header.nick.hasPrefix(header.modePrefix) {
+                let rank = Palette.memberPrefix(tier)
                 name.addAttributes(
                     [.foregroundColor: rank, .font: font.bold],
                     range: NSRange(location: 0, length: header.modePrefix.utf16.count)

@@ -171,7 +171,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// visible cell on every reload, and the glyph comes from the nicklist, not the message.
     /// Empty unless `look.nick.show_mode_prefix` is on — which it isn't by default — so the
     /// whole feature costs nothing until someone asks for it.
-    private var modePrefixes: [String: String] = [:]
+    private var modePrefixes: [String: MemberPrefix.Mark] = [:]
     /// Turns rows into cells. Stateless; kept as a property rather than made anew per row.
     private let listRenderer = MessageListRenderer()
 
@@ -861,6 +861,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         /// Ours alone, not the nicklist: `Member` carries `away`, and holding the list would let
         /// every away-notify flip in a busy channel through to the composer.
         var ownModes: [String]
+        /// The network's PREFIX, which says what `ownModes` look like (lurker-ios#191).
+        var prefix: [PrefixMode]?
         var dccSession: Bool?
         var away: AwayState?
 
@@ -870,10 +872,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         struct Inputs: Equatable {
             var nick: String?
             var members: [Member]?
+            var prefix: [PrefixMode]?
             var dccSession: Bool?
             var away: AwayState?
 
             init(_ state: ChatState, buffer: Buffer) {
+                prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
                 nick = ChatViewController.ownNick(for: state, buffer: buffer)
                 members = buffer.kind == .channel ? state.members[buffer.key.id] : nil
                 dccSession = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
@@ -888,6 +892,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         init(_ inputs: Inputs) {
             nick = inputs.nick
             ownModes = inputs.members?.member(named: inputs.nick ?? "")?.modes ?? []
+            prefix = inputs.prefix
             dccSession = inputs.dccSession
             away = inputs.away
         }
@@ -919,7 +924,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let nick = chrome.nick, !nick.isEmpty else { return "Message" }
         // The conventional glyph, the one your own lines and the nicklist show — the prompt
         // disagreeing with them about you would be the stranger mistake.
-        return MemberPrefix.of(chrome.ownModes) + nick
+        return MemberPrefix.of(chrome.ownModes, prefix: chrome.prefix) + nick
     }
 
     /// Leave this screen when the buffer it is showing isn't open any more.
@@ -1814,14 +1819,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// backlog from someone who has since left gets no glyph rather than a guessed one, which
     /// is what the web does. A member holding no modes is left out entirely, so the lookup
     /// falls through to "" for them too.
-    private static func modePrefixes(for state: ChatState, buffer: Buffer) -> [String: String] {
+    private static func modePrefixes(for state: ChatState, buffer: Buffer) -> [String: MemberPrefix.Mark] {
         guard buffer.kind == .channel,
               state.settings.bool("look.nick.show_mode_prefix", default: false)
         else { return [:] }
-        var prefixes: [String: String] = [:]
+        // The network's own PREFIX: its symbols, its ranks (lurker-ios#191).
+        let prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
+        var prefixes: [String: MemberPrefix.Mark] = [:]
         for member in state.members[buffer.key.id] ?? [] {
-            let glyph = MemberPrefix.of(member.modes)
-            if !glyph.isEmpty { prefixes[member.nick.lowercased()] = glyph }
+            if let mark = MemberPrefix.mark(member.modes, prefix: prefix) { prefixes[member.nick.lowercased()] = mark }
         }
         return prefixes
     }
