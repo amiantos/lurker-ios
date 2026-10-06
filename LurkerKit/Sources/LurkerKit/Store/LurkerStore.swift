@@ -1471,11 +1471,10 @@ final class LurkerStore {
                 next.maxStaticImageDimension = dimension
             }
             return next
-        case .settingsValues(let values):
+        case .settingsValues(let values, let keys):
             var next = state
-            // Replace: this one IS the full stored set, and it can be smaller than what we
-            // hold (see `Settings.replaceValues`).
-            next.settings.replaceValues(values)
+            // The written keys only, each replaced — present or absent (see `Settings.applyStored`).
+            next.settings.applyStored(values, for: keys)
             return next
         case .serverError(let text):
             var next = state

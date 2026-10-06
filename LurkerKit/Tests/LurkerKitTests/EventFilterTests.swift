@@ -15,7 +15,7 @@ final class EventFilterTests: XCTestCase {
 
     private func settings(_ mode: String?) -> Settings {
         var s = Settings()
-        if let mode { s.replaceValues([EventFilter.modeKey: .string(mode)]) }
+        if let mode { s.apply(changes: [EventFilter.modeKey: .string(mode)]) }
         return s
     }
 

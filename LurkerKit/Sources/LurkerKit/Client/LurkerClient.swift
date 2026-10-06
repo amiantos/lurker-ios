@@ -314,12 +314,13 @@ final class LurkerClient {
                 // replayed) the echo may not arrive at all, leaving a write that succeeded
                 // looking like one that failed.
                 //
-                // `values` is the full stored set, and the reducer patches rather than
-                // replaces, so applying it is idempotent with the echo that follows.
+                // `values` is the full stored set; only the keys this write sent are taken from it
+                // (`Settings.applyStored`), so it's idempotent with the echo that follows and can't
+                // undo another write that answered first.
                 if let text = String(data: data, encoding: .utf8) {
                     deliver(.settingsValues(FrameParser.parseSettingValues(
                         FrameParser.jsonObject(from: text)?["values"]
-                    )), sentWith: token)
+                    ), keys: Set(changes.keys)), sentWith: token)
                 }
                 return nil
             }

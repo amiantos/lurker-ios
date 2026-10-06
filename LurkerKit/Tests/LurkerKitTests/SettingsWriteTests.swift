@@ -80,7 +80,39 @@ final class SettingsWriteTests: XCTestCase {
         XCTAssertEqual(count(frames) { if case .networks = $0 { true } else { false } }, 0)
     }
 
-    /// The control for the two above: the same reads, answered while the session lives, do land.
+    /// Not just a sign-out: a sign-in to another account while the read was out, too.
+    func testARosterForAReplacedSessionIsDropped() async throws {
+        let server = try await OneStatusServer(status: 200, body: #"{"networks":[]}"#, gated: true)
+        var frames: [ServerFrame] = []
+        let client = LurkerClient(onFrame: { frames.append($0) })
+        client.restore(server: server.url, token: "departing")
+        let read = Task { await client.fetchNetworks() }
+        try await waitUntil { server.requests.count == 1 }
+        client.logout()
+        client.restore(server: server.url, token: "next")
+        server.open()
+        _ = await read.value
+        XCTAssertEqual(count(frames) { if case .networks = $0 { true } else { false } }, 0)
+    }
+
+    /// A write's reply is the whole stored set; the frame names the keys the write sent, so only
+    /// those are taken from it (`Settings.applyStored`).
+    func testAWriteReplyNamesTheKeysItSent() async throws {
+        let server = try await OneStatusServer(
+            status: 200, body: #"{"values":{"system.timezone":"Asia/Tokyo","chat.smart_filter":true}}"#)
+        var frames: [ServerFrame] = []
+        let client = LurkerClient(onFrame: { frames.append($0) })
+        client.restore(server: server.url, token: "live")
+        _ = await client.updateSettings(["system.timezone": .string("Asia/Tokyo")])
+        guard case let .settingsValues(values, keys) = frames.first(where: isValues) else {
+            return XCTFail("no settingsValues")
+        }
+        XCTAssertEqual(keys, ["system.timezone"])
+        XCTAssertEqual(values.count, 2)
+    }
+
+    /// The control for the bootstrap and roster drops above: the same reads, answered while the
+    /// session lives, do land.
     func testReadsLandInTheSessionThatAsked() async throws {
         let server = try await OneStatusServer(status: 200, body: #"{"registry":[],"values":{},"networks":[]}"#)
         var frames: [ServerFrame] = []

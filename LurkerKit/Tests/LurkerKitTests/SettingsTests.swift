@@ -177,7 +177,8 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(state.settings.bool("chat.consolidate_joins", default: true), false)
         // The user switches it back on: `true` == the registry default, so the server deletes
         // the row and its reply omits the key entirely.
-        state = LurkerStore.reduce(state, .settingsValues(["chat.consolidate_max_names": .int(9)]))
+        state = LurkerStore.reduce(
+            state, .settingsValues(["chat.consolidate_max_names": .int(9)], keys: ["chat.consolidate_joins"]))
         XCTAssertTrue(
             state.settings.bool("chat.consolidate_joins", default: true),
             "a key absent from the full stored set must revert to its default"
@@ -191,17 +192,54 @@ final class SettingsTests: XCTestCase {
     /// replace must not resurrect anything.
     func testEchoAfterReplaceIsIdempotent() {
         var state = bootstrapped()
-        state = LurkerStore.reduce(state, .settingsValues(["chat.consolidate_max_names": .int(9)]))
+        state = LurkerStore.reduce(
+            state, .settingsValues(["chat.consolidate_max_names": .int(9)], keys: ["chat.consolidate_joins"]))
         state = LurkerStore.reduce(state, .settingsChanged(["chat.consolidate_joins": .bool(true)], uploadLimits: .unstated))
         XCTAssertTrue(state.settings.bool("chat.consolidate_joins", default: false))
     }
 
     func testReplaceLeavesTheRegistryAlone() {
         var state = bootstrapped()
-        state = LurkerStore.reduce(state, .settingsValues([:]))
+        state = LurkerStore.reduce(state, .settingsValues([:], keys: ["chat.consolidate_max_names"]))
         XCTAssertEqual(state.settings.registry.count, 4)
-        // Everything falls back to its default, which is exactly "nothing overridden".
+        // The written key falls back to its default, which is exactly "nothing overridden".
         XCTAssertEqual(state.settings.int("chat.consolidate_max_names", default: 0), 5)
+    }
+
+    /// Two writes out together answer in either order, and each reply is the whole stored set as
+    /// of ITS write. The one that lands last must not put back what the other just changed.
+    func testAReplyTakesOnlyTheKeysItsWriteSent() {
+        var state = bootstrapped()
+        // Another write (or another device, by echo) has just moved max_names to 12…
+        state = LurkerStore.reduce(
+            state, .settingsChanged(["chat.consolidate_max_names": .int(12)], uploadLimits: .unstated))
+        // …and a write of consolidate_joins answers late, its set still holding the old 9.
+        state = LurkerStore.reduce(
+            state,
+            .settingsValues(
+                ["chat.consolidate_joins": .bool(false), "chat.consolidate_max_names": .int(9)],
+                keys: ["chat.consolidate_joins"]))
+        XCTAssertEqual(state.settings.int("chat.consolidate_max_names", default: 0), 12)
+        XCTAssertEqual(state.settings.bool("chat.consolidate_joins", default: true), false)
+    }
+
+    /// A write of several keys: each takes its stored value, or no override when the reply omits
+    /// it, and a key the write didn't send stays as held.
+    func testAWriteOfSeveralKeysTakesEachAsStored() {
+        var state = bootstrapped()
+        state = LurkerStore.reduce(
+            state, .settingsChanged(["chat.smart_filter": .bool(true)], uploadLimits: .unstated))
+        state = LurkerStore.reduce(
+            state,
+            .settingsValues(
+                ["chat.consolidate_max_names": .int(3)],
+                keys: ["chat.consolidate_max_names", "chat.consolidate_joins"]))
+        // Present: it moves, 9 → 3.
+        XCTAssertEqual(state.settings.values["chat.consolidate_max_names"], .int(3))
+        // Absent: back to no override.
+        XCTAssertNil(state.settings.values["chat.consolidate_joins"])
+        // Not written, and absent from the reply: kept.
+        XCTAssertEqual(state.settings.values["chat.smart_filter"], .bool(true))
     }
 
     /// A mixed array can't be represented exactly, and `compactMap`-ing the strings out of it
