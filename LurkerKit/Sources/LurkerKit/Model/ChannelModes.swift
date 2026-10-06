@@ -58,7 +58,7 @@ public struct PrefixMode: Equatable, Sendable {
 public enum ChannelRank {
     /// The conventional ladder, used only to pick a stand-in when a gate names a letter the
     /// network doesn't have.
-    private static let conventional = ["q", "a", "o", "h", "v"]
+    private static let conventional = MemberPrefix.conventional.map(\.mode)
 
     /// Where a member's highest mode sits in PREFIX order: 0 for the top rank, nil when they
     /// hold none. Scans by rank, never by array position.

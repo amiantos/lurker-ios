@@ -69,7 +69,7 @@ final class MemberListViewController: UITableViewController {
             // glyph and the order, and its ISUPPORT can land after the nicklist does.
             .removeDuplicates { old, new in
                 old.members[key] == new.members[key] && old.ignores === new.ignores
-                    && networkId.flatMap { old.networks[$0]?.modeSpec } == networkId.flatMap { new.networks[$0]?.modeSpec }
+                    && networkId.flatMap { old.networks[$0]?.modeSpec?.prefix } == networkId.flatMap { new.networks[$0]?.modeSpec?.prefix }
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }

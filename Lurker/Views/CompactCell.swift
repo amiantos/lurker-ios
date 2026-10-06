@@ -42,10 +42,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         /// property of the room, not of the person, so the web gives it `look.color.member.*`
         /// and iOS follows. Empty for every header that isn't a channel member's — a network,
         /// a notice's `-mark-`, or the highlights feed, which doesn't resolve the nicklist.
-        let modePrefix: String
-        /// The glyph's colour tier — by the mode letter's role, which the glyph alone can't say on a
-        /// network whose symbols aren't the conventional ones (lurker-ios#191). Nil with no glyph.
-        let modeTier: MemberPrefix.Tier?
+        ///
+        /// With its colour tier — by the mode letter's role, which the glyph alone can't say on a
+        /// network whose symbols aren't the conventional ones (lurker-ios#191). One value, so the
+        /// glyph and its colour can't disagree.
+        let modeMark: MemberPrefix.Mark?
+        var modePrefix: String { modeMark?.glyph ?? "" }
         /// Where a re-attributed relay line was bridged from (#277) — "Discord", "github", the
         /// source network. Nil on every header that isn't one, which is nearly all of them.
         ///
@@ -55,14 +57,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let relaySource: String?
 
         init(
-            nick: String, color: UIColor, time: String?, modePrefix: String = "", modeTier: MemberPrefix.Tier? = nil,
-            relaySource: String? = nil
+            nick: String, color: UIColor, time: String?, modeMark: MemberPrefix.Mark? = nil, relaySource: String? = nil
         ) {
             self.nick = nick
             self.color = color
             self.time = time
-            self.modePrefix = modePrefix
-            self.modeTier = modeTier
+            self.modeMark = modeMark
             self.relaySource = relaySource
         }
     }
@@ -302,8 +302,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             // Bold via `withTrait`, the only weight that takes on this monospaced face (`semibold`
             // resolves to the same Regular). The glyph needs the weight for contrast: the rank hues
             // are ~3.5-4:1 on the light canvas.
-            if let tier = header.modeTier, !header.modePrefix.isEmpty, header.nick.hasPrefix(header.modePrefix) {
-                let rank = Palette.memberPrefix(tier)
+            if let mark = header.modeMark, header.nick.hasPrefix(mark.glyph) {
+                let rank = Palette.memberPrefix(mark.tier)
                 name.addAttributes(
                     [.foregroundColor: rank, .font: font.bold],
                     range: NSRange(location: 0, length: header.modePrefix.utf16.count)

@@ -922,8 +922,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return "Not connected — /dcc chat \(DccChat.peer(buffer.target))"
         }
         guard let nick = chrome.nick, !nick.isEmpty else { return "Message" }
-        // The conventional glyph, the one your own lines and the nicklist show — the prompt
-        // disagreeing with them about you would be the stranger mistake.
+        // The network's own glyph (its PREFIX), the one your own lines and the nicklist show — the
+        // prompt disagreeing with them about you would be the stranger mistake.
         return MemberPrefix.of(chrome.ownModes, prefix: chrome.prefix) + nick
     }
 

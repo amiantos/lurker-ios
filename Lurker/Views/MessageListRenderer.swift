@@ -26,7 +26,7 @@ struct MessageListContext {
     let networkName: (Message) -> String?
     /// Colors known nicks mentioned in message bodies.
     let highlighter: NickHighlighter
-    /// Lowercased nick → channel-mode glyph, for the author header.
+    /// Lowercased nick → channel-mode glyph and its colour tier, for the author header.
     let modePrefixes: [String: MemberPrefix.Mark]
     let settings: Settings
     /// The screen's live traits. Not `UITraitCollection.current`, which isn't reliably set during
@@ -342,8 +342,7 @@ struct MessageListRenderer {
             time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
             // notice or a network line gets the glyph resolved and then discarded.
-            modePrefix: name.hasPrefix(prefix) ? prefix : "",
-            modeTier: name.hasPrefix(prefix) ? mark?.tier : nil,
+            modeMark: name.hasPrefix(prefix) ? mark : nil,
             // Where a re-attributed relay line came from (#277). Nil on everything else, and nil
             // for a bare `<nick> message` relay too, whose envelope names no source — that line
             // simply reads as the speaker, which is the call the web makes as well.

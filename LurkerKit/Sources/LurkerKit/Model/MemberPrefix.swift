@@ -25,6 +25,11 @@ public enum MemberPrefix {
     public struct Mark: Equatable, Sendable {
         public let glyph: String
         public let tier: Tier
+
+        public init(glyph: String, tier: Tier) {
+            self.glyph = glyph
+            self.tier = tier
+        }
     }
 
     /// The symbol of the highest-ranked prefix mode the member holds, or "" when they hold none.
@@ -52,7 +57,10 @@ public enum MemberPrefix {
         return Mark(glyph: list[index].symbol, tier: tier)
     }
 
-    private static let tierByLetter: [String: Tier] = ["q": .owner, "a": .admin, "o": .op, "h": .halfop, "v": .voice]
+    /// The conventional letters' tiers, in `conventional`'s order — paired with it rather than
+    /// written out a second time (lurker-ios#98's lesson).
+    private static let tierByLetter: [String: Tier] = Dictionary(
+        uniqueKeysWithValues: zip(conventional.map(\.mode), [Tier.owner, .admin, .op, .halfop, .voice]))
 
     /// Sort position: 0 for the top rank, and members with no prefix mode after every rank the
     /// network has.
@@ -76,7 +84,8 @@ public enum MemberPrefix {
 
     /// The conventional glyphs, derived from the table above rather than written out again —
     /// a second hand-typed copy of a sigil set is exactly how lurker-ios#98 got in. The WHOIS
-    /// split keeps the conventional set on purpose; it's a different question (see below).
+    /// split below keeps the conventional set, as lurker-ios#191 asked: which sigils lead a WHOIS
+    /// channel token is a separate question from how a member's rank is drawn.
     private static let glyphs = Set(conventional.compactMap(\.symbol.first))
 
     /// Split a `"@#foo"` token from RPL_WHOISCHANNELS into the sigils held there and the
