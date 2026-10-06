@@ -63,9 +63,51 @@ final class TimeZoneSyncTests: XCTestCase {
         XCTAssertEqual(written(), [here])
     }
 
+    /// The write failed, and a bootstrap waited behind it: that bootstrap still gets its answer.
+    func testABootstrapSkippedForAWriteIsAnsweredWhenItLands() {
+        let (model, written) = makeModel()
+        let stale = SettingsBootstrapFrames.stale(elsewhere)
+        model.handle(stale)
+        model.handle(stale)
+        model.timeZoneWriteFinished()
+        XCTAssertEqual(written(), [here, here])
+    }
+
+    /// Nothing waited: a refused zone isn't asked again until the next bootstrap, never in a loop.
+    func testAWriteThatLandsWithNothingWaitingAsksNoMore() {
+        let (model, written) = makeModel()
+        model.handle(SettingsBootstrapFrames.stale(elsewhere))
+        model.timeZoneWriteFinished()
+        XCTAssertEqual(written(), [here])
+    }
+
+    /// The write landed (its echo stored this zone): the waiting bootstrap finds nothing to do.
+    func testAWaitingBootstrapIsJudgedAgainstWhatIsStoredWhenTheWriteLands() {
+        let (model, written) = makeModel()
+        model.handle(SettingsBootstrapFrames.stale(elsewhere))
+        model.handle(SettingsBootstrapFrames.stale(elsewhere))
+        model.handle(.settingsChanged(["system.timezone": .string(here)], uploadLimits: .unstated))
+        model.timeZoneWriteFinished()
+        XCTAssertEqual(written(), [here])
+    }
+
+    func testSignOutForgetsAWriteOut() {
+        let (model, written) = makeModel()
+        model.handle(SettingsBootstrapFrames.stale(elsewhere))
+        model.logout()
+        model.handle(SettingsBootstrapFrames.stale(elsewhere))
+        XCTAssertEqual(written(), [here, here])
+    }
+
     func testAnEmptyZoneIsNeverWritten() {
         let (model, written) = makeModel()
         model.syncTimeZone("")
         XCTAssertEqual(written(), [])
+    }
+}
+
+private enum SettingsBootstrapFrames {
+    static func stale(_ zone: String) -> ServerFrame {
+        .settingsBootstrap(registry: [:], values: ["system.timezone": .string(zone)])
     }
 }
