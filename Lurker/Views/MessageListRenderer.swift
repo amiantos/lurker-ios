@@ -341,8 +341,13 @@ struct MessageListRenderer {
             // though every caller here is already on the main actor.
             time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
-            // notice or a network line gets the glyph resolved and then discarded.
-            modeMark: name.hasPrefix(prefix) ? mark : nil,
+            // notice or a network line gets the glyph resolved and then discarded. ⚠ Asked by
+            // building the caption without it, never by `name.hasPrefix(prefix)`: a network's own
+            // symbol can be any character (lurker-ios#191), and with PREFIX `(ov)-+` a notice's
+            // `-alice-` "starts with" an op's `-`, which then wore the op colour.
+            modeMark: !prefix.isEmpty
+                && name != MessageRenderer.caption(message, networkName: context.networkName(message), modePrefix: "")
+                ? mark : nil,
             // Where a re-attributed relay line came from (#277). Nil on everything else, and nil
             // for a bare `<nick> message` relay too, whose envelope names no source — that line
             // simply reads as the speaker, which is the call the web makes as well.
