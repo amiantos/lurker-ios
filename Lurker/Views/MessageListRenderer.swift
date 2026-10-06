@@ -26,8 +26,8 @@ struct MessageListContext {
     let networkName: (Message) -> String?
     /// Colors known nicks mentioned in message bodies.
     let highlighter: NickHighlighter
-    /// Lowercased nick → channel-mode glyph, for the author header.
-    let modePrefixes: [String: String]
+    /// Lowercased nick → channel-mode glyph and its colour tier, for the author header.
+    let modePrefixes: [String: MemberPrefix.Mark]
     let settings: Settings
     /// The screen's live traits. Not `UITraitCollection.current`, which isn't reliably set during
     /// `cellForRowAt` — see `MessageRenderer.compactFont`, which was caught doing exactly that.
@@ -325,9 +325,8 @@ struct MessageListRenderer {
         // someone speaking through a bridge, not to a member of this channel — so a hit in the
         // nicklist would be a coincidence of spelling, and it would decorate the visitor with a
         // local user's `@`. The bot's own rank isn't shown either: it isn't the one talking.
-        let prefix = message.relayBot == nil
-            ? message.nick.flatMap { context.modePrefixes[$0.lowercased()] } ?? ""
-            : ""
+        let mark = message.relayBot == nil ? message.nick.flatMap { context.modePrefixes[$0.lowercased()] } : nil
+        let prefix = mark?.glyph ?? ""
         // Nil means there's nothing to call this line: server text whose network hasn't resolved
         // yet, most often. An empty header is a blank line above the text with a stray
         // right-aligned timestamp beside it, so there just isn't one.
@@ -342,8 +341,13 @@ struct MessageListRenderer {
             // though every caller here is already on the main actor.
             time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
-            // notice or a network line gets the glyph resolved and then discarded.
-            modePrefix: name.hasPrefix(prefix) ? prefix : "",
+            // notice or a network line gets the glyph resolved and then discarded. ⚠ Asked by
+            // building the caption without it, never by `name.hasPrefix(prefix)`: a network's own
+            // symbol can be any character (lurker-ios#191), and with PREFIX `(ov)-+` a notice's
+            // `-alice-` "starts with" an op's `-`, which then wore the op colour.
+            modeMark: !prefix.isEmpty
+                && name != MessageRenderer.caption(message, networkName: context.networkName(message), modePrefix: "")
+                ? mark : nil,
             // Where a re-attributed relay line came from (#277). Nil on everything else, and nil
             // for a bare `<nick> message` relay too, whose envelope names no source — that line
             // simply reads as the speaker, which is the call the web makes as well.

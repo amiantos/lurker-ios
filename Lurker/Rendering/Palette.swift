@@ -103,16 +103,16 @@ enum Palette {
     nonisolated static let memberHalfop = dynamicHex(dark: "#78dce8", light: "#1c8ca8")
     nonisolated static let memberVoice = dynamicHex(dark: "#b3db82", light: "#269d69")
 
-    /// The color for a `MemberPrefix.of(_:)` glyph, or `nil` for a member holding no mode — the
-    /// caller leaves those in the ordinary text color rather than inventing a sixth rank.
-    nonisolated static func memberPrefix(_ glyph: String) -> UIColor? {
-        switch glyph {
-        case "~": memberOwner
-        case "&": memberAdmin
-        case "@": memberOp
-        case "%": memberHalfop
-        case "+": memberVoice
-        default: nil
+    /// The color for a glyph's tier (`MemberPrefix.mark`). By tier, not by the glyph character:
+    /// a network can give op another symbol, and it's still op (lurker-ios#191). A member holding
+    /// no mode has no mark, and the caller leaves them in the ordinary text color.
+    nonisolated static func memberPrefix(_ tier: MemberPrefix.Tier) -> UIColor {
+        switch tier {
+        case .owner: memberOwner
+        case .admin: memberAdmin
+        case .op: memberOp
+        case .halfop: memberHalfop
+        case .voice: memberVoice
         }
     }
 

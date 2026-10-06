@@ -26,6 +26,8 @@ final class MemberListViewController: UITableViewController {
     /// Everyone in the channel, ranked. The table draws `visible`, which is this filtered by
     /// the search field.
     private var members: [Member] = []
+    /// The network's PREFIX — its symbols and ranks (lurker-ios#191); nil before ISUPPORT.
+    private var prefix: [PrefixMode]?
     private var visible: [Member] = []
 
     /// Below this, the field is clutter: every nick already fits on a screen or two, and
@@ -59,11 +61,16 @@ final class MemberListViewController: UITableViewController {
         }
 
         let key = buffer.key.id
+        let networkId = buffer.networkId
         viewModel.statePublisher
             // The ignore set decides who's *listed*, not just who's in the room, so a rule
             // arriving from another device has to wake this screen the same way a join does.
-            // (`===` is the right test — see `IgnoreSet`.)
-            .removeDuplicates { $0.members[key] == $1.members[key] && $0.ignores === $1.ignores }
+            // (`===` is the right test — see `IgnoreSet`.) The network's mode spec decides every
+            // glyph and the order, and its ISUPPORT can land after the nicklist does.
+            .removeDuplicates { old, new in
+                old.members[key] == new.members[key] && old.ignores === new.ignores
+                    && networkId.flatMap { old.networks[$0]?.modeSpec?.prefix } == networkId.flatMap { new.networks[$0]?.modeSpec?.prefix }
+            }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
             .store(in: &cancellables)
@@ -71,7 +78,8 @@ final class MemberListViewController: UITableViewController {
     }
 
     private func apply(_ state: ChatState) {
-        members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key))
+        prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
+        members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key), prefix: prefix)
         title = members.isEmpty ? "Members" : "Members (\(members.count))"
         // The field appears and disappears with the channel's size, so a room that empties out
         // below the threshold stops offering one. Assigned only on change: reassigning
@@ -159,11 +167,12 @@ final class MemberListViewController: UITableViewController {
         let cell = tableView.dequeueReusableCell(withIdentifier: "member", for: indexPath)
         let member = visible[indexPath.row]
         var content = UIListContentConfiguration.cell()
-        let prefix = MemberPrefix.of(member.modes)
+        let mark = MemberPrefix.mark(member.modes, prefix: prefix)
+        let glyph = mark?.glyph ?? ""
         // Away members stay in place rather than sorting to the bottom — you look for a
         // nick where you last saw it — and are dimmed instead.
         let base: UIColor = member.away ? .tertiaryLabel : .label
-        content.text = prefix + member.nick
+        content.text = glyph + member.nick
         content.textProperties.color = base
 
         // The mode glyph wears its rank's color (`look.color.member.*`), the nick does not —
@@ -174,7 +183,8 @@ final class MemberListViewController: UITableViewController {
         // reads as inert — a bright `@` beside a greyed-out nick says the wrong thing about who
         // is actually around to use it. (The web's `li.away` rule overrides its prefix color for
         // exactly this.)
-        if !member.away, let rank = Palette.memberPrefix(prefix) {
+        if !member.away, let tier = mark?.tier {
+            let rank = Palette.memberPrefix(tier)
             // ⚠ `attributedText` "supersedes the text and some properties of the textProperties"
             // (UIListContentConfiguration.h) — which properties is not spelled out, so nothing is
             // left to `textProperties` here: the font and the base color are both written onto
@@ -199,7 +209,7 @@ final class MemberListViewController: UITableViewController {
             // heavier glyph is genuinely easier to pick out at one character wide besides.
             attributed.addAttributes(
                 [.foregroundColor: rank, .font: font.bold],
-                range: NSRange(location: 0, length: prefix.utf16.count)
+                range: NSRange(location: 0, length: glyph.utf16.count)
             )
             content.attributedText = attributed
         }
