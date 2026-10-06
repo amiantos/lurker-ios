@@ -262,6 +262,7 @@ public final class ChatViewModel {
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.
         settingsCache.clear()
+        resetTimeZoneSync()
         // Previews carry the same hazard the settings cache does, plus two more: the metadata
         // is the previous account's reading history, and the `asked` set would suppress
         // re-resolution against a DIFFERENT instance — whose signed proxy tokens wouldn't verify
@@ -373,6 +374,65 @@ public final class ChatViewModel {
 
     /// Test seam: stands in for the socket a raw line goes out on (`/frobnicate`).
     var sendRawSeam: ((String) -> Bool)?
+
+    /// Test seam: stands in for the settings write `syncTimeZone` makes.
+    var timeZoneWriteSeam: ((String) -> Void)?
+
+    /// The phone's time zone, written to `system.timezone` when the server's differs (sweep L08), as
+    /// the web's `syncDetectedTimezone` does. The server formats in it with no client connected: push
+    /// quiet hours, and the "since …" others see in the auto-away message. A phone that never wrote
+    /// it left both on the zone of whichever browser bootstrapped last, or on the server's clock.
+    ///
+    /// On each settings bootstrap — every start and every reconnect — so a phone that has travelled
+    /// corrects it on its next foreground. Never in answer to a `settings` frame: another device's
+    /// write isn't answered, so two devices in different zones can't trade it back and forth.
+    ///
+    /// `autoupdatingCurrent`, not `current`: `current` is a snapshot that can outlive a zone change
+    /// in a process that stayed alive through a flight.
+    ///
+    /// ⚠ One write out at a time, and a bootstrap that arrives meanwhile is answered when it lands,
+    /// against the zone and the stored value as they are THEN. Two writes out together could land in
+    /// either order and leave the old zone stored; a bootstrap simply skipped would be lost if the
+    /// write out failed. Only a skipped bootstrap asks again, so a zone the server refuses is asked
+    /// once per bootstrap, never in a loop.
+    func syncTimeZone(_ detected: String = TimeZone.autoupdatingCurrent.identifier) {
+        if timeZoneWrite != nil {
+            timeZoneResyncOwed = true
+            return
+        }
+        guard !detected.isEmpty, store.state.settings.values["system.timezone"] != .string(detected) else { return }
+        let write = UUID()
+        timeZoneWrite = write
+        // The seam's write never finishes on its own; a test finishes it (`timeZoneWriteFinished`).
+        if let timeZoneWriteSeam { return timeZoneWriteSeam(detected) }
+        Task {
+            // Not worth a word on failure: the next bootstrap asks again.
+            _ = await client.updateSettings(["system.timezone": .string(detected)])
+            // A sign-out since then ended it; the next session starts clean.
+            if timeZoneWrite == write { timeZoneWriteFinished() }
+        }
+    }
+
+    /// The write out has landed, either way: a bootstrap that waited for it is answered now.
+    /// Internal for tests.
+    func timeZoneWriteFinished() {
+        timeZoneWrite = nil
+        guard timeZoneResyncOwed else { return }
+        timeZoneResyncOwed = false
+        syncTimeZone()
+    }
+
+    /// The time zone write out, if any, so its answer can tell it still belongs to this session.
+    private var timeZoneWrite: UUID?
+
+    /// A bootstrap arrived while a write was out, and is answered when it lands.
+    private var timeZoneResyncOwed = false
+
+    /// Session-scoped: a sign-out drops both, so the next account's first bootstrap is never skipped.
+    private func resetTimeZoneSync() {
+        timeZoneWrite = nil
+        timeZoneResyncOwed = false
+    }
 
     /// Open a DM and go there once its row exists (iOS #201): Send Message on a profile, a Friends
     /// row whose DM is closed. The app is taken there through `onBufferOpened` — at once if the row
@@ -2047,6 +2107,7 @@ public final class ChatViewModel {
             // Persist after folding, not from the frame: a `settingsChanged` patch carries only
             // what moved, so the cache has to mirror the merged result rather than the delta.
             settingsCache.save(store.state.settings.values)
+            if case .settingsBootstrap = frame { syncTimeZone() }
         case .unauthorized:
             onAuthLost()
         case .incompatible(let incompatibility):
@@ -2371,6 +2432,7 @@ public final class ChatViewModel {
         // particular must not carry across users. Both this and the deliberate sign-out clear
         // it, because either can be followed by someone else signing in on this phone.
         settingsCache.clear()
+        resetTimeZoneSync()
         // Previews carry the same hazard the settings cache does, plus two more: the metadata
         // is the previous account's reading history, and the `asked` set would suppress
         // re-resolution against a DIFFERENT instance — whose signed proxy tokens wouldn't verify

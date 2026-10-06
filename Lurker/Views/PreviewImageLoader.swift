@@ -81,7 +81,7 @@ final class PreviewImageLoader {
                 image = decoded.image
                 // Recorded whether or not it animates, so `isAnimated` can answer "no" without
                 // confusing it with "not loaded yet".
-                frames[path] = decoded.frames
+                animates[path] = decoded.plays
                 // Bytes we cannot decode are a verdict: asking again gets the same bytes.
             case .retryable:
                 isVerdict = false
@@ -110,27 +110,31 @@ final class PreviewImageLoader {
         }
     }
 
-    /// The still, plus how many frames the file actually holds.
+    /// The still, plus whether the file plays as an animation.
     ///
     /// ⚠ Only the FIRST frame is decoded here, even for an animation. That is the whole reason
     /// playback is opt-in: a hundred-frame GIF held as decoded frames is hundreds of megabytes
     /// against a 32 MB cache budget, and autoplay pays that for every animation in scrollback
     /// whether or not anybody is watching. A still costs exactly what a JPEG costs.
-    nonisolated private static func decode(_ data: Data) async -> (image: UIImage?, frames: Int) {
+    nonisolated private static func decode(_ data: Data) async -> (image: UIImage?, plays: Bool) {
         await Task.detached(priority: .userInitiated) {
-            let count = CGImageSourceCreateWithData(data as CFData, nil)
-                .map { CGImageSourceGetCount($0) } ?? 1
-            guard let image = UIImage(data: data) else { return (nil as UIImage?, count) }
+            // Whether it plays, not how many images it holds: most containers with several are
+            // stills (`ImageAnimation`).
+            let plays = CGImageSourceCreateWithData(data as CFData, nil).map { source in
+                ImageAnimation.plays(
+                    frameCount: CGImageSourceGetCount(source), typeIdentifier: CGImageSourceGetType(source) as String?)
+            } ?? false
+            guard let image = UIImage(data: data) else { return (nil as UIImage?, plays) }
             // Force the decode now rather than on first draw, which would otherwise happen on
             // the main thread at exactly the wrong moment.
-            return (image.preparingForDisplay() ?? image, count)
+            return (image.preparingForDisplay() ?? image, plays)
         }.value
     }
 
     // MARK: - Animation, on request
 
-    /// Frame counts by path, learned when the still was decoded.
-    private var frames: [String: Int] = [:]
+    /// Whether each path plays, learned when the still was decoded.
+    private var animates: [String: Bool] = [:]
 
     /// Bumped by `reset()`, so answers already in the air can tell they belong to the account
     /// that just signed out.
@@ -149,12 +153,12 @@ final class PreviewImageLoader {
 
     /// Whether `path` holds an animation.
     ///
-    /// Answers false until the still has loaded — the frame count comes from the same decode —
+    /// Answers false until the still has loaded — the answer comes from the same decode —
     /// so a caller re-asks when its image arrives. That is exactly when the badge appears, and
     /// it costs no layout: a badge is decoration over a box whose size the metadata already
     /// fixed, so nothing moves.
     func isAnimated(_ path: String) -> Bool {
-        (frames[path] ?? 1) > 1
+        animates[path] ?? false
     }
 
     /// Build the animated image for `path`, downsampled and bounded. Nil if it can't or won't.
@@ -179,7 +183,9 @@ final class PreviewImageLoader {
         await Task.detached(priority: .userInitiated) {
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
             let count = CGImageSourceGetCount(source)
-            guard count > 1 else { return nil }
+            guard ImageAnimation.plays(frameCount: count, typeIdentifier: CGImageSourceGetType(source) as String?) else {
+                return nil
+            }
 
             let options: [CFString: Any] = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -237,7 +243,7 @@ final class PreviewImageLoader {
         cache.removeAllObjects()
         waiters.removeAll()
         failed.removeAll()
-        frames.removeAll()
+        animates.removeAll()
         generation &+= 1
     }
 }

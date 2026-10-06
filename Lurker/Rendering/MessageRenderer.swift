@@ -74,8 +74,11 @@ enum MessageRenderer {
     /// A structural line — "alice joined", "bob is now bob_afk", "chan set +o dave". The
     /// actor and any nicks it names are colored; the connective words are muted, so the line
     /// reads as narration about the room rather than something someone said in it.
+    ///
+    /// `revealed` reaches the one body a line can carry — a topic or a reason — so a spoiler in it
+    /// opens like one in a message.
     private static func renderActivity(
-        _ message: Message, base: UIFont, settings: Settings = Settings()
+        _ message: Message, base: UIFont, settings: Settings = Settings(), revealed: Set<Int> = []
     ) -> NSAttributedString {
         let line = NSMutableAttributedString()
         let actor = nickToken(message.nick, isSelf: message.isSelf, base: base)
@@ -92,11 +95,11 @@ enum MessageRenderer {
         case .part:
             line.append(actor)
             line.append(muted(host + " left", base: base))
-            appendReason(message.text, to: line, base: base)
+            appendReason(message, to: line, base: base, revealed: revealed)
         case .quit:
             line.append(actor)
             line.append(muted(host + " quit", base: base))
-            appendReason(message.text, to: line, base: base)
+            appendReason(message, to: line, base: base, revealed: revealed)
         case .nick:
             line.append(actor)
             line.append(muted(" is now ", base: base))
@@ -106,7 +109,7 @@ enum MessageRenderer {
             line.append(nickToken(message.kicked, base: base))
             line.append(muted(" was kicked by ", base: base))
             line.append(actor)
-            appendReason(message.text, to: line, base: base)
+            appendReason(message, to: line, base: base, revealed: revealed)
         case .mode:
             line.append(actor)
             for segment in ModeNarration.describe(message.modes, rawText: message.text) {
@@ -128,12 +131,9 @@ enum MessageRenderer {
         case .topic:
             line.append(actor)
             line.append(muted(" set the topic", base: base))
-            if let text = message.text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                line.append(muted(": ", base: base))
-                // The same muted as the ": " immediately before it — two greys mid-sentence read
-                // as a seam, and the topic text is a continuation of the narration, not a quote.
-                line.append(body(message, base: base, fallback: Palette.fgMuted))
-            }
+            // The same muted as the ": " before it — two greys mid-sentence read as a seam, and the
+            // topic text is a continuation of the narration, not a quote.
+            appendActivityBody(message, to: line, base: base, revealed: revealed, open: ": ")
         case .invite:
             line.append(actor)
             line.append(muted(" invited ", base: base))
@@ -426,7 +426,7 @@ enum MessageRenderer {
             // column of punctuation buying nothing.
             return spaced(
                 NSMutableAttributedString(
-                    attributedString: renderActivity(message, base: base, settings: settings)
+                    attributedString: renderActivity(message, base: base, settings: settings, revealed: revealed)
                 ),
                 flushFirstLine: true, traits: traits
             )
@@ -543,10 +543,28 @@ enum MessageRenderer {
         NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: Palette.fgMuted])
     }
 
-    /// A part/quit reason in parentheses, or nothing when there isn't one.
-    private static func appendReason(_ text: String?, to line: NSMutableAttributedString, base: UIFont) {
-        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        line.append(muted(" (" + text + ")", base: base))
+    /// A part, quit or kick reason in parentheses, or nothing when there isn't one.
+    private static func appendReason(
+        _ message: Message, to line: NSMutableAttributedString, base: UIFont, revealed: Set<Int>
+    ) {
+        appendActivityBody(message, to: line, base: base, revealed: revealed, open: " (", close: ")")
+    }
+
+    /// The text an activity line carries — a topic, a reason — between `open` and `close` in the
+    /// narration's grey, or nothing at all when it has no visible text. Through `body` (sweep L06):
+    /// it carries mIRC colours and links like any message, and as plain text its colour digits
+    /// leaked ("(04Leaving") and its URLs couldn't be tapped. Judged on what `body` drew, so a text
+    /// of nothing but formatting codes leaves no empty "()" or dangling ": ".
+    private static func appendActivityBody(
+        _ message: Message, to line: NSMutableAttributedString, base: UIFont, revealed: Set<Int>,
+        open: String, close: String = ""
+    ) {
+        guard let text = message.text, !text.isEmpty else { return }
+        let drawn = body(message, base: base, fallback: Palette.fgMuted, revealed: revealed)
+        guard !drawn.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        line.append(muted(open, base: base))
+        line.append(drawn)
+        if !close.isEmpty { line.append(muted(close, base: base)) }
     }
 
     /// One summary category as "alice, bob and carol joined" — the names as nick tokens, the
