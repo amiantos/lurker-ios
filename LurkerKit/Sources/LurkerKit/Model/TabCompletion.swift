@@ -37,14 +37,15 @@ public struct TabCompletion: Equatable, Sendable {
     /// it or nothing matches.
     ///
     /// `nicks` answers the nick candidates for what's been typed, best first — pass
-    /// `NickCompletion.candidates` with a limit high enough to cycle through. `channels` is the
-    /// network's channels, best first (the one you're in leads); this filters them by the typed
-    /// prefix. `punctuation` is `NickCompletion.addressPunctuation(settings)`.
+    /// `NickCompletion.candidates` with no limit to speak of, so Tab can cycle through every match,
+    /// as the web's can. `channels` answers the network's channels, best first (the one you're in
+    /// leads), asked only when the word starts with `#`; this filters them by the typed prefix.
+    /// `punctuation` is `NickCompletion.addressPunctuation(settings)`.
     public static func begin(
         text: String,
         caret: Int,
         nicks: (String) -> [String],
-        channels: [String],
+        channels: () -> [String],
         punctuation: String
     ) -> TabCompletion? {
         let units = Array(text.utf16)
@@ -66,7 +67,7 @@ public struct TabCompletion: Equatable, Sendable {
         let matches: [String]
         if isChannel {
             let typed = token.lowercased()
-            matches = channels.filter { $0.lowercased().hasPrefix(typed) }
+            matches = channels().filter { $0.lowercased().hasPrefix(typed) }
         } else {
             let query = token.hasPrefix("@") ? String(token.dropFirst()) : token
             guard !query.isEmpty else { return nil }

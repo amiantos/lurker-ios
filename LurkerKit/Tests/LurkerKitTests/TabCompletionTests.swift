@@ -14,7 +14,7 @@ final class TabCompletionTests: XCTestCase {
 
     private func begin(_ text: String, caret: Int? = nil, channels: [String] = [], punctuation: String = ":") -> TabCompletion? {
         TabCompletion.begin(
-            text: text, caret: caret ?? text.utf16.count, nicks: nicks, channels: channels, punctuation: punctuation)
+            text: text, caret: caret ?? text.utf16.count, nicks: nicks, channels: { channels }, punctuation: punctuation)
     }
 
     func testANickOpeningTheLineIsAddressed() {
@@ -93,6 +93,16 @@ final class TabCompletionTests: XCTestCase {
         XCTAssertNil(begin("hi ", caret: 3))
         XCTAssertNil(begin("zz"))
         XCTAssertNil(begin("#zz", channels: ["#lurker"]))
+    }
+
+    /// Most Tabs complete a nick; the network's channels are only worth gathering for a `#`.
+    func testChannelsAreAskedOnlyForAHash() {
+        var asked = 0
+        let channels = { () -> [String] in asked += 1; return ["#lurker"] }
+        _ = TabCompletion.begin(text: "al", caret: 2, nicks: nicks, channels: channels, punctuation: ":")
+        XCTAssertEqual(asked, 0)
+        _ = TabCompletion.begin(text: "#lu", caret: 3, nicks: nicks, channels: channels, punctuation: ":")
+        XCTAssertEqual(asked, 1)
     }
 
     func testOffsetsAreUTF16() {

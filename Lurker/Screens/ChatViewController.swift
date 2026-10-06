@@ -424,8 +424,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.tabSource = { [weak self] in
             guard let self else { return nil }
             return ComposerBar.TabSource(
-                nicks: { [weak self] query in self?.nickCandidates(matching: query, limit: 50) ?? [] },
-                channels: tabChannels(),
+                // No cap: Tab cycles every match, as the web's does. The pills' limit is a display's.
+                nicks: { [weak self] query in self?.nickCandidates(matching: query, limit: .max) ?? [] },
+                channels: { [weak self] in self?.tabChannels() ?? [] },
                 punctuation: addressPunctuation
             )
         }

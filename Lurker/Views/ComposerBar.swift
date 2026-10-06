@@ -79,15 +79,19 @@ final class ComposerBar: UIView {
     struct TabSource {
         /// Nick candidates for what's typed, best first — enough of them to cycle through.
         let nicks: (String) -> [String]
-        /// The network's channels, best first.
-        let channels: [String]
+        /// The network's channels, best first — asked only for a `#` word.
+        let channels: () -> [String]
         /// `NickCompletion.addressPunctuation` of the live settings.
         let punctuation: String
     }
     var tabSource: (() -> TabSource?)?
-    /// The completion Tab is cycling, if any. Kept until a Tab finds the field no longer as it
-    /// left it (`continues`): a keystroke, a tap or a restore ends it without being told.
+    /// The completion Tab is cycling, if any. Any edit or caret move Tab didn't make ends it, as
+    /// any other key does on the web — `continues` alone would revive it after a letter typed and
+    /// deleted. While it lives the pill strip stays down: the web closes its pickers on Tab, and a
+    /// mid-sentence completion would otherwise float pills over the nick it just finished.
     private var tabCompletion: TabCompletion?
+    /// Set while Tab's own edit goes in, so the change callbacks don't end the session it belongs to.
+    private var isApplyingTab = false
 
     /// The draft as of the last `onDraftChange` (or `restore`), so a re-measure that changes no
     /// text doesn't masquerade as an edit. See `textViewDidChange`.
@@ -743,6 +747,8 @@ final class ComposerBar: UIView {
     /// An ordinary text change as far as the rest of the composer goes: the pill strip, the
     /// typing signal and the draft all hear it through `textViewDidChange`, as after a keystroke.
     private func tabComplete(backward: Bool) {
+        // A selection has no caret to complete at: Tab is still taken, and changes nothing.
+        guard textView.selectedRange.length == 0 else { return }
         // UTF-16, which is `TabCompletion`'s currency and `selectedRange`'s.
         let text = textView.text ?? ""
         let caret = textView.selectedRange.location
@@ -760,7 +766,15 @@ final class ComposerBar: UIView {
             tabCompletion = nil
             return
         }
-        textView.text = edit.text
+        isApplyingTab = true
+        defer { isApplyingTab = false }
+        // Through `replace`, not `text =`: a programmatic set registers no undo, and a hardware
+        // keyboard's Cmd-Z would then replay older typing ranges against the rewritten text.
+        if let whole = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) {
+            textView.replace(whole, withText: edit.text)
+        } else {
+            textView.text = edit.text
+        }
         textView.selectedRange = NSRange(location: edit.caret, length: 0)
         textViewDidChange(textView)
     }
@@ -798,6 +812,8 @@ extension ComposerBar: UITextViewDelegate {
     /// ⚠ Never over marked text: Return there commits the IME's composition.
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
         guard text == "\n", !isComposing, !self.textView.isInsertingHardwareNewline,
+              // A pasted newline is pasted text, and dictation's "new line" is a line, not a send.
+              !self.textView.isPasting, self.textView.textInputMode?.primaryLanguage != "dictation",
               UserPreferences.standard.composerEnterSends
         else { return true }
         fire()
@@ -807,6 +823,7 @@ extension ComposerBar: UITextViewDelegate {
     /// Caret moves matter as much as keystrokes: arrowing out of a token (or into one)
     /// changes the completion context without changing the text.
     func textViewDidChangeSelection(_ textView: UITextView) {
+        if !isApplyingTab { tabCompletion = nil }
         emitCompletion()
         // A commit that leaves the text as it was (romaji `ka` committed as typed) changes no
         // text, so `textViewDidChange` may not hear it — but the marked range went away. Asked
@@ -842,7 +859,8 @@ extension ComposerBar: UITextViewDelegate {
     }
 
     private func activeCompletion(text: String, caret: Int, isCollapsed: Bool) -> Completion? {
-        guard isCollapsed else { return nil }
+        // A Tab completion owns the field while it cycles (see `tabCompletion`).
+        guard isCollapsed, tabCompletion == nil else { return nil }
         if let context = CommandCompletion.context(in: text, caret: caret) {
             switch context {
             case .command(let query, _):
@@ -860,6 +878,7 @@ extension ComposerBar: UITextViewDelegate {
     }
 
     func textViewDidChange(_ textView: UITextView) {
+        if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }
         // Only when the text genuinely differs. This method is also called by hand for

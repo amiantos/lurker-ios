@@ -44,8 +44,14 @@ final class ComposerTextView: UITextView {
             onPasteImage?(pasted.data, pasted.mime, pasted.filename)
             return
         }
+        isPasting = true
+        defer { isPasting = false }
         super.paste(sender)
     }
+
+    /// Set while a text paste goes in, so "Enter to send" (lurker-android#64) doesn't read a
+    /// pasted lone newline as the Return key — it comes through `shouldChangeTextIn` the same way.
+    private(set) var isPasting = false
 
     // MARK: - Hardware keyboard (lurker-android#63)
 
