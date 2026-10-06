@@ -17,13 +17,14 @@ import UIKit
 /// the container.
 ///
 /// A `UITextView`, not a `UITextField`, for two reasons the redesign turns on: it grows to
-/// several lines, and Return inserts a newline. Sending is the button's job alone now — a
-/// hardware/space Return no longer fires it — so a multi-line message is something you can
-/// actually type.
+/// several lines, and Return inserts a newline. On the on-screen keyboard that stays the default,
+/// so a multi-line message is something you can actually type; "Enter to send"
+/// (lurker-android#64) makes Return send instead. A hardware keyboard's Enter always sends and
+/// Shift-Enter starts a line (lurker-android#63) — there's a Shift key to ask for the newline with.
 final class ComposerBar: UIView {
 
-    /// Called with the trimmed text when the send button is tapped. The bar does not clear
-    /// itself — the owner does, once the send is accepted, via `clear()`.
+    /// Called with the trimmed text when the send button is tapped, or a key sends (`fire()`).
+    /// The bar does not clear itself — the owner does, once the send is accepted, via `clear()`.
     var onSend: ((String) -> Void)?
 
     /// Tapped the paperclip.
@@ -71,6 +72,26 @@ final class ComposerBar: UIView {
     var onCancelReply: (() -> Void)?
     /// The away strip's Back (#135).
     var onBack: (() -> Void)?
+
+    /// What a hardware Tab completes against (lurker-android#63), asked fresh on each Tab that
+    /// starts a completion. The owner's, because the roster, the network's channels and the
+    /// suffix setting live on the store, which this view has no window onto.
+    struct TabSource {
+        /// Nick candidates for what's typed, best first — enough of them to cycle through.
+        let nicks: (String) -> [String]
+        /// The network's channels, best first — asked only for a `#` word.
+        let channels: () -> [String]
+        /// `NickCompletion.addressPunctuation` of the live settings.
+        let punctuation: String
+    }
+    var tabSource: (() -> TabSource?)?
+    /// The completion Tab is cycling, if any. Any edit or caret move Tab didn't make ends it, as
+    /// any other key does on the web — `continues` alone would revive it after a letter typed and
+    /// deleted. While it lives the pill strip stays down: the web closes its pickers on Tab, and a
+    /// mid-sentence completion would otherwise float pills over the nick it just finished.
+    private var tabCompletion: TabCompletion?
+    /// Set while Tab's own edit goes in, so the change callbacks don't end the session it belongs to.
+    private var isApplyingTab = false
 
     /// The draft as of the last `onDraftChange` (or `restore`), so a re-measure that changes no
     /// text doesn't masquerade as an edit. See `textViewDidChange`.
@@ -202,6 +223,8 @@ final class ComposerBar: UIView {
         textView.isScrollEnabled = false // until it hits the cap; see textViewDidChange
         textView.delegate = self
         textView.onPasteImage = { [weak self] data, mime, name in self?.onPasteImage?(data, mime, name) }
+        textView.onHardwareReturn = { [weak self] in self?.fire() }
+        textView.onTab = { [weak self] backward in self?.tabComplete(backward: backward) }
         textView.translatesAutoresizingMaskIntoConstraints = false
         applyKeyboardPreferences()
         NotificationCenter.default.addObserver(
@@ -351,18 +374,24 @@ final class ComposerBar: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Read the device-local keyboard preferences onto the field — today, whether to
-    /// capitalize sentences (`UserDefaults.composerAutocapitalizes`).
+    /// Read the device-local keyboard preferences onto the field: whether to capitalize
+    /// sentences (`UserDefaults.composerAutocapitalizes`), and whether Return reads Send
+    /// (`composerEnterSends`, lurker-android#64 — the send itself is `shouldChangeTextIn`'s).
     ///
     /// Runs at init and again on every change, because Settings is a sheet over this screen
     /// rather than a push: the composer stays alive underneath it and would otherwise keep the
     /// value it read the last time it was built, which for the buffer you were in when you
     /// flipped the switch is "never".
     @objc private func applyKeyboardPreferences() {
-        let wanted: UITextAutocapitalizationType =
-            UserPreferences.standard.composerAutocapitalizes ? .sentences : .none
-        guard textView.autocapitalizationType != wanted else { return }
-        textView.autocapitalizationType = wanted
+        let preferences = UserPreferences.standard
+        let capitalization: UITextAutocapitalizationType = preferences.composerAutocapitalizes ? .sentences : .none
+        let returnKey: UIReturnKeyType = preferences.composerEnterSends ? .send : .default
+        guard textView.autocapitalizationType != capitalization || textView.returnKeyType != returnKey
+        else { return }
+        textView.autocapitalizationType = capitalization
+        textView.returnKeyType = returnKey
+        // A Send key greys out over an empty field, as Messages' does; a newline key never would.
+        textView.enablesReturnKeyAutomatically = preferences.composerEnterSends
         // A keyboard is configured when it comes up, so a field that's focused right now is
         // already showing one built from the old value. This re-asks for it.
         if textView.isFirstResponder { textView.reloadInputViews() }
@@ -702,10 +731,52 @@ final class ComposerBar: UIView {
 
     // MARK: - State
 
+    /// The send, by whichever key or button asked: the Send button, a hardware Enter
+    /// (lurker-android#63), or the on-screen Return under "Enter to send" (lurker-android#64). One
+    /// path, so one set of checks.
     private func fire() {
         let text = textView.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         onSend?(text)
+    }
+
+    /// A hardware Tab (Shift-Tab: `backward`) — the web composer's in-place completion
+    /// (`TabCompletion`). Cycles the live completion while the field is as it left it; otherwise
+    /// starts one from the word under the caret, and does nothing when nothing matches.
+    ///
+    /// An ordinary text change as far as the rest of the composer goes: the pill strip, the
+    /// typing signal and the draft all hear it through `textViewDidChange`, as after a keystroke.
+    private func tabComplete(backward: Bool) {
+        // A selection has no caret to complete at: Tab is still taken, and changes nothing.
+        guard textView.selectedRange.length == 0 else { return }
+        // UTF-16, which is `TabCompletion`'s currency and `selectedRange`'s.
+        let text = textView.text ?? ""
+        let caret = textView.selectedRange.location
+        let edit: TabCompletion.Edit
+        if var session = tabCompletion, session.continues(text: text, caret: caret) {
+            edit = session.cycle(backward: backward)
+            tabCompletion = session
+        } else if let source = tabSource?(),
+                  let fresh = TabCompletion.begin(
+                    text: text, caret: caret, nicks: source.nicks,
+                    channels: source.channels, punctuation: source.punctuation) {
+            edit = fresh.edit
+            tabCompletion = fresh
+        } else {
+            tabCompletion = nil
+            return
+        }
+        isApplyingTab = true
+        defer { isApplyingTab = false }
+        // Through `replace`, not `text =`: a programmatic set registers no undo, and a hardware
+        // keyboard's Cmd-Z would then replay older typing ranges against the rewritten text.
+        if let whole = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) {
+            textView.replace(whole, withText: edit.text)
+        } else {
+            textView.text = edit.text
+        }
+        textView.selectedRange = NSRange(location: edit.caret, length: 0)
+        textViewDidChange(textView)
     }
 
     private func updateSendEnabled() {
@@ -728,9 +799,31 @@ final class ComposerBar: UIView {
 }
 
 extension ComposerBar: UITextViewDelegate {
+    /// "Enter to send" (lurker-android#64): the on-screen keyboard's Return sends instead of
+    /// starting a line. An empty draft sends nothing and gets no newline either — the key was a
+    /// send.
+    ///
+    /// ⚠ A hardware Return never gets here: its key command has priority and consumes it
+    /// (`ComposerTextView`). The one hardware `"\n"` that does is Shift-Enter's own insert, which
+    /// is flagged so it stays a newline instead of sending. And were some keyboard ever to deliver
+    /// a Return both ways, it still couldn't send twice: the owner clears the field inside
+    /// `onSend`, so the second `fire()` finds it empty.
+    ///
+    /// ⚠ Never over marked text: Return there commits the IME's composition.
+    func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        guard text == "\n", !isComposing, !self.textView.isInsertingHardwareNewline,
+              // A pasted newline is pasted text, and dictation's "new line" is a line, not a send.
+              !self.textView.isPasting, self.textView.textInputMode?.primaryLanguage != "dictation",
+              UserPreferences.standard.composerEnterSends
+        else { return true }
+        fire()
+        return false
+    }
+
     /// Caret moves matter as much as keystrokes: arrowing out of a token (or into one)
     /// changes the completion context without changing the text.
     func textViewDidChangeSelection(_ textView: UITextView) {
+        if !isApplyingTab { tabCompletion = nil }
         emitCompletion()
         // A commit that leaves the text as it was (romaji `ka` committed as typed) changes no
         // text, so `textViewDidChange` may not hear it — but the marked range went away. Asked
@@ -766,7 +859,8 @@ extension ComposerBar: UITextViewDelegate {
     }
 
     private func activeCompletion(text: String, caret: Int, isCollapsed: Bool) -> Completion? {
-        guard isCollapsed else { return nil }
+        // A Tab completion owns the field while it cycles (see `tabCompletion`).
+        guard isCollapsed, tabCompletion == nil else { return nil }
         if let context = CommandCompletion.context(in: text, caret: caret) {
             switch context {
             case .command(let query, _):
@@ -784,6 +878,7 @@ extension ComposerBar: UITextViewDelegate {
     }
 
     func textViewDidChange(_ textView: UITextView) {
+        if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }
         // Only when the text genuinely differs. This method is also called by hand for

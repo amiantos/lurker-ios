@@ -29,6 +29,7 @@ enum UserPreferences {
         static let lastBufferTarget = "lastBufferTarget"
         static let lastBufferNetworkId = "lastBufferNetworkId"
         static let composerAutocapitalization = "composerAutocapitalization"
+        static let composerEnterSends = "composerEnterSends"
     }
 
     /// Registration happens once, when this is first touched, rather than on every access.
@@ -83,6 +84,21 @@ extension UserDefaults {
 
     func set(composerAutocapitalizes: Bool) {
         set(composerAutocapitalizes, forKey: UserPreferences.Key.composerAutocapitalization)
+        NotificationCenter.default.post(name: .composerKeyboardPreferencesDidChange, object: nil)
+    }
+
+    /// Whether the on-screen keyboard's Return sends rather than starting a new line
+    /// (lurker-android#64). Off by default, which is a missing key's `false` — no registration.
+    ///
+    /// Only the on-screen keyboard: a hardware keyboard's Enter always sends and Shift-Enter
+    /// starts a line (lurker-android#63), whatever this says. Device-local for the reason
+    /// autocapitalization is: it configures this phone's keyboard.
+    var composerEnterSends: Bool {
+        bool(forKey: UserPreferences.Key.composerEnterSends)
+    }
+
+    func set(composerEnterSends: Bool) {
+        set(composerEnterSends, forKey: UserPreferences.Key.composerEnterSends)
         NotificationCenter.default.post(name: .composerKeyboardPreferencesDidChange, object: nil)
     }
 

@@ -420,6 +420,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             case nil: break
             }
         }
+        // A hardware Tab (lurker-android#63): the strip's nick ranking, deep enough to cycle.
+        composer.tabSource = { [weak self] in
+            guard let self else { return nil }
+            return ComposerBar.TabSource(
+                // No cap: Tab cycles every match, as the web's does. The pills' limit is a display's.
+                nicks: { [weak self] query in self?.nickCandidates(matching: query, limit: .max) ?? [] },
+                channels: { [weak self] in self?.tabChannels() ?? [] },
+                punctuation: addressPunctuation
+            )
+        }
         suggestions.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(suggestions)
 
@@ -2814,6 +2824,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
+    /// What a hardware Tab completes a `#…` against: this network's channels, the one you're in
+    /// first, then the rest alphabetically. ⚠ The web ranks the rest by how recently you visited
+    /// them; the app keeps no recency list, so alphabetical is the honest second key.
+    /// `TabCompletion` does the prefix filtering.
+    private func tabChannels() -> [String] {
+        let others = viewModel.state.buffers.values
+            .filter { $0.networkId == buffer.networkId && $0.kind == .channel && $0.key.id != buffer.key.id }
+            .map(\.target)
+            .sorted { $0.lowercased() < $1.lowercased() }
+        return (buffer.kind == .channel ? [buffer.target] : []) + others
+    }
+
     /// Channels on this buffer's network whose name matches `query`, best-effort. Both sides
     /// are compared with a leading channel sigil stripped, so `/join li` still finds
     /// `#linux` — the `#` the user hasn't typed yet shouldn't hide it.
@@ -2828,13 +2850,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .map { $0 }
     }
 
-    private func nickCandidates(matching query: String) -> [String] {
+    /// The strip's four, or Tab's deeper list (`limit`) — one ranking, so Tab's first pick is the
+    /// strip's best.
+    private func nickCandidates(matching query: String, limit: Int = 4) -> [String] {
         NickCompletion.candidates(
             speakers: speakers,
             members: viewModel.state.visibleMembers(in: buffer.key),
             selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
             query: query,
             isChannel: buffer.kind == .channel,
+            limit: limit,
             ignores: viewModel.state.ignores,
             networkId: buffer.networkId,
             channel: buffer.target
