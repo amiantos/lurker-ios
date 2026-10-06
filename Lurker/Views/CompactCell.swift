@@ -284,22 +284,23 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let font = MessageRenderer.compactFont(compatibleWith: traits)
         headerRow.isHidden = header == nil
         if let header {
-            let nickFont = font.semibold
+            // The name at the body's weight, as the web draws it.
             let name = NSMutableAttributedString(
                 string: header.nick,
-                attributes: [.font: nickFont, .foregroundColor: header.color]
+                attributes: [.font: font, .foregroundColor: header.color]
             )
             // The mode glyph in its rank's color, the name in the speaker's — the split the web's
             // `NickRef` makes.
             //
-            // Bold via `withTrait`, which is the only thing that takes on this face — `semibold`
-            // adds a weight attribute that a monospaced font's concrete name beats in matching, so
-            // `nickFont` above is not in fact heavier than the body. The glyph needs the weight for
+            // Bold via `withTrait`, which is the only thing that takes on this face: `semibold` adds
+            // a weight attribute that a monospaced font's concrete name beats in matching, so it
+            // changes nothing here (the name asked for it once, to no effect — Android's port took
+            // the request at its word and drew heavy nicks). The glyph needs the weight for
             // contrast: the rank hues are ~3.5-4:1 on the light canvas, which clears the bar for
             // large text and not the one for regular.
             if let rank = Palette.memberPrefix(header.modePrefix), header.nick.hasPrefix(header.modePrefix) {
                 name.addAttributes(
-                    [.foregroundColor: rank, .font: nickFont.bold],
+                    [.foregroundColor: rank, .font: font.bold],
                     range: NSRange(location: 0, length: header.modePrefix.utf16.count)
                 )
             }
