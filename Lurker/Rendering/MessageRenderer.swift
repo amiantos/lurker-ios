@@ -982,8 +982,11 @@ extension UIFont {
     var bold: UIFont { withTrait(.traitBold) }
     var italic: UIFont { withTrait(.traitItalic) }
 
-    /// One weight step up, for the nick above a bubble. `size: 0`
-    /// keeps the descriptor's own size, so a text style's Dynamic Type scaling survives.
+    /// One weight step up, for the system text styles (banners, titles). `size: 0` keeps the
+    /// descriptor's own size, so a text style's Dynamic Type scaling survives.
+    ///
+    /// ⚠ No effect on a monospaced face: its concrete name beats the weight attribute in matching,
+    /// and it resolves to the same Regular. Use `bold` there.
     var semibold: UIFont {
         let descriptor = fontDescriptor.addingAttributes([
             .traits: [UIFontDescriptor.TraitKey.weight: UIFont.Weight.semibold],
