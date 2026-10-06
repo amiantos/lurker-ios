@@ -210,7 +210,7 @@ final class PendingRevokeTests: XCTestCase {
 
 /// A loopback HTTP server that answers every request with one status and records each request's
 /// head. Just enough HTTP for URLSession.
-private final class OneStatusServer: @unchecked Sendable {
+final class OneStatusServer: @unchecked Sendable {
     private(set) var url = ""
     private let listener: NWListener
     private let lock = NSLock()

@@ -310,6 +310,12 @@ final class LurkerClient {
                 //
                 // `values` is the full stored set, and the reducer patches rather than
                 // replaces, so applying it is idempotent with the echo that follows.
+                //
+                // Only into the session that asked. A sign-out while the write was out cleared the
+                // store and the settings cache; the departing account's values must not come back
+                // into them for whoever signs in next. The phone's own time zone write makes this
+                // window an ordinary one: it goes out at every bootstrap, unasked.
+                guard self.token == token else { return nil }
                 if let text = String(data: data, encoding: .utf8) {
                     onFrame(.settingsValues(FrameParser.parseSettingValues(
                         FrameParser.jsonObject(from: text)?["values"]
