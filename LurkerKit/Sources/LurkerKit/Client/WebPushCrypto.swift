@@ -43,6 +43,9 @@ public enum WebPushCrypto {
         case authenticationFailed
         /// RFC 8188 padding: the last record must end in 0x02 then zeros.
         case badPadding
+        /// The header's record size is below RFC 8188's minimum, or smaller than the record:
+        /// a push is one record, and the server's http_ece refuses either.
+        case badRecordSize
     }
 
     public static func decrypt(_ body: Data, keys: WebPushKeys) throws -> Data {
@@ -51,6 +54,7 @@ public enum WebPushCrypto {
         // keyid is the sender's ephemeral public key.
         guard bytes.count >= 21 else { throw DecryptError.truncated }
         let salt = Data(bytes[0..<16])
+        let recordSize = bytes[16..<20].reduce(0) { $0 << 8 | Int($1) }
         let idlen = Int(bytes[20])
         guard idlen == 65 else { throw DecryptError.badSenderKey }
         let headerLength = 21 + idlen
@@ -61,6 +65,9 @@ public enum WebPushCrypto {
             throw DecryptError.badSenderKey
         }
         let record = Data(bytes[headerLength...])
+        // One record, ciphertext and 16-byte tag together, no bigger than `rs`; and `rs` at
+        // least 18 (a tag, a delimiter and a byte), as http_ece checks.
+        guard recordSize >= 18, record.count <= recordSize else { throw DecryptError.badRecordSize }
 
         // RFC 8291 §3.3–3.4: IKM = HKDF(auth_secret, ecdh_secret, "WebPush: info\0" ||
         // ua_public || as_public, 32).

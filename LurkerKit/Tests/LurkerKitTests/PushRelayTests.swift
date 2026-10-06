@@ -128,6 +128,18 @@ final class RelayNotificationTests: XCTestCase {
         }
     }
 
+    /// Collapsing matches a direct push's thread as well as a relayed one's tag.
+    func testANewPushReplacesItsBuffersEarlierOnes() {
+        let delivered = [
+            RelayNotification.Delivered(identifier: "direct", threadIdentifier: "3::bob", tag: nil),
+            RelayNotification.Delivered(identifier: "relayed", threadIdentifier: "3::bob", tag: "3::bob"),
+            RelayNotification.Delivered(identifier: "tag-only", threadIdentifier: "", tag: "3::bob"),
+            RelayNotification.Delivered(identifier: "other", threadIdentifier: "3::alice", tag: "3::alice"),
+        ]
+        XCTAssertEqual(RelayNotification.collapsing(delivered, tag: "3::bob"), ["direct", "relayed", "tag-only"])
+        XCTAssertEqual(RelayNotification.collapsing(delivered, tag: "9::nobody"), [])
+    }
+
     func testAnythingElseIsLeftAsThePlaceholder() {
         for json in [
             "not json", "[]", #"{"title":"t","tag":"x","target":"bob"}"#,
@@ -144,6 +156,13 @@ final class RelayNotificationTests: XCTestCase {
         )))
         XCTAssertEqual(n.networkId, 7)
         XCTAssertEqual(n.messageId, 12)
+    }
+
+    /// Bigger than any relayed APNs payload can be, so not from a server, however well-formed.
+    func testABodyTooBigToHaveComeThroughTheRelayIsRefused() {
+        let body = String(repeating: "a", count: 5000)
+        let json = #"{"title":"t","tag":"x","networkId":1,"target":"bob","body":"\#(body)"}"#
+        XCTAssertNil(RelayNotification.parse(Data(json.utf8)))
     }
 
     func testAMissingBadgeOrBodyIsFine() throws {

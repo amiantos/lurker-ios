@@ -17,10 +17,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Which APNs gateway issued our token, from how this build was actually signed: the
         // App Store and TestFlight strip the profile and are production; a build installed
         // from Xcode carries one that says (RELAY_PLAN.md §6.2).
+        // A simulator has no profile and gets sandbox tokens, so it's development.
+        #if targetEnvironment(simulator)
+        viewModel.apnsEnvironment = .development
+        #else
         viewModel.apnsEnvironment = ProvisioningProfile.apnsEnvironment(
             embeddedProfile: Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision")
                 .flatMap { try? Data(contentsOf: $0) }
         )
+        #endif
         // A Debug build may talk to a relay under development (LURKER_PUSH_RELAY_URL);
         // everything else trusts only push.lurker.chat.
         #if DEBUG

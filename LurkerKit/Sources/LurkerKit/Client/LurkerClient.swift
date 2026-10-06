@@ -1536,6 +1536,18 @@ final class LurkerClient {
         }
     }
 
+    /// Drop a relay subscription while signed in — when the route moves to direct APNs.
+    func deregisterWebPush(endpoint: String) async {
+        guard let token else { return }
+        await Self.deregisterWebPush(session: session, baseURL: baseURL, sessionToken: token, endpoint: endpoint)
+    }
+
+    /// Drop a direct APNs registration while signed in — when the route moves to the relay.
+    func deregisterDevice(token deviceToken: String) async {
+        guard let token else { return }
+        await Self.deregisterDevice(session: session, baseURL: baseURL, sessionToken: token, deviceToken: deviceToken)
+    }
+
     /// Drop this device's relay subscription — the Web Push twin of `deregisterDevice`, and
     /// called at the same moment, for the same reason.
     static func deregisterWebPush(

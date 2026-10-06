@@ -74,6 +74,8 @@ final class RoutedServer: @unchecked Sendable {
     struct Route {
         let status: Int
         let body: String
+        /// Hold the answer back this long, for a reply that lands after something else.
+        var delay: TimeInterval = 0
     }
 
     private(set) var url = ""
@@ -138,7 +140,9 @@ final class RoutedServer: @unchecked Sendable {
             } ?? Route(status: 404, body: "")
             let response = "HTTP/1.1 \(route.status) X\r\nContent-Type: application/json\r\n"
                 + "Content-Length: \(Data(route.body.utf8).count)\r\nConnection: close\r\n\r\n\(route.body)"
-            connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            DispatchQueue.global().asyncAfter(deadline: .now() + route.delay) {
+                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            }
         }
     }
 

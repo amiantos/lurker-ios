@@ -13,12 +13,16 @@ public protocol WebPushKeyStore: Sendable {
     func load() -> WebPushKeys?
     /// False when the keys weren't stored — the caller must not register them.
     func save(_ keys: WebPushKeys) -> Bool
+    /// Forget the keys, so the next registration makes new ones. Done at every sign-out: a
+    /// push for the old account still queued at APNs then can't be decrypted, and shows only
+    /// the relay's placeholder instead of the old account's message.
+    func delete()
 }
 
 extension WebPushKeyStore {
-    /// The device's keys, created and stored the first time they're asked for. Kept after
-    /// that, including across sign-outs: they belong to the device, not the account, and a
-    /// re-registration (or another account on the same phone) reuses them.
+    /// The device's keys, created and stored the first time they're asked for, and kept for
+    /// the rest of the session. A sign-out deletes them (`delete`), so the next account gets
+    /// new ones and the server's rebind replaces the stored public half.
     ///
     /// nil when new keys can't be stored and read back exactly. Registering keys the
     /// Notification Service Extension can't load would turn every push into the relay's
@@ -93,6 +97,10 @@ public final class KeychainWebPushKeyStore: WebPushKeyStore {
         let added = SecItemAdd(attributes as CFDictionary, nil)
         if added == errSecMissingEntitlement { Self.missingEntitlement(accessGroup) }
         return added == errSecSuccess
+    }
+
+    public func delete() {
+        SecItemDelete(baseQuery() as CFDictionary)
     }
 
     /// Loud on purpose: the target's entitlements don't list the group, which is a build

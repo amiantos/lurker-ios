@@ -46,6 +46,25 @@ final class WebPushCryptoTests: XCTestCase {
         }
     }
 
+    /// The test encryptor reproduces the server's bodies byte for byte, so tests built on it
+    /// stand in for real pushes.
+    func testTheTestEncryptorMatchesTheServer() throws {
+        struct Full: Decodable { let vectors: [V] }
+        struct V: Decodable { let name, plaintext, uaPublic, authSecret, asPrivate, salt, body: String }
+        let url = try XCTUnwrap(Bundle.module.url(forResource: "relayVectors", withExtension: "json"))
+        for v in try JSONDecoder().decode(Full.self, from: Data(contentsOf: url)).vectors {
+            let d = { (s: String) in try XCTUnwrap(WebPushCrypto.base64URLDecode(s)) }
+            let body = try WebPushTestEncryptor.encrypt(
+                Data(v.plaintext.utf8),
+                to: P256.KeyAgreement.PublicKey(x963Representation: d(v.uaPublic)),
+                authSecret: d(v.authSecret),
+                sender: P256.KeyAgreement.PrivateKey(rawRepresentation: d(v.asPrivate)),
+                salt: d(v.salt)
+            )
+            XCTAssertEqual(OAuth.base64URL(body), v.body, v.name)
+        }
+    }
+
     func testTheSubscriptionKeysAreThePublicHalfAndTheSecret() throws {
         for v in try Self.vectors() {
             let keys = try Self.keys(v)
@@ -94,6 +113,39 @@ final class WebPushCryptoTests: XCTestCase {
         body[21] = 0x05 // not the uncompressed-point prefix
         XCTAssertThrowsError(try WebPushCrypto.decrypt(body, keys: Self.keys(v))) {
             XCTAssertEqual($0 as? WebPushCrypto.DecryptError, .badSenderKey)
+        }
+    }
+
+    /// A push is one record no bigger than its declared size, and the size is at least 18.
+    func testTheRecordSizeIsEnforced() throws {
+        let v = try XCTUnwrap(Self.vectors().first { $0.name == "dm" })
+        let keys = try Self.keys(v)
+        let body = try Self.body(v)
+        let record = body.count - 86
+        for size in [0, 17, record - 1] {
+            var doctored = body
+            withUnsafeBytes(of: UInt32(size).bigEndian) { doctored.replaceSubrange(16..<20, with: $0) }
+            XCTAssertThrowsError(try WebPushCrypto.decrypt(doctored, keys: keys), "rs \(size)") {
+                XCTAssertEqual($0 as? WebPushCrypto.DecryptError, .badRecordSize)
+            }
+        }
+        // Exactly the record is fine — the size is a ceiling, not a match.
+        var exact = body
+        withUnsafeBytes(of: UInt32(record).bigEndian) { exact.replaceSubrange(16..<20, with: $0) }
+        XCTAssertNoThrow(try WebPushCrypto.decrypt(exact, keys: keys))
+    }
+
+    /// A hostile but properly encrypted body — the sender holds the keys — can't crash or hang
+    /// the extension: it decrypts, and the notification parse refuses it.
+    func testAHostileAuthenticatedPayloadIsRefusedCleanly() throws {
+        let keys = WebPushKeys.generate()
+        let nested = Data((String(repeating: "[", count: 2900) + String(repeating: "]", count: 2900)).utf8)
+        for payload in [nested, Data(repeating: 0x41, count: 8000)] {
+            let body = try WebPushTestEncryptor.encrypt(
+                payload, to: keys.privateKey.publicKey, authSecret: keys.authSecret, recordSize: 16384
+            )
+            let plaintext = try WebPushCrypto.decrypt(body, keys: keys)
+            XCTAssertNil(RelayNotification.parse(plaintext))
         }
     }
 
@@ -161,4 +213,5 @@ final class MemoryKeyStore: WebPushKeyStore, @unchecked Sendable {
         saves += 1
         return true
     }
+    func delete() { stored = nil }
 }

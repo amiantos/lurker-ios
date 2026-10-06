@@ -13,6 +13,9 @@ final class PushRelayViewModelTests: XCTestCase {
     private let serverKey =
         "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
     private let token = "ABCDEF0123456789"
+    /// Held for the whole test: a RoutedServer's deinit closes its listener, so one dropped by a
+    /// `let (model, _, _)` would refuse every request after setup.
+    private var servers: [RoutedServer] = []
 
     override func setUp() {
         super.setUp()
@@ -46,6 +49,7 @@ final class PushRelayViewModelTests: XCTestCase {
             "POST /api/push/devices": .init(status: 201, body: "{}"),
             "POST /api/auth/logout": .init(status: 200, body: #"{"ok":true}"#),
         ])
+        servers.append(server)
         let sessions = SessionStore(service: service)
         sessions.save(PersistedSession(server: server.url, token: "tok"))
         let model = ChatViewModel(
@@ -134,7 +138,6 @@ final class PushRelayViewModelTests: XCTestCase {
         XCTAssertNil(model.pushRoute)
         XCTAssertNil(model.pushConfig)
         XCTAssertNil(model.relayEndpoint)
-        withExtendedLifetime(server) {} // its deinit closes the listener
     }
 
     /// The admin can turn the relay on while the app is open; the next activation sees it.
@@ -161,6 +164,89 @@ final class PushRelayViewModelTests: XCTestCase {
         _ = await model.resolvePushRoute()
         XCTAssertEqual(seen.last, .unavailable)
         watching.cancel()
-        withExtendedLifetime(server) {} // its deinit closes the listener
+    }
+
+    // MARK: - Account isolation
+
+    /// A push for the signed-out account, still queued at APNs, can't be read by the next one.
+    func testSignOutRotatesTheKeysSoTheOldAccountsPushesCantBeRead() async throws {
+        let (model, server, keys) = try await signedIn()
+        _ = await model.registerPushDevice(token: token)
+        let old = try XCTUnwrap(keys.stored)
+        let queued = try WebPushTestEncryptor.encrypt(
+            Data(#"{"title":"old account","tag":"x","networkId":1,"target":"bob"}"#.utf8),
+            to: old.privateKey.publicKey, authSecret: old.authSecret
+        )
+        XCTAssertNoThrow(try WebPushCrypto.decrypt(queued, keys: old))
+        model.logout()
+        XCTAssertNil(keys.stored)
+        let next = try XCTUnwrap(keys.loadOrCreate())
+        XCTAssertNotEqual(next.p256dh, old.p256dh)
+        XCTAssertThrowsError(try WebPushCrypto.decrypt(queued, keys: next))
+    }
+
+    func testALostSessionRotatesTheKeysToo() async throws {
+        let (model, server, keys) = try await signedIn()
+        _ = await model.registerPushDevice(token: token)
+        XCTAssertNotNil(keys.stored)
+        model.handle(.unauthorized)
+        XCTAssertNil(keys.stored)
+    }
+
+    /// A reply from a session that has since ended changes nothing.
+    func testALate403FromTheLastSessionLeavesTheNextAlone() async throws {
+        let (model, server, _) = try await signedIn()
+        server.route("POST /api/push/subscriptions", .init(status: 403, body: "{}", delay: 0.5))
+        let registering = Task { await model.registerPushDevice(token: token) }
+        try await waitUntil { !self.requests(server, "POST /api/push/subscriptions").isEmpty }
+        model.logout()
+        let result = await registering.value
+        XCTAssertEqual(result, .unavailable)
+        XCTAssertNil(model.pushRoute, "the late 403 rewrote the route after sign-out")
+        XCTAssertNil(model.pushConfig)
+    }
+
+    // MARK: - Route switches
+
+    func testMovingFromTheRelayToDirectAPNsDropsTheRelaySubscription() async throws {
+        let (model, server, _) = try await signedIn()
+        _ = await model.registerPushDevice(token: token)
+        server.route("GET /api/push/config", config(apns: true))
+        _ = await model.resolvePushRoute()
+        let result = await model.registerPushDevice(token: token)
+        XCTAssertEqual(result, .registered)
+        let deleted = try XCTUnwrap(requests(server, "DELETE /api/push/subscriptions").first)
+        XCTAssertTrue(deleted.contains("relay-to"), deleted)
+        XCTAssertEqual(requests(server, "POST /api/push/devices").count, 1)
+        XCTAssertNil(model.relayEndpoint)
+    }
+
+    func testMovingFromDirectAPNsToTheRelayDropsTheDirectRegistration() async throws {
+        let (model, server, _) = try await signedIn(apns: true)
+        _ = await model.registerPushDevice(token: token)
+        XCTAssertEqual(requests(server, "POST /api/push/devices").count, 1)
+        server.route("GET /api/push/devices", .init(status: 200, body: "{}"))
+        server.route("DELETE /api/push/devices", .init(status: 200, body: #"{"ok":true}"#))
+        // A hosted answer is kept for the session; a new session on a relay server is the
+        // realistic switch, but the server changing its answer exercises the same path.
+        model.forgetPushConfigForTests()
+        server.route("GET /api/push/config", config(relay: true))
+        _ = await model.resolvePushRoute()
+        let result = await model.registerPushDevice(token: token)
+        XCTAssertEqual(result, .registered)
+        let deleted = try XCTUnwrap(requests(server, "DELETE /api/push/devices").first)
+        XCTAssertTrue(deleted.contains(token), deleted)
+        XCTAssertEqual(requests(server, "POST /api/push/subscriptions").count, 1)
+        XCTAssertNil(model.directToken)
+    }
+
+    /// The admin turned the relay off and on while the app was away: the server deleted the
+    /// subscription. iOS hands over the token on every activation, and each re-files it.
+    func testEveryActivationRefilesTheSubscription() async throws {
+        let (model, server, _) = try await signedIn()
+        _ = await model.registerPushDevice(token: token)
+        _ = await model.resolvePushRoute()
+        _ = await model.registerPushDevice(token: token)
+        XCTAssertEqual(requests(server, "POST /api/push/subscriptions").count, 2)
     }
 }
