@@ -3377,7 +3377,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             networkId: buffer.key.networkId,
             isBookmarked: message.map { viewModel.isBookmarked($0.id) } ?? false,
             target: buffer.key.target,
-            canReact: viewModel.state.canReact(networkId: buffer.key.networkId)
+            support: viewModel.state.tagSupport(networkId: buffer.key.networkId)
         )
         let subject = url.map(MessageActionsViewController.Subject.link)
             ?? message.map { .message($0, scope: scope) }
@@ -3492,16 +3492,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// DM, there's nobody to address: the tag is all it is, so it needs the network to carry one
     /// right now — re-checked here, at the tap, because the sheet was built before it.
     ///
-    /// ⚠ Unlike the web, a channel reply needs the tags to go out too before it's PENDING: the
-    /// strip says "Replying to alice", and on a network that can't carry the tag right now that
-    /// would be a promise the server then quietly breaks with a plain line. The address still
-    /// goes in, which is all a reply there can be.
+    /// ⚠ Unlike the web, a channel reply needs its tag to go out too (`canReply`) before it's
+    /// PENDING: the strip says "Replying to alice", and on a network that can't carry the tag right
+    /// now that would be a promise the server then quietly breaks with a plain line. The address
+    /// still goes in, which is all a reply there can be.
     private func reply(to message: Message) {
         guard let nick = message.nick, !nick.isEmpty else { return }
         let target = buffer.key.target
         let unaddressed = message.isSelf || Replies.isPrivate(target)
         let started = Replies.replyable(message, target: target)
-            && viewModel.state.canReact(networkId: buffer.key.networkId)
+            && viewModel.state.canReply(networkId: buffer.key.networkId)
         // Reply again to the same author in a channel: the address in the draft is still the one
         // the first Reply put there, so a cancel may still take it back.
         let keepsAddress = started && !unaddressed && pendingReply?.addressed == true
@@ -3624,17 +3624,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 return viewModel.state.reactionGroups(for: message.id)
             },
             canToggle: { [weak self] message in
-                guard let self else { return false }
-                return Reactions.canSend(
-                    on: message, target: target,
-                    networkCanReact: viewModel.state.canReact(networkId: networkId))
+                // Once per row: the group already says whether it's ours.
+                let support = self?.viewModel.state.tagSupport(networkId: networkId) ?? .nothing
+                return { group in Reactions.canToggle(mine: group.mine, on: message, target: target, support: support) }
             },
             showsAdd: { message in Reactions.lineTakes(message, target: target) },
             onToggle: { [weak self] message, value in
                 guard let self else { return }
                 // The chip doesn't move until the network echoes it, so the tap is acknowledged
                 // here — and a send that went nowhere says so the same way, rather than nothing.
-                if viewModel.toggleReaction(messageId: message.id, value: value) {
+                if viewModel.toggleReaction(value, on: message, in: buffer.key) {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 } else {
                     UINotificationFeedbackGenerator().notificationOccurred(.error)

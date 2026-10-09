@@ -73,8 +73,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// Not `Reactions`: that's LurkerKit's rules type, and a nested one would shadow it here.
     struct ReactionChips {
         let groups: [ReactionGroup]
-        /// A reaction can go out on this line right now.
-        let canToggle: Bool
+        /// Tapping this chip can go out right now — see `ReactionContext.canToggle`.
+        let canToggle: (ReactionGroup) -> Bool
         /// The line is one we could ever react to from here (not a notice, not encrypted).
         let showsAdd: Bool
         let onToggle: (String) -> Void

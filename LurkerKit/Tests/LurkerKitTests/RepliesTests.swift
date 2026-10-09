@@ -131,29 +131,54 @@ final class RepliesTests: XCTestCase {
 
     // MARK: - Reply gate
 
-    private func replyTitle(_ message: Message, target: String, canReact: Bool) -> String? {
+    private func replyTitle(_ message: Message, target: String, support: TagSupport) -> String? {
         MessageActions.build(
             for: message,
-            scope: MessageActionScope(networkId: 1, isBookmarked: false, target: target, canReact: canReact)
+            scope: MessageActionScope(networkId: 1, isBookmarked: false, target: target, support: support)
         ).first { $0.key == .reply }?.title
     }
 
     func testChannelReplyIsAlwaysOffered() {
-        XCTAssertEqual(replyTitle(line(), target: "#c", canReact: false), "Reply to bob")
-        XCTAssertEqual(replyTitle(line(msgid: nil), target: "#c", canReact: false), "Reply to bob", "it still addresses them")
+        XCTAssertEqual(replyTitle(line(), target: "#c", support: .nothing), "Reply to bob")
+        XCTAssertEqual(replyTitle(line(msgid: nil), target: "#c", support: .nothing), "Reply to bob", "it still addresses them")
     }
 
     func testYourOwnLineIsTagOnly() {
-        XCTAssertEqual(replyTitle(line(isSelf: true), target: "#c", canReact: true), "Reply to yourself")
-        XCTAssertNil(replyTitle(line(isSelf: true), target: "#c", canReact: false))
-        XCTAssertNil(replyTitle(line(isSelf: true, msgid: nil), target: "#c", canReact: true))
+        XCTAssertEqual(replyTitle(line(isSelf: true), target: "#c", support: .all), "Reply to yourself")
+        XCTAssertNil(replyTitle(line(isSelf: true), target: "#c", support: .nothing))
+        XCTAssertNil(replyTitle(line(isSelf: true, msgid: nil), target: "#c", support: .all))
     }
 
     func testADmIsTagOnly() {
-        XCTAssertEqual(replyTitle(line(), target: "bob", canReact: true), "Reply to bob")
-        XCTAssertNil(replyTitle(line(), target: "bob", canReact: false))
-        XCTAssertNil(replyTitle(line(e2e: true), target: "bob", canReact: true))
-        XCTAssertNil(replyTitle(line(), target: "=bob", canReact: true), "a DCC chat carries no tags")
+        XCTAssertEqual(replyTitle(line(), target: "bob", support: .all), "Reply to bob")
+        XCTAssertNil(replyTitle(line(), target: "bob", support: .nothing))
+        XCTAssertNil(replyTitle(line(e2e: true), target: "bob", support: .all))
+        XCTAssertNil(replyTitle(line(), target: "=bob", support: .all), "a DCC chat carries no tags")
+    }
+
+    /// lurker#1101: the reply TAG is its own answer. irc.so carries it while refusing a reaction's
+    /// take-back — the old single `canReact` was false there, so iOS never sent a reply tag — and a
+    /// network that takes reactions but not the reply tag offers no tag-only reply.
+    func testATagOnlyReplyAsksCanReplyAlone() {
+        XCTAssertEqual(replyTitle(line(isSelf: true), target: "#c", support: .ircSo), "Reply to yourself")
+        XCTAssertEqual(replyTitle(line(), target: "bob", support: .ircSo), "Reply to bob")
+        let reactionsOnly = TagSupport(canAddReaction: true, canRemoveReaction: true, canReply: false)
+        XCTAssertNil(replyTitle(line(isSelf: true), target: "#c", support: reactionsOnly))
+        XCTAssertNil(replyTitle(line(), target: "bob", support: reactionsOnly))
+    }
+
+    /// The store's accessor is what the chat screen asks before a channel reply goes PENDING.
+    @MainActor
+    func testCanReplyFollowsItsOwnFlagAndTheLink() {
+        let store = LurkerStore()
+        store.apply(.socketOpen)
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
+                              globalIgnores: [], uploadLimits: .unstated))
+        XCTAssertFalse(store.state.canReply(networkId: 1), "nothing until the burst says so")
+        store.apply(.reactSupport(networkId: 1, support: .ircSo))
+        XCTAssertTrue(store.state.canReply(networkId: 1))
+        store.apply(.networkState(networkId: 1, state: .reconnecting, nick: nil))
+        XCTAssertFalse(store.state.canReply(networkId: 1))
     }
 
     func testReplyableNeedsAStampedConversationLine() {

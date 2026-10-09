@@ -71,26 +71,32 @@ final class ReactionRowView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Draw `groups`. `canToggle` is whether a reaction can go out on this line right now — off,
-    /// the chips still read normally (they're facts about the line) but a tap opens the sheet
-    /// instead of sending something the server would refuse in silence. `showsAdd` is off on
-    /// lines nobody can react to from here at all: a notice, an encrypted line.
-    func configure(groups: [ReactionGroup], canToggle: Bool, showsAdd: Bool, traits: UITraitCollection) {
+    /// Draw `groups`. `canToggle` is whether tapping a chip can go out right now — ours takes it
+    /// back, anyone else's adds ours, and a network can allow one and not the other (irc.so takes
+    /// a reaction but not a take-back, lurker#1101). Off, the chip still reads normally (it's a
+    /// fact about the line) but a tap opens the sheet, which says why, instead of sending
+    /// something the server would refuse in silence. `showsAdd` is off on lines nobody can react
+    /// to from here at all: a notice, an encrypted line.
+    func configure(
+        groups: [ReactionGroup], canToggle: (ReactionGroup) -> Bool, showsAdd: Bool, traits: UITraitCollection
+    ) {
         let font = MessageRenderer.compactFont(compatibleWith: traits)
         for chip in chips { chip.removeFromSuperview() }
         chips = groups.map { group in
             let chip = UIButton(type: .custom)
             chip.configuration = Self.chipConfiguration(group: group, font: font, traits: traits)
             let value = group.value
+            let works = canToggle(group)
             chip.addAction(UIAction { [weak self] _ in
                 guard let self else { return }
-                if canToggle { onToggle?(value) } else { onOpen?() }
+                if works { onToggle?(value) } else { onOpen?() }
             }, for: .touchUpInside)
             chip.accessibilityLabel = Self.spoken(group)
             chip.accessibilityTraits = group.mine ? [.button, .selected] : .button
-            chip.accessibilityHint = canToggle
+            // A chip that can't toggle opens the sheet, so say that rather than nothing.
+            chip.accessibilityHint = works
                 ? (group.mine ? "Takes your reaction back." : "Adds your reaction.")
-                : nil
+                : "Shows who reacted."
             addSubview(chip)
             return chip
         }
