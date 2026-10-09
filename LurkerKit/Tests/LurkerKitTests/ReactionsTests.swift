@@ -249,8 +249,8 @@ final class ReactionsTests: XCTestCase {
     }
 
     private func answers(_ store: LurkerStore, _ networkId: Int? = 1) -> [Bool] {
-        [store.state.canAddReaction(networkId: networkId), store.state.canRemoveReaction(networkId: networkId),
-         store.state.canReply(networkId: networkId)]
+        let support = store.state.tagSupport(networkId: networkId)
+        return [support.canAddReaction, support.canRemoveReaction, store.state.canReply(networkId: networkId)]
     }
 
     func testTagSupportNeedsTheFlagsAndALiveLink() {
@@ -339,6 +339,42 @@ final class ReactionsTests: XCTestCase {
     private func reactSupport1(_ fields: String) -> ServerFrame {
         FrameParser.parseWs(
             #"{"kind":"irc","type":"react-support","networkId":1,"target":":server:1""# + fields + "}")
+    }
+
+    /// `ChatViewModel.toggleReaction` is the last gate before the socket: a take-back the network
+    /// refuses never goes out, nor does anything while the link is down — and adding still does.
+    func testTheSendItselfRefusesWhatTheNetworkWould() {
+        let model = ChatViewModel(
+            sessions: SessionStore(service: "chat.lurker.tests.reactions"),
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.reactions")!)
+        )
+        var sent: [String] = []
+        model.reactSeam = { id, value, remove in sent.append("\(id) \(value) \(remove ? "remove" : "add")"); return true }
+        model.handle(.socketOpen)
+        model.handle(.snapshot(
+            [NetworkSnapshot(id: 1, state: .connected, nick: "me",
+                             channels: [ChannelSnapshot(name: "#lurker", topic: nil, members: [])])],
+            globalIgnores: [], uploadLimits: .unstated
+        ))
+        model.handle(backlog([line(1, reactions: [MessageReaction(nick: "me", value: "👍", isSelf: true), party])]))
+        let key = BufferKey(networkId: 1, target: "#lurker")
+
+        model.handle(.reactSupport(networkId: 1, support: .ircSo))
+        XCTAssertFalse(model.toggleReaction("👍", on: line(1), in: key), "ours: a take-back irc.so refuses")
+        XCTAssertTrue(model.toggleReaction("🎉", on: line(1), in: key))
+        XCTAssertTrue(model.toggleReaction("😂", on: line(1), in: key))
+        XCTAssertEqual(sent, ["1 🎉 add", "1 😂 add"])
+
+        sent = []
+        model.handle(.reactSupport(networkId: 1, support: .all))
+        XCTAssertTrue(model.toggleReaction("👍", on: line(1), in: key))
+        XCTAssertEqual(sent, ["1 👍 remove"])
+
+        sent = []
+        model.handle(.networkState(networkId: 1, state: .reconnecting, nick: nil))
+        XCTAssertFalse(model.toggleReaction("😂", on: line(1), in: key), "the link is down")
+        XCTAssertFalse(model.toggleReaction("👍", on: line(1), in: key))
+        XCTAssertEqual(sent, [])
     }
 
     func testTheLineStillHasToTakeOne() {

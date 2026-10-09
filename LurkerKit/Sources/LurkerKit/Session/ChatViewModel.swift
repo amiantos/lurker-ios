@@ -860,9 +860,17 @@ public final class ChatViewModel {
         guard Reactions.isValidValue(value),
               state.canToggleReaction(value, on: message, target: key.target, networkId: key.networkId)
         else { return false }
-        return client.react(
-            messageId: message.id, value: value, remove: state.isOwnReaction(value, messageId: message.id))
+        return sendReact(message.id, value, remove: state.isOwnReaction(value, messageId: message.id))
     }
+
+    /// Every reaction's way onto the socket — through `reactSeam` when a test has set one.
+    private func sendReact(_ messageId: Int, _ value: String, remove: Bool) -> Bool {
+        if let reactSeam { return reactSeam(messageId, value, remove) }
+        return client.react(messageId: messageId, value: value, remove: remove)
+    }
+
+    /// Test seam: stands in for the socket a `react` verb goes out on — message id, value, remove.
+    var reactSeam: ((Int, String, Bool) -> Bool)?
 
     /// Upload a prepared file and return the stored object's URL for the composer to paste
     /// (#14). The caller has already picked the file and — for video — compressed it to fit
@@ -1310,7 +1318,7 @@ public final class ChatViewModel {
     /// is silence there too, the same as a tap on the sheet.
     private func react(_ value: String, in key: BufferKey) {
         let state = store.state
-        guard state.canAddReaction(networkId: key.networkId), Reactions.isConversation(key.target) else {
+        guard state.tagSupport(networkId: key.networkId).canAddReaction, Reactions.isConversation(key.target) else {
             store.appendLocal(key, text: "this network can't carry reactions right now")
             return
         }
@@ -1328,7 +1336,7 @@ public final class ChatViewModel {
                 store.appendLocal(key, text: "you already reacted \(value) to \(line.nick ?? "that")")
                 return
             }
-            if !client.react(messageId: line.id, value: value, remove: false) {
+            if !sendReact(line.id, value, remove: false) {
                 store.appendLocal(key, text: "not connected — the reaction wasn't sent")
             }
         }

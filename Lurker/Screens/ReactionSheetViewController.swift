@@ -43,6 +43,12 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     private let offline = UILabel()
     /// Under the standing reactions, when one of ours is there and the network won't take it back.
     private let noTakeBack = UILabel()
+    /// What the last render found, so every control — and the footnote — reads one answer: whether
+    /// a new reaction can go out on this line, whether one of ours can come back off, and which
+    /// values are ours.
+    private var canAdd = false
+    private var canRemove = false
+    private var mineValues: Set<String> = []
 
     private static let detent = UISheetPresentationController.Detent.Identifier("reactions")
 
@@ -195,17 +201,18 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     }
 
     private func render(_ state: ChatState) {
-        // Adding is what the picks and the field are for; whether each one works — ours may not
-        // come back off on this network — is asked per value (`works`).
-        let canAdd = Reactions.canSend(
-            on: message, target: target, support: state.tagSupport(networkId: networkId))
+        // Resolved once: adding is what the picks and the field are for, and a value of ours is a
+        // take-back, which the network may refuse where it takes a new one (`works`).
+        let support = state.tagSupport(networkId: networkId)
+        canAdd = Reactions.canToggle(mine: false, on: message, target: target, support: support)
+        canRemove = Reactions.canToggle(mine: true, on: message, target: target, support: support)
         let groups = state.reactionGroups(for: message.id)
-        let mine = Set(groups.filter(\.mine).map(\.value))
+        mineValues = Set(groups.filter(\.mine).map(\.value))
 
         quickRow.isHidden = !canAdd
         fieldRow.isHidden = !canAdd
         offline.isHidden = canAdd
-        noTakeBack.isHidden = !canAdd || mine.allSatisfy { works($0, state) }
+        noTakeBack.isHidden = !canAdd || canRemove || mineValues.isEmpty
         // Blame the right thing: a notice or an encrypted line can't take one on any network, and
         // sending someone off to look for a connection problem there would be a wild goose chase.
         offline.text = Reactions.lineTakes(message, target: target)
@@ -218,23 +225,22 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         let half = (Reactions.quickPicks.count + 1) / 2
         for (index, value) in Reactions.quickPicks.enumerated() {
             (index < half ? quickTop : quickBottom).addArrangedSubview(
-                quickButton(value, mine: mine.contains(value), works: works(value, state)))
+                quickButton(value, mine: mineValues.contains(value), works: works(value)))
         }
 
         standingTitle.isHidden = groups.isEmpty
         for view in standingStack.arrangedSubviews { view.removeFromSuperview() }
         for group in groups {
-            standingStack.addArrangedSubview(standingRow(group, works: works(group.value, state)))
+            standingStack.addArrangedSubview(standingRow(group, works: works(group.value)))
         }
-        reactButton.isEnabled = typedWorks(state)
+        if canAdd { updateField() }
         view.setNeedsLayout()
     }
 
-    /// Whether choosing `value` would go out now: ours takes it back, anything else adds ours, and
-    /// a network can allow one and not the other. The store's one rule, so the sheet can't offer
-    /// what the send would refuse.
-    private func works(_ value: String, _ state: ChatState) -> Bool {
-        state.canToggleReaction(value, on: message, target: target, networkId: networkId)
+    /// Whether choosing `value` would go out, as of the last render: ours takes it back, anything
+    /// else adds ours (`Reactions.canToggle`, resolved in `render`).
+    private func works(_ value: String) -> Bool {
+        mineValues.contains(value) ? canRemove : canAdd
     }
 
     private func quickButton(_ value: String, mine: Bool, works: Bool) -> UIButton {
@@ -304,19 +310,21 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     }
 
     private func typedChanged() {
-        let value = typedValue
-        let tooLong = !value.isEmpty && !Reactions.isValidValue(value)
-        problem.text = "That's longer than a reaction can be."
-        problem.isHidden = !tooLong
-        reactButton.isEnabled = typedWorks(viewModel.state)
+        updateField()
         view.setNeedsLayout()
     }
 
-    /// The field holds a reaction that can go out — which, typed to match one of ours, is a
-    /// take-back the network may refuse.
-    private func typedWorks(_ state: ChatState) -> Bool {
+    /// The React button and the line under the field, for what's typed. A value that matches one
+    /// of ours is a take-back, which the network may refuse — said here, where the keyboard can't
+    /// hide it, rather than only in the footnote under the standing list.
+    private func updateField() {
         let value = typedValue
-        return Reactions.isValidValue(value) && works(value, state)
+        let valid = Reactions.isValidValue(value)
+        let tooLong = !value.isEmpty && !valid
+        let refused = valid && !works(value)
+        problem.text = tooLong ? "That's longer than a reaction can be." : "This network can't take a reaction back."
+        problem.isHidden = !(tooLong || refused)
+        reactButton.isEnabled = valid && !refused
     }
 
     private func submitTyped() {
@@ -333,7 +341,9 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     /// Toggle `value` and close. Re-checked against the store at the tap rather than trusted from
     /// whenever the buttons were drawn: the network may have dropped since.
     private func choose(_ value: String) {
-        guard !hasChosen, works(value, viewModel.state), Reactions.isValidValue(value) else { return }
+        guard !hasChosen, Reactions.isValidValue(value),
+              viewModel.state.canToggleReaction(value, on: message, target: target, networkId: networkId)
+        else { return }
         guard viewModel.toggleReaction(value, on: message, in: BufferKey(networkId: networkId, target: target)) else {
             // Nothing went out — no socket. Say so and stay, rather than closing on a reaction
             // that will never appear.

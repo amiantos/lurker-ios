@@ -93,9 +93,10 @@ final class ReactionRowView: UIView {
             }, for: .touchUpInside)
             chip.accessibilityLabel = Self.spoken(group)
             chip.accessibilityTraits = group.mine ? [.button, .selected] : .button
+            // A chip that can't toggle opens the sheet, so say that rather than nothing.
             chip.accessibilityHint = works
                 ? (group.mine ? "Takes your reaction back." : "Adds your reaction.")
-                : nil
+                : "Shows who reacted."
             addSubview(chip)
             return chip
         }

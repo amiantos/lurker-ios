@@ -706,7 +706,8 @@ public struct ChatState: Sendable {
 
     /// Which tags can go out on this network right now: it's connected and its last registration
     /// said so (§5.1). `.nothing` otherwise. Each answer is its own — irc.so takes a reaction and a
-    /// reply's tag but not a take-back (lurker#1101) — so ask the accessor for the one you mean.
+    /// reply's tag but not a take-back (lurker#1101) — so read the field you mean. Resolve it once
+    /// for everything drawn together (a row's chips, the sheet), not per control.
     ///
     /// ⚠ Our own socket first, like `presence`: while it's down `network.state` is whatever the
     /// last snapshot said, and nothing we send goes anywhere.
@@ -719,21 +720,15 @@ public struct ChatState: Sendable {
     /// reply a reply rather than a plain line.
     public func canReply(networkId: Int?) -> Bool { tagSupport(networkId: networkId).canReply }
 
-    /// Whether a new reaction can go out on this network right now.
-    public func canAddReaction(networkId: Int?) -> Bool { tagSupport(networkId: networkId).canAddReaction }
-
-    /// Whether one of our reactions can be taken back on this network right now.
-    public func canRemoveReaction(networkId: Int?) -> Bool { tagSupport(networkId: networkId).canRemoveReaction }
-
     /// Whether we've reacted `value` to this line — what makes choosing it a take-back.
     public func isOwnReaction(_ value: String, messageId: Int) -> Bool {
         (reactions[messageId] ?? []).contains { $0.isSelf && $0.value == value }
     }
 
     /// Whether choosing `value` on `message` (in `target`, on `networkId`) would do anything right
-    /// now — the one decision behind every chip, the sheet's rows and picks, its field, and the
-    /// send itself (`ChatViewModel.toggleReaction`), so none of them offers what the server would
-    /// refuse in silence. See `Reactions.canToggle`.
+    /// now — `Reactions.canToggle` for a caller that doesn't already know whether the value is
+    /// ours: the send itself (`ChatViewModel.toggleReaction`) and a tap re-checked against the
+    /// store. Where a `ReactionGroup` is in hand, ask `Reactions.canToggle` with its `mine`.
     public func canToggleReaction(_ value: String, on message: Message, target: String, networkId: Int?) -> Bool {
         Reactions.canToggle(
             mine: isOwnReaction(value, messageId: message.id), on: message, target: target,

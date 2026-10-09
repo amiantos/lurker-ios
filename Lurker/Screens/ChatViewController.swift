@@ -3623,10 +3623,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 guard let self, Reactions.canCarry(message, networkId: networkId) else { return [] }
                 return viewModel.state.reactionGroups(for: message.id)
             },
-            canToggle: { [weak self] message, group in
-                guard let self else { return false }
-                return viewModel.state.canToggleReaction(
-                    group.value, on: message, target: target, networkId: networkId)
+            canToggle: { [weak self] message in
+                // Once per row: the group already says whether it's ours.
+                let support = self?.viewModel.state.tagSupport(networkId: networkId) ?? .nothing
+                return { group in Reactions.canToggle(mine: group.mine, on: message, target: target, support: support) }
             },
             showsAdd: { message in Reactions.lineTakes(message, target: target) },
             onToggle: { [weak self] message, value in

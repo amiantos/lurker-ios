@@ -66,9 +66,10 @@ struct MessageListContext {
 /// the store once per drawn row and not per loaded one.
 struct ReactionContext {
     let groups: (Message) -> [ReactionGroup]
-    /// Whether tapping this chip can go out now — ours takes it back, anyone else's adds ours, and
-    /// a network can allow one and not the other (`ChatState.canToggleReaction`, lurker#1101).
-    let canToggle: (Message, ReactionGroup) -> Bool
+    /// Whether tapping each of a line's chips can go out now — ours takes it back, anyone else's
+    /// adds ours, and a network can allow one and not the other (`Reactions.canToggle`,
+    /// lurker#1101). Asked once per row, which resolves what the network takes once for its chips.
+    let canToggle: (Message) -> (ReactionGroup) -> Bool
     /// Whether the line could ever take a reaction from here — a notice or an encrypted line
     /// shows its chips but offers no add chip.
     let showsAdd: (Message) -> Bool
@@ -296,7 +297,7 @@ struct MessageListRenderer {
         guard !groups.isEmpty else { return nil }
         return CompactCell.ReactionChips(
             groups: groups,
-            canToggle: { [canToggle = reactions.canToggle] group in canToggle(message, group) },
+            canToggle: reactions.canToggle(message),
             showsAdd: reactions.showsAdd(message),
             onToggle: { [onToggle = reactions.onToggle] value in onToggle(message, value) },
             onOpen: { [onOpen = reactions.onOpen] in onOpen(message) },
