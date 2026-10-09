@@ -120,7 +120,7 @@ public enum Reactions {
 
     /// Whether choosing a value on `message` would do anything: one of ours (`mine`) takes it back,
     /// which needs `canRemoveReaction`; anything else adds ours, which needs `canAddReaction`. A
-    /// network can allow the first and deny the second — irc.so's UnrealIRCd does (lurker#1101) —
+    /// network can allow adding one and deny the take-back — irc.so's UnrealIRCd does (lurker#1101) —
     /// and the server refuses a take-back there in silence. Every entry point asks this, through
     /// `ChatState.canToggleReaction`, so none offers what the send would lose.
     public static func canToggle(mine: Bool, on message: Message, target: String, support: TagSupport) -> Bool {
