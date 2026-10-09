@@ -463,7 +463,7 @@ enum FrameParser {
                 pinned: (network["pinned"] as? [String]) ?? [],
                 dccChats: nonEmptyStrings(network["dccChats"]),
                 dccChatOffers: nonEmptyStrings(network["dccChatOffers"]),
-                canReact: network.bool("canReact"),
+                tagSupport: tagSupport(network),
                 modeSpec: parseModeSpec(network["modeSpec"])
             )
         }
@@ -472,6 +472,22 @@ enum FrameParser {
             globalIgnores: obj.objects("globalIgnores").map(parseIgnoreRule),
             uploadLimits: advertisedUploadLimits(obj),
             cursor: obj.intOrNull("cursor")
+        )
+    }
+
+    /// The `canReact` family off a snapshot entry or a `react-support` frame (§5.1, lurker#1101).
+    ///
+    /// ⚠ Absent is not false. A server that predates the split sends only `canReact`, and then it
+    /// covers all three; one that sends the split means `canReact` as "both reaction directions"
+    /// (= `canRemoveReaction`), which is never the answer for adding one or for a reply's tag —
+    /// irc.so allows those and denies the take-back. So each field falls back to `canReact` only
+    /// when the key isn't there.
+    static func tagSupport(_ obj: [String: Any]) -> TagSupport {
+        let legacy = obj.bool("canReact")
+        return TagSupport(
+            canAddReaction: obj.bool("canAddReaction", legacy),
+            canRemoveReaction: obj.bool("canRemoveReaction", legacy),
+            canReply: obj.bool("canReply", legacy)
         )
     }
 
@@ -943,7 +959,7 @@ enum FrameParser {
         // `react-support` is network-scoped state on a `:server:<id>` carrier, like those above.
         if obj.string("type") == "react-support" {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }
-            return .reactSupport(networkId: networkId, canReact: obj.bool("canReact"))
+            return .reactSupport(networkId: networkId, support: tagSupport(obj))
         }
         // …and so is `mode-spec`. Below the guard it would land in the server log as a line with
         // no text, and the channel settings would wait forever for a vocabulary that came.

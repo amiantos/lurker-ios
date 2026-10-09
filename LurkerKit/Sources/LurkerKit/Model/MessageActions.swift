@@ -34,14 +34,14 @@ public struct MessageActionScope: Equatable, Sendable {
     public let isBookmarked: Bool
     /// The buffer's target — whether it's a conversation a tag can ride to (`Reactions.isConversation`).
     public let target: String
-    /// `ChatState.canReact(networkId:)` at the press: the network is up and takes the tags.
-    public let canReact: Bool
+    /// `ChatState.tagSupport(networkId:)` at the press: which tags the network takes right now.
+    public let support: TagSupport
 
-    public init(networkId: Int?, isBookmarked: Bool, target: String = "", canReact: Bool = false) {
+    public init(networkId: Int?, isBookmarked: Bool, target: String = "", support: TagSupport = .nothing) {
         self.networkId = networkId
         self.isBookmarked = isBookmarked
         self.target = target
-        self.canReact = canReact
+        self.support = support
     }
 }
 
@@ -151,14 +151,15 @@ public enum MessageActions {
         // and the address is what a line without its reply tag still says. On your own line ("to
         // clarify what I said above", lurker#997) or in a DM (lurker#1015) there's no address, so
         // the reply TAG is all it is, and it's offered only where one would go out: a line the
-        // server stamped, on a network that takes the tags right now. The web's rule.
+        // server stamped, on a network that carries a reply's tag right now (`canReply` — not
+        // `canAddReaction`: irc.so takes the reply tag without echo-message). The web's rule.
         if message.type.isSpeech, let nick = message.nick, !nick.isEmpty {
             let unaddressed = message.isSelf || Replies.isPrivate(scope.target)
             if !unaddressed {
                 actions.append(
                     MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
                 )
-            } else if scope.canReact, Replies.replyable(message, target: scope.target) {
+            } else if scope.support.canReply, Replies.replyable(message, target: scope.target) {
                 actions.append(MessageAction(
                     key: .reply,
                     title: message.isSelf ? "Reply to yourself" : "Reply to \(nick)",
@@ -168,11 +169,11 @@ public enum MessageActions {
         }
 
         // React (iOS #183): a reaction names the line's msgid, so it needs a line the server
-        // stamped, in a conversation, not encrypted, on a network that takes the tags right now.
+        // stamped, in a conversation, not encrypted, on a network that takes a new one right now.
         // Not a notice — the server refuses those (`reactionSendTarget`). It re-checks all of it
         // and refuses in silence, which is exactly why the row isn't offered where it could only
         // do nothing.
-        if Reactions.canSend(on: message, target: scope.target, networkCanReact: scope.canReact) {
+        if Reactions.canSend(on: message, target: scope.target, support: scope.support) {
             actions.append(MessageAction(key: .react, title: "React", symbol: "face.smiling"))
         }
 

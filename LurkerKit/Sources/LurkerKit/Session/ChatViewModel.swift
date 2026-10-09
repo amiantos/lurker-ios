@@ -845,17 +845,23 @@ public final class ChatViewModel {
     /// - airplane mode flips `reachable` while the old socket still reads `.connected`.
     private var canWrite: Bool { store.state.socketWritable }
 
-    /// React with `value` on a line, or take ours back when it's already there (iOS #183).
+    /// React with `value` on a line in `key`'s buffer, or take ours back when it's already there
+    /// (iOS #183).
     ///
     /// The direction comes from the store as it stands, like the web's `toggle`: a chip is drawn
     /// from the same map, so tapping a lit one takes it back. Never optimistic — the network's
     /// echo is what lights a reaction up (see `LurkerClient.react`). False when the value can't
-    /// go out at all or there's no socket to carry it.
+    /// go out at all — the line or the network can't take it in that direction
+    /// (`ChatState.canToggleReaction`: irc.so refuses a take-back, lurker#1101) — or there's no
+    /// socket to carry it.
     @discardableResult
-    public func toggleReaction(messageId: Int, value: String) -> Bool {
-        guard messageId != 0, Reactions.isValidValue(value) else { return false }
-        let mine = (state.reactions[messageId] ?? []).contains { $0.isSelf && $0.value == value }
-        return client.react(messageId: messageId, value: value, remove: mine)
+    public func toggleReaction(_ value: String, on message: Message, in key: BufferKey) -> Bool {
+        let state = store.state
+        guard Reactions.isValidValue(value),
+              state.canToggleReaction(value, on: message, target: key.target, networkId: key.networkId)
+        else { return false }
+        return client.react(
+            messageId: message.id, value: value, remove: state.isOwnReaction(value, messageId: message.id))
     }
 
     /// Upload a prepared file and return the stored object's URL for the composer to paste
@@ -1304,7 +1310,7 @@ public final class ChatViewModel {
     /// is silence there too, the same as a tap on the sheet.
     private func react(_ value: String, in key: BufferKey) {
         let state = store.state
-        guard state.canReact(networkId: key.networkId), Reactions.isConversation(key.target) else {
+        guard state.canAddReaction(networkId: key.networkId), Reactions.isConversation(key.target) else {
             store.appendLocal(key, text: "this network can't carry reactions right now")
             return
         }
@@ -1318,7 +1324,7 @@ public final class ChatViewModel {
         case .failure(let refusal):
             store.appendLocal(key, text: refusal.text)
         case .success(let line):
-            if (state.reactions[line.id] ?? []).contains(where: { $0.isSelf && $0.value == value }) {
+            if state.isOwnReaction(value, messageId: line.id) {
                 store.appendLocal(key, text: "you already reacted \(value) to \(line.nick ?? "that")")
                 return
             }

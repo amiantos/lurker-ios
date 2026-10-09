@@ -10,7 +10,9 @@ import UIKit
 /// Who reacted with what (the only place a touch screen can see that: the web names them in a
 /// hover title), a row of quick picks, and a field for anything else — an emoji from the emoji
 /// keyboard, which the field opens on, or plain text like "lol", which the spec allows and IRC
-/// people actually use. Every choice toggles: picking a reaction you already gave takes it back.
+/// people actually use. Every choice toggles: picking a reaction you already gave takes it back —
+/// where the network allows that. irc.so takes a reaction but not a take-back (lurker#1101), so
+/// there your own are shown but can't be chosen, and the sheet says why.
 ///
 /// Live, unlike the message actions sheet: it watches the store, so a reaction landing while it's
 /// open shows up in the list instead of the sheet asserting an answer that has since moved.
@@ -39,6 +41,8 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     private let fieldRow = UIStackView()
     private let problem = UILabel()
     private let offline = UILabel()
+    /// Under the standing reactions, when one of ours is there and the network won't take it back.
+    private let noTakeBack = UILabel()
 
     private static let detent = UISheetPresentationController.Detent.Identifier("reactions")
 
@@ -148,12 +152,20 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         standingStack.axis = .vertical
         standingStack.spacing = 2
         stack.addArrangedSubview(standingStack)
+        stack.setCustomSpacing(6, after: standingStack)
+
+        noTakeBack.text = "This network can't take a reaction back."
+        noTakeBack.font = .preferredFont(forTextStyle: .footnote)
+        noTakeBack.adjustsFontForContentSizeCategory = true
+        noTakeBack.textColor = .secondaryLabel
+        noTakeBack.numberOfLines = 0
+        stack.addArrangedSubview(noTakeBack)
 
         render(viewModel.state)
         viewModel.statePublisher
             .removeDuplicates { [networkId, key = BufferKey(networkId: networkId, target: target)] old, new in
                 old.reactionsRevision(for: key) == new.reactionsRevision(for: key)
-                    && old.canReact(networkId: networkId) == new.canReact(networkId: networkId)
+                    && old.tagSupport(networkId: networkId) == new.tagSupport(networkId: networkId)
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.render(state) }
@@ -183,40 +195,49 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     }
 
     private func render(_ state: ChatState) {
-        let canReact = canSend(state)
+        // Adding is what the picks and the field are for; whether each one works — ours may not
+        // come back off on this network — is asked per value (`works`).
+        let canAdd = Reactions.canSend(
+            on: message, target: target, support: state.tagSupport(networkId: networkId))
         let groups = state.reactionGroups(for: message.id)
         let mine = Set(groups.filter(\.mine).map(\.value))
 
-        quickRow.isHidden = !canReact
-        fieldRow.isHidden = !canReact
-        offline.isHidden = canReact
+        quickRow.isHidden = !canAdd
+        fieldRow.isHidden = !canAdd
+        offline.isHidden = canAdd
+        noTakeBack.isHidden = !canAdd || mine.allSatisfy { works($0, state) }
         // Blame the right thing: a notice or an encrypted line can't take one on any network, and
         // sending someone off to look for a connection problem there would be a wild goose chase.
         offline.text = Reactions.lineTakes(message, target: target)
             ? "This network can't carry reactions right now."
             : "This line can't take reactions."
-        if !canReact { problem.isHidden = true; field.resignFirstResponder() }
+        if !canAdd { problem.isHidden = true; field.resignFirstResponder() }
         for row in [quickTop, quickBottom] {
             for view in row.arrangedSubviews { view.removeFromSuperview() }
         }
         let half = (Reactions.quickPicks.count + 1) / 2
         for (index, value) in Reactions.quickPicks.enumerated() {
-            (index < half ? quickTop : quickBottom).addArrangedSubview(quickButton(value, mine: mine.contains(value)))
+            (index < half ? quickTop : quickBottom).addArrangedSubview(
+                quickButton(value, mine: mine.contains(value), works: works(value, state)))
         }
 
         standingTitle.isHidden = groups.isEmpty
         for view in standingStack.arrangedSubviews { view.removeFromSuperview() }
         for group in groups {
-            standingStack.addArrangedSubview(standingRow(group, canReact: canReact))
+            standingStack.addArrangedSubview(standingRow(group, works: works(group.value, state)))
         }
+        reactButton.isEnabled = typedWorks(state)
         view.setNeedsLayout()
     }
 
-    private func canSend(_ state: ChatState) -> Bool {
-        Reactions.canSend(on: message, target: target, networkCanReact: state.canReact(networkId: networkId))
+    /// Whether choosing `value` would go out now: ours takes it back, anything else adds ours, and
+    /// a network can allow one and not the other. The store's one rule, so the sheet can't offer
+    /// what the send would refuse.
+    private func works(_ value: String, _ state: ChatState) -> Bool {
+        state.canToggleReaction(value, on: message, target: target, networkId: networkId)
     }
 
-    private func quickButton(_ value: String, mine: Bool) -> UIButton {
+    private func quickButton(_ value: String, mine: Bool, works: Bool) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.title = value
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
@@ -234,14 +255,18 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         button.accessibilityLabel = value
         button.accessibilityTraits = mine ? [.button, .selected] : .button
-        button.accessibilityHint = mine ? "Takes your reaction back." : nil
+        button.accessibilityHint = !works ? "This network can't take a reaction back."
+            : mine ? "Takes your reaction back." : nil
+        // Dimmed, not just disabled: an emoji title doesn't take the disabled tint.
+        button.isEnabled = works
+        button.alpha = works ? 1 : 0.4
         button.addAction(UIAction { [weak self] _ in self?.choose(value) }, for: .touchUpInside)
         return button
     }
 
     /// One standing reaction: the value — whole, wrapping, the one place a long text reaction is
-    /// shown in full — and everyone who gave it. Tapping it toggles yours.
-    private func standingRow(_ group: ReactionGroup, canReact: Bool) -> UIView {
+    /// shown in full — and everyone who gave it. Tapping it toggles yours, where that `works`.
+    private func standingRow(_ group: ReactionGroup, works: Bool) -> UIView {
         var config = UIButton.Configuration.plain()
         config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
         config.background.cornerRadius = 4
@@ -260,9 +285,10 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         config.titleAlignment = .leading
         let button = UIButton(configuration: config)
         button.contentHorizontalAlignment = .leading
-        button.isEnabled = canReact
+        button.isEnabled = works
         // Disabled reads as greyed out, which would make the list of who reacted look like an
-        // error. It's still information — only the tap is gone.
+        // error. It's still information — only the tap is gone (`noTakeBack` says why, when it's
+        // ours on a network that won't take it back).
         button.configurationUpdateHandler = { button in
             button.configuration?.attributedTitle = AttributedString(line)
         }
@@ -282,8 +308,15 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         let tooLong = !value.isEmpty && !Reactions.isValidValue(value)
         problem.text = "That's longer than a reaction can be."
         problem.isHidden = !tooLong
-        reactButton.isEnabled = !value.isEmpty && !tooLong
+        reactButton.isEnabled = typedWorks(viewModel.state)
         view.setNeedsLayout()
+    }
+
+    /// The field holds a reaction that can go out — which, typed to match one of ours, is a
+    /// take-back the network may refuse.
+    private func typedWorks(_ state: ChatState) -> Bool {
+        let value = typedValue
+        return Reactions.isValidValue(value) && works(value, state)
     }
 
     private func submitTyped() {
@@ -300,8 +333,8 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     /// Toggle `value` and close. Re-checked against the store at the tap rather than trusted from
     /// whenever the buttons were drawn: the network may have dropped since.
     private func choose(_ value: String) {
-        guard !hasChosen, canSend(viewModel.state), Reactions.isValidValue(value) else { return }
-        guard viewModel.toggleReaction(messageId: message.id, value: value) else {
+        guard !hasChosen, works(value, viewModel.state), Reactions.isValidValue(value) else { return }
+        guard viewModel.toggleReaction(value, on: message, in: BufferKey(networkId: networkId, target: target)) else {
             // Nothing went out — no socket. Say so and stay, rather than closing on a reaction
             // that will never appear.
             problem.text = "Not connected — try again in a moment."

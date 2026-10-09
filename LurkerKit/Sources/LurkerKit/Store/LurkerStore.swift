@@ -704,15 +704,41 @@ public struct ChatState: Sendable {
         return networks[networkId]?.state == .connected
     }
 
-    /// Whether a reaction — or a reply's tags — can go out on this network right now: it's
-    /// connected and its last registration said yes (§5.1). The server's own gate needs a reply
-    /// tag allowed too, so this is also the nearest signal for "a reply will carry its tag".
+    /// Which tags can go out on this network right now: it's connected and its last registration
+    /// said so (§5.1). `.nothing` otherwise. Each answer is its own — irc.so takes a reaction and a
+    /// reply's tag but not a take-back (lurker#1101) — so ask the accessor for the one you mean.
     ///
     /// ⚠ Our own socket first, like `presence`: while it's down `network.state` is whatever the
     /// last snapshot said, and nothing we send goes anywhere.
-    public func canReact(networkId: Int?) -> Bool {
-        guard canWrite(networkId: networkId), let networkId else { return false }
-        return networks[networkId]?.canReact == true
+    public func tagSupport(networkId: Int?) -> TagSupport {
+        guard canWrite(networkId: networkId), let networkId else { return .nothing }
+        return networks[networkId]?.tagSupport ?? .nothing
+    }
+
+    /// Whether a line sent with `replyTo` here right now carries its reply tag — what makes a
+    /// reply a reply rather than a plain line.
+    public func canReply(networkId: Int?) -> Bool { tagSupport(networkId: networkId).canReply }
+
+    /// Whether a new reaction can go out on this network right now.
+    public func canAddReaction(networkId: Int?) -> Bool { tagSupport(networkId: networkId).canAddReaction }
+
+    /// Whether one of our reactions can be taken back on this network right now.
+    public func canRemoveReaction(networkId: Int?) -> Bool { tagSupport(networkId: networkId).canRemoveReaction }
+
+    /// Whether we've reacted `value` to this line — what makes choosing it a take-back.
+    public func isOwnReaction(_ value: String, messageId: Int) -> Bool {
+        (reactions[messageId] ?? []).contains { $0.isSelf && $0.value == value }
+    }
+
+    /// Whether choosing `value` on `message` (in `target`, on `networkId`) would do anything right
+    /// now — the one decision behind every chip, the sheet's rows and picks, its field, and the
+    /// send itself (`ChatViewModel.toggleReaction`), so none of them offers what the server would
+    /// refuse in silence. See `Reactions.canToggle`.
+    public func canToggleReaction(_ value: String, on message: Message, target: String, networkId: Int?) -> Bool {
+        Reactions.canToggle(
+            mine: isOwnReaction(value, messageId: message.id), on: message, target: target,
+            support: tagSupport(networkId: networkId)
+        )
     }
 
     /// The newest lines of every loaded network buffer, for a `sync-reactions` after a resume:
@@ -1226,7 +1252,7 @@ final class LurkerStore {
                 // ends the server can't say what it allows (it re-announces `react-support`
                 // then). Holding the old answer would offer React on the strength of the last
                 // connection's CLIENTTAGDENY.
-                if connection != .connected { existing.canReact = false }
+                if connection != .connected { existing.tagSupport = .nothing }
                 // Same for the mode vocabulary: the next registration restates it once its
                 // burst ends, and until then the last link's answer is not this one's.
                 if connection != .connected { existing.modeSpec = nil }
@@ -1263,10 +1289,10 @@ final class LurkerStore {
             var next = state
             next.applyReactionsSync(messageIds: messageIds, found: found)
             return next
-        case .reactSupport(let networkId, let canReact):
+        case .reactSupport(let networkId, let support):
             // Never materializes a network: it describes one the snapshot already named.
             var next = state
-            next.networks[networkId]?.canReact = canReact
+            next.networks[networkId]?.tagSupport = support
             return next
         case .draftSnapshot(let entries):
             // Unprotected: what this device has unflushed is the view model's to know, and it
@@ -1710,7 +1736,7 @@ final class LurkerStore {
                 // to disappear here. Keeping the old value would leave a stale "away" divider
                 // in every buffer with no event able to retract it.
                 existing.away = snapshot.away
-                existing.canReact = snapshot.canReact
+                existing.tagSupport = snapshot.tagSupport
                 existing.modeSpec = snapshot.modeSpec
                 next.networks[snapshot.id] = existing
             } else {
@@ -1724,7 +1750,7 @@ final class LurkerStore {
                 // for a nil name and re-reads the roster.
                 next.networks[snapshot.id] = Network(
                     id: snapshot.id, name: nil, state: snapshot.state, nick: snapshot.nick,
-                    away: snapshot.away, canReact: snapshot.canReact, modeSpec: snapshot.modeSpec
+                    away: snapshot.away, tagSupport: snapshot.tagSupport, modeSpec: snapshot.modeSpec
                 )
             }
             for channel in snapshot.channels {

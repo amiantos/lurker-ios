@@ -4,6 +4,13 @@
 import XCTest
 @testable import LurkerKit
 
+/// The shapes a network's tag support comes in, shared by the reaction and reply tests.
+extension TagSupport {
+    static let all = TagSupport(canAddReaction: true, canRemoveReaction: true, canReply: true)
+    /// irc.so's UnrealIRCd (lurker#1101): `+draft/react` and `+reply` allowed, `+draft/unreact` not.
+    static let ircSo = TagSupport(canAddReaction: true, canRemoveReaction: false, canReply: true)
+}
+
 /// IRCv3 reactions (iOS #183): the wire, the side map, and the gates.
 @MainActor
 final class ReactionsTests: XCTestCase {
@@ -81,16 +88,42 @@ final class ReactionsTests: XCTestCase {
                        "with no id list it can't be authoritative about anything")
     }
 
-    func testReactSupportAndSnapshotCanReactParse() {
+    private func reactSupport(_ fields: String) -> ServerFrame {
+        FrameParser.parseWs(
+            #"{"kind":"irc","type":"react-support","networkId":3,"target":":server:3""# + fields + "}")
+    }
+
+    private func snapshotSupport(_ fields: String) -> TagSupport? {
+        let frame = FrameParser.parseWs(
+            #"{"kind":"snapshot","networks":[{"networkId":3,"state":"connected","nick":"me","channels":[]"#
+                + fields + "}]}")
+        guard case let .snapshot(networks, _, _, _) = frame else { XCTFail("\(frame)"); return nil }
+        return networks[0].tagSupport
+    }
+
+    /// lurker#1101: irc.so's shape — a reaction and a reply's tag, but no take-back. `canReact`
+    /// (both directions) is false there and must not drag the other two down with it.
+    func testTheSplitParsesOnBothCarriers() {
+        let ircSo = #","canReact":false,"canAddReaction":true,"canRemoveReaction":false,"canReply":true"#
+        XCTAssertEqual(reactSupport(ircSo), .reactSupport(networkId: 3, support: .ircSo))
+        XCTAssertEqual(snapshotSupport(ircSo), .ircSo)
+        let all = #","canReact":true,"canAddReaction":true,"canRemoveReaction":true,"canReply":true"#
+        XCTAssertEqual(reactSupport(all), .reactSupport(networkId: 3, support: .all))
+        XCTAssertEqual(snapshotSupport(all), .all)
+    }
+
+    /// An older server sends only `canReact`, and it stands for all three: absent is not false.
+    func testAnOldServersCanReactCoversAllThree() {
+        XCTAssertEqual(reactSupport(#","canReact":true"#), .reactSupport(networkId: 3, support: .all))
+        XCTAssertEqual(snapshotSupport(#","canReact":true"#), .all)
+        XCTAssertEqual(reactSupport(#","canReact":false"#), .reactSupport(networkId: 3, support: .nothing))
+        XCTAssertEqual(snapshotSupport(#","canReact":false"#), TagSupport.nothing)
+        XCTAssertEqual(reactSupport(""), .reactSupport(networkId: 3, support: .nothing), "nothing said is nothing allowed")
+        XCTAssertEqual(snapshotSupport(""), TagSupport.nothing)
+        // Each field falls back on its own: one present doesn't make the others false.
         XCTAssertEqual(
-            FrameParser.parseWs(##"{"kind":"irc","type":"react-support","networkId":3,"target":":server:3","canReact":true}"##),
-            .reactSupport(networkId: 3, canReact: true)
-        )
-        let snapshot = FrameParser.parseWs(
-            ##"{"kind":"snapshot","networks":[{"networkId":3,"state":"connected","nick":"me","channels":[],"canReact":true}]}"##
-        )
-        guard case let .snapshot(networks, _, _, _) = snapshot else { return XCTFail("\(snapshot)") }
-        XCTAssertTrue(networks[0].canReact)
+            snapshotSupport(#","canReact":true,"canRemoveReaction":false"#),
+            TagSupport(canAddReaction: true, canRemoveReaction: false, canReply: true))
     }
 
     // MARK: - Side map
@@ -204,37 +237,127 @@ final class ReactionsTests: XCTestCase {
         XCTAssertFalse(ids.contains(9999), "system lines are another id space")
     }
 
-    // MARK: - canReact
+    // MARK: - Tag support
 
-    func testCanReactNeedsTheFlagAndALiveLink() {
+    private func connectedStore(_ support: TagSupport? = nil) -> LurkerStore {
         let store = LurkerStore()
         store.apply(.socketOpen)
         store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])],
                               globalIgnores: [], uploadLimits: .unstated))
-        XCTAssertFalse(store.state.canReact(networkId: 1), "false until the burst says otherwise")
-        store.apply(.reactSupport(networkId: 1, canReact: true))
-        XCTAssertTrue(store.state.canReact(networkId: 1))
+        if let support { store.apply(.reactSupport(networkId: 1, support: support)) }
+        return store
+    }
 
-        // The link drops: whatever the last registration allowed is no answer now…
+    private func answers(_ store: LurkerStore, _ networkId: Int? = 1) -> [Bool] {
+        [store.state.canAddReaction(networkId: networkId), store.state.canRemoveReaction(networkId: networkId),
+         store.state.canReply(networkId: networkId)]
+    }
+
+    func testTagSupportNeedsTheFlagsAndALiveLink() {
+        let store = connectedStore()
+        XCTAssertEqual(answers(store), [false, false, false], "nothing until the burst says otherwise")
+        store.apply(.reactSupport(networkId: 1, support: .ircSo))
+        XCTAssertEqual(answers(store), [true, false, true], "each answer is its own")
+        store.apply(.reactSupport(networkId: 1, support: .all))
+        XCTAssertEqual(answers(store), [true, true, true])
+
+        // The link drops: whatever the last registration allowed is no answer now — all of it…
         store.apply(.networkState(networkId: 1, state: .reconnecting, nick: nil))
-        XCTAssertFalse(store.state.canReact(networkId: 1))
+        XCTAssertEqual(answers(store), [false, false, false])
+        XCTAssertEqual(store.state.networks[1]?.tagSupport, TagSupport.nothing, "reset, not just hidden")
         // …and coming back isn't one either until the new burst re-announces it.
         store.apply(.networkState(networkId: 1, state: .connected, nick: nil))
-        XCTAssertFalse(store.state.canReact(networkId: 1))
-        XCTAssertFalse(store.state.canReact(networkId: nil))
-        XCTAssertFalse(store.state.canReact(networkId: 99))
+        XCTAssertEqual(answers(store), [false, false, false])
+        XCTAssertEqual(answers(store, nil), [false, false, false])
+        XCTAssertEqual(answers(store, 99), [false, false, false])
     }
 
     /// While our own socket is down, the network's last-known state says nothing: whatever we
     /// send goes nowhere.
-    func testCanReactNeedsOurOwnSocket() {
+    func testTagSupportNeedsOurOwnSocket() {
         let store = LurkerStore()
         store.apply(.socketOpen)
-        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], canReact: true)],
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], tagSupport: .all)],
                               globalIgnores: [], uploadLimits: .unstated))
-        XCTAssertTrue(store.state.canReact(networkId: 1))
+        XCTAssertEqual(answers(store), [true, true, true])
         store.apply(.socketClosed(reason: nil, code: nil))
-        XCTAssertFalse(store.state.canReact(networkId: 1))
+        XCTAssertEqual(answers(store), [false, false, false])
+    }
+
+    /// A resume's snapshot lands on a network the store already holds: it replaces the answer.
+    func testASnapshotRestatesAKnownNetwork() {
+        let store = connectedStore(.all)
+        store.apply(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [], tagSupport: .ircSo)],
+                              globalIgnores: [], uploadLimits: .unstated))
+        XCTAssertEqual(answers(store), [true, false, true])
+    }
+
+    // MARK: - Toggle
+
+    /// Line 1 carries our 👍 and bob's 🎉.
+    private func toggleStore(_ support: TagSupport) -> LurkerStore {
+        let store = connectedStore(support)
+        store.apply(backlog([line(1, reactions: [MessageReaction(nick: "me", value: "👍", isSelf: true), party])]))
+        return store
+    }
+
+    private let party = MessageReaction(nick: "bob", value: "🎉", isSelf: false)
+
+    private func toggles(_ store: LurkerStore, _ value: String, on message: Message? = nil) -> Bool {
+        store.state.canToggleReaction(value, on: message ?? line(1), target: "#lurker", networkId: 1)
+    }
+
+    /// lurker#1101: on irc.so tapping our own chip would send a removal the server refuses in
+    /// silence; anyone else's chip, or a new value, adds ours, which works.
+    func testIrcSoRefusesOnlyTheTakeBack() {
+        let store = toggleStore(.ircSo)
+        XCTAssertFalse(toggles(store, "👍"), "ours — a take-back")
+        XCTAssertTrue(toggles(store, "🎉"), "bob's chip adds ours")
+        XCTAssertTrue(toggles(store, "😂"), "a new one")
+    }
+
+    func testBothDirectionsWhereTheNetworkTakesBoth() {
+        let store = toggleStore(.all)
+        XCTAssertTrue(toggles(store, "👍"))
+        XCTAssertTrue(toggles(store, "🎉"))
+        XCTAssertTrue(toggles(store, "😂"))
+    }
+
+    /// The old server's single flag, through the parser and the store, end to end.
+    func testAnOldServersFlagDecidesEveryToggle() {
+        let allowed = toggleStore(.nothing)
+        allowed.apply(reactSupport1(#","canReact":true"#))
+        XCTAssertEqual([toggles(allowed, "👍"), toggles(allowed, "🎉"), toggles(allowed, "😂")], [true, true, true])
+        XCTAssertTrue(allowed.state.canReply(networkId: 1))
+
+        let refused = toggleStore(.all)
+        refused.apply(reactSupport1(#","canReact":false"#))
+        XCTAssertEqual([toggles(refused, "👍"), toggles(refused, "🎉"), toggles(refused, "😂")], [false, false, false])
+        XCTAssertFalse(refused.state.canReply(networkId: 1))
+    }
+
+    private func reactSupport1(_ fields: String) -> ServerFrame {
+        FrameParser.parseWs(
+            #"{"kind":"irc","type":"react-support","networkId":1,"target":":server:1""# + fields + "}")
+    }
+
+    func testTheLineStillHasToTakeOne() {
+        let store = toggleStore(.all)
+        XCTAssertFalse(toggles(store, "😂", on: line(1, msgid: nil)))
+        XCTAssertFalse(toggles(store, "😂", on: line(1, type: .notice)))
+        XCTAssertFalse(store.state.canToggleReaction("😂", on: line(1), target: ":server:1", networkId: 1))
+    }
+
+    func testTheToggleRule() {
+        let ok = line(1)
+        XCTAssertTrue(Reactions.canToggle(mine: false, on: ok, target: "#lurker", support: .ircSo))
+        XCTAssertFalse(Reactions.canToggle(mine: true, on: ok, target: "#lurker", support: .ircSo))
+        XCTAssertTrue(Reactions.canToggle(mine: true, on: ok, target: "#lurker", support: .all))
+        XCTAssertFalse(Reactions.canToggle(mine: false, on: ok, target: "#lurker", support: .nothing))
+        // A reply tag alone carries no reaction.
+        XCTAssertFalse(Reactions.canToggle(
+            mine: false, on: ok, target: "#lurker",
+            support: TagSupport(canAddReaction: false, canRemoveReaction: false, canReply: true)))
     }
 
     /// ⚠⚠ Someone who takes the nick we reacted under is not us: their reaction is theirs, and
@@ -291,40 +414,42 @@ final class ReactionsTests: XCTestCase {
 
     func testSendGate() {
         let ok = line(1)
-        XCTAssertTrue(Reactions.canSend(on: ok, target: "#lurker", networkCanReact: true))
-        XCTAssertTrue(Reactions.canSend(on: ok, target: "bob", networkCanReact: true), "a DM")
-        XCTAssertTrue(Reactions.canSend(on: line(1, type: .action), target: "#lurker", networkCanReact: true))
-        XCTAssertFalse(Reactions.canSend(on: ok, target: "#lurker", networkCanReact: false))
-        XCTAssertFalse(Reactions.canSend(on: line(1, msgid: nil), target: "#lurker", networkCanReact: true))
-        XCTAssertFalse(Reactions.canSend(on: line(0), target: "#lurker", networkCanReact: true))
-        XCTAssertFalse(Reactions.canSend(on: line(1, isE2E: true), target: "#lurker", networkCanReact: true))
-        XCTAssertFalse(Reactions.canSend(on: line(1, type: .notice), target: "#lurker", networkCanReact: true))
-        XCTAssertFalse(Reactions.canSend(on: ok, target: ":server:1", networkCanReact: true))
-        XCTAssertFalse(Reactions.canSend(on: ok, target: "=bob", networkCanReact: true), "DCC chat")
+        XCTAssertTrue(Reactions.canSend(on: ok, target: "#lurker", support: .all))
+        XCTAssertTrue(Reactions.canSend(on: ok, target: "#lurker", support: .ircSo), "adding needs no take-back")
+        XCTAssertTrue(Reactions.canSend(on: ok, target: "bob", support: .all), "a DM")
+        XCTAssertTrue(Reactions.canSend(on: line(1, type: .action), target: "#lurker", support: .all))
+        XCTAssertFalse(Reactions.canSend(on: ok, target: "#lurker", support: .nothing))
+        XCTAssertFalse(Reactions.canSend(on: line(1, msgid: nil), target: "#lurker", support: .all))
+        XCTAssertFalse(Reactions.canSend(on: line(0), target: "#lurker", support: .all))
+        XCTAssertFalse(Reactions.canSend(on: line(1, isE2E: true), target: "#lurker", support: .all))
+        XCTAssertFalse(Reactions.canSend(on: line(1, type: .notice), target: "#lurker", support: .all))
+        XCTAssertFalse(Reactions.canSend(on: ok, target: ":server:1", support: .all))
+        XCTAssertFalse(Reactions.canSend(on: ok, target: "=bob", support: .all), "DCC chat")
     }
 
     func testReactActionFollowsTheSendGate() {
-        let keys = { (message: Message, canReact: Bool) in
+        let keys = { (message: Message, support: TagSupport) in
             MessageActions.build(
                 for: message,
-                scope: MessageActionScope(networkId: 1, isBookmarked: false, target: "#lurker", canReact: canReact)
+                scope: MessageActionScope(networkId: 1, isBookmarked: false, target: "#lurker", support: support)
             ).map(\.key)
         }
-        XCTAssertTrue(keys(line(1), true).contains(.react))
-        XCTAssertTrue(keys(line(1, isSelf: true), true).contains(.react), "you can react to your own line")
-        XCTAssertFalse(keys(line(1), false).contains(.react))
-        XCTAssertFalse(keys(line(1, type: .notice), true).contains(.react))
+        XCTAssertTrue(keys(line(1), .all).contains(.react))
+        XCTAssertTrue(keys(line(1), .ircSo).contains(.react), "irc.so takes a new reaction")
+        XCTAssertTrue(keys(line(1, isSelf: true), .all).contains(.react), "you can react to your own line")
+        XCTAssertFalse(keys(line(1), .nothing).contains(.react))
+        XCTAssertFalse(keys(line(1, type: .notice), .all).contains(.react))
 
         var reacted: Message?
         let context = MessageActionContext(
             reply: { _ in }, copy: { _ in }, setBookmark: { _, _ in }, showProfile: { _ in },
             react: { reacted = $0 }
         )
-        let scope = MessageActionScope(networkId: 1, isBookmarked: false, target: "#lurker", canReact: false)
+        let scope = MessageActionScope(networkId: 1, isBookmarked: false, target: "#lurker", support: .nothing)
         MessageActions.run(.react, on: line(1), scope: scope, context: context)
         XCTAssertNil(reacted, "not offered, so not run")
         MessageActions.run(.react, on: line(1), scope: MessageActionScope(
-            networkId: 1, isBookmarked: false, target: "#lurker", canReact: true), context: context)
+            networkId: 1, isBookmarked: false, target: "#lurker", support: .all), context: context)
         XCTAssertEqual(reacted?.id, 1)
     }
 }

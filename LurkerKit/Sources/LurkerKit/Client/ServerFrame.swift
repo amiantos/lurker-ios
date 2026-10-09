@@ -216,9 +216,9 @@ enum ServerFrame: Equatable, Sendable {
     /// authoritative — one absent from `reactions` has none standing now.
     case reactionsSync(messageIds: [Int], reactions: [Int: [MessageReaction]])
 
-    /// Live `react-support` (§7.2): whether reactions can go out on this network changed — the
-    /// burst ended (CLIENTTAGDENY rides a 005 after the snapshot), or a later 005 moved it.
-    case reactSupport(networkId: Int, canReact: Bool)
+    /// Live `react-support` (§7.2): which tags can go out on this network changed — the burst
+    /// ended (CLIENTTAGDENY rides a 005 after the snapshot), or a later 005 moved it.
+    case reactSupport(networkId: Int, support: TagSupport)
 
     /// WS `upload-progress`: how far along the server is with an upload *this* device is
     /// running (#47), correlated by the `progressToken` we put in the multipart body.
@@ -462,9 +462,9 @@ struct NetworkSnapshot: Equatable, Sendable {
     var dccChats: [String] = []
     /// Peers whose DCC chat offer to us still awaits an answer.
     var dccChatOffers: [String] = []
-    /// Whether reactions (and reply tags) can be sent on this network (§5.1). False until the
-    /// registration burst ends, then kept current by `react-support`.
-    var canReact = false
+    /// Which tags can be sent on this network — reactions, taking ours back, reply tags (§5.1).
+    /// None until the registration burst ends, then kept current by `react-support`.
+    var tagSupport = TagSupport.nothing
     /// The network's channel-mode vocabulary (§5.1). ⚠ Nil until the registration burst ends —
     /// "unknown", not the RFC defaults — then kept current by `mode-spec`.
     var modeSpec: ModeSpec?
