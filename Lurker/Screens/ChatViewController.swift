@@ -3005,8 +3005,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             showSearch(viewModel: viewModel, seed: scope)
         }
         let sheet = UINavigationController(rootViewController: info)
+        // Full height from the start, like Activity and the other views: no half-way stop.
         sheet.sheetPresentationController?.prefersGrabberVisible = true
-        sheet.sheetPresentationController?.detents = [.medium(), .large()]
         present(sheet, animated: true)
     }
 
