@@ -99,6 +99,15 @@ public struct Message: Equatable, Sendable {
     /// On an `error` line from a 421, the command the ircd didn't know (`FROBNICATE`). The line
     /// lands in the server log; this is what lets the buffer the command was typed in say so too.
     public let unknownCommand: String?
+    /// The server's "alert the user about this" verdict (wsHub `decorateMessage`): the
+    /// highlight/DM/always-notify union with the ignore and mute veto already folded in. The
+    /// three signals below say which kind it is, and so which `notifications.<kind>` toggle
+    /// governs it.
+    public let notify: Bool
+    public let dm: Bool
+    public let notifyAlways: Bool
+    /// A kick of us — only the server knows the nick we wore when it landed.
+    public let selfKicked: Bool
     /// The reply's quote as it should SHOW — set by `showingReply`, the one producer, from
     /// `Replies.shown`: nil on a reply means "original message unavailable" (gone, never held, or
     /// from someone ignored since). Meaningless on a line that isn't a reply.
@@ -144,7 +153,11 @@ public struct Message: Equatable, Sendable {
         reactions: [MessageReaction]? = nil,
         replyTo: ReplyContext? = nil,
         replyToSelf: Bool = false,
-        unknownCommand: String? = nil
+        unknownCommand: String? = nil,
+        notify: Bool = false,
+        dm: Bool = false,
+        notifyAlways: Bool = false,
+        selfKicked: Bool = false
     ) {
         self.id = id
         self.type = type
@@ -171,6 +184,10 @@ public struct Message: Equatable, Sendable {
         self.replyTo = replyTo
         self.replyToSelf = replyToSelf
         self.unknownCommand = unknownCommand
+        self.notify = notify
+        self.dm = dm
+        self.notifyAlways = notifyAlways
+        self.selfKicked = selfKicked
     }
 
     /// This line with its highlight taken off — what a `NOHIGHLIGHT` ignore rule leaves behind

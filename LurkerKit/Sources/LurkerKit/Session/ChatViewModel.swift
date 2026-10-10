@@ -77,6 +77,11 @@ public final class ChatViewModel {
     /// is never answered loses nothing. Not fired for a channel we're already in.
     public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
 
+    /// A live line the server says to alert about, with its kind's toggle on (see
+    /// `StatusNotification`). The app decides whether it's worth showing — not for the buffer
+    /// already on screen, not while backgrounded, where push has it.
+    public var onNotify: ((StatusNotification) -> Void)?
+
     /// Where each raw line this device sent was typed, and when, by network and verb, oldest
     /// first, until a 421 names that verb — see `noteUnknownCommand`. A queue rather than the
     /// latest send: `/foo` in #a then in #b answers twice, in that order, and each answer belongs
@@ -2229,6 +2234,14 @@ public final class ChatViewModel {
     /// Internal rather than private so a test can feed a frame through the same path the socket
     /// does.
     func handle(_ frame: ServerFrame) {
+        // Read before the store moves: a came-online is a transition, and after `apply` the prior
+        // state is gone.
+        let cameOnline = StatusNotification.cameOnline(frame, before: store.state)
+        // Likewise a repeat: after `apply` every line is one the store holds.
+        var repeatsLine = false
+        if case .live(let networkId, let target, let message) = frame {
+            repeatsLine = store.state.alreadyHolds(message, key: BufferKey(networkId: networkId, target: target).id)
+        }
         switch frame {
         case .settingsBootstrap, .settingsChanged, .settingsValues:
             store.apply(frame)
@@ -2405,8 +2418,16 @@ public final class ChatViewModel {
         case .live(let networkId, let target, let message):
             channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
             noteUnknownCommand(networkId: networkId, message)
+            // Not for a line already held — the store dropped it, and the alert went with it.
+            if !repeatsLine, let notification = StatusNotification.make(
+                networkId: networkId, target: target, message: message, settings: store.state.settings
+            ) {
+                onNotify?(notification)
+            }
         case .snapshot:
             channelEventsSubject.send(.resynced)
+        case .peerPresence:
+            if let cameOnline { onNotify?(cameOnline) }
         case .invited(let networkId, let channel, let from, let userhost):
             guard store.state.buffers[BufferKey(networkId: networkId, target: channel).id]?.joined != true,
                   // Someone ignored outright doesn't get to put an alert in front of us; their

@@ -1203,7 +1203,11 @@ enum FrameParser {
             replyTo: parseReplyContext(event["replyTo"]),
             replyToSelf: event.bool("replyToSelf"),
             // Only a 421 carries it, naming the verb the ircd didn't know.
-            unknownCommand: type == .error ? event.stringOrNull("unknownCommand") : nil
+            unknownCommand: type == .error ? event.stringOrNull("unknownCommand") : nil,
+            notify: event.bool("notify"),
+            dm: event.bool("dm"),
+            notifyAlways: event.bool("notifyAlways"),
+            selfKicked: event.bool("selfKicked")
         )
     }
 

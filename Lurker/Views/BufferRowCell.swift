@@ -45,11 +45,12 @@ enum RosterMetrics {
 }
 
 extension UIColor {
-    /// What the buffer list and every roster cell stand on: the system's plain-list background,
-    /// not the message list's. The list paints it and so does each cell — opaque, because a row
-    /// sliding over its swipe actions shows whatever is behind it. It holds in a split's sidebar
-    /// too, which opts out of UIKit's glass — see `BufferSplitViewController`.
-    static let rosterGround = UIColor.systemBackground
+    /// What the buffer list and every roster cell stand on: the message list's ground, as on
+    /// Android and the web, rather than the system's plain-list black or white. The list paints it
+    /// and so does each cell — opaque, because a row sliding over its swipe actions shows whatever
+    /// is behind it. It holds in a split's sidebar too, which opts out of UIKit's glass — see
+    /// `BufferSplitViewController`.
+    static let rosterGround = Palette.bg
 
     /// A pressed row, and the open one: a translucent wash of the foreground, so it's a step off
     /// the ground in either style.

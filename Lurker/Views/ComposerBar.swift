@@ -97,6 +97,17 @@ final class ComposerBar: UIView {
     var onCancelReply: (() -> Void)?
     /// The away strip's Back (#135).
     var onBack: (() -> Void)?
+    /// Tapped the notification showing in the status row.
+    var onToastTap: ((StatusNotification) -> Void)?
+    /// Tapped the highlight count at the end of the status row.
+    var onHighlightCountTap: (() -> Void)?
+    /// Whether the row can be seen — on screen with nothing over it. Asked before each toast:
+    /// one shown under a sheet, or after the screen has gone, would expire unseen while its
+    /// announcement spoke over somewhere else.
+    var canShowToasts: (() -> Bool)?
+    /// A notice that no longer fits the row by the time its turn comes (a narrower column, a
+    /// larger text size), handed back to be shown somewhere it can wrap.
+    var onNoticeOverflow: ((String) -> Void)?
 
     /// What a hardware Tab completes against (lurker-android#63), asked fresh on each Tab that
     /// starts a completion. The owner's, because the roster, the network's channels and the
@@ -162,40 +173,98 @@ final class ComposerBar: UIView {
     }
 
     private let container = UIVisualEffectView(effect: ComposerBar.containerEffect())
+    /// The slab: one glass shape holding the status row on top and the field + send below —
+    /// the web's status bar and input as one piece, the way the desktop client draws them.
     private let fieldGlass = UIVisualEffectView()
-    private let sendGlass = UIVisualEffectView()
     private let textView = ComposerTextView()
     private let placeholderLabel = UILabel()
     private let sendButton = UIButton(type: .system)
-    /// The strip above the field. It says one of two things:
+    /// The status row across the top of the slab. Always there, at a fixed height, so nothing
+    /// it shows or hides ever moves the conversation. Left side, one thing at a time:
     ///
-    /// - The pending reply (iOS #184): "Replying to alice  ×". The web keeps it in its status
-    ///   bar; iOS has none, and this is where Messages, Discord and Telegram all put it —
-    ///   attached to the thing it changes.
-    /// - That you're away (#135): "Away since 2:32 PM · lunch  Back". The indicator and the way
-    ///   out are one control, so getting back doesn't depend on remembering `/back`.
-    ///
-    /// The reply wins while one is pending — it's what the next send does — and the away strip
-    /// comes back once it's spent or cancelled. One slot rather than two stacked strips, which
-    /// would eat into the little conversation a phone shows above the keyboard.
-    private let strip = UIVisualEffectView()
-    private let stripLabel = UILabel()
-    private let stripButton = UIButton(type: .system)
+    /// 1. Completion chips while a nick/command/channel is being typed (they take the whole row).
+    /// 2. A notification from elsewhere, for a few seconds — never over the chips; it waits.
+    /// 3. The pending reply (iOS #184): "↩ alice: excerpt  ×".
+    /// 4. Where you are, with who's typing (#61) appended — out of the message list, so it's
+    ///    visible at any scroll position.
+    private let statusRow = UIView()
+    private let leadLabel = UILabel()
+    private let cancelReplyButton = RowHeightHitButton(type: .system)
+    /// That you're away (#135), in its own glass strip above the slab: "Away since 2:32 PM ·
+    /// lunch  Back". Not in the status row — being away is worth being nagged about, and the row
+    /// has no room for the time.
+    private let awayStrip = UIVisualEffectView()
+    private let awayLabel = UILabel()
+    private let backButton = UIButton(type: .system)
+    private var containerAtTop: NSLayoutConstraint!
+    private var containerBelowAway: NSLayoutConstraint!
+    /// What the status row can flash for a few seconds.
+    enum StatusToast {
+        /// Something in another conversation; a tap goes there.
+        case notification(StatusNotification)
+        /// Something you just did that didn't work: "Not connected — try again when you're back
+        /// online". A tap just clears it.
+        case notice(String)
+
+        var isNotification: Bool {
+            if case .notification = self { true } else { false }
+        }
+
+        /// The same person, buffer and kind — or the same notice. What a newer toast updates in
+        /// place rather than queueing behind.
+        func sameSource(as other: StatusToast) -> Bool {
+            switch (self, other) {
+            case let (.notification(a), .notification(b)):
+                a.key.id == b.key.id && a.kind == b.kind
+                    && a.nick?.lowercased() == b.nick?.lowercased()
+            case let (.notice(a), .notice(b)):
+                a == b
+            default:
+                false
+            }
+        }
+    }
+    /// The status row's right end: highlights waiting in other buffers, a plain gold number like
+    /// a buffer row's count. Tapping it goes back to the list. Hidden at 0.
+    private let highlightCountButton = UIButton(type: .system)
+    /// The toast showing now, and the ones waiting their turn, oldest first.
+    private var activeToast: StatusToast?
+    private var toastQueue: [StatusToast] = []
+    private var toastTimer: Timer?
+    /// Shorter while others wait, so a burst drains rather than backing up.
+    private static let toastHoldBusy: TimeInterval = 2.5
+    /// How many notifications may wait. Past it the oldest goes: its line is still in its
+    /// buffer, and the highlight count and buffer list still show it.
+    private static let toastQueueCap = 3
+    /// How long a notification holds the row.
+    private static let toastHold: TimeInterval = 4
+    private let statusRule = UIView()
+    /// The completion chips, owned by the chat screen's suggestion logic but drawn in the row.
+    let suggestions = SuggestionsView()
     private var reply: PendingReply?
     private var away: AwayState?
+    private var typists: [String] = []
+    private var location: Location?
     /// `away`'s words, built when it or the clock changes rather than on every render — a
     /// reply shown or cancelled, a Dynamic Type change — since building them means a
     /// `DateFormatter`.
     private var awayText: AwayStrip?
-    private var containerBelowStrip: NSLayoutConstraint!
-    private var containerAtTop: NSLayoutConstraint!
+    private var statusHeight: NSLayoutConstraint!
+    /// The row's own contents (lead + away), hidden while the chips are up.
+    private var statusContent: UIView?
 
     /// How tall the text may grow before it scrolls internally instead. Five lines is the
     /// Messages ceiling too — past that you're writing a paragraph, and the conversation
     /// behind the bar has given up enough room.
     private static let maxLines = 5
-    /// The gap between the glass pills.
-    private static let gap: CGFloat = 8
+    /// How far the send circle sits in from the slab's edge.
+    private static let sendInset: CGFloat = 5
+    /// The slab's corner radius: a rounded rectangle, since it's always two rows tall.
+    private static let slabRadius: CGFloat = 20
+    /// The status row's height: exactly the one-line field's, so the slab is two equal rows.
+    /// Fixed, so the row never moves the conversation; tracks Dynamic Type through `updateMetrics`.
+    private static var statusRowHeight: CGFloat { collapsedHeight }
+
     /// The text view's own inset. The placeholder is pinned to *these* exact values so it
     /// sits where the first typed character will, not merely somewhere near it.
     private static let textInset = UIEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
@@ -213,7 +282,7 @@ final class ComposerBar: UIView {
     /// button and matches its diameter through this — two circles a few points apart at
     /// different sizes read as a mistake.
     static var collapsedHeight: CGFloat {
-        ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + textInset.top + textInset.bottom
+        ceil(MessageRenderer.compactFont().lineHeight) + textInset.top + textInset.bottom
     }
     private var textHeight: NSLayoutConstraint!
     /// The pills' width/height constraints, kept so a Dynamic Type change can resize them.
@@ -244,12 +313,14 @@ final class ComposerBar: UIView {
         // the corners are huge arcs that clip the text top and bottom. Pinned to half the
         // single-line height, it's a capsule when short and a rounded rectangle when tall.
         fieldGlass.effect = Self.glass()
-        fieldGlass.cornerConfiguration = .corners(radius: .fixed(Self.collapsedHeight / 2))
+        fieldGlass.cornerConfiguration = .corners(radius: .fixed(Self.slabRadius))
         fieldGlass.translatesAutoresizingMaskIntoConstraints = false
 
         textView.backgroundColor = .clear
-        textView.font = .preferredFont(forTextStyle: .body)
-        textView.adjustsFontForContentSizeCategory = true
+        // The message list's fixed-width face, like the status row above it — the slab reads as
+        // one terminal-ish piece, the way the web's input and status bar do. Not a text-style
+        // font, so `updateMetrics` re-applies it on a Dynamic Type change.
+        textView.font = MessageRenderer.compactFont(compatibleWith: traitCollection)
         textView.textContainerInset = Self.textInset
         textView.textContainer.lineFragmentPadding = 0
         // `.default`, not `.yes`: the user's system-wide autocorrect preference stays the
@@ -279,56 +350,53 @@ final class ComposerBar: UIView {
         // text container's own origin, in the text view's own font, so it's indistinguishable
         // from a caret on an empty line. Hidden the moment there's text.
         placeholderLabel.font = textView.font
-        placeholderLabel.adjustsFontForContentSizeCategory = true
         placeholderLabel.textColor = .placeholderText
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        configureRoundGlass(sendGlass, button: sendButton, symbol: "arrow.up")
+        configureSendButton()
         sendButton.addAction(UIAction { [weak self] _ in self?.fire() }, for: .touchUpInside)
         // Long press, or a tap while the button is the `+` (`showsMenuAsPrimaryAction`).
         sendButton.menu = sendMenu()
 
-        strip.effect = Self.glass()
-        strip.cornerConfiguration = .corners(radius: .fixed(22))
-        strip.translatesAutoresizingMaskIntoConstraints = false
-        strip.isHidden = true
-        stripLabel.font = .preferredFont(forTextStyle: .footnote)
-        stripLabel.adjustsFontForContentSizeCategory = true
-        stripLabel.lineBreakMode = .byTruncatingTail
-        stripLabel.translatesAutoresizingMaskIntoConstraints = false
-        stripButton.translatesAutoresizingMaskIntoConstraints = false
-        stripButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            // What the strip is showing NOW, not what it showed when the action was built.
-            if reply != nil { onCancelReply?() } else { onBack?() }
-        }, for: .touchUpInside)
-        stripButton.setContentHuggingPriority(.required, for: .horizontal)
-        stripButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        strip.contentView.addSubview(stripLabel)
-        strip.contentView.addSubview(stripButton)
-        addSubview(strip)
+        configureStatusRow()
 
+        fieldGlass.contentView.addSubview(statusRow)
+        fieldGlass.contentView.addSubview(statusRule)
         fieldGlass.contentView.addSubview(textView)
         fieldGlass.contentView.addSubview(placeholderLabel)
+        fieldGlass.contentView.addSubview(sendButton)
         container.contentView.addSubview(fieldGlass)
-        container.contentView.addSubview(sendGlass)
         addSubview(container)
+        configureAwayStrip()
 
         let content = container.contentView
+        let slab = fieldGlass.contentView
         let pill = Self.collapsedHeight
+        let send = pill - 2 * Self.sendInset
         textHeight = textView.heightAnchor.constraint(equalToConstant: pill)
-        // The round pill is sized to the field's one-line height so the two match. That
+        statusHeight = statusRow.heightAnchor.constraint(equalToConstant: Self.statusRowHeight)
+        // The send circle is sized to sit inside the one-line field with an even margin. That
         // height tracks Dynamic Type, so these constants have to move with it (see
         // `updateMetrics`) — kept in one place for that.
         pillSizeConstraints = [
-            sendGlass.widthAnchor.constraint(equalToConstant: pill),
-            sendGlass.heightAnchor.constraint(equalToConstant: pill),
+            sendButton.widthAnchor.constraint(equalToConstant: send),
+            sendButton.heightAnchor.constraint(equalToConstant: send),
         ]
         NSLayoutConstraint.activate([
-            textView.topAnchor.constraint(equalTo: fieldGlass.contentView.topAnchor),
-            textView.bottomAnchor.constraint(equalTo: fieldGlass.contentView.bottomAnchor),
-            textView.leadingAnchor.constraint(equalTo: fieldGlass.contentView.leadingAnchor),
-            textView.trailingAnchor.constraint(equalTo: fieldGlass.contentView.trailingAnchor),
+            statusRow.topAnchor.constraint(equalTo: slab.topAnchor),
+            statusRow.leadingAnchor.constraint(equalTo: slab.leadingAnchor),
+            statusRow.trailingAnchor.constraint(equalTo: slab.trailingAnchor),
+            statusHeight,
+
+            statusRule.topAnchor.constraint(equalTo: statusRow.bottomAnchor),
+            statusRule.leadingAnchor.constraint(equalTo: slab.leadingAnchor, constant: Self.textInset.left),
+            statusRule.trailingAnchor.constraint(equalTo: slab.trailingAnchor, constant: -Self.textInset.right),
+            statusRule.heightAnchor.constraint(equalToConstant: 1 / max(traitCollection.displayScale, 1)),
+
+            textView.topAnchor.constraint(equalTo: statusRow.bottomAnchor),
+            textView.bottomAnchor.constraint(equalTo: slab.bottomAnchor),
+            textView.leadingAnchor.constraint(equalTo: slab.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: sendButton.leadingAnchor, constant: -4),
             textHeight,
 
             // Exactly the text container's origin — same inset the glyphs use.
@@ -338,62 +406,160 @@ final class ComposerBar: UIView {
             placeholderLabel.topAnchor.constraint(
                 equalTo: textView.topAnchor, constant: Self.textInset.top
             ),
+            placeholderLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: textView.trailingAnchor, constant: -Self.textInset.right
+            ),
+
+            // At the *bottom* of the slab, so it stays beside the last line as the field grows
+            // upward rather than floating to the middle.
+            sendButton.trailingAnchor.constraint(equalTo: slab.trailingAnchor, constant: -Self.sendInset),
+            sendButton.bottomAnchor.constraint(equalTo: slab.bottomAnchor, constant: -Self.sendInset),
 
             container.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
-
-            strip.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            strip.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
-            strip.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
-            stripLabel.leadingAnchor.constraint(equalTo: strip.contentView.leadingAnchor, constant: 14),
-            stripLabel.centerYAnchor.constraint(equalTo: strip.contentView.centerYAnchor),
-            stripLabel.topAnchor.constraint(greaterThanOrEqualTo: strip.contentView.topAnchor, constant: 7),
-            stripLabel.bottomAnchor.constraint(lessThanOrEqualTo: strip.contentView.bottomAnchor, constant: -7),
-            stripButton.leadingAnchor.constraint(equalTo: stripLabel.trailingAnchor, constant: 4),
-            stripButton.trailingAnchor.constraint(equalTo: strip.contentView.trailingAnchor),
-            // The only way to cancel (or come back) by touch, so a full 44pt target — and inside the bar, which
-            // sets the bar's height: a target that hung outside it would never be hit.
-            stripButton.topAnchor.constraint(equalTo: strip.contentView.topAnchor),
-            stripButton.bottomAnchor.constraint(equalTo: strip.contentView.bottomAnchor),
-            stripButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44),
-            stripButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
             container.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
 
             fieldGlass.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            fieldGlass.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             fieldGlass.topAnchor.constraint(equalTo: content.topAnchor),
             fieldGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-
-            // The round pill sits at the *bottom* of the group, so it stays beside the last
-            // line as the field grows upward rather than floating to the middle.
-            sendGlass.leadingAnchor.constraint(equalTo: fieldGlass.trailingAnchor, constant: Self.gap),
-            sendGlass.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            sendGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            awayStrip.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            awayStrip.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            awayStrip.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
         ] + pillSizeConstraints)
-
         containerAtTop = container.topAnchor.constraint(equalTo: topAnchor, constant: 6)
-        containerBelowStrip = container.topAnchor.constraint(equalTo: strip.bottomAnchor, constant: 6)
+        containerBelowAway = container.topAnchor.constraint(equalTo: awayStrip.bottomAnchor, constant: 6)
         containerAtTop.isActive = true
 
-        // Keep the pill and the field's corner radius sized to one line as the text size
-        // changes under us — without this the field's floor (recomputed live in
-        // `textViewDidChange`) grows on a type change while the pill stays put, and the
-        // two stop matching height.
+        // Keep the send circle and the status row sized to the text as the text size changes
+        // under us — without this the field's floor (recomputed live in `textViewDidChange`)
+        // grows on a type change while the circle stays put.
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (bar: ComposerBar, _) in
             bar.updateMetrics()
         }
+        // The typing glyph's grey is baked into its image (`MessageRenderer.typingGlyph`), so a
+        // light/dark flip has to redraw it.
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (bar: ComposerBar, _) in
+            bar.renderStatus()
+        }
 
         updateSendEnabled()
+        renderStatus()
     }
 
-    /// Re-size the round pill and the field's corner radius to the current one-line height,
-    /// then refresh the field's floor. Called on a Dynamic Type change.
+    /// The status row's pieces: a lead label (reply or typing) with the reply's ×, the away
+    /// segment with its Back, and the chips laid over the whole row.
+    private func configureStatusRow() {
+        statusRow.translatesAutoresizingMaskIntoConstraints = false
+        statusRule.translatesAutoresizingMaskIntoConstraints = false
+        statusRule.backgroundColor = .separator
+
+        leadLabel.font = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        leadLabel.lineBreakMode = .byTruncatingTail
+        leadLabel.translatesAutoresizingMaskIntoConstraints = false
+        leadLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        leadLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // A tap on a showing notification goes to it.
+        leadLabel.isUserInteractionEnabled = true
+        leadLabel.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(leadTapped)))
+
+        var cancel = UIButton.Configuration.plain()
+        cancel.image = UIImage(systemName: "xmark.circle.fill")
+        cancel.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: MessageRenderer.compactFont().pointSize)
+        cancel.baseForegroundColor = .secondaryLabel
+        cancel.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
+        cancelReplyButton.configuration = cancel
+        cancelReplyButton.accessibilityLabel = "Cancel reply"
+        cancelReplyButton.horizontalOutset = 8
+        cancelReplyButton.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
+
+        var count = UIButton.Configuration.plain()
+        count.baseForegroundColor = Palette.warn
+        count.contentInsets = NSDirectionalEdgeInsets(
+            // A few points past the text inset: the slab's corner curves in at the right end.
+            top: 0, leading: 8, bottom: 0, trailing: Self.textInset.left + 2
+        )
+        count.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = MessageRenderer.compactFont()
+            return outgoing
+        }
+        highlightCountButton.configuration = count
+        highlightCountButton.isHidden = true
+        highlightCountButton.accessibilityHint = "Goes back to the buffer list."
+        highlightCountButton.addAction(UIAction { [weak self] _ in self?.onHighlightCountTap?() }, for: .touchUpInside)
+
+        for button in [cancelReplyButton, highlightCountButton] {
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+
+        suggestions.translatesAutoresizingMaskIntoConstraints = false
+        suggestions.onVisibilityChange = { [weak self] in
+            guard let self else { return }
+            // Chips over a toast: it goes back to the front of the queue, to be shown in full
+            // once they close, rather than running out its time underneath them.
+            if !suggestions.isHidden, let active = activeToast {
+                endActiveToast()
+                toastQueue.insert(active, at: 0)
+            }
+            self.renderStatus()
+            // Toasts that arrived mid-completion waited for the chips to close.
+            self.presentNextToast()
+        }
+
+        let lead = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton])
+        lead.alignment = .center
+        lead.spacing = 0
+        let row = UIStackView(arrangedSubviews: [lead, UIView(), highlightCountButton])
+        row.alignment = .fill
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+        statusContent = row
+
+        statusRow.addSubview(row)
+        statusRow.addSubview(suggestions)
+        NSLayoutConstraint.activate([
+            row.topAnchor.constraint(equalTo: statusRow.topAnchor),
+            row.bottomAnchor.constraint(equalTo: statusRow.bottomAnchor),
+            row.leadingAnchor.constraint(equalTo: statusRow.leadingAnchor, constant: Self.textInset.left),
+            row.trailingAnchor.constraint(equalTo: statusRow.trailingAnchor),
+
+            suggestions.topAnchor.constraint(equalTo: statusRow.topAnchor),
+            suggestions.bottomAnchor.constraint(equalTo: statusRow.bottomAnchor),
+            suggestions.leadingAnchor.constraint(equalTo: statusRow.leadingAnchor),
+            suggestions.trailingAnchor.constraint(equalTo: statusRow.trailingAnchor),
+        ])
+    }
+
+    /// The send button: a plain circle inside the slab. It can't be glass of its own — glass
+    /// inside glass doesn't sample — so it's a fill: clear over an empty field, the accent when
+    /// there's something to send.
+    private func configureSendButton() {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "arrow.up")
+        config.preferredSymbolConfigurationForImage = Self.glyph
+        config.baseForegroundColor = .label
+        config.cornerStyle = .capsule
+        sendButton.configuration = config
+        sendButton.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// Re-size the send circle and the status row to the current text size, then refresh the
+    /// field's floor. Called on a Dynamic Type change.
     private func updateMetrics() {
-        let pill = Self.collapsedHeight
-        pillSizeConstraints.forEach { $0.constant = pill }
-        fieldGlass.cornerConfiguration = .corners(radius: .fixed(pill / 2))
+        let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        textView.font = font
+        placeholderLabel.font = font
+        if textView.attributedText.length == 0 { textView.typingAttributes = plainAttributes }
+        pillSizeConstraints.forEach { $0.constant = Self.collapsedHeight - 2 * Self.sendInset }
+        statusHeight.constant = Self.statusRowHeight
         textViewDidChange(textView)
         // Back's title is a button configuration's, which doesn't follow Dynamic Type itself.
-        renderStrip()
+        renderStatus()
+        renderAway()
+        onHeightChange?()
     }
 
     @available(*, unavailable)
@@ -427,18 +593,17 @@ final class ComposerBar: UIView {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             awayText = AwayStrip.make(away)
-            renderStrip()
+            renderAway()
         }
     }
 
-    /// Show the pending reply above the field, or take it away (nil). The strip grows or
-    /// shrinks the composer, so the owner hears about it the way it hears about a taller field.
+    /// Show the pending reply in the status row, or take it away (nil).
     func showReply(_ reply: PendingReply?) {
         self.reply = reply
-        renderStrip()
+        renderStatus()
     }
 
-    /// Show that you're away above the field, or stop (nil, or an away that isn't active).
+    /// Show that you're away in the status row, or stop (nil, or an away that isn't active).
     ///
     /// ⚠ Gated on `active` alone. `since` and `message` deliberately outlive `/back` so the
     /// dividers can draw the finished pair (see `AwayState`), so their presence says nothing.
@@ -447,63 +612,311 @@ final class ComposerBar: UIView {
         guard away != self.away else { return }
         self.away = away
         awayText = AwayStrip.make(away)
-        renderStrip()
+        renderAway()
     }
 
-    private func renderStrip() {
-        let wasShowing = !strip.isHidden
-        let footnote = UIFont.preferredFont(forTextStyle: .footnote)
-        stripButton.accessibilityHint = nil
-        if let reply {
+    /// Where this conversation is and how its connection is doing — what the nav bar's title and
+    /// subtitle used to say. The row's resting content, under everything else on the left.
+    struct Location: Equatable {
+        /// "#lurker", "bob", or the network itself for its server log.
+        var name: String
+        /// Right after the name when the connection isn't up: "(Offline)", "(Connecting…)".
+        var connection: String?
+        /// In parentheses after the name: a DM peer's presence when it's news, "bob (Away)".
+        var detail: String?
+    }
+
+    func showLocation(_ location: Location?) {
+        guard location != self.location else { return }
+        self.location = location
+        renderStatus()
+    }
+
+    /// Show who's typing in the status row (#61). Empty clears it.
+    func showTyping(_ nicks: [String]) {
+        guard nicks != typists else { return }
+        typists = nicks
+        renderStatus()
+    }
+
+    /// Lay out the status row for what's current. Never changes the composer's height — the
+    /// row is always there — so it's safe to call from anywhere, `apply` included.
+    private func renderStatus() {
+        // The message list's fixed-width face, so the row reads like the log above it — the web
+        // status bar's look. Re-read here because it doesn't follow Dynamic Type on its own.
+        let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        leadLabel.font = font
+        // The chips own the whole row while they're up: they're about the word under the caret,
+        // and they're gone the moment it's finished.
+        statusContent?.isHidden = !suggestions.isHidden
+
+        if let toast = activeToast {
+            let text = Self.toastText(toast, font: font)
+            leadLabel.attributedText = text
+            // A notification goes somewhere when tapped; say so.
+            if case .notification = toast { leadLabel.accessibilityTraits = .button }
+            else { leadLabel.accessibilityTraits = .staticText }
+            leadLabel.accessibilityLabel = text.string
+            cancelReplyButton.isHidden = true
+        } else if let reply {
             let text = NSMutableAttributedString(
-                string: "Replying to ",
-                attributes: [.foregroundColor: UIColor.secondaryLabel]
+                string: "↩ ", attributes: [.foregroundColor: Palette.fgMuted, .font: font]
             )
             let name = reply.isSelf ? "yourself" : reply.nick
             text.append(NSAttributedString(string: name, attributes: [
-                .foregroundColor: UIColor.label, .font: footnote.bold,
+                .foregroundColor: Palette.fg, .font: font,
             ]))
             let excerpt = Replies.excerpt(reply.text)
             if !excerpt.isEmpty {
                 text.append(NSAttributedString(
-                    string: ": " + excerpt, attributes: [.foregroundColor: UIColor.secondaryLabel]
+                    string: ": " + excerpt, attributes: [.foregroundColor: Palette.fgMuted, .font: font]
                 ))
             }
-            stripLabel.attributedText = text
-            stripLabel.accessibilityLabel = "Replying to \(name)" + (excerpt.isEmpty ? "" : ": \(excerpt)")
-            var config = UIButton.Configuration.plain()
-            config.image = UIImage(systemName: "xmark.circle.fill")
-            config.baseForegroundColor = .secondaryLabel
-            config.contentInsets = .zero
-            stripButton.configuration = config
-            stripButton.accessibilityLabel = "Cancel reply"
-        } else if let label = awayText {
+            leadLabel.attributedText = text
+            leadLabel.accessibilityLabel = "Replying to \(name)" + (excerpt.isEmpty ? "" : ": \(excerpt)")
+            leadLabel.accessibilityTraits = .staticText
+            cancelReplyButton.isHidden = false
+        } else {
+            // Where you are, then who's typing there: "#lurker ⌨ alice, bob". The keyboard glyph is
+            // the separator; a status reads in parentheses, "(Offline)", "(Away)".
+            //
+            // The app's own palette, never the system's label colors: on glass a label drawn in
+            // those alone gets the system's vibrant treatment, and mixed with the typing line's
+            // nick colors and glyph it doesn't — so the name changed color whenever someone typed.
+            let text = NSMutableAttributedString()
+            var spoken: [String] = []
+            if let location {
+                text.append(NSAttributedString(string: location.name, attributes: [
+                    .foregroundColor: Palette.fgMuted, .font: font,
+                ]))
+                if let connection = location.connection {
+                    text.append(NSAttributedString(
+                        string: " " + connection, attributes: [.foregroundColor: Palette.fgMuted, .font: font]
+                    ))
+                }
+                if let detail = location.detail, !detail.isEmpty {
+                    text.append(NSAttributedString(
+                        string: " (" + detail + ")", attributes: [.foregroundColor: Palette.fgMuted, .font: font]
+                    ))
+                }
+                spoken = [location.name, location.connection, location.detail].compactMap { $0 }
+            }
+            if let typing = MessageRenderer.renderTyping(typists, base: font, traits: traitCollection) {
+                if text.length > 0 {
+                    // One space, as between the glyph and the first nick.
+                    text.append(NSAttributedString(string: " ", attributes: [.font: font]))
+                }
+                text.append(typing)
+                spoken.append("Typing: " + typists.joined(separator: ", "))
+            }
+            leadLabel.attributedText = text.length > 0 ? text : nil
+            leadLabel.accessibilityLabel = spoken.isEmpty ? nil : spoken.joined(separator: ", ")
+            leadLabel.accessibilityTraits = .staticText
+            cancelReplyButton.isHidden = true
+        }
+    }
+
+    /// The away strip, shown or hidden for `awayText`. Changes the composer's height, so it runs
+    /// only from `showAway` and its own clock/metrics refreshes — never from `apply` (see
+    /// `ComposerChrome`).
+    private func renderAway() {
+        let wasShowing = !awayStrip.isHidden
+        let footnote = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        if let label = awayText {
             let text = NSMutableAttributedString(string: label.lead, attributes: [
-                .foregroundColor: UIColor.label, .font: footnote.bold,
+                .foregroundColor: UIColor.label, .font: footnote,
             ])
             text.append(NSAttributedString(
-                string: label.detail, attributes: [.foregroundColor: UIColor.secondaryLabel]
+                string: label.detail, attributes: [.foregroundColor: UIColor.secondaryLabel, .font: footnote]
             ))
-            stripLabel.attributedText = text
-            stripLabel.accessibilityLabel = label.lead + label.detail
-            var config = UIButton.Configuration.plain()
-            config.title = "Back"
-            config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-                var outgoing = incoming
-                outgoing.font = UIFont.preferredFont(forTextStyle: .footnote).bold
-                return outgoing
-            }
-            // Clear of the strip's rounded end, which a bare 44pt-wide title would crowd.
-            config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 16)
-            stripButton.configuration = config
-            stripButton.accessibilityLabel = "Back"
-            stripButton.accessibilityHint = "Clears your away status."
+            awayLabel.attributedText = text
+            awayLabel.accessibilityLabel = label.lead + label.detail
         }
-        let showing = reply != nil || awayText != nil
-        strip.isHidden = !showing
+        let showing = awayText != nil
+        awayStrip.isHidden = !showing
         containerAtTop.isActive = !showing
-        containerBelowStrip.isActive = showing
+        containerBelowAway.isActive = showing
         if wasShowing != showing { onHeightChange?() }
+    }
+
+    private func configureAwayStrip() {
+        awayStrip.effect = Self.glass()
+        awayStrip.cornerConfiguration = .corners(radius: .fixed(Self.slabRadius))
+        awayStrip.translatesAutoresizingMaskIntoConstraints = false
+        awayStrip.isHidden = true
+        awayLabel.lineBreakMode = .byTruncatingTail
+        awayLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        var back = UIButton.Configuration.plain()
+        back.title = "Back"
+        back.baseForegroundColor = .tintColor
+        back.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 16)
+        back.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var outgoing = incoming
+            outgoing.font = MessageRenderer.compactFont()
+            return outgoing
+        }
+        backButton.configuration = back
+        backButton.accessibilityLabel = "Back"
+        backButton.accessibilityHint = "Clears your away status."
+        backButton.addAction(UIAction { [weak self] _ in self?.onBack?() }, for: .touchUpInside)
+        backButton.translatesAutoresizingMaskIntoConstraints = false
+        backButton.setContentHuggingPriority(.required, for: .horizontal)
+        backButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        awayStrip.contentView.addSubview(awayLabel)
+        awayStrip.contentView.addSubview(backButton)
+        addSubview(awayStrip)
+        NSLayoutConstraint.activate([
+            awayLabel.leadingAnchor.constraint(equalTo: awayStrip.contentView.leadingAnchor, constant: Self.textInset.left),
+            awayLabel.centerYAnchor.constraint(equalTo: awayStrip.contentView.centerYAnchor),
+            backButton.leadingAnchor.constraint(equalTo: awayLabel.trailingAnchor, constant: 4),
+            backButton.trailingAnchor.constraint(equalTo: awayStrip.contentView.trailingAnchor),
+            backButton.topAnchor.constraint(equalTo: awayStrip.contentView.topAnchor),
+            backButton.bottomAnchor.constraint(equalTo: awayStrip.contentView.bottomAnchor),
+            // The only way back by touch: a full 44pt target, inside the strip so it's hit.
+            backButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44),
+        ])
+    }
+
+    // MARK: - Notifications in the status row (exploration)
+
+    /// Highlights waiting in other buffers; 0 hides the count.
+    func showHighlightCount(_ count: Int) {
+        highlightCountButton.isHidden = count <= 0
+        highlightCountButton.configuration?.title = count <= 0 ? nil : count > 999 ? ">999" : "\(count)"
+        highlightCountButton.accessibilityLabel = "\(count) highlight" + (count == 1 ? "" : "s") + " in other buffers"
+    }
+
+    /// Show a toast in the status row for a few seconds, in turn. Never over the completion chips
+    /// — they're what you're tapping — so the queue waits for them to close.
+    ///
+    /// - A newer line from the same person in the same buffer updates their toast where it is,
+    ///   showing or waiting, rather than queueing behind it or being dropped: a burst (ChanServ
+    ///   answering /HELP) is one toast that reads its latest line. It doesn't buy more time.
+    /// - A notice is about something you just did, so it goes first, and a notification
+    ///   showing gives way to it.
+    func showToast(_ toast: StatusToast) {
+        if let active = activeToast, active.sameSource(as: toast) {
+            activeToast = toast
+            renderStatus()
+            announce(toast)
+            return
+        }
+        if let waiting = toastQueue.firstIndex(where: { $0.sameSource(as: toast) }) {
+            toastQueue[waiting] = toast
+            return
+        }
+        if case .notice = toast {
+            toastQueue.insert(toast, at: 0)
+            if case .notification? = activeToast { endActiveToast() }
+        } else {
+            toastQueue.append(toast)
+            while toastQueue.filter(\.isNotification).count > Self.toastQueueCap,
+                  let oldest = toastQueue.firstIndex(where: \.isNotification) {
+                toastQueue.remove(at: oldest)
+            }
+        }
+        presentNextToast()
+    }
+
+    /// Whether `message` fits the row as a notice without being cut off. The row is one line;
+    /// a notice that would truncate floats instead, where it can wrap.
+    func fitsAsNotice(_ message: String) -> Bool {
+        let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        let count = highlightCountButton.isHidden ? 0 : highlightCountButton.intrinsicContentSize.width
+        let room = statusRow.bounds.width - Self.textInset.left - count - 8
+        return Self.toastText(.notice(message), font: font).size().width <= room
+    }
+
+    private func presentNextToast() {
+        guard suggestions.isHidden, activeToast == nil, !toastQueue.isEmpty else { return }
+        guard canShowToasts?() ?? true else {
+            // Passing news, gone stale while nobody could see it; the count still has the rest.
+            toastQueue.removeAll()
+            return
+        }
+        let next = toastQueue.removeFirst()
+        if case .notice(let message) = next, !fitsAsNotice(message) {
+            onNoticeOverflow?(message)
+            presentNextToast()
+            return
+        }
+        activeToast = next
+        let timer = Timer(
+            timeInterval: toastQueue.isEmpty ? Self.toastHold : Self.toastHoldBusy, repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            toastTimer = nil
+            activeToast = nil
+            renderStatus()
+            presentNextToast()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        toastTimer = timer
+        renderStatus()
+        // A notice gets the floating toast's light tap — the only feedback its action has.
+        if case .notice = next { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+        announce(next)
+    }
+
+    /// Said as well as shown, as the floating toast did: the row's text changes in place, which
+    /// VoiceOver doesn't announce on its own.
+    private func announce(_ toast: StatusToast) {
+        let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
+        UIAccessibility.post(notification: .announcement, argument: Self.toastText(toast, font: font).string)
+    }
+
+    private func endActiveToast() {
+        toastTimer?.invalidate()
+        toastTimer = nil
+        activeToast = nil
+        renderStatus()
+    }
+
+    /// Who and what — "bob: are you around?" — the way the line reads in the buffer; where it
+    /// happened is the tap's job. A kick has no speaker worth naming, so it says where. A notice
+    /// is in the error color behind a glyph, so "Not connected" can't be read as someone's line.
+    private static func toastText(_ toast: StatusToast, font: UIFont) -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        let muted: [NSAttributedString.Key: Any] = [.foregroundColor: Palette.fgMuted, .font: font]
+        switch toast {
+        case .notice(let message):
+            let glyph = UIImage(
+                systemName: "exclamationmark.circle.fill",
+                withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small)
+            )?.withTintColor(Palette.bad, renderingMode: .alwaysOriginal)
+            if let glyph {
+                text.append(NSAttributedString(attachment: NSTextAttachment(image: glyph)))
+                text.append(NSAttributedString(string: " ", attributes: [.font: font]))
+            }
+            text.append(NSAttributedString(string: message, attributes: [.foregroundColor: Palette.bad, .font: font]))
+        case .notification(let notification):
+            if notification.kind == .kicked {
+                text.append(NSAttributedString(string: "Kicked from " + notification.key.target, attributes: muted))
+            } else {
+                let nick = notification.nick ?? "?"
+                text.append(NSAttributedString(string: nick, attributes: [
+                    .foregroundColor: MessageRenderer.hashedColor(nick), .font: font,
+                ]))
+                if notification.kind == .friendOnline {
+                    text.append(NSAttributedString(string: " came online", attributes: muted))
+                }
+            }
+            if !notification.text.isEmpty {
+                text.append(NSAttributedString(
+                    string: ": " + notification.text, attributes: [.foregroundColor: Palette.fg, .font: font]
+                ))
+            }
+        }
+        return text
+    }
+
+    @objc private func leadTapped() {
+        guard let toast = activeToast else { return }
+        endActiveToast()
+        if case .notification(let notification) = toast { onToastTap?(notification) }
+        presentNextToast()
     }
 
     /// Clears the field after a send the owner accepted, and collapses it back to one line.
@@ -578,7 +991,7 @@ final class ComposerBar: UIView {
     /// send-button state read.
     private var plainText: String { textView.text ?? "" }
 
-    private var bodyFont: UIFont { textView.font ?? .preferredFont(forTextStyle: .body) }
+    private var bodyFont: UIFont { textView.font ?? MessageRenderer.compactFont(compatibleWith: traitCollection) }
     private var plainAttributes: [NSAttributedString.Key: Any] {
         ComposerColors.plainAttributes(font: bodyFont)
     }
@@ -814,29 +1227,6 @@ final class ComposerBar: UIView {
         return glass
     }
 
-    /// A round glass pill wrapping a plain (non-glass) button — the button can't carry the
-    /// glass itself and still join the container, so the glass is the wrapper and the button
-    /// just fills it.
-    private func configureRoundGlass(_ glass: UIVisualEffectView, button: UIButton, symbol: String) {
-        glass.effect = Self.glass()
-        glass.cornerConfiguration = .capsule()
-        glass.translatesAutoresizingMaskIntoConstraints = false
-
-        var config = UIButton.Configuration.plain()
-        config.image = UIImage(systemName: symbol)
-        config.preferredSymbolConfigurationForImage = Self.glyph
-        config.baseForegroundColor = .label
-        button.configuration = config
-        button.translatesAutoresizingMaskIntoConstraints = false
-        glass.contentView.addSubview(button)
-        NSLayoutConstraint.activate([
-            button.topAnchor.constraint(equalTo: glass.contentView.topAnchor),
-            button.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor),
-            button.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor),
-            button.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor),
-        ])
-    }
-
     // MARK: - Send menu
 
     /// The send button's menu, built as it opens so it reflects the field and the upload state
@@ -950,14 +1340,12 @@ final class ComposerBar: UIView {
             sendButton.accessibilityHint = offersMenu && glyph == "arrow.up"
                 ? "Touch and hold for attachments and color." : nil
         }
-        // Take the accent color when there's something to send, clear glass when not — the
-        // same "lights up when it goes live" the Messages send button does, here through the
-        // glass tint so it still belongs to the group. Only rebuilt on the transition:
-        // reassigning `.effect` re-triggers the glass materialize, and this runs on every
-        // keystroke.
+        // Take the accent color when there's something to send, clear when not — the same
+        // "lights up when it goes live" the Messages send button does. Only on the transition,
+        // since this runs on every keystroke.
         if sendActive != hasText {
             sendActive = hasText
-            sendGlass.effect = Self.glass(tint: hasText ? .tintColor : nil)
+            sendButton.configuration?.background.backgroundColor = hasText ? .tintColor : .clear
             // White arrow on the accent tint when live, like Messages; back to `.label` on
             // the clear glass when there's nothing to send.
             sendButton.configuration?.baseForegroundColor = hasText ? .white : .label
@@ -1068,7 +1456,7 @@ extension ComposerBar: UITextViewDelegate {
         let fitting = textView.sizeThatFits(
             CGSize(width: textView.bounds.width, height: .greatestFiniteMagnitude)
         ).height
-        let lineHeight = ceil((textView.font ?? .preferredFont(forTextStyle: .body)).lineHeight)
+        let lineHeight = ceil(bodyFont.lineHeight)
         let cap = Self.collapsedHeight + CGFloat(Self.maxLines - 1) * lineHeight
         let target = min(max(fitting, Self.collapsedHeight), cap)
         textView.isScrollEnabled = fitting > cap
