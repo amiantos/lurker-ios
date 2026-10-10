@@ -227,6 +227,12 @@ final class SpoilerRoundTripTests: XCTestCase {
         XCTAssertTrue(SpoilerMarkup.apply(to: "||a||,b").hasSuffix("\u{3},b"))
     }
 
+    /// A keycap is not an ASCII Character, but its first scalar is the digit the parser reads.
+    func testAKeycapIsACollision() {
+        let wire = SpoilerMarkup.apply(to: "||a||1\u{FE0F}\u{20E3}")
+        XCTAssertTrue(wire.hasSuffix("a\u{3}99,991\u{FE0F}\u{20E3}"), wire.debugDescription)
+    }
+
     /// ⚠ The trigger is ASCII `0`–`9`, because that is exactly what `IRCFormatting` reads after a
     /// `\u{3}`. `Character.isNumber` is true of all of these and none of them can start a colour
     /// code, so treating them as collisions would spend the heavier close — and 99's

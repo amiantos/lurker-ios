@@ -10,8 +10,11 @@ import UIKit
 /// where they sit; with nothing selected, the colour is what you type next, as in Notes. There's
 /// no sample sentence and no hidden "pen" to keep track of: what the field shows is what sends.
 ///
-/// Nothing here is a draft of the draft. Done (or Send) hands the whole text back to the composer,
-/// and there's no Cancel to lose an edit to — undo is there for a pick you didn't mean.
+/// Nothing here is a draft of the draft. Every change goes to the composer as it's made
+/// (`onChange`), so it saves and syncs like typing there does — backgrounding mid-edit loses
+/// nothing — and whatever changes the composer meanwhile (a finished upload's link, another
+/// device's draft) comes back in through `adopt`. There's no Cancel to lose an edit to; undo is
+/// there for a pick you didn't mean.
 ///
 /// Sixteen colours, not mIRC's 99: the sixteen are the ones every client paints, and the list
 /// draws them in the same palette (`MessageRenderer.mircSlot`).
@@ -25,6 +28,8 @@ final class ColorEditorViewController: UIViewController {
         let typing: (fg: Int?, bg: Int?)?
     }
 
+    /// Every edit, colour pick and caret move, for the composer to mirror.
+    var onChange: ((Result) -> Void)?
     /// Done: for the composer to take back.
     var onDone: ((Result) -> Void)?
     /// Send: the same, then send it.
@@ -37,6 +42,7 @@ final class ColorEditorViewController: UIViewController {
     private var swatches: [SwatchButton] = []
     private let initialText: NSAttributedString
     private let initialSelection: NSRange
+    private let initialTyping: (fg: Int?, bg: Int?)
 
     private var layer: ComposerColors.Layer {
         layerControl.selectedSegmentIndex == 0 ? .text : .highlight
@@ -50,9 +56,12 @@ final class ColorEditorViewController: UIViewController {
         "Yellow", "Light Green", "Teal", "Cyan", "Light Blue", "Pink", "Grey", "Light Grey",
     ]
 
-    init(text: NSAttributedString, selection: NSRange) {
+    /// `typing` is the composer's pending colour — a pick made in an earlier visit and not yet
+    /// typed with, which is still the pick.
+    init(text: NSAttributedString, selection: NSRange, typing: (fg: Int?, bg: Int?)) {
         initialText = ComposerColors.restyled(text, font: Self.font)
         initialSelection = selection
+        initialTyping = typing
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -112,6 +121,25 @@ final class ColorEditorViewController: UIViewController {
         textView.selectedRange = NSRange(
             location: location, length: min(initialSelection.length, length - location))
         textView.becomeFirstResponder()
+        if textView.selectedRange.length == 0 {
+            var typing = textView.typingAttributes
+            typing = ComposerColors.applying(initialTyping.fg, layer: .text, to: typing)
+            typing = ComposerColors.applying(initialTyping.bg, layer: .highlight, to: typing)
+            textView.typingAttributes = typing
+        }
+        refreshPicks()
+        // Placing the caret above already told the composer, before the pending colour was back.
+        onChange?(result)
+    }
+
+    /// Take in a change the composer made while this was open, keeping the caret where the
+    /// composer put it — which is where this one was, since every move is mirrored there.
+    func adopt(_ text: NSAttributedString, selection: NSRange) {
+        guard isViewLoaded else { return }
+        textView.attributedText = ComposerColors.restyled(text, font: Self.font)
+        let length = textView.attributedText.length
+        let location = min(selection.location, length)
+        textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
         refreshPicks()
     }
 
@@ -179,6 +207,7 @@ final class ColorEditorViewController: UIViewController {
             textView.typingAttributes = ComposerColors.applying(slot, layer: layer, to: textView.typingAttributes)
         }
         refreshPicks()
+        onChange?(result)
     }
 
     /// Swap `range`'s styled text, undoably — colour changes go through the text storage, which
@@ -190,6 +219,7 @@ final class ColorEditorViewController: UIViewController {
         textView.undoManager?.registerUndo(withTarget: self) { editor in
             editor.replace(range, with: previous, undoing: text)
             editor.refreshPicks()
+            editor.onChange?(editor.result)
         }
         textView.undoManager?.setActionName("Color")
     }
@@ -210,21 +240,29 @@ final class ColorEditorViewController: UIViewController {
     @objc private func sendTapped() { finish(sending: true) }
 
     private func finish(sending: Bool) {
+        (sending ? onSend : onDone)?(result)
+    }
+
+    private var result: Result {
         let selection = textView.selectedRange
         let typing = textView.typingAttributes
-        let result = Result(
+        return Result(
             text: textView.attributedText ?? NSAttributedString(),
             selection: selection,
             typing: selection.length == 0
                 ? (ComposerColors.slot(.text, in: typing), ComposerColors.slot(.highlight, in: typing))
                 : nil)
-        (sending ? onSend : onDone)?(result)
     }
 }
 
 extension ColorEditorViewController: UITextViewDelegate {
+    func textViewDidChange(_ textView: UITextView) {
+        onChange?(result)
+    }
+
     func textViewDidChangeSelection(_ textView: UITextView) {
         refreshPicks()
+        onChange?(result)
     }
 }
 

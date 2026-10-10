@@ -16,7 +16,9 @@
 /// for black on dark and 1.1:1 for white on light). Keep in step with the web; a spoiler that
 /// looks different in each client is the drift this port exists to avoid.
 public enum SpoilerMarkup {
-    static let open = "\u{3}14,14"
+    /// The box's colour, grey on grey. `ColorMarkup.chatBody` paints its boxes from this too.
+    static let slot = 14
+    static let open = "\u{3}\(slot),\(slot)"
     static let close = "\u{3}"
 
     /// The close to use when the very next character is a digit.
@@ -47,8 +49,12 @@ public enum SpoilerMarkup {
     /// colour parser will touch, so using it would spend the heavier close (and 99's
     /// less-universal semantics) on text that never needed it — most often Arabic, Persian or
     /// Devanagari, which is a poor place to be needlessly clever.
+    ///
+    /// ⚠ The first SCALAR, not the character. The parser reads scalars, and a keycap `1️⃣` is one
+    /// Character that isn't ASCII but opens with an ASCII `1` — which a bare close would read as
+    /// colour 1, eating the digit and breaking the emoji. (The web's `/^\d/` sees the `1`.)
     static func close(before next: Character?) -> String {
-        guard let next, next.isASCII, next.isNumber else { return close }
+        guard let first = next?.unicodeScalars.first, (0x30...0x39).contains(first.value) else { return close }
         return closeBeforeDigit
     }
 
@@ -56,9 +62,9 @@ public enum SpoilerMarkup {
     /// which `||` stay literal, and where the `\||` escapes are. Character offsets.
     ///
     /// Positional rather than a rewrite so a second writer can make the SAME spoilers out of the
-    /// same text: `ColorMarkup` builds them itself on a coloured line, where the user's colour has
-    /// to stop at the box and resume after it, which a bare-close rewrite of the encoded line
-    /// can't do. Both read this, so the two can't disagree about what is a spoiler.
+    /// same text: `ColorMarkup.chatBody` builds them itself on a coloured body, where the user's
+    /// colour has to stop at the box and resume after it, which a bare-close rewrite can't do.
+    /// Both read this, so the two can't disagree about what is a spoiler.
     struct Layout {
         /// The opening and closing `||` of each spoiler, by the offset of its first `|`.
         var spoilers: [(open: Int, close: Int)] = []

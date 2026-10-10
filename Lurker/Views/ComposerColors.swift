@@ -96,23 +96,18 @@ enum ComposerColors {
     }
 
     /// The field's text for a line that came from outside it — a restored refusal, a synced
-    /// draft. Colour the editor can hold becomes colour; anything else stays the raw line it
-    /// always was, codes and all, so nothing written elsewhere is lost on the way through.
+    /// draft. What `ColorMarkup` can hold becomes colour (a lone reset reads as the plain text it
+    /// shows); anything else stays the raw line it always was, codes and all, so nothing written
+    /// elsewhere is lost or changed on the way through.
     static func attributed(line: String, font: UIFont) -> NSAttributedString {
-        if let spans = ColorMarkup.decode(line), ColorMarkup.isColored(spans) {
+        if let spans = ColorMarkup.decode(line) {
             return attributed(spans, font: font)
         }
         return NSAttributedString(string: line, attributes: plainAttributes(font: font))
     }
 
-    /// The draft `text` holds — colour written out, nothing else rewritten (`encodeDraft`).
-    static func draft(_ text: NSAttributedString) -> String {
-        let spans = spans(of: text)
-        return ColorMarkup.isColored(spans) ? ColorMarkup.encodeDraft(spans) : text.string
-    }
-
-    /// The line `text` sends as (`encode`) — spoilers made, colour only on a chat body.
-    static func wireLine(_ text: NSAttributedString) -> String {
+    /// The line `text` holds, syncs and sends — one format for all three (`ColorMarkup.encode`).
+    static func line(_ text: NSAttributedString) -> String {
         let spans = spans(of: text)
         return ColorMarkup.isColored(spans) ? ColorMarkup.encode(spans) : text.string
     }

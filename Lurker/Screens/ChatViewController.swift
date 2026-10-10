@@ -36,6 +36,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Retained across the async pick→compress→upload flow (the picker delegates need it kept
     /// alive) and, by living in a single slot, it enforces one attachment at a time.
     private var attachmentPicker: AttachmentPicker?
+    /// The colour editor while it's open — the composer's changes are mirrored into it.
+    private weak var colorEditor: ColorEditorViewController?
     /// The running upload, so the status view's cancel can tear it down.
     private var uploadTask: Task<Void, Never>?
     /// The floating "back to the newest message" pill (see `JumpToLatestButton`), and the
@@ -373,6 +375,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.onAttach = { [weak self] in self?.attach(from: $0) }
         composer.canAttach = { [weak self] in self.map { $0.takesUploads && !$0.isUploadBusy } ?? false }
         composer.onEditColor = { [weak self] in self?.presentColorEditor() }
+        composer.onExternalChange = { [weak self] in
+            guard let self, let colorEditor else { return }
+            colorEditor.adopt(composer.attributedDraft, selection: composer.draftSelection)
+        }
         composer.onPasteImage = { [weak self] data, mime, name in
             self?.uploadPastedImage(data: data, mime: mime, filename: name)
         }
@@ -2445,21 +2451,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Edit Color: the draft full screen, handed back on Done — or sent, on Send.
+    /// Edit Color: the draft full screen. The composer mirrors it as it's edited — so it saves and
+    /// syncs as typing does — and anything that changes the composer meanwhile goes back in.
     private func presentColorEditor() {
-        let editor = ColorEditorViewController(text: composer.attributedDraft, selection: composer.draftSelection)
+        let editor = ColorEditorViewController(
+            text: composer.attributedDraft, selection: composer.draftSelection, typing: composer.typingColors)
+        editor.onChange = { [weak self] result in
+            self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
+        }
         editor.onDone = { [weak self, weak editor] result in
             self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
+            self?.endColorEditing()
             editor?.dismiss(animated: true)
         }
         editor.onSend = { [weak self, weak editor] result in
             self?.composer.replaceDraft(result.text, selection: result.selection, typing: nil)
+            self?.endColorEditing()
             // After the dismissal: a send can present (a refusal, a confirm) or switch buffers.
             editor?.dismiss(animated: true) { self?.composer.send() }
         }
+        colorEditor = editor
+        composer.isCovered = true
         let sheet = UINavigationController(rootViewController: editor)
         sheet.modalPresentationStyle = .fullScreen
         present(sheet, animated: true)
+    }
+
+    private func endColorEditing() {
+        colorEditor = nil
+        composer.isCovered = false
     }
 
     /// Build the picker and start it — but only once a source is actually chosen. Setting

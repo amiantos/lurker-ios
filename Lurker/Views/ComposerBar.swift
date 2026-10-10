@@ -125,10 +125,18 @@ final class ComposerBar: UIView {
     /// Set while `restore(_:)` is putting a refused line back — see its note.
     private var isRestoring = false
 
-    /// The last few coloured lines sent, with the draft each was sent from. A refused send comes
-    /// home as the line that went out, and a coloured one has had its spoilers made and its `||`
-    /// escaped on the way — so `restore` puts back what was typed instead.
-    private var sentDrafts: [(line: String, draft: String)] = []
+    /// `text`, written once per edit rather than per read — it's read several times a keystroke
+    /// (the edit check, the draft save), and writing it walks the whole field. Dropped in
+    /// `textViewDidChange`, which every change to the field goes through.
+    private var cachedLine: String?
+
+    /// Fired after the field changes for a reason that isn't the user typing in it — a restore, a
+    /// finished upload's link — so the colour editor, while it's open, can take the change in.
+    var onExternalChange: (() -> Void)?
+
+    /// Set while the colour editor covers the composer: the editor is where the user is writing,
+    /// so nothing here may take the keyboard — a finished upload's link lands without it.
+    var isCovered = false
 
     /// The field as `onEdit` last saw it, so a re-measure or a caret move isn't an edit.
     private var lastEdit = (text: "", composing: false)
@@ -551,7 +559,19 @@ final class ComposerBar: UIView {
 
     /// What's in the field, as it will be sent: its colour written out as `\x03` codes. The
     /// line a send takes and the draft that syncs.
-    var text: String { ComposerColors.draft(textView.attributedText) }
+    var text: String {
+        if let cachedLine { return cachedLine }
+        let line = ComposerColors.line(textView.attributedText)
+        cachedLine = line
+        return line
+    }
+
+    /// The colour the next keystroke writes in — handed to the colour editor so a pick made
+    /// there and not yet typed with is still the pick when it opens again.
+    var typingColors: (fg: Int?, bg: Int?) {
+        let attributes = textView.typingAttributes
+        return (ComposerColors.slot(.text, in: attributes), ComposerColors.slot(.highlight, in: attributes))
+    }
 
     /// The characters in the field, without colour — what completion, the typing signal and the
     /// send-button state read.
@@ -609,9 +629,10 @@ final class ComposerBar: UIView {
         // edit of the user's.
         isRestoring = true
         defer { isRestoring = false }
-        // Colour comes back as colour; a line with formatting the field can't show stays raw.
-        let typed = sentDrafts.last { $0.line == text }?.draft ?? text
-        textView.attributedText = ComposerColors.attributed(line: typed, font: bodyFont)
+        // Colour comes back as colour; a line with formatting the field can't show stays raw. A
+        // refused coloured line is the same string the field held (`ColorMarkup`'s one format),
+        // so it comes back exactly as it was typed.
+        textView.attributedText = ComposerColors.attributed(line: text, font: bodyFont)
         textView.selectedRange = NSRange(location: textView.attributedText.length, length: 0)
         // An emptied field writes plain, whatever was being typed in before. (Text left behind
         // carries its own colour to the caret, as it would after a keystroke.)
@@ -632,6 +653,7 @@ final class ComposerBar: UIView {
         // that isn't there: silent.
         lastEmittedDraft = plainText
         textViewDidChange(textView)
+        onExternalChange?()
     }
 
     /// Address `nick` at the head of the draft — what Reply does (#60).
@@ -655,9 +677,11 @@ final class ComposerBar: UIView {
         let current = plainText
         let already = NickCompletion.isAddressed(current, to: nick, punctuation: punctuation)
         let next = already ? current : "\(nick)\(punctuation) " + current
-        // Caret at the end, not after the prefix: `replaceToken` puts it where it spliced, which
-        // for a prepend is in front of the existing draft.
-        rewrite(to: next)
+        // Spliced at the very start, which `splice` writes plain — so the address never takes the
+        // colour of the words it's put in front of. (A diff would find a shared prefix in
+        // `bob is here` and copy the colour of its last letter.) Caret at the end, not after the
+        // prefix, so you carry on writing after your own words.
+        if !already { splice(NSRange(location: 0, length: 0), with: "\(nick)\(punctuation) ") }
         textView.selectedRange = NSRange(location: (next as NSString).length, length: 0)
         textViewDidChange(textView)
         becomeFirstResponder()
@@ -716,10 +740,11 @@ final class ComposerBar: UIView {
         let caretWasTrailing = resumeAt.length == 0 && resumeAt.location >= current.length
         replaceToken(range, with: payload)
         if atCaret {
-            becomeFirstResponder()
+            if !isCovered { becomeFirstResponder() }
         } else if !caretWasTrailing, resumeAt.upperBound <= (textView.text as NSString).length {
             textView.selectedRange = resumeAt
         }
+        onExternalChange?()
     }
 
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits
@@ -736,6 +761,7 @@ final class ComposerBar: UIView {
     /// completed inside a red sentence is red — and is plain at the very start, so a Reply's
     /// `bob: ` doesn't take the colour of the words it's put in front of.
     private func splice(_ range: NSRange, with replacement: String) {
+        cachedLine = nil
         let storage = textView.textStorage
         var attributes = plainAttributes
         if range.length > 0 {
@@ -859,13 +885,7 @@ final class ComposerBar: UIView {
         guard let sendable = CommandParser.sendable(plainText) else { return }
         let kept = textView.attributedText.attributedSubstring(
             from: NSRange(location: 0, length: (sendable as NSString).length))
-        let line = ComposerColors.wireLine(kept)
-        let draft = ComposerColors.draft(kept)
-        if line != draft {
-            sentDrafts.append((line, draft))
-            if sentDrafts.count > 8 { sentDrafts.removeFirst() }
-        }
-        onSend?(line)
+        onSend?(ComposerColors.line(kept))
     }
 
     /// A hardware Tab (Shift-Tab: `backward`) — the web composer's in-place completion
@@ -1022,6 +1042,7 @@ extension ComposerBar: UITextViewDelegate {
     }
 
     func textViewDidChange(_ textView: UITextView) {
+        cachedLine = nil
         if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }

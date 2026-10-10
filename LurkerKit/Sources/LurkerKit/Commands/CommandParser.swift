@@ -27,8 +27,11 @@ public enum CommandParser {
     /// ⚠ Only the PAYLOAD is rewritten. Anything showing the user their own line back — a
     /// failed-send notice, input history — must keep the TYPED text, so what they see and recall
     /// is `||…||` rather than raw control codes.
+    ///
+    /// A body the composer coloured has its spoilers made inside the colour (`ColorMarkup`);
+    /// anything else goes through `SpoilerMarkup.apply` unchanged.
     private static func chatBody(_ text: String) -> String {
-        SpoilerMarkup.apply(to: text)
+        ColorMarkup.chatBody(text)
     }
 
     /// The line a composer sends for `draft`, or nil when there's nothing to send (empty, or only
