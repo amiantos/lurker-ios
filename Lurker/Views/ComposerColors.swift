@@ -4,17 +4,18 @@
 import LurkerKit
 import UIKit
 
-extension NSAttributedString.Key {
-    /// The mIRC slot (`Int`, 0–15) a stretch of composer text is coloured with. The slot is the
-    /// truth and `.foregroundColor` only shows it: a colour can't be read back into a slot, and
-    /// the slot is what `ColorMarkup` writes on the wire.
-    static let ircForeground = NSAttributedString.Key("net.amiantos.lurker.ircForeground")
-    /// The slot behind it — the run's own fill, shown as `.backgroundColor`.
-    static let ircBackground = NSAttributedString.Key("net.amiantos.lurker.ircBackground")
-}
-
 /// Colour on composer text — the composer and the colour editor both keep it as attributes on
 /// their text, and convert to and from `ColorSpan` at the edges (`ColorMarkup`).
+///
+/// ⚠⚠ The slot is read back from the VISIBLE colour — `.foregroundColor` / `.backgroundColor`
+/// being one of the sixteen palette instances (`MessageRenderer.mircSlot`), compared by identity.
+/// It used to ride a custom attribute key beside them, and UIKit drops custom keys: a text view
+/// rebuilds its typing attributes from the previous character keeping only the keys it knows, so
+/// after the first keystroke the text stayed red on screen while the slot was gone, and the
+/// colour never reached the wire. Autocorrect's replace drops them too. The colour objects
+/// themselves survive typing, replacement, reassignment and an appearance change (measured on
+/// the simulator), so the one attribute is the whole truth and there's nothing to fall out of
+/// step with it.
 enum ComposerColors {
 
     /// Which half of a colour pair a pick sets.
@@ -34,8 +35,8 @@ enum ComposerColors {
         text.enumerateAttributes(in: NSRange(location: 0, length: text.length)) { attributes, range, _ in
             spans.append(ColorSpan(
                 string.substring(with: range),
-                fg: attributes[.ircForeground] as? Int,
-                bg: attributes[.ircBackground] as? Int))
+                fg: slot(.text, in: attributes),
+                bg: slot(.highlight, in: attributes)))
         }
         return spans
     }
@@ -53,7 +54,9 @@ enum ComposerColors {
 
     /// The slot `attributes` give `layer`, nil for none.
     static func slot(_ layer: Layer, in attributes: [NSAttributedString.Key: Any]) -> Int? {
-        attributes[layer == .text ? .ircForeground : .ircBackground] as? Int
+        guard let color = attributes[layer == .text ? .foregroundColor : .backgroundColor] as? UIColor
+        else { return nil }
+        return (0..<16).first { MessageRenderer.mircSlot($0) === color }
     }
 
     /// `attributes` with `layer` set to `slot` (nil takes it off), the other half kept.
@@ -63,12 +66,8 @@ enum ComposerColors {
         var out = attributes
         let color = slot.flatMap(MessageRenderer.mircSlot)
         switch layer {
-        case .text:
-            out[.ircForeground] = color == nil ? nil : slot
-            out[.foregroundColor] = color ?? UIColor.label
-        case .highlight:
-            out[.ircBackground] = color == nil ? nil : slot
-            out[.backgroundColor] = color
+        case .text: out[.foregroundColor] = color ?? UIColor.label
+        case .highlight: out[.backgroundColor] = color
         }
         return out
     }
@@ -77,21 +76,15 @@ enum ComposerColors {
     static func apply(_ slot: Int?, layer: Layer, to range: NSRange, in text: NSMutableAttributedString) {
         guard range.length > 0 else { return }
         let color = slot.flatMap(MessageRenderer.mircSlot)
-        let (key, visual): (NSAttributedString.Key, NSAttributedString.Key) =
-            layer == .text ? (.ircForeground, .foregroundColor) : (.ircBackground, .backgroundColor)
-        text.beginEditing()
-        if let slot, let color {
-            text.addAttribute(key, value: slot, range: range)
-            text.addAttribute(visual, value: color, range: range)
-        } else {
-            text.removeAttribute(key, range: range)
-            if layer == .text {
-                text.addAttribute(visual, value: UIColor.label, range: range)
+        switch layer {
+        case .text: text.addAttribute(.foregroundColor, value: color ?? UIColor.label, range: range)
+        case .highlight:
+            if let color {
+                text.addAttribute(.backgroundColor, value: color, range: range)
             } else {
-                text.removeAttribute(visual, range: range)
+                text.removeAttribute(.backgroundColor, range: range)
             }
         }
-        text.endEditing()
     }
 
     /// `text` in `font` throughout — the editor writes larger than the composer, and colour is

@@ -952,6 +952,9 @@ enum MessageRenderer {
 
     /// A palette slot's colour (0–15), as the list paints it — for the composer's colour editor,
     /// which has to show a message in the colours it will be read in.
+    ///
+    /// ⚠ The SAME instance on every call, and the composer depends on it: it reads a slot back by
+    /// identity with these (`ComposerColors.slot`).
     static func mircSlot(_ index: Int) -> UIColor? {
         ircColor(.slot(index))
     }
