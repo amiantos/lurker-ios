@@ -28,8 +28,13 @@ final class ColorEditorViewController: UIViewController {
         let typing: (fg: Int?, bg: Int?)?
     }
 
-    /// Every edit, colour pick and caret move, for the composer to mirror.
+    /// Every edit and colour pick, for the composer to mirror. Never mid-composition: an IME's
+    /// marked text isn't written yet, and mirrored it would be saved and synced as if it were.
     var onChange: ((Result) -> Void)?
+    /// A caret move — cheap to mirror, since the text hasn't changed.
+    var onSelect: ((Result) -> Void)?
+    /// An edit `onChange` held back while an IME was composing, owed once it commits.
+    private var owesChange = false
     /// Done: for the composer to take back.
     var onDone: ((Result) -> Void)?
     /// Send: the same, then send it.
@@ -122,25 +127,35 @@ final class ColorEditorViewController: UIViewController {
             location: location, length: min(initialSelection.length, length - location))
         textView.becomeFirstResponder()
         if textView.selectedRange.length == 0 {
-            var typing = textView.typingAttributes
-            typing = ComposerColors.applying(initialTyping.fg, layer: .text, to: typing)
-            typing = ComposerColors.applying(initialTyping.bg, layer: .highlight, to: typing)
-            textView.typingAttributes = typing
+            textView.typingAttributes = ComposerColors.applying(initialTyping, to: textView.typingAttributes)
         }
         refreshPicks()
         // Placing the caret above already told the composer, before the pending colour was back.
-        onChange?(result)
+        onSelect?(result)
     }
 
     /// Take in a change the composer made while this was open, keeping the caret where the
     /// composer put it — which is where this one was, since every move is mirrored there.
+    ///
+    /// ⚠ The undo stack goes: every step in it names a range in the text it was made against,
+    /// and replayed against this one it would recolour the wrong words — or, on a shorter text,
+    /// raise out of range and crash.
+    ///
+    /// ⚠ A colour picked at a bare caret and not yet typed with survives: assigning the text
+    /// rebuilds the typing attributes from the characters, which would drop it.
     func adopt(_ text: NSAttributedString, selection: NSRange) {
         guard isViewLoaded else { return }
+        let pending = textView.selectedRange.length == 0 ? ComposerColors.colors(in: textView.typingAttributes) : nil
         textView.attributedText = ComposerColors.restyled(text, font: Self.font)
+        textView.undoManager?.removeAllActions()
         let length = textView.attributedText.length
         let location = min(selection.location, length)
         textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
+        if let pending, textView.selectedRange.length == 0 {
+            textView.typingAttributes = ComposerColors.applying(pending, to: textView.typingAttributes)
+        }
         refreshPicks()
+        onSelect?(result)
     }
 
     // MARK: - Panel
@@ -245,24 +260,34 @@ final class ColorEditorViewController: UIViewController {
 
     private var result: Result {
         let selection = textView.selectedRange
-        let typing = textView.typingAttributes
         return Result(
             text: textView.attributedText ?? NSAttributedString(),
             selection: selection,
-            typing: selection.length == 0
-                ? (ComposerColors.slot(.text, in: typing), ComposerColors.slot(.highlight, in: typing))
-                : nil)
+            typing: selection.length == 0 ? ComposerColors.colors(in: textView.typingAttributes) : nil)
     }
 }
 
 extension ColorEditorViewController: UITextViewDelegate {
     func textViewDidChange(_ textView: UITextView) {
+        guard textView.markedTextRange == nil else {
+            owesChange = true
+            return
+        }
+        owesChange = false
         onChange?(result)
     }
 
+    /// A commit that leaves the text as it was (romaji `ka` committed as typed) changes no text,
+    /// so `textViewDidChange` may not hear it — but the marked range went away, which lands here.
     func textViewDidChangeSelection(_ textView: UITextView) {
         refreshPicks()
-        onChange?(result)
+        guard textView.markedTextRange == nil else { return }
+        if owesChange {
+            owesChange = false
+            onChange?(result)
+        } else {
+            onSelect?(result)
+        }
     }
 }
 

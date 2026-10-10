@@ -375,6 +375,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.onAttach = { [weak self] in self?.attach(from: $0) }
         composer.canAttach = { [weak self] in self.map { $0.takesUploads && !$0.isUploadBusy } ?? false }
         composer.onEditColor = { [weak self] in self?.presentColorEditor() }
+        // Asked, so an editor dismissed without Done (a notification tap) uncovers it too: the
+        // reference is weak, and the editor goes with its presentation.
+        composer.isCovered = { [weak self] in self?.colorEditor?.viewIfLoaded?.window != nil }
         composer.onExternalChange = { [weak self] in
             guard let self, let colorEditor else { return }
             colorEditor.adopt(composer.attributedDraft, selection: composer.draftSelection)
@@ -2459,6 +2462,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         editor.onChange = { [weak self] result in
             self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
         }
+        editor.onSelect = { [weak self] result in
+            self?.composer.mirrorSelection(result.selection, typing: result.typing)
+        }
         editor.onDone = { [weak self, weak editor] result in
             self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
             self?.endColorEditing()
@@ -2471,7 +2477,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             editor?.dismiss(animated: true) { self?.composer.send() }
         }
         colorEditor = editor
-        composer.isCovered = true
         let sheet = UINavigationController(rootViewController: editor)
         sheet.modalPresentationStyle = .fullScreen
         present(sheet, animated: true)
@@ -2479,7 +2484,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     private func endColorEditing() {
         colorEditor = nil
-        composer.isCovered = false
     }
 
     /// Build the picker and start it — but only once a source is actually chosen. Setting

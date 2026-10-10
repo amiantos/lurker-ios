@@ -63,7 +63,8 @@ public enum ColorMarkup {
     /// - any formatting but palette colour, including a slot outside 0–15 that no text follows;
     /// - a code inside the bare head (`encode`): `\x0304/me waves` is red TEXT, and `/j\x0304oin`
     ///   is an unknown command — shown without its code, either would send as a different line;
-    /// - colour on a command that has no chat body, which `encode` would drop.
+    /// - any code at all on a command that has no chat body: `encode` would drop its colour, and
+    ///   a reset in front of the slash (`\x03/quit bye`) is what makes that line text.
     ///
     /// `\x0F` is accepted: with nothing but colour in play it is a colour reset. Slot 99 (IRC's
     /// "default") reads as no colour.
@@ -71,7 +72,7 @@ public enum ColorMarkup {
         guard let spans = colorSpans(line) else { return nil }
         let text = spans.map(\.text).joined()
         guard text != line else { return spans }
-        guard let bare = bareHead(of: text) else { return isColored(spans) ? nil : spans }
+        guard let bare = bareHead(of: text) else { return nil }
         // The line has to open with the head exactly — no code before it or inside it.
         guard line.hasPrefix(String(text.prefix(bare))) else { return nil }
         return spans
@@ -105,10 +106,13 @@ public enum ColorMarkup {
         }
         // `\||` reads as a literal `||`: the backslash goes.
         dropped.formUnion(layout.escapes)
+        // Each box opens on its own, so `||a||||b||` stays two boxes as `apply` makes it — two
+        // touching runs in one colour would otherwise be written as one.
+        let opens = Set(layout.spoilers.map { $0.open + 2 })
         var out: [Cell] = []
         for (index, cell) in body.enumerated() where !dropped.contains(index) {
             out.append(hidden.contains(index)
-                ? Cell(char: cell.char, fg: SpoilerMarkup.slot, bg: SpoilerMarkup.slot)
+                ? Cell(char: cell.char, fg: SpoilerMarkup.slot, bg: SpoilerMarkup.slot, opensBox: opens.contains(index))
                 : cell)
         }
         return write(out)
@@ -122,6 +126,9 @@ public enum ColorMarkup {
         var char: Character
         var fg: Int?
         var bg: Int?
+        /// The first character of a spoiler box, which is closed and reopened even when the box
+        /// before it touches it.
+        var opensBox = false
     }
 
     private static func cells(of spans: [ColorSpan]) -> [Cell] {
@@ -134,35 +141,14 @@ public enum ColorMarkup {
     /// text follows (`…\x0342`) makes no run, and checking runs alone would accept the line and
     /// silently drop the colour it leaves in effect.
     private static func colorSpans(_ line: String) -> [ColorSpan]? {
-        let scalars = Array(line.unicodeScalars)
-        var i = 0
-        while i < scalars.count {
-            switch scalars[i].value {
-            case 0x02, 0x04, 0x11, 0x16, 0x1D, 0x1E, 0x1F:
-                return nil
-            case 0x03:
-                i += 1
-                var slots: [Int] = []
-                var digits = ""
-                while digits.count < 2, i < scalars.count, isDigit(scalars[i]) {
-                    digits.unicodeScalars.append(scalars[i]); i += 1
-                }
-                if let fg = Int(digits) {
-                    slots.append(fg)
-                    if i + 1 < scalars.count, scalars[i] == ",", isDigit(scalars[i + 1]) {
-                        i += 1
-                        var bg = ""
-                        while bg.count < 2, i < scalars.count, isDigit(scalars[i]) {
-                            bg.unicodeScalars.append(scalars[i]); i += 1
-                        }
-                        slots.append(Int(bg) ?? 99)
-                    }
-                }
-                guard slots.allSatisfy({ (0...15).contains($0) || $0 == 99 }) else { return nil }
-            default:
-                i += 1
+        for scalar in line.unicodeScalars {
+            switch scalar.value {
+            case 0x02, 0x04, 0x11, 0x16, 0x1D, 0x1E, 0x1F: return nil
+            default: continue
             }
         }
+        guard IRCFormatting.colorSlots(in: line).allSatisfy({ (0...15).contains($0) || $0 == 99 })
+        else { return nil }
         var spans: [ColorSpan] = []
         for run in IRCFormatting.parse(line) {
             let fg = slot(run.fg), bg = slot(run.bg)
@@ -174,8 +160,6 @@ public enum ColorMarkup {
         }
         return spans
     }
-
-    private static func isDigit(_ scalar: Unicode.Scalar) -> Bool { (0x30...0x39).contains(scalar.value) }
 
     /// A slot `colorSpans` already vetted: 0–15 as itself, 99 as no colour.
     private static func slot(_ color: IRCColor?) -> Int? {
@@ -204,7 +188,7 @@ public enum ColorMarkup {
 
     private static func opensWithCommaDigit(_ text: String) -> Bool {
         let scalars = Array(text.unicodeScalars.prefix(2))
-        return scalars.count == 2 && scalars[0] == "," && isDigit(scalars[1])
+        return scalars.count == 2 && scalars[0] == "," && (0x30...0x39).contains(scalars[1].value)
     }
 
     /// How many leading characters stay bare, or nil when the line is a command with no chat body,
@@ -228,7 +212,8 @@ public enum ColorMarkup {
         case "msg", "query", "notice": bare = 1
         case "topic", "part", "leave", "p": bare = channelFirst ? 1 : 0
         case "kick": bare = channelFirst ? 2 : 1
-        case "away": bare = words.prefix { $0.hasPrefix("-") }.count
+        // `CommandParser.awayFlag`: one leading `-all` or `-one`, and nothing else is a flag.
+        case "away": bare = words.first.map { ["-all", "-one"].contains($0.lowercased()) } == true ? 1 : 0
         default: return nil
         }
         // The verb, then each bare word with the whitespace after it: a code welded onto the end
@@ -269,6 +254,10 @@ public enum ColorMarkup {
                 continue
             }
             let state = (fg: cell.fg, bg: cell.bg)
+            if cell.opensBox, state == current {
+                out += SpoilerMarkup.close
+                current = (nil, nil)
+            }
             if state != current {
                 // What follows the code — what the digit and comma traps look at.
                 var run = ""

@@ -59,6 +59,18 @@ enum ComposerColors {
         return (0..<16).first { MessageRenderer.mircSlot($0) === color }
     }
 
+    /// Both halves at once — the colour a caret is typing in, as the composer and the editor
+    /// hand it to each other.
+    static func colors(in attributes: [NSAttributedString.Key: Any]) -> (fg: Int?, bg: Int?) {
+        (slot(.text, in: attributes), slot(.highlight, in: attributes))
+    }
+
+    static func applying(
+        _ colors: (fg: Int?, bg: Int?), to attributes: [NSAttributedString.Key: Any]
+    ) -> [NSAttributedString.Key: Any] {
+        applying(colors.bg, layer: .highlight, to: applying(colors.fg, layer: .text, to: attributes))
+    }
+
     /// `attributes` with `layer` set to `slot` (nil takes it off), the other half kept.
     static func applying(
         _ slot: Int?, layer: Layer, to attributes: [NSAttributedString.Key: Any]

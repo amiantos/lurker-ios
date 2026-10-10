@@ -134,9 +134,11 @@ final class ComposerBar: UIView {
     /// finished upload's link — so the colour editor, while it's open, can take the change in.
     var onExternalChange: (() -> Void)?
 
-    /// Set while the colour editor covers the composer: the editor is where the user is writing,
-    /// so nothing here may take the keyboard — a finished upload's link lands without it.
-    var isCovered = false
+    /// Whether the colour editor covers the composer: the editor is where the user is writing,
+    /// so nothing here may take the keyboard — a finished upload's link lands without it. Asked,
+    /// not stored, so an editor dismissed some other way than Done (a notification tap) can't
+    /// leave it set.
+    var isCovered: (() -> Bool)?
 
     /// The field as `onEdit` last saw it, so a re-measure or a caret move isn't an edit.
     private var lastEdit = (text: "", composing: false)
@@ -569,8 +571,7 @@ final class ComposerBar: UIView {
     /// The colour the next keystroke writes in — handed to the colour editor so a pick made
     /// there and not yet typed with is still the pick when it opens again.
     var typingColors: (fg: Int?, bg: Int?) {
-        let attributes = textView.typingAttributes
-        return (ComposerColors.slot(.text, in: attributes), ComposerColors.slot(.highlight, in: attributes))
+        ComposerColors.colors(in: textView.typingAttributes)
     }
 
     /// The characters in the field, without colour — what completion, the typing signal and the
@@ -594,13 +595,17 @@ final class ComposerBar: UIView {
         let length = textView.attributedText.length
         let location = min(selection.location, length)
         textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
-        if let typing {
-            var attributes = plainAttributes
-            attributes = ComposerColors.applying(typing.fg, layer: .text, to: attributes)
-            attributes = ComposerColors.applying(typing.bg, layer: .highlight, to: attributes)
-            textView.typingAttributes = attributes
-        }
+        if let typing { textView.typingAttributes = ComposerColors.applying(typing, to: plainAttributes) }
         textViewDidChange(textView)
+    }
+
+    /// Mirror the colour editor's caret, so a finished upload's link lands where the user is
+    /// writing there. Cheap, unlike `replaceDraft`: the text is already the same.
+    func mirrorSelection(_ selection: NSRange, typing: (fg: Int?, bg: Int?)?) {
+        let length = textView.attributedText.length
+        let location = min(selection.location, length)
+        textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
+        if let typing { textView.typingAttributes = ComposerColors.applying(typing, to: plainAttributes) }
     }
 
     /// Send what's in the field, as the button would — the colour editor's own Send.
@@ -740,7 +745,7 @@ final class ComposerBar: UIView {
         let caretWasTrailing = resumeAt.length == 0 && resumeAt.location >= current.length
         replaceToken(range, with: payload)
         if atCaret {
-            if !isCovered { becomeFirstResponder() }
+            if isCovered?() != true { becomeFirstResponder() }
         } else if !caretWasTrailing, resumeAt.upperBound <= (textView.text as NSString).length {
             textView.selectedRange = resumeAt
         }

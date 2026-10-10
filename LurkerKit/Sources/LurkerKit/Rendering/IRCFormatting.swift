@@ -103,23 +103,17 @@ public enum IRCFormatting {
                 i += 1
             case 0x03: // color: \x03[FG[,BG]]
                 flush()
-                i += 1
-                let (foreground, consumed) = readDigits(scalars, from: i)
-                if foreground == nil {
+                let code = readColorCode(scalars, at: i)
+                i = code.end
+                if let foreground = code.fg {
+                    fg = .slot(foreground)
+                    // A bare FG (no ,BG) leaves the existing bg untouched.
+                    if let background = code.bg { bg = .slot(background) }
+                    continue
+                } else {
                     // Bare \x03 resets both foreground and background.
                     fg = nil
                     bg = nil
-                } else {
-                    fg = foreground.map(IRCColor.slot)
-                    i = consumed
-                    // Optional ,BG. A bare FG (no ,BG) leaves the existing bg untouched.
-                    if i + 1 < scalars.count, scalars[i].value == 0x2C, isDigit(scalars[i + 1]) {
-                        i += 1 // consume comma
-                        let (background, afterBg) = readDigits(scalars, from: i)
-                        bg = background.map(IRCColor.slot)
-                        i = afterBg
-                    }
-                    continue
                 }
             case 0x04: // truecolour: \x04[RRGGBB[,RRGGBB]]
                 flush()
@@ -228,6 +222,36 @@ public enum IRCFormatting {
 
     /// Read up to two ASCII digits from `start`; returns the value (nil if none) and the
     /// index just past them.
+    /// Every slot a `\x03` code in `text` names, in order — including codes no text follows,
+    /// which `parse` makes no run for. Read by the same scanner `parse` uses, so the two agree on
+    /// what a code is (`ColorMarkup.decode` vets slots with this).
+    static func colorSlots(in text: String) -> [Int] {
+        let scalars = Array(text.unicodeScalars)
+        var slots: [Int] = []
+        var i = 0
+        while i < scalars.count {
+            guard scalars[i].value == 0x03 else { i += 1; continue }
+            let code = readColorCode(scalars, at: i)
+            slots += [code.fg, code.bg].compactMap { $0 }
+            i = code.end
+        }
+        return slots
+    }
+
+    /// The `\x03[FG[,BG]]` at `start` (which is the `\x03`): its slots, nil for a part it
+    /// doesn't have, and where the text after it begins. A comma is part of the code only with a
+    /// digit after it.
+    private static func readColorCode(
+        _ scalars: [Unicode.Scalar], at start: Int
+    ) -> (fg: Int?, bg: Int?, end: Int) {
+        let (foreground, afterFg) = readDigits(scalars, from: start + 1)
+        guard foreground != nil else { return (nil, nil, start + 1) }
+        guard afterFg + 1 < scalars.count, scalars[afterFg].value == 0x2C, isDigit(scalars[afterFg + 1])
+        else { return (foreground, nil, afterFg) }
+        let (background, afterBg) = readDigits(scalars, from: afterFg + 1)
+        return (foreground, background, afterBg)
+    }
+
     private static func readDigits(_ scalars: [Unicode.Scalar], from start: Int) -> (Int?, Int) {
         var digits = ""
         var i = start

@@ -92,6 +92,8 @@ final class ColorMarkupTests: XCTestCase {
         XCTAssertEqual(ColorMarkup.encode([ColorSpan("/kick bob out", fg: 4)]), "/kick bob \u{3}04out")
         XCTAssertEqual(ColorMarkup.encode([ColorSpan("/kick #c bob out", fg: 4)]), "/kick #c bob \u{3}04out")
         XCTAssertEqual(ColorMarkup.encode([ColorSpan("/away -all lunch", fg: 4)]), "/away -all \u{3}04lunch")
+        // Only `-all` and `-one` are flags; anything else is the message.
+        XCTAssertEqual(ColorMarkup.encode([ColorSpan("/away -_- brb", fg: 4)]), "/away \u{3}04-_- brb")
     }
 
     /// Any other command has no chat body, so it goes out exactly as typed.
@@ -112,6 +114,13 @@ final class ColorMarkupTests: XCTestCase {
         XCTAssertEqual(reads(sent([ColorSpan("a ||"), ColorSpan("x", fg: 4), ColorSpan("|| 5")])), [
             ColorSpan("a "), ColorSpan("x", fg: 14, bg: 14), ColorSpan(" 5"),
         ])
+    }
+
+    /// Two touching spoilers are two boxes, as the plain rewrite makes them.
+    func testTouchingSpoilersStaySeparate() {
+        let wire = sent([ColorSpan("||a||||b||", fg: 4)])
+        XCTAssertEqual(wire, "\u{3}14,14a\u{3}\u{3}14,14b")
+        XCTAssertEqual(IRCFormatting.strip(wire), IRCFormatting.strip(SpoilerMarkup.apply(to: "||a||||b||")))
     }
 
     /// The draft keeps `||` as typed — spoilers are made on the way out, not in the field.
@@ -199,6 +208,10 @@ final class ColorMarkupTests: XCTestCase {
     /// A command with no chat body can't keep colour, so a coloured one stays raw.
     func testDeclinesColourOnACommandWithoutABody() {
         XCTAssertNil(ColorMarkup.decode("/join \u{3}04#x"))
+        // A reset changes no colour, but in front of the slash it's what makes the line text.
+        XCTAssertNil(ColorMarkup.decode("\u{3}/join #x"))
+        XCTAssertNil(ColorMarkup.decode("\u{F}/quit bye"))
+        XCTAssertNil(ColorMarkup.decode("/j\u{3}oin #x"))
         XCTAssertEqual(ColorMarkup.decode("/join #x"), [ColorSpan("/join #x")])
     }
 
