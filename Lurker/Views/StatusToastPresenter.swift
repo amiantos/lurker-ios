@@ -92,6 +92,7 @@ final class StatusToastPresenter {
         guard active != nil else { return }
         stopTimer()
         queue.requeueActive()
+        onChange()
     }
 
     /// Take everything down: the surface is going away.
@@ -105,6 +106,16 @@ final class StatusToastPresenter {
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
+    }
+}
+
+extension UIViewController {
+    /// In a window with nothing presented over it — where a toast on this screen can be seen. A
+    /// sheet (a conversation's info, Settings, the color editor) covers it.
+    var isUncovered: Bool {
+        view.window != nil && presentedViewController == nil
+            && navigationController?.presentedViewController == nil
+            && splitViewController?.presentedViewController == nil
     }
 }
 

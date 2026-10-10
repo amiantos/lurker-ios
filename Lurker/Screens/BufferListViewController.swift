@@ -350,6 +350,7 @@ final class BufferListViewController: UICollectionViewController {
         toasts.isVisible = { [weak self] in self?.showsToasts ?? false }
         toasts.onChange = { [weak self] in
             guard let self else { return }
+            if toasts.active != nil { view.bringSubviewToFront(notificationToast) }
             notificationToast.render(toasts.active)
         }
         // The capsule appearing isn't announced on its own.
@@ -359,10 +360,7 @@ final class BufferListViewController: UICollectionViewController {
         }
         notificationToast.onTap = { [weak self] in
             guard let self, case .notification(let notification)? = toasts.takeActive() else { return }
-            navigationController?.showBuffer(
-                viewModel.state.buffer(for: notification.key), viewModel: viewModel,
-                jumpTo: notification.messageId > 0 ? notification.messageId : nil, animated: true
-            )
+            navigationController?.showNotification(notification, viewModel: viewModel)
             toasts.presentNext()
         }
         NotificationCenter.default.addObserver(
@@ -461,6 +459,9 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Passing news: not carried over the screen arriving, nor still up, for a buffer just
+        // visited, when you come back.
+        toasts.clear()
         refreshBanner()
         if usesBottomSearchBar { navigationController?.setToolbarHidden(true, animated: animated) }
     }
@@ -468,19 +469,24 @@ final class BufferListViewController: UICollectionViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         isOnScreen = false
-        // Passing news: not still up, for a buffer just visited, when you come back.
-        toasts.clear()
+    }
+
+    /// ⚠ A toast that takes touches has to be the collection view's LAST subview, not just drawn
+    /// on top: hit-testing goes by subview order, which `zPosition` doesn't change, and cells are
+    /// inserted above it as they're dequeued — so a tap on the capsule would select the row
+    /// under it. Kept in front through every scroll while it's up.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if toasts.active != nil, view.subviews.last !== notificationToast {
+            view.bringSubviewToFront(notificationToast)
+        }
     }
 
     /// Whether this list is where an in-app notification goes: on screen, uncovered, and with no
-    /// conversation beside it — one there shows it in its status row instead.
+    /// conversation beside it — one there shows it in its status row instead. Side by side there
+    /// always is one (the system buffer at rest), so that's `marksOpenBuffer`.
     private var showsToasts: Bool {
-        isOnScreen && view.window != nil
-            && navigationController?.topViewController === self
-            && presentedViewController == nil
-            && navigationController?.presentedViewController == nil
-            && splitViewController?.presentedViewController == nil
-            && ChatViewController.activeChat()?.view.window == nil
+        isOnScreen && isUncovered && navigationController?.topViewController === self && !marksOpenBuffer
     }
 
     @objc private func toastCenterChanged(_ note: Notification) {
@@ -870,6 +876,8 @@ final class BufferListViewController: UICollectionViewController {
         didSet {
             guard marksOpenBuffer != oldValue else { return }
             markingChanged()
+            // A conversation came up beside the list, and takes the toasts from here on.
+            if marksOpenBuffer { toasts.clear() }
             // The banner yields to the conversation column's whenever there is one, so this
             // flag flipping is exactly when that answer changes.
             refreshBanner()
