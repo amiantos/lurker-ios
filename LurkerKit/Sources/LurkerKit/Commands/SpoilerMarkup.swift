@@ -16,7 +16,9 @@
 /// for black on dark and 1.1:1 for white on light). Keep in step with the web; a spoiler that
 /// looks different in each client is the drift this port exists to avoid.
 public enum SpoilerMarkup {
-    static let open = "\u{3}14,14"
+    /// The box's colour, grey on grey. `ColorMarkup.chatBody` paints its boxes from this too.
+    static let slot = 14
+    static let open = "\u{3}\(slot),\(slot)"
     static let close = "\u{3}"
 
     /// The close to use when the very next character is a digit.
@@ -47,92 +49,104 @@ public enum SpoilerMarkup {
     /// colour parser will touch, so using it would spend the heavier close (and 99's
     /// less-universal semantics) on text that never needed it — most often Arabic, Persian or
     /// Devanagari, which is a poor place to be needlessly clever.
+    ///
+    /// ⚠ The first SCALAR, not the character. The parser reads scalars, and a keycap `1️⃣` is one
+    /// Character that isn't ASCII but opens with an ASCII `1` — which a bare close would read as
+    /// colour 1, eating the digit and breaking the emoji. (The web's `/^\d/` sees the `1`.)
     static func close(before next: Character?) -> String {
-        guard let next, next.isASCII, next.isNumber else { return close }
+        guard let first = next?.unicodeScalars.first, (0x30...0x39).contains(first.value) else { return close }
         return closeBeforeDigit
     }
 
-    private enum Token {
-        case text(String)
-        case delimiter
+    /// How `apply` reads `text`, by position: where each `||` pair that makes a spoiler sits,
+    /// which `||` stay literal, and where the `\||` escapes are. Character offsets.
+    ///
+    /// Positional rather than a rewrite so a second writer can make the SAME spoilers out of the
+    /// same text: `ColorMarkup.chatBody` builds them itself on a coloured body, where the user's
+    /// colour has to stop at the box and resume after it, which a bare-close rewrite can't do.
+    /// Both read this, so the two can't disagree about what is a spoiler.
+    struct Layout {
+        /// The opening and closing `||` of each spoiler, by the offset of its first `|`.
+        var spoilers: [(open: Int, close: Int)] = []
+        /// `||` that stay as text — unmatched, or an empty `||||`.
+        var literals: [Int] = []
+        /// `\||` escapes, by the offset of the backslash.
+        var escapes: [Int] = []
     }
 
-    /// Split into literal-text and `||`-delimiter tokens, resolving `\||` escapes into a literal
-    /// `||` inside the text tokens as we go.
-    ///
     /// `\||` is the only sequence treated specially, and there is deliberately no escape for the
     /// backslash itself: a lone `\` is always literal, so `path\to\file` needs no thought from
     /// the user. The cost is that a literal `\||` cannot be written — judged the better trade,
     /// since `||` is far commoner in real text than `\||`.
-    private static func tokenize(_ text: String) -> [Token] {
-        var tokens: [Token] = []
-        var buffer = ""
-        let chars = Array(text)
-        var i = 0
-        while i < chars.count {
-            if chars[i] == "\\", i + 2 < chars.count, chars[i + 1] == "|", chars[i + 2] == "|" {
-                buffer += "||"
-                i += 3
-                continue
-            }
-            if chars[i] == "|", i + 1 < chars.count, chars[i + 1] == "|" {
-                if !buffer.isEmpty {
-                    tokens.append(.text(buffer))
-                    buffer = ""
-                }
-                tokens.append(.delimiter)
-                i += 2
-                continue
-            }
-            buffer.append(chars[i])
-            i += 1
-        }
-        if !buffer.isEmpty { tokens.append(.text(buffer)) }
-        return tokens
-    }
-
-    /// Rewrite every `||spoiler||` pair into IRC spoiler codes.
     ///
     /// Pairing is non-greedy — the nearest closing `||` wins, so `||a||b||c||` is a spoiler, a
     /// literal `b`, then another spoiler — and an empty pair (`||||`) is left literal. Both match
     /// how Discord treats them, which is where users' expectations come from.
+    static func layout(_ chars: [Character]) -> Layout {
+        var layout = Layout()
+        var delimiters: [Int] = []
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "\\", i + 2 < chars.count, chars[i + 1] == "|", chars[i + 2] == "|" {
+                layout.escapes.append(i)
+                i += 3
+            } else if chars[i] == "|", i + 1 < chars.count, chars[i + 1] == "|" {
+                delimiters.append(i)
+                i += 2
+            } else {
+                i += 1
+            }
+        }
+        var d = 0
+        while d < delimiters.count {
+            // Something between the two — an escape counts — or the opener is just text.
+            if d + 1 < delimiters.count, delimiters[d + 1] > delimiters[d] + 2 {
+                layout.spoilers.append((delimiters[d], delimiters[d + 1]))
+                d += 2
+            } else {
+                layout.literals.append(delimiters[d])
+                d += 1
+            }
+        }
+        return layout
+    }
+
+    /// Rewrite every `||spoiler||` pair into IRC spoiler codes, and each `\||` into a literal `||`.
     ///
     /// ⚠ Apply this to a user-authored CHAT body only, and opt in per command — see the note on
     /// `CommandParser`. It must never become something a shared send helper does to everything.
     public static func apply(to text: String) -> String {
         guard text.contains("||") else { return text }
-        let tokens = tokenize(text)
+        let chars = Array(text)
+        let layout = layout(chars)
+        let opens = Dictionary(uniqueKeysWithValues: layout.spoilers.map { ($0.open, $0.close) })
+        let escapes = Set(layout.escapes)
+        /// The character at `i` as it will read — an escape reads as `|`. Nil for a delimiter or
+        /// the end, neither of which can be a digit.
+        func reads(at i: Int) -> Character? {
+            guard i < chars.count else { return nil }
+            if escapes.contains(i) { return "|" }
+            if chars[i] == "|", i + 1 < chars.count, chars[i + 1] == "|" { return nil }
+            return chars[i]
+        }
         var out = ""
         var i = 0
-        while i < tokens.count {
-            guard case .delimiter = tokens[i] else {
-                if case .text(let value) = tokens[i] { out += value }
-                i += 1
-                continue
-            }
-            // An opening `||`: gather everything up to the next delimiter.
-            var content = ""
-            var closeIndex = -1
-            for j in (i + 1)..<tokens.count {
-                if case .delimiter = tokens[j] {
-                    closeIndex = j
-                    break
-                }
-                if case .text(let value) = tokens[j] { content += value }
-            }
-            if closeIndex != -1, !content.isEmpty {
+        var closeAt: Int?
+        while i < chars.count {
+            if let close = opens[i] {
+                out += open
+                closeAt = close
+                i += 2
+            } else if i == closeAt {
                 // What follows the spoiler decides how it has to be closed — see `close(before:)`.
-                // The next character is the first of the next text token, if there is one; a
-                // delimiter or the end of the message can't be a digit.
-                var next: Character?
-                if closeIndex + 1 < tokens.count, case .text(let following) = tokens[closeIndex + 1] {
-                    next = following.first
-                }
-                out += open + content + close(before: next)
-                i = closeIndex + 1
-            } else {
-                // Unmatched, or an empty `||||` — the opening `||` is just literal text.
+                out += close(before: reads(at: i + 2))
+                closeAt = nil
+                i += 2
+            } else if escapes.contains(i) {
                 out += "||"
+                i += 3
+            } else {
+                out.append(chars[i])
                 i += 1
             }
         }

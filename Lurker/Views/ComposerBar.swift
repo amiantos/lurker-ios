@@ -5,12 +5,12 @@ import LurkerKit
 import UIKit
 
 /// The message composer, in the shape Messages uses: a glass field that grows with the
-/// text, flanked by a paperclip and a round send button. It floats over the conversation
+/// text, beside a round send button. It floats over the conversation
 /// rather than sitting on an opaque bar — the same iOS 26 glass the nav bar
 /// uses — so the messages scroll *under* it and off the bottom of the screen.
 ///
-/// The three pieces live in one `UIGlassContainerEffect`, which gives them a shared
-/// sampling region: at rest they read as three separate pills, but interacting with one
+/// The pieces live in one `UIGlassContainerEffect`, which gives them a shared
+/// sampling region: at rest they read as separate pills, but interacting with one
 /// bleeds its glass toward its neighbors instead of each sitting in its own sealed pane.
 /// That grouping is why the field and buttons are each a `UIVisualEffectView` with its own
 /// `UIGlassEffect` rather than glass-configured `UIButton`s — a glass button doesn't join
@@ -21,6 +21,17 @@ import UIKit
 /// so a multi-line message is something you can actually type; "Enter to send"
 /// (lurker-android#64) makes Return send instead. A hardware keyboard's Enter always sends and
 /// Shift-Enter starts a line (lurker-android#63) — there's a Shift key to ask for the newline with.
+///
+/// **The send button is also the composer's menu.** Attaching and colouring used to need a
+/// paperclip pill of their own; now a long press on Send offers them, and over an empty field —
+/// where there's nothing to send, and where you'd start an attachment — the button turns into a
+/// `+` that opens the menu on a plain tap.
+///
+/// **Colour is WYSIWYG.** It lives on the field's text as attributes (`ComposerColors`) and is
+/// written out as `\x03` codes only when the line leaves — `text`, which is what sends and what
+/// syncs as the draft. No code is ever a character in the field, so none can be half-deleted.
+/// That's why every programmatic edit here splices through the text storage rather than
+/// assigning `textView.text`, which would strip the colour off the whole line.
 final class ComposerBar: UIView {
 
     /// Called with the line to send (`CommandParser.sendable`) when the send button is tapped, or a
@@ -28,8 +39,21 @@ final class ComposerBar: UIView {
     /// The bar does not clear itself — the owner does, once the send is accepted, via `clear()`.
     var onSend: ((String) -> Void)?
 
-    /// Tapped the paperclip.
-    var onAttach: (() -> Void)?
+    /// Where an attachment comes from, as the send menu offers it.
+    enum AttachSource {
+        case photoLibrary
+        case camera
+        case files
+    }
+
+    /// Picked an attachment source from the send menu.
+    var onAttach: ((AttachSource) -> Void)?
+    /// Whether an attachment can start now — asked as the menu opens, so the items grey out
+    /// while one is already uploading rather than doing nothing when picked.
+    var canAttach: (() -> Bool)?
+    /// Picked Edit Color. The owner presents the editor; it hands the text back through
+    /// `replaceDraft`.
+    var onEditColor: (() -> Void)?
 
     /// Pasted an image into the field (#14) — original bytes, mime, filename. The owner
     /// uploads it; the composer never drops the image inline.
@@ -101,6 +125,21 @@ final class ComposerBar: UIView {
     /// Set while `restore(_:)` is putting a refused line back — see its note.
     private var isRestoring = false
 
+    /// `text`, written once per edit rather than per read — it's read several times a keystroke
+    /// (the edit check, the draft save), and writing it walks the whole field. Dropped in
+    /// `textViewDidChange`, which every change to the field goes through.
+    private var cachedLine: String?
+
+    /// Fired after the field changes for a reason that isn't the user typing in it — a restore, a
+    /// finished upload's link — so the colour editor, while it's open, can take the change in.
+    var onExternalChange: (() -> Void)?
+
+    /// Whether the colour editor covers the composer: the editor is where the user is writing,
+    /// so nothing here may take the keyboard — a finished upload's link lands without it. Asked,
+    /// not stored, so an editor dismissed some other way than Done (a notification tap) can't
+    /// leave it set.
+    var isCovered: (() -> Bool)?
+
     /// The field as `onEdit` last saw it, so a re-measure or a caret move isn't an edit.
     private var lastEdit = (text: "", composing: false)
 
@@ -108,27 +147,25 @@ final class ComposerBar: UIView {
         didSet { placeholderLabel.text = placeholder }
     }
 
-    /// Whether the paperclip shows. The system buffer composes commands, not messages —
-    /// there's nothing to attach — so it drops the pill and the field takes the width.
-    var showsAttach: Bool = true {
+    /// Whether this is a conversation, which takes attachments and colour. The system buffer and
+    /// a server log compose commands, not messages, so there the send button is only a send
+    /// button: no menu, and greyed out over an empty field as it always was.
+    var offersMenu: Bool = true {
         didSet {
-            guard showsAttach != oldValue else { return }
-            attachGlass.isHidden = !showsAttach
-            // No paperclip, no image paste either — the same rule, from the keyboard.
-            textView.acceptsImages = showsAttach
-            // Deactivate before activate, or the two leading constraints briefly conflict.
-            (showsAttach ? fieldFlushLeading : fieldAfterAttach)?.isActive = false
-            (showsAttach ? fieldAfterAttach : fieldFlushLeading)?.isActive = true
+            guard offersMenu != oldValue else { return }
+            // No attachments, no image paste either — the same rule, from the keyboard.
+            textView.acceptsImages = offersMenu
+            sendButton.menu = offersMenu ? sendMenu() : nil
+            sendGlyph = nil
+            updateSendEnabled()
         }
     }
 
     private let container = UIVisualEffectView(effect: ComposerBar.containerEffect())
-    private let attachGlass = UIVisualEffectView()
     private let fieldGlass = UIVisualEffectView()
     private let sendGlass = UIVisualEffectView()
     private let textView = ComposerTextView()
     private let placeholderLabel = UILabel()
-    private let attachButton = UIButton(type: .system)
     private let sendButton = UIButton(type: .system)
     /// The strip above the field. It says one of two things:
     ///
@@ -157,7 +194,7 @@ final class ComposerBar: UIView {
     /// Messages ceiling too — past that you're writing a paragraph, and the conversation
     /// behind the bar has given up enough room.
     private static let maxLines = 5
-    /// The gap between the three glass pills.
+    /// The gap between the glass pills.
     private static let gap: CGFloat = 8
     /// The text view's own inset. The placeholder is pinned to *these* exact values so it
     /// sits where the first typed character will, not merely somewhere near it.
@@ -181,13 +218,12 @@ final class ComposerBar: UIView {
     private var textHeight: NSLayoutConstraint!
     /// The pills' width/height constraints, kept so a Dynamic Type change can resize them.
     private var pillSizeConstraints: [NSLayoutConstraint] = []
-    /// The field's two possible leading edges — beside the paperclip, or flush to the
-    /// container when `showsAttach` drops it. Exactly one is active at a time.
-    private var fieldAfterAttach: NSLayoutConstraint!
-    private var fieldFlushLeading: NSLayoutConstraint!
     /// Whether the send button is currently in its active (accent) state, so its glass
     /// effect is only rebuilt when that flips — not on every keystroke.
     private var sendActive: Bool?
+    /// The symbol the send button shows — `arrow.up`, or `plus` while it's the menu — so it's
+    /// only reconfigured when that flips.
+    private var sendGlyph: String?
     /// The last completion context handed to `onCompletion`, so keystrokes and caret moves
     /// that don't change the answer don't re-fire it. Wrapped in an extra optional to
     /// distinguish "not computed yet" from "computed, and it's nil".
@@ -247,11 +283,10 @@ final class ComposerBar: UIView {
         placeholderLabel.textColor = .placeholderText
         placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
 
-        configureRoundGlass(attachGlass, button: attachButton, symbol: "paperclip")
-        attachButton.addAction(UIAction { [weak self] _ in self?.onAttach?() }, for: .touchUpInside)
-
         configureRoundGlass(sendGlass, button: sendButton, symbol: "arrow.up")
         sendButton.addAction(UIAction { [weak self] _ in self?.fire() }, for: .touchUpInside)
+        // Long press, or a tap while the button is the `+` (`showsMenuAsPrimaryAction`).
+        sendButton.menu = sendMenu()
 
         strip.effect = Self.glass()
         strip.cornerConfiguration = .corners(radius: .fixed(22))
@@ -275,7 +310,6 @@ final class ComposerBar: UIView {
 
         fieldGlass.contentView.addSubview(textView)
         fieldGlass.contentView.addSubview(placeholderLabel)
-        container.contentView.addSubview(attachGlass)
         container.contentView.addSubview(fieldGlass)
         container.contentView.addSubview(sendGlass)
         addSubview(container)
@@ -283,12 +317,10 @@ final class ComposerBar: UIView {
         let content = container.contentView
         let pill = Self.collapsedHeight
         textHeight = textView.heightAnchor.constraint(equalToConstant: pill)
-        // The round pills are sized to the field's one-line height so all three match. That
+        // The round pill is sized to the field's one-line height so the two match. That
         // height tracks Dynamic Type, so these constants have to move with it (see
         // `updateMetrics`) — kept in one place for that.
         pillSizeConstraints = [
-            attachGlass.widthAnchor.constraint(equalToConstant: pill),
-            attachGlass.heightAnchor.constraint(equalToConstant: pill),
             sendGlass.widthAnchor.constraint(equalToConstant: pill),
             sendGlass.heightAnchor.constraint(equalToConstant: pill),
         ]
@@ -327,14 +359,12 @@ final class ComposerBar: UIView {
             container.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
             container.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
 
-            // Both round pills sit at the *bottom* of the group, so they stay beside the
-            // last line as the field grows upward rather than floating to the middle.
-            attachGlass.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            attachGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-
+            fieldGlass.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             fieldGlass.topAnchor.constraint(equalTo: content.topAnchor),
             fieldGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
 
+            // The round pill sits at the *bottom* of the group, so it stays beside the last
+            // line as the field grows upward rather than floating to the middle.
             sendGlass.leadingAnchor.constraint(equalTo: fieldGlass.trailingAnchor, constant: Self.gap),
             sendGlass.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             sendGlass.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -344,16 +374,10 @@ final class ComposerBar: UIView {
         containerBelowStrip = container.topAnchor.constraint(equalTo: strip.bottomAnchor, constant: 6)
         containerAtTop.isActive = true
 
-        fieldAfterAttach = fieldGlass.leadingAnchor.constraint(
-            equalTo: attachGlass.trailingAnchor, constant: Self.gap
-        )
-        fieldFlushLeading = fieldGlass.leadingAnchor.constraint(equalTo: content.leadingAnchor)
-        fieldAfterAttach.isActive = true
-
-        // Keep the pills and the field's corner radius sized to one line as the text size
+        // Keep the pill and the field's corner radius sized to one line as the text size
         // changes under us — without this the field's floor (recomputed live in
-        // `textViewDidChange`) grows on a type change while the pills stay put, and the
-        // three stop matching height.
+        // `textViewDidChange`) grows on a type change while the pill stays put, and the
+        // two stop matching height.
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (bar: ComposerBar, _) in
             bar.updateMetrics()
         }
@@ -361,7 +385,7 @@ final class ComposerBar: UIView {
         updateSendEnabled()
     }
 
-    /// Re-size the round pills and the field's corner radius to the current one-line height,
+    /// Re-size the round pill and the field's corner radius to the current one-line height,
     /// then refresh the field's floor. Called on a Dynamic Type change.
     private func updateMetrics() {
         let pill = Self.collapsedHeight
@@ -485,6 +509,8 @@ final class ComposerBar: UIView {
     /// Clears the field after a send the owner accepted, and collapses it back to one line.
     func clear() {
         textView.text = ""
+        // The next message starts uncoloured, whatever the last one ended in.
+        textView.typingAttributes = plainAttributes
         textViewDidChange(textView)
     }
 
@@ -533,15 +559,64 @@ final class ComposerBar: UIView {
         replaceToken(range, with: "\(value) ")
     }
 
-    /// What's in the field, as typed.
-    var text: String { textView.text ?? "" }
+    /// What's in the field, as it will be sent: its colour written out as `\x03` codes. The
+    /// line a send takes and the draft that syncs.
+    var text: String {
+        if let cachedLine { return cachedLine }
+        let line = ComposerColors.line(textView.attributedText)
+        cachedLine = line
+        return line
+    }
+
+    /// The colour the next keystroke writes in — handed to the colour editor so a pick made
+    /// there and not yet typed with is still the pick when it opens again.
+    var typingColors: (fg: Int?, bg: Int?) {
+        ComposerColors.colors(in: textView.typingAttributes)
+    }
+
+    /// The characters in the field, without colour — what completion, the typing signal and the
+    /// send-button state read.
+    private var plainText: String { textView.text ?? "" }
+
+    private var bodyFont: UIFont { textView.font ?? .preferredFont(forTextStyle: .body) }
+    private var plainAttributes: [NSAttributedString.Key: Any] {
+        ComposerColors.plainAttributes(font: bodyFont)
+    }
+
+    /// The draft as the colour editor works on it, and where the caret or selection is.
+    var attributedDraft: NSAttributedString { textView.attributedText }
+    var draftSelection: NSRange { textView.selectedRange }
+
+    /// Take back the colour editor's text — an edit of the user's, so it reaches the draft and
+    /// the typing signal like a keystroke. `typing` is a colour picked at a bare caret and not
+    /// yet typed with: it's still what the next keystroke writes in, here as it was there.
+    func replaceDraft(_ draft: NSAttributedString, selection: NSRange, typing: (fg: Int?, bg: Int?)?) {
+        textView.attributedText = ComposerColors.restyled(draft, font: bodyFont)
+        let length = textView.attributedText.length
+        let location = min(selection.location, length)
+        textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
+        if let typing { textView.typingAttributes = ComposerColors.applying(typing, to: plainAttributes) }
+        textViewDidChange(textView)
+    }
+
+    /// Mirror the colour editor's caret, so a finished upload's link lands where the user is
+    /// writing there. Cheap, unlike `replaceDraft`: the text is already the same.
+    func mirrorSelection(_ selection: NSRange, typing: (fg: Int?, bg: Int?)?) {
+        let length = textView.attributedText.length
+        let location = min(selection.location, length)
+        textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
+        if let typing { textView.typingAttributes = ComposerColors.applying(typing, to: plainAttributes) }
+    }
+
+    /// Send what's in the field, as the button would — the colour editor's own Send.
+    func send() { fire() }
 
     /// Whether an IME is mid-composition — marked text the keyboard hasn't committed yet.
     var isComposing: Bool { textView.markedTextRange != nil }
 
     /// Whether the field is empty — nothing typed, nothing but whitespace.
     var isEmpty: Bool {
-        CommandParser.sendable(textView.text ?? "") == nil
+        CommandParser.sendable(plainText) == nil
     }
 
     /// Put a refused line back, as typed (#128) — or a draft, which may be empty: another device
@@ -559,8 +634,14 @@ final class ComposerBar: UIView {
         // edit of the user's.
         isRestoring = true
         defer { isRestoring = false }
-        textView.text = text
-        textView.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        // Colour comes back as colour; a line with formatting the field can't show stays raw. A
+        // refused coloured line is the same string the field held (`ColorMarkup`'s one format),
+        // so it comes back exactly as it was typed.
+        textView.attributedText = ComposerColors.attributed(line: text, font: bodyFont)
+        textView.selectedRange = NSRange(location: textView.attributedText.length, length: 0)
+        // An emptied field writes plain, whatever was being typed in before. (Text left behind
+        // carries its own colour to the caret, as it would after a keystroke.)
+        if textView.attributedText.length == 0 { textView.typingAttributes = plainAttributes }
         // ⚠⚠ Silently. `textViewDidChange` is needed for the height, the send button and the
         // placeholder, but its two announcements must not fire: `onDraftChange` would tell the
         // CHANNEL you had resumed typing because the server handed your own message back, and
@@ -575,8 +656,9 @@ final class ComposerBar: UIView {
         // what was last emitted, nothing goes out, and the channel keeps seeing "paused" while
         // you type. Deleting the restored text to empty emits an empty draft, which ends a claim
         // that isn't there: silent.
-        lastEmittedDraft = text
+        lastEmittedDraft = plainText
         textViewDidChange(textView)
+        onExternalChange?()
     }
 
     /// Address `nick` at the head of the draft — what Reply does (#60).
@@ -597,12 +679,14 @@ final class ComposerBar: UIView {
     @discardableResult
     func address(_ nick: String, punctuation: String) -> Bool {
         guard !nick.isEmpty else { return false }
-        let current = textView.text ?? ""
+        let current = plainText
         let already = NickCompletion.isAddressed(current, to: nick, punctuation: punctuation)
         let next = already ? current : "\(nick)\(punctuation) " + current
-        // Caret at the end, not after the prefix: `replaceToken` puts it where it spliced, which
-        // for a prepend is in front of the existing draft.
-        textView.text = next
+        // Spliced at the very start, which `splice` writes plain — so the address never takes the
+        // colour of the words it's put in front of. (A diff would find a shared prefix in
+        // `bob is here` and copy the colour of its last letter.) Caret at the end, not after the
+        // prefix, so you carry on writing after your own words.
+        if !already { splice(NSRange(location: 0, length: 0), with: "\(nick)\(punctuation) ") }
         textView.selectedRange = NSRange(location: (next as NSString).length, length: 0)
         textViewDidChange(textView)
         becomeFirstResponder()
@@ -613,10 +697,10 @@ final class ComposerBar: UIView {
     /// `address`. Anything else in the field stays, and a draft that no longer opens with it is
     /// left alone: the user has rewritten it, and it's theirs now.
     func removeAddress(_ nick: String, punctuation: String) {
-        let current = textView.text ?? ""
+        let current = plainText
         let next = NickCompletion.removingAddress(current, to: nick, punctuation: punctuation)
         guard next != current else { return }
-        textView.text = next
+        rewrite(to: next)
         textView.selectedRange = NSRange(location: (next as NSString).length, length: 0)
         textViewDidChange(textView)
     }
@@ -661,19 +745,42 @@ final class ComposerBar: UIView {
         let caretWasTrailing = resumeAt.length == 0 && resumeAt.location >= current.length
         replaceToken(range, with: payload)
         if atCaret {
-            becomeFirstResponder()
+            if isCovered?() != true { becomeFirstResponder() }
         } else if !caretWasTrailing, resumeAt.upperBound <= (textView.text as NSString).length {
             textView.selectedRange = resumeAt
         }
+        onExternalChange?()
     }
 
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits
     /// don't fire the delegate, so this runs it by hand for the height, the send button, and
     /// the completion emit (now recomputed against the spliced text).
     private func replaceToken(_ range: NSRange, with replacement: String) {
-        textView.text = (textView.text as NSString).replacingCharacters(in: range, with: replacement)
+        splice(range, with: replacement)
         textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
         textViewDidChange(textView)
+    }
+
+    /// Replace `range` through the text storage, so the rest of the line keeps its colour. The
+    /// new text takes the colour of what it replaces, or of the character before it — a nick
+    /// completed inside a red sentence is red — and is plain at the very start, so a Reply's
+    /// `bob: ` doesn't take the colour of the words it's put in front of.
+    private func splice(_ range: NSRange, with replacement: String) {
+        cachedLine = nil
+        let storage = textView.textStorage
+        var attributes = plainAttributes
+        if range.length > 0 {
+            attributes = storage.attributes(at: range.location, effectiveRange: nil)
+        } else if range.location > 0, storage.length > 0 {
+            attributes = storage.attributes(at: min(range.location, storage.length) - 1, effectiveRange: nil)
+        }
+        storage.replaceCharacters(in: range, with: NSAttributedString(string: replacement, attributes: attributes))
+    }
+
+    /// Make the field read `next`, rewriting only the stretch that differs.
+    private func rewrite(to next: String) {
+        let edit = TextEdit.difference(from: plainText, to: next)
+        splice(edit.range, with: edit.replacement)
     }
 
     @discardableResult
@@ -730,6 +837,46 @@ final class ComposerBar: UIView {
         ])
     }
 
+    // MARK: - Send menu
+
+    /// The send button's menu, built as it opens so it reflects the field and the upload state
+    /// at that moment. Send comes first, which puts it nearest the button.
+    private func sendMenu() -> UIMenu {
+        UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                completion(self?.sendMenuElements() ?? [])
+            },
+        ])
+    }
+
+    private func sendMenuElements() -> [UIMenuElement] {
+        var elements: [UIMenuElement] = []
+        if !isEmpty {
+            elements.append(UIAction(title: "Send", image: UIImage(systemName: "arrow.up")) { [weak self] _ in
+                self?.fire()
+            })
+        }
+        let canAttach = canAttach?() ?? true
+        func attach(_ title: String, _ symbol: String, _ source: AttachSource) -> UIAction {
+            let action = UIAction(title: title, image: UIImage(systemName: symbol)) { [weak self] _ in
+                self?.onAttach?(source)
+            }
+            if !canAttach { action.attributes = .disabled }
+            return action
+        }
+        var attachments = [attach("Attach Photo", "photo.on.rectangle", .photoLibrary)]
+        // Not on a device without one — the simulator, most Macs.
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            attachments.append(attach("Take Photo", "camera", .camera))
+        }
+        attachments.append(attach("Attach File", "paperclip", .files))
+        elements.append(UIMenu(options: .displayInline, children: attachments))
+        elements.append(UIAction(title: "Edit Color", image: UIImage(systemName: "paintpalette")) { [weak self] _ in
+            self?.onEditColor?()
+        })
+        return elements
+    }
+
     // MARK: - State
 
     /// The send, by whichever key or button asked: the Send button, a hardware Enter
@@ -737,8 +884,13 @@ final class ComposerBar: UIView {
     /// path, so one set of checks.
     private func fire() {
         // Trailing whitespace only: a leading space keeps ` /whois bob` text (lurker-ios#210).
-        guard let text = CommandParser.sendable(textView.text ?? "") else { return }
-        onSend?(text)
+        // Trimmed as characters, BEFORE the colour is written: trimming the written line would
+        // strand the code for a trailing coloured space at its end. And emptiness from the
+        // characters too — a field of coloured spaces is empty, though its line isn't.
+        guard let sendable = CommandParser.sendable(plainText) else { return }
+        let kept = textView.attributedText.attributedSubstring(
+            from: NSRange(location: 0, length: (sendable as NSString).length))
+        onSend?(ComposerColors.line(kept))
     }
 
     /// A hardware Tab (Shift-Tab: `backward`) — the web composer's in-place completion
@@ -751,7 +903,7 @@ final class ComposerBar: UIView {
         // A selection has no caret to complete at: Tab is still taken, and changes nothing.
         guard textView.selectedRange.length == 0 else { return }
         // UTF-16, which is `TabCompletion`'s currency and `selectedRange`'s.
-        let text = textView.text ?? ""
+        let text = plainText
         let caret = textView.selectedRange.location
         let edit: TabCompletion.Edit
         if var session = tabCompletion, session.continues(text: text, caret: caret) {
@@ -770,11 +922,15 @@ final class ComposerBar: UIView {
         isApplyingTab = true
         defer { isApplyingTab = false }
         // Through `replace`, not `text =`: a programmatic set registers no undo, and a hardware
-        // keyboard's Cmd-Z would then replay older typing ranges against the rewritten text.
-        if let whole = textView.textRange(from: textView.beginningOfDocument, to: textView.endOfDocument) {
-            textView.replace(whole, withText: edit.text)
+        // keyboard's Cmd-Z would then replay older typing ranges against the rewritten text. Only
+        // the stretch that changed, so the colour on the rest of the line survives.
+        let change = TextEdit.difference(from: text, to: edit.text)
+        if let start = textView.position(from: textView.beginningOfDocument, offset: change.range.location),
+           let end = textView.position(from: start, offset: change.range.length),
+           let range = textView.textRange(from: start, to: end) {
+            textView.replace(range, withText: change.replacement)
         } else {
-            textView.text = edit.text
+            rewrite(to: edit.text)
         }
         textView.selectedRange = NSRange(location: edit.caret, length: 0)
         textViewDidChange(textView)
@@ -782,8 +938,18 @@ final class ComposerBar: UIView {
 
     private func updateSendEnabled() {
         // The send's own rule (`fire`), so the button never lights for a draft it won't send.
-        let hasText = CommandParser.sendable(textView.text ?? "") != nil
-        sendButton.isEnabled = hasText
+        let hasText = !isEmpty
+        // Over an empty field the button is the menu — still live, as a `+` that opens on a tap.
+        sendButton.isEnabled = hasText || offersMenu
+        sendButton.showsMenuAsPrimaryAction = !hasText && offersMenu
+        let glyph = hasText || !offersMenu ? "arrow.up" : "plus"
+        if sendGlyph != glyph {
+            sendGlyph = glyph
+            sendButton.configuration?.image = UIImage(systemName: glyph)
+            sendButton.accessibilityLabel = glyph == "plus" ? "Add" : "Send"
+            sendButton.accessibilityHint = offersMenu && glyph == "arrow.up"
+                ? "Touch and hold for attachments and color." : nil
+        }
         // Take the accent color when there's something to send, clear glass when not — the
         // same "lights up when it goes live" the Messages send button does, here through the
         // glass tint so it still belongs to the group. Only rebuilt on the transition:
@@ -840,7 +1006,8 @@ extension ComposerBar: UITextViewDelegate {
     /// Tell the owner the field changed, if it did. A restore is recorded without being told:
     /// the next real edit compares against what the field shows, not against an older text.
     private func reportEdit() {
-        let now = (text: textView.text ?? "", composing: isComposing)
+        // The line, colour and all: recolouring is an edit the synced draft has to hear.
+        let now = (text: text, composing: isComposing)
         guard now != lastEdit else { return }
         lastEdit = now
         if !isRestoring { onEdit?() }
@@ -880,6 +1047,7 @@ extension ComposerBar: UITextViewDelegate {
     }
 
     func textViewDidChange(_ textView: UITextView) {
+        cachedLine = nil
         if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }
@@ -887,7 +1055,7 @@ extension ComposerBar: UITextViewDelegate {
         // *layout* reasons — `updateMetrics()` on a Dynamic Type change, which re-measures the
         // field without touching a character — and firing the draft hook there would tell the
         // channel you'd resumed typing because you changed your text size in Control Center.
-        let draft = textView.text ?? ""
+        let draft = plainText
         if !isRestoring, draft != lastEmittedDraft {
             lastEmittedDraft = draft
             onDraftChange?(draft)

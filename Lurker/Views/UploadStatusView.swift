@@ -32,9 +32,9 @@ final class UploadStatusView: UIView {
         case processing
         case sending(fraction: Double?, destination: String?)
         /// Cancelled, but not yet stopped. Neither a photo-library copy nor a compression pass
-        /// ends on the instant, and until the run really ends the paperclip stays disabled —
+        /// ends on the instant, and until the run really ends attaching stays disabled —
         /// so hiding the readout the moment the X is tapped trades a beat of responsiveness
-        /// for a stretch where the attach button does nothing and nothing on screen says why.
+        /// for a stretch where attaching does nothing and nothing on screen says why.
         case stopping
     }
 

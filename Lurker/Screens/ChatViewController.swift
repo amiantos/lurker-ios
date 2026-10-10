@@ -36,6 +36,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Retained across the async pick→compress→upload flow (the picker delegates need it kept
     /// alive) and, by living in a single slot, it enforces one attachment at a time.
     private var attachmentPicker: AttachmentPicker?
+    /// The colour editor while it's open — the composer's changes are mirrored into it.
+    private weak var colorEditor: ColorEditorViewController?
     /// The running upload, so the status view's cancel can tear it down.
     private var uploadTask: Task<Void, Never>?
     /// The floating "back to the newest message" pill (see `JumpToLatestButton`), and the
@@ -370,15 +372,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             if viewModel.setBack(networkId: buffer.key.networkId) { return }
             ToastView.showNotConnected(over: view, above: noticeAnchor)
         }
-        composer.onAttach = { [weak self] in self?.presentAttachmentSources() }
+        composer.onAttach = { [weak self] in self?.attach(from: $0) }
+        composer.canAttach = { [weak self] in self.map { $0.takesUploads && !$0.isUploadBusy } ?? false }
+        composer.onEditColor = { [weak self] in self?.presentColorEditor() }
+        // Asked, so an editor dismissed without Done (a notification tap) uncovers it too: the
+        // reference is weak, and the editor goes with its presentation.
+        composer.isCovered = { [weak self] in self?.colorEditor?.viewIfLoaded?.window != nil }
+        composer.onExternalChange = { [weak self] in
+            guard let self, let colorEditor else { return }
+            colorEditor.adopt(composer.attributedDraft, selection: composer.draftSelection)
+        }
         composer.onPasteImage = { [weak self] data, mime, name in
             self?.uploadPastedImage(data: data, mime: mime, filename: name)
         }
         composer.translatesAutoresizingMaskIntoConstraints = false
         // Every buffer composes — the system buffer too, as the app's command console
         // (#355 on the web; commands themselves are #10 here) — but only a conversation takes
-        // files, so elsewhere the paperclip goes and the field takes the width.
-        composer.showsAttach = takesUploads
+        // files and colour, so elsewhere the send button is only a send button.
+        composer.offersMenu = takesUploads
         view.addSubview(composer)
 
         uploadStatus.onCancel = { [weak self] in self?.cancelUpload() }
@@ -2420,11 +2431,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// so a second pick or paste can't start atop the first.
     private var isUploadBusy: Bool { uploadTask != nil || attachmentPicker != nil }
 
-    /// The paperclip: offer the two sources and, on a pick, run the upload. One at a time —
-    /// the status readout and `viewModel.upload`'s single-flight both assume it.
     /// Whether this buffer takes uploads at all: the conversations — channels, DMs and DCC chats.
     /// Not a server log or the Lurker buffer, which take commands, not files. One rule for every
-    /// place it's asked — the paperclip, a pasted image, Add to Message and where a finished link
+    /// place it's asked — the send menu, a pasted image, Add to Message and where a finished link
     /// lands — so a buffer can't be offered by one and refused by another. (Android's
     /// `UploadTargets`.)
     var takesUploads: Bool {
@@ -2434,30 +2443,53 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    private func presentAttachmentSources() {
+    /// A source picked from the send menu: run the picker and, on a pick, the upload. One at a
+    /// time — the status readout and `viewModel.upload`'s single-flight both assume it.
+    private func attach(from source: ComposerBar.AttachSource) {
         guard takesUploads, !isUploadBusy else { return }
-        let sheet = UIAlertController(title: nil, message: nil, preferredStyle: .actionSheet)
-        sheet.addAction(UIAlertAction(title: "Photo Library", style: .default) { [weak self] _ in
-            self?.pick { $0.pickFromPhotoLibrary(completion: $1) }
-        })
-        sheet.addAction(UIAlertAction(title: "Files", style: .default) { [weak self] _ in
-            self?.pick { $0.pickFromFiles(completion: $1) }
-        })
-        sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        // iPad presents an action sheet as a popover, which needs an anchor — the composer's
-        // leading edge, roughly where the paperclip sits.
-        if let popover = sheet.popoverPresentationController {
-            popover.sourceView = composer
-            popover.sourceRect = CGRect(x: 24, y: 0, width: 1, height: 1)
-            popover.permittedArrowDirections = .down
+        switch source {
+        case .photoLibrary: pick { $0.pickFromPhotoLibrary(completion: $1) }
+        case .camera: pick { $0.takePhoto(completion: $1) }
+        case .files: pick { $0.pickFromFiles(completion: $1) }
         }
+    }
+
+    /// Edit Color: the draft full screen. The composer mirrors it as it's edited — so it saves and
+    /// syncs as typing does — and anything that changes the composer meanwhile goes back in.
+    private func presentColorEditor() {
+        let editor = ColorEditorViewController(
+            text: composer.attributedDraft, selection: composer.draftSelection, typing: composer.typingColors)
+        editor.onChange = { [weak self] result in
+            self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
+        }
+        editor.onSelect = { [weak self] result in
+            self?.composer.mirrorSelection(result.selection, typing: result.typing)
+        }
+        editor.onDone = { [weak self, weak editor] result in
+            self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
+            self?.endColorEditing()
+            editor?.dismiss(animated: true)
+        }
+        editor.onSend = { [weak self, weak editor] result in
+            self?.composer.replaceDraft(result.text, selection: result.selection, typing: nil)
+            self?.endColorEditing()
+            // After the dismissal: a send can present (a refusal, a confirm) or switch buffers.
+            editor?.dismiss(animated: true) { self?.composer.send() }
+        }
+        colorEditor = editor
+        let sheet = UINavigationController(rootViewController: editor)
+        sheet.modalPresentationStyle = .fullScreen
         present(sheet, animated: true)
+    }
+
+    private func endColorEditing() {
+        colorEditor = nil
     }
 
     /// Build the picker and start it — but only once a source is actually chosen. Setting
     /// `attachmentPicker` HERE, not before presenting the sheet, means a dismissed sheet
     /// (Cancel, or an iPad outside-tap that fires no handler) never leaves `attachmentPicker`
-    /// set — which would wedge `isUploadBusy` true and disable the paperclip for the session.
+    /// set — which would wedge `isUploadBusy` true and disable attaching for the session.
     private func pick(
         _ start: (AttachmentPicker, @escaping (Result<[AttachmentPicker.Source], AttachmentPicker.PickError>) -> Void) -> Void
     ) {
@@ -2792,7 +2824,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// It used to dismiss immediately so the tap felt instant, which was a lie of a beat:
     /// `uploadTask` stays non-nil until the current file actually unwinds, and `isUploadBusy`
-    /// with it, so the paperclip and paste-to-upload are inert for that whole stretch. Hiding
+    /// with it, so attaching and paste-to-upload are inert for that whole stretch. Hiding
     /// the readout left nothing on screen to explain why. The task's own unwind dismisses it.
     private func cancelUpload() {
         uploadTask?.cancel()

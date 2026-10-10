@@ -475,7 +475,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
                 StateView.Model(
                     symbol: "photo.on.rectangle",
                     title: "No uploads yet",
-                    subtitle: "Files you send with the paperclip in a conversation are kept here."
+                    subtitle: "Files you send in a conversation are kept here."
                 ))
         }
     }
