@@ -240,6 +240,8 @@ final class BufferListViewController: UICollectionViewController {
     /// (lurker#1098): a highlight, a DM, a friend coming online. Tapping one goes to the line.
     private let notificationToast = NotificationToastView()
     private let toasts = StatusToastPresenter()
+    /// Between `viewDidAppear` and `viewWillDisappear`: the list has arrived, and isn't leaving.
+    private var takesToasts = false
     /// Whether this screen is actually on screen, as against merely alive under a chat screen.
     /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
     /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
@@ -461,6 +463,7 @@ final class BufferListViewController: UICollectionViewController {
         super.viewWillDisappear(animated)
         // Passing news: not carried over the screen arriving, nor still up, for a buffer just
         // visited, when you come back.
+        takesToasts = false
         toasts.clear()
         refreshBanner()
         if usesBottomSearchBar { navigationController?.setToolbarHidden(true, animated: animated) }
@@ -485,8 +488,11 @@ final class BufferListViewController: UICollectionViewController {
     /// Whether this list is where an in-app notification goes: on screen, uncovered, and with no
     /// conversation beside it — one there shows it in its status row instead. Side by side there
     /// always is one (the system buffer at rest), so that's `marksOpenBuffer`.
+    ///
+    /// `takesToasts`, not `isOnScreen`: that one goes up in `viewWillAppear`, while a popped chat
+    /// is still in the window taking toasts itself, and both would show the same one.
     private var showsToasts: Bool {
-        isOnScreen && isUncovered && navigationController?.topViewController === self && !marksOpenBuffer
+        takesToasts && isUncovered && navigationController?.topViewController === self && !marksOpenBuffer
     }
 
     @objc private func toastCenterChanged(_ note: Notification) {
@@ -508,6 +514,7 @@ final class BufferListViewController: UICollectionViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         refreshBanner()
+        takesToasts = true
     }
 
     private func refreshBanner() {

@@ -178,6 +178,18 @@ final class SettingsViewController: UITableViewController {
         ("chat.link_previews.enabled", "Link previews"),
     ]
 
+    /// The in-app notification kinds (lurker#1098), in the web's order: each one's switch, then
+    /// its sound. The switch is the web's master toggle for the kind, so it governs push as well
+    /// as the toast — the section footer says so. The sound's volume isn't offered: the app plays
+    /// alert sounds at the phone's own alert volume (`NotificationSounds`).
+    private static let notificationKinds: [(kind: String, label: String, sound: String)] = [
+        ("highlight", "Highlights", "Highlight sound"),
+        ("dm", "Direct messages", "DM sound"),
+        ("always_notify", "Always-notify channels", "Always-notify sound"),
+        ("kicked", "Kicks", "Kick sound"),
+        ("friend_online", "Friends coming online", "Friend sound"),
+    ]
+
     /// Preferences that belong to this install rather than to the account.
     ///
     /// The rule above — a server setting the phone honors should be changeable from the phone
@@ -221,6 +233,14 @@ final class SettingsViewController: UITableViewController {
         let option: SettingOption
     }
 
+    /// A Notifications row: a kind's switch, or its sound — one pull-down over two keys, "Off" or
+    /// the sound to play, rather than a switch and a list of names whose second row means nothing
+    /// while the first is off.
+    private enum NotificationRow {
+        case toggle(SettingRow)
+        case sound(label: String, kind: String)
+    }
+
     private enum Section {
         /// The account's IRC networks (#11) — a push, not a control.
         ///
@@ -233,6 +253,7 @@ final class SettingsViewController: UITableViewController {
         case events([SettingRow])
         case smartFilter([SettingRow])
         case appearance([SettingRow])
+        case notifications([NotificationRow])
         /// Bootstrap hasn't landed, so there's no registry to build controls from.
         case unavailable
         /// The server answered and can't push to the app (RELAY_PLAN.md §6.1). Said here,
@@ -322,6 +343,12 @@ final class SettingsViewController: UITableViewController {
         let eventRows = resolve(Self.eventSettings)
         let smartFilterRows = resolve(Self.smartFilterSettings)
         let appearanceRows = resolve(Self.appearanceSettings)
+        let notificationRows: [NotificationRow] = Self.notificationKinds.flatMap { entry in
+            let prefix = "notifications.\(entry.kind)"
+            guard let toggle = resolve([("\(prefix).enabled", entry.label)]).first else { return [NotificationRow]() }
+            let hasSound = registry["\(prefix).sound.enabled"] != nil && registry["\(prefix).sound.choice"] != nil
+            return [.toggle(toggle)] + (hasSound ? [.sound(label: entry.sound, kind: entry.kind)] : [])
+        }
         // No registry means the bootstrap fetch hasn't landed (or failed). Say so, rather than
         // silently rendering a Settings screen whose only contents are Sign Out and a version
         // number — which reads as "this app has no settings" instead of "we couldn't load them".
@@ -344,6 +371,7 @@ final class SettingsViewController: UITableViewController {
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
                 + (smartFilterRows.isEmpty ? [] : [.smartFilter(smartFilterRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
+                + (notificationRows.isEmpty ? [] : [.notifications(notificationRows)])
                 + push
                 + [.device, .account, .about]
         tableView.reloadData()
@@ -357,6 +385,7 @@ final class SettingsViewController: UITableViewController {
         switch sections[section] {
         case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
             rows.count
+        case .notifications(let rows): rows.count
         case .device: DeviceSetting.allCases.count
         case .networks, .unavailable, .pushUnavailable, .account, .about: 1
         }
@@ -369,7 +398,11 @@ final class SettingsViewController: UITableViewController {
         case .events: "Events"
         case .smartFilter: "Smart Filter"
         case .appearance: "Appearance"
-        case .pushUnavailable: "Notifications"
+        case .notifications: "Notifications"
+        // Under the Notifications rows when there are some, as part of them.
+        case .pushUnavailable:
+            section > 0 && { if case .notifications = sections[section - 1] { true } else { false } }()
+                ? nil : "Notifications"
         case .device: "This Device"
         case .account, .about: nil
         }
@@ -398,6 +431,7 @@ final class SettingsViewController: UITableViewController {
             Applies to this device only — not shared with your other Lurker clients.
             """
         case .smartFilter: "Used when Event filter is set to Smart."
+        case .notifications: "Shown in the app while it's open, and pushed when it isn't."
         default: nil
         }
     }
@@ -426,6 +460,26 @@ final class SettingsViewController: UITableViewController {
                 content.secondaryTextProperties.numberOfLines = 0
             }
             configure(cell, for: row.option)
+        case .notifications(let rows):
+            switch rows[indexPath.row] {
+            case .toggle(let row):
+                content.text = row.label
+                if let error = writeError, error.key == row.option.key {
+                    content.secondaryText = error.message
+                    content.secondaryTextProperties.color = Palette.bad
+                    content.secondaryTextProperties.numberOfLines = 0
+                }
+                configure(cell, for: row.option)
+            case .sound(let label, let kind):
+                content.text = label
+                let prefix = "notifications.\(kind)"
+                if let error = writeError, error.key == "\(prefix).sound.choice" {
+                    content.secondaryText = error.message
+                    content.secondaryTextProperties.color = Palette.bad
+                    content.secondaryTextProperties.numberOfLines = 0
+                }
+                cell.accessoryView = soundMenu(kind: kind)
+            }
         case .device:
             let setting = DeviceSetting.allCases[indexPath.row]
             content.text = setting.label
@@ -567,6 +621,34 @@ final class SettingsViewController: UITableViewController {
         }
     }
 
+    /// A kind's sound: "Off", or which one plays. Picking a sound plays it, as the web's preview
+    /// button does, and turns the sound on in the same write. Greyed while the kind itself is off.
+    private func soundMenu(kind: String) -> UIButton {
+        let prefix = "notifications.\(kind)"
+        let settings = viewModel.state.settings
+        let choiceKey = "\(prefix).sound.choice"
+        let isOn = settings.effective("\(prefix).sound.enabled")?.boolValue ?? false
+        let choices = (settings.registry[choiceKey]?.choices ?? []).filter(StatusNotification.sounds.contains)
+        let current = isOn ? settings.effective(choiceKey)?.stringValue ?? "" : Self.soundOff
+        return menuButton(
+            current: current,
+            choices: [MenuChoice(value: Self.soundOff, label: "Off")]
+                + choices.map { MenuChoice(value: $0, label: $0.capitalized) },
+            enabled: settings.effective("\(prefix).enabled")?.boolValue ?? true
+        ) { [weak self] choice in
+            guard let self else { return }
+            if choice == Self.soundOff {
+                write(["\(prefix).sound.enabled": .bool(false)], errorKey: choiceKey)
+            } else {
+                NotificationSounds.play(choice)
+                write(["\(prefix).sound.enabled": .bool(true), choiceKey: .string(choice)], errorKey: choiceKey)
+            }
+        }
+    }
+
+    /// The sound pull-down's "Off" — not a registry choice, so it can't collide with one.
+    private static let soundOff = ""
+
     /// A pull-down showing the value in force, offering `choices`.
     ///
     /// A button, not a segmented control: the event tier's choices are full phrases ("Hide
@@ -659,10 +741,15 @@ final class SettingsViewController: UITableViewController {
     /// returned values), so a rejected write leaves the control exactly where the server still
     /// holds it rather than showing a state it never accepted.
     private func write(_ key: String, _ value: SettingValue) {
+        write([key: value], errorKey: key)
+    }
+
+    /// Write several settings in one request, any rejection shown under the row for `errorKey`.
+    private func write(_ values: [String: SettingValue], errorKey key: String) {
         // ⚠ `viewModel` strongly, `self` weakly: the PATCH goes out even when the screen has
         // already gone (a flush at close); only the reply's redraw needs the screen.
         Task { [weak self, viewModel] in
-            let failure = await viewModel.updateSettings([key: value])
+            let failure = await viewModel.updateSettings(values)
             guard let self else { return }
             guard let failure else {
                 // Success: the client applied the reply's values, so the store changed and the
