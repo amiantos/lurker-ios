@@ -499,6 +499,7 @@ final class BufferListViewController: UICollectionViewController {
         guard showsToasts, let notification = note.userInfo?[ToastCenter.toastKey] as? StatusNotification
         else { return }
         toasts.show(.notification(notification))
+        ToastCenter.shared.didShow()
     }
 
     /// Show the banner only once this screen is genuinely frontmost, and hide it the instant a

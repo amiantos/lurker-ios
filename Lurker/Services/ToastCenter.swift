@@ -23,16 +23,27 @@ final class ToastCenter {
     /// toast, which updates in place (`StatusToastQueue`). The web drops the repeats instead,
     /// since its first toast stays up; a one-line toast has to show the latest.
     ///
-    /// The sound goes with the decision, not with whichever surface shows it, and a burst gets
+    /// The sound goes with a toast a surface took, once for whichever one did, and a burst gets
     /// one: the web's per-source throttle, kept here for the sound alone.
     func post(_ notification: StatusNotification, settings: Settings) {
         guard UIApplication.shared.applicationState == .active,
               ChatViewController.activeChat()?.showsBuffer(notification.key) != true
         else { return }
+        shown = false
         NotificationCenter.default.post(name: Self.didChange, object: self, userInfo: [Self.toastKey: notification])
-        if let sound = notification.sound(in: settings), !soundThrottled(notification) {
+        if shown, let sound = notification.sound(in: settings), !soundThrottled(notification) {
             NotificationSounds.play(sound)
         }
+    }
+
+    /// Whether a surface took the notification being posted. Delivery is synchronous, so a
+    /// surface that shows it says so (`didShow`) before `post` decides on the sound.
+    private var shown = false
+
+    /// Called by a surface taking a posted notification. The sound comes with a toast you can
+    /// see, as on the web: none under a sheet, where nothing says what it was or where to go.
+    func didShow() {
+        shown = true
     }
 
     /// When each source last made a sound: network, buffer, nick and kind, the web's key.

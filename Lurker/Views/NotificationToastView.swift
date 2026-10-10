@@ -34,6 +34,7 @@ final class NotificationToastView: FloatingGlassControl {
         isAccessibilityElement = true
         accessibilityTraits = .button
         accessibilityHint = "Opens the conversation."
+        accessibilityElementsHidden = true
     }
 
     @available(*, unavailable)

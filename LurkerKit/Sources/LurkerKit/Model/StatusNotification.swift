@@ -73,6 +73,12 @@ public struct StatusNotification: Equatable, Sendable, Identifiable {
     /// moment before bootstrap — always-notify and kick sound by default, the rest don't, and each
     /// kind has its own default sound so they can be told apart by ear. A volume of 0 is silence.
     public func sound(in settings: Settings) -> String? {
+        Self.sound(for: kind, in: settings)
+    }
+
+    /// `sound(in:)` for a kind — what the settings screen shows as the sound in force, so the row
+    /// reads exactly what will play.
+    public static func sound(for kind: Kind, in settings: Settings) -> String? {
         let (enabled, choice): (Bool, String) = switch kind {
         case .highlight: (false, "ping")
         case .dm: (false, "chime")
@@ -85,7 +91,7 @@ public struct StatusNotification: Equatable, Sendable, Identifiable {
               settings.int("\(prefix).volume", default: 60) > 0
         else { return nil }
         let picked = settings.string("\(prefix).choice", default: choice)
-        return Self.sounds.contains(picked) ? picked : choice
+        return sounds.contains(picked) ? picked : choice
     }
 
     /// The bundled sounds, the registry's `sound.choice` enum.

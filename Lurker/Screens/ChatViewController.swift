@@ -2438,6 +2438,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
               let notification = note.userInfo?[ToastCenter.toastKey] as? StatusNotification
         else { return }
         composer.showToast(.notification(notification))
+        ToastCenter.shared.didShow()
     }
 
     /// Go to a notification's line.

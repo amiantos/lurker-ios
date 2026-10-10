@@ -371,8 +371,8 @@ final class SettingsViewController: UITableViewController {
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
                 + (smartFilterRows.isEmpty ? [] : [.smartFilter(smartFilterRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
-                + (notificationRows.isEmpty ? [] : [.notifications(notificationRows)])
-                + push
+                // The push notice is the Notifications section's footer when there is one.
+                + (notificationRows.isEmpty ? push : [.notifications(notificationRows)])
                 + [.device, .account, .about]
         tableView.reloadData()
     }
@@ -398,11 +398,7 @@ final class SettingsViewController: UITableViewController {
         case .events: "Events"
         case .smartFilter: "Smart Filter"
         case .appearance: "Appearance"
-        case .notifications: "Notifications"
-        // Under the Notifications rows when there are some, as part of them.
-        case .pushUnavailable:
-            section > 0 && { if case .notifications = sections[section - 1] { true } else { false } }()
-                ? nil : "Notifications"
+        case .notifications, .pushUnavailable: "Notifications"
         case .device: "This Device"
         case .account, .about: nil
         }
@@ -431,7 +427,12 @@ final class SettingsViewController: UITableViewController {
             Applies to this device only — not shared with your other Lurker clients.
             """
         case .smartFilter: "Used when Event filter is set to Smart."
-        case .notifications: "Shown in the app while it's open, and pushed when it isn't."
+        case .notifications:
+            if let route = viewModel.pushRoute, !route.delivers {
+                "Shown in the app while it's open. " + Self.pushUnavailableText(route)
+            } else {
+                "Shown in the app while it's open, and pushed when it isn't."
+            }
         default: nil
         }
     }
@@ -452,32 +453,17 @@ final class SettingsViewController: UITableViewController {
         case .chat(let rows), .events(let rows), .smartFilter(let rows), .appearance(let rows):
             let row = rows[indexPath.row]
             content.text = row.label
-            // The subtitle slot is otherwise unused, so a failed write can say why right under
-            // the control that failed.
-            if let error = writeError, error.key == row.option.key {
-                content.secondaryText = error.message
-                content.secondaryTextProperties.color = Palette.bad
-                content.secondaryTextProperties.numberOfLines = 0
-            }
+            showWriteError(for: row.option.key, in: &content)
             configure(cell, for: row.option)
         case .notifications(let rows):
             switch rows[indexPath.row] {
             case .toggle(let row):
                 content.text = row.label
-                if let error = writeError, error.key == row.option.key {
-                    content.secondaryText = error.message
-                    content.secondaryTextProperties.color = Palette.bad
-                    content.secondaryTextProperties.numberOfLines = 0
-                }
+                showWriteError(for: row.option.key, in: &content)
                 configure(cell, for: row.option)
             case .sound(let label, let kind):
                 content.text = label
-                let prefix = "notifications.\(kind)"
-                if let error = writeError, error.key == "\(prefix).sound.choice" {
-                    content.secondaryText = error.message
-                    content.secondaryTextProperties.color = Palette.bad
-                    content.secondaryTextProperties.numberOfLines = 0
-                }
+                showWriteError(for: "notifications.\(kind).sound.choice", in: &content)
                 cell.accessoryView = soundMenu(kind: kind)
             }
         case .device:
@@ -504,9 +490,7 @@ final class SettingsViewController: UITableViewController {
                 : "Check your connection and reopen Settings."
             content.secondaryTextProperties.numberOfLines = 0
         case .pushUnavailable(let route):
-            content.text = route == .relayUnsupported
-                ? "This server's push relay isn't supported by this app."
-                : "Your server's admin hasn't turned on push for the apps."
+            content.text = Self.pushUnavailableText(route)
             content.textProperties.color = .secondaryLabel
             content.textProperties.numberOfLines = 0
         case .account:
@@ -621,33 +605,56 @@ final class SettingsViewController: UITableViewController {
         }
     }
 
-    /// A kind's sound: "Off", or which one plays. Picking a sound plays it, as the web's preview
-    /// button does, and turns the sound on in the same write. Greyed while the kind itself is off.
+    /// A kind's sound: "Off", or which one plays — read through `StatusNotification.sound(for:in:)`,
+    /// so the row says exactly what an alert will do. Picking a sound plays it, as the web's
+    /// preview button does, and turns it on in the same write; a volume set to 0 on the web,
+    /// which silences it and has no control here, goes back to the registry's default.
+    /// Greyed while the kind itself is off.
     private func soundMenu(kind: String) -> UIButton {
         let prefix = "notifications.\(kind)"
         let settings = viewModel.state.settings
         let choiceKey = "\(prefix).sound.choice"
-        let isOn = settings.effective("\(prefix).sound.enabled")?.boolValue ?? false
+        let volumeKey = "\(prefix).sound.volume"
+        let current = StatusNotification.Kind(rawValue: kind)
+            .flatMap { StatusNotification.sound(for: $0, in: settings) } ?? Self.soundOff
         let choices = (settings.registry[choiceKey]?.choices ?? []).filter(StatusNotification.sounds.contains)
-        let current = isOn ? settings.effective(choiceKey)?.stringValue ?? "" : Self.soundOff
         return menuButton(
             current: current,
             choices: [MenuChoice(value: Self.soundOff, label: "Off")]
                 + choices.map { MenuChoice(value: $0, label: $0.capitalized) },
-            enabled: settings.effective("\(prefix).enabled")?.boolValue ?? true
+            enabled: isEnabled(choiceKey) && settings.bool("\(prefix).enabled", default: true)
         ) { [weak self] choice in
             guard let self else { return }
-            if choice == Self.soundOff {
-                write(["\(prefix).sound.enabled": .bool(false)], errorKey: choiceKey)
-            } else {
-                NotificationSounds.play(choice)
-                write(["\(prefix).sound.enabled": .bool(true), choiceKey: .string(choice)], errorKey: choiceKey)
+            guard choice != Self.soundOff else {
+                return write(["\(prefix).sound.enabled": .bool(false)], errorKey: choiceKey)
             }
+            NotificationSounds.play(choice)
+            var values: [String: SettingValue] = ["\(prefix).sound.enabled": .bool(true), choiceKey: .string(choice)]
+            if settings.int(volumeKey, default: 60) <= 0, let volume = settings.registry[volumeKey]?.default {
+                values[volumeKey] = volume
+            }
+            write(values, errorKey: choiceKey)
         }
     }
 
     /// The sound pull-down's "Off" — not a registry choice, so it can't collide with one.
     private static let soundOff = ""
+
+    /// Why this server's notifications can't reach the app when it's closed.
+    private static func pushUnavailableText(_ route: PushRoute) -> String {
+        route == .relayUnsupported
+            ? "This server's push relay isn't supported by this app."
+            : "Your server's admin hasn't turned on push for the apps."
+    }
+
+    /// A failed write's reason, under the row whose control made it — the subtitle slot is
+    /// otherwise unused.
+    private func showWriteError(for key: String, in content: inout UIListContentConfiguration) {
+        guard let error = writeError, error.key == key else { return }
+        content.secondaryText = error.message
+        content.secondaryTextProperties.color = Palette.bad
+        content.secondaryTextProperties.numberOfLines = 0
+    }
 
     /// A pull-down showing the value in force, offering `choices`.
     ///
