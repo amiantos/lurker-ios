@@ -53,7 +53,9 @@ final class ColorEditorViewController: UIViewController {
         layerControl.selectedSegmentIndex == 0 ? .text : .highlight
     }
 
-    private static var font: UIFont { .preferredFont(forTextStyle: .title3) }
+    /// The message list's fixed-width face, as in the composer this edits for. It's a fixed
+    /// size per text-size setting, so a change is re-applied by hand — see `viewDidLoad`.
+    private var font: UIFont { MessageRenderer.compactFont(compatibleWith: traitCollection) }
 
     /// mIRC's own names, for VoiceOver — the colour the code means to every other client.
     private static let names = [
@@ -64,7 +66,7 @@ final class ColorEditorViewController: UIViewController {
     /// `typing` is the composer's pending colour — a pick made in an earlier visit and not yet
     /// typed with, which is still the pick.
     init(text: NSAttributedString, selection: NSRange, typing: (fg: Int?, bg: Int?)) {
-        initialText = ComposerColors.restyled(text, font: Self.font)
+        initialText = ComposerColors.restyled(text, font: MessageRenderer.compactFont())
         initialSelection = selection
         initialTyping = typing
         super.init(nibName: nil, bundle: nil)
@@ -75,7 +77,8 @@ final class ColorEditorViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .systemBackground
+        // The message list's ground: what's written here is read against it.
+        view.backgroundColor = Palette.bg
         title = "Edit Color"
 
         navigationItem.leftBarButtonItem = UIBarButtonItem(
@@ -85,9 +88,12 @@ final class ColorEditorViewController: UIViewController {
         send.accessibilityLabel = "Send"
         navigationItem.rightBarButtonItem = send
 
-        textView.font = Self.font
+        textView.font = font
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (editor: Self, _) in
+            editor.textView.font = editor.font
+            editor.adopt(editor.textView.attributedText, selection: editor.textView.selectedRange)
+        }
         textView.attributedText = initialText
-        textView.adjustsFontForContentSizeCategory = true
         textView.backgroundColor = .clear
         textView.textContainerInset = UIEdgeInsets(top: 12, left: 16, bottom: 12, right: 16)
         textView.keyboardDismissMode = .interactive
@@ -146,7 +152,7 @@ final class ColorEditorViewController: UIViewController {
     func adopt(_ text: NSAttributedString, selection: NSRange) {
         guard isViewLoaded else { return }
         let pending = textView.selectedRange.length == 0 ? ComposerColors.colors(in: textView.typingAttributes) : nil
-        textView.attributedText = ComposerColors.restyled(text, font: Self.font)
+        textView.attributedText = ComposerColors.restyled(text, font: font)
         textView.undoManager?.removeAllActions()
         let length = textView.attributedText.length
         let location = min(selection.location, length)
