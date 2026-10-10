@@ -34,38 +34,43 @@ struct Suggestion: Equatable {
     }
 }
 
-/// The completion suggestions: the caller's best few candidates floating above the composer
-/// as separate glass pills, best candidate at the bottom — likelihood equals proximity to
-/// the field, so the pill you almost certainly want is the shortest reach. (Discord stacks
-/// its panel the other way, but a panel has a selection cursor; loose pills don't.) How many
-/// there are is the caller's call: nicks cap at four, command chips run a little longer.
-/// Discrete pills rather
-/// than one panel — everything down at the composer is already a family of floating glass
-/// capsules, and a flat list box would be the one flat thing among them.
+/// The completion suggestions: a horizontal row of plain chips in the composer's status row,
+/// best candidate first (leading), scrolling sideways when there are more than fit. Plain
+/// rather than glass — they live inside the composer's slab, and glass inside glass doesn't
+/// sample.
 ///
 /// Dumb by design: the owner computes the suggestions (a command, channel, or nick strip) and
-/// hands them to `show`; this view only draws pills and reports taps.
+/// hands them to `show`; this view only draws chips and reports taps.
 final class SuggestionsView: UIView {
     var onPick: ((Suggestion) -> Void)?
+    /// Fired when the row appears or goes, so the composer can swap its status content.
+    var onVisibilityChange: (() -> Void)?
 
+    private let scroll = UIScrollView()
     private let stack = UIStackView()
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        stack.axis = .vertical
-        // Centered, not leading-aligned: the pills hang in the middle of the screen over
-        // the field, so each is a thumb's reach from either hand rather than a stretch
-        // to the left edge — and mixed-width titles read as one centered group.
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.alwaysBounceHorizontal = true
+        scroll.contentInset = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
         stack.alignment = .center
-        stack.spacing = 8
+        stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        addSubview(scroll)
+        scroll.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor),
-            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
         isHidden = true
     }
@@ -73,51 +78,53 @@ final class SuggestionsView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Rebuild the pills from a best-first list; the reversal here is what puts the best
-    /// candidate nearest the composer. Empty hides the strip. Rebuilt wholesale rather
-    /// than diffed — it's at most four small views, and a keystroke replaces the whole
-    /// answer anyway.
+    /// Rebuild the chips from a best-first list. Empty hides the row. Rebuilt wholesale rather
+    /// than diffed — it's a handful of small views, and a keystroke replaces the whole answer
+    /// anyway.
     func show(_ suggestions: [Suggestion]) {
+        let wasHidden = isHidden
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for suggestion in suggestions.reversed() {
-            stack.addArrangedSubview(pill(for: suggestion))
+        for suggestion in suggestions {
+            stack.addArrangedSubview(chip(for: suggestion))
         }
+        scroll.contentOffset = CGPoint(x: -scroll.contentInset.left, y: 0)
         isHidden = suggestions.isEmpty
+        if wasHidden != isHidden { onVisibilityChange?() }
     }
 
-    /// One suggestion as a tappable glass capsule, in its own color.
-    private func pill(for suggestion: Suggestion) -> UIView {
-        let glass = UIVisualEffectView()
-        let effect = UIGlassEffect()
-        effect.isInteractive = true
-        glass.effect = effect
-        glass.cornerConfiguration = .capsule()
-        glass.translatesAutoresizingMaskIntoConstraints = false
-
+    /// One suggestion as a tappable chip: its title in its own color on a faint fill.
+    private func chip(for suggestion: Suggestion) -> UIView {
         var config = UIButton.Configuration.plain()
         config.title = suggestion.title
         config.baseForegroundColor = suggestion.color
-        // Generous on purpose: these are one-shot tap targets mid-typing, not persistent
-        // chrome — roughly the composer pills' height, with wider shoulders for the thumb.
-        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 18, bottom: 10, trailing: 18)
+        config.background.backgroundColor = .tertiarySystemFill
+        config.cornerStyle = .capsule
+        config.contentInsets = NSDirectionalEdgeInsets(top: 3, leading: 10, bottom: 3, trailing: 10)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attrs in
             var attrs = attrs
-            attrs.font = UIFont.preferredFont(forTextStyle: .subheadline).semibold
+            attrs.font = MessageRenderer.compactFont()
             return attrs
         }
-        let button = UIButton(configuration: config)
+        let button = RowHeightHitButton(configuration: config)
+        button.horizontalOutset = stack.spacing / 2
         button.titleLabel?.lineBreakMode = .byTruncatingTail
         button.accessibilityLabel = suggestion.accessibility
         button.addAction(UIAction { [weak self] _ in self?.onPick?(suggestion) }, for: .touchUpInside)
-        button.translatesAutoresizingMaskIntoConstraints = false
+        return button
+    }
+}
 
-        glass.contentView.addSubview(button)
-        NSLayoutConstraint.activate([
-            button.topAnchor.constraint(equalTo: glass.contentView.topAnchor),
-            button.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor),
-            button.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor),
-            button.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor),
-        ])
-        return glass
+/// A button that takes touches across the full height of the row it sits in, though it draws
+/// smaller: the status row's chips and its reply ✕ are drawn at the one-line text's size, but a
+/// target that short is easy to miss. Its container must span the row, or touches beyond the
+/// container never reach it.
+final class RowHeightHitButton: UIButton {
+    /// Extra width taken on each side — half the gap to a neighbour, so two never overlap.
+    var horizontalOutset: CGFloat = 0
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let rowHeight = superview?.bounds.height ?? bounds.height
+        let vertical = max(0, (rowHeight - bounds.height) / 2)
+        return bounds.insetBy(dx: -horizontalOutset, dy: -vertical).contains(point)
     }
 }

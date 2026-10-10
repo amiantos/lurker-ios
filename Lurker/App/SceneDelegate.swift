@@ -107,6 +107,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         viewModel.onInvited = { [weak self] networkId, channel, from in
             self?.invitePrompt?.offer(networkId: networkId, channel: channel, from: from)
         }
+        // A highlight, DM or always-notify line while the app is open — push's foreground half.
+        viewModel.onNotify = { notification in ToastCenter.shared.post(notification) }
 
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here
@@ -383,17 +385,19 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    /// Say something that went wrong, over whatever is on screen: the sheet on top if there is
-    /// one, else above a chat screen's composer (which the keyboard carries), else the buffer list.
+    /// Say something that went wrong where it'll be seen: in a chat screen's status row when one
+    /// is up and uncovered, else floating over the sheet on top, else over the buffer list.
     private func showNotice(_ message: String) {
         guard let root = window?.rootViewController else { return }
         let sheet = presentedSheet()
-        let chat = sheet == nil ? ChatViewController.activeChat() : nil
+        if sheet == nil, let chat = ChatViewController.activeChat(), chat.view.window != nil {
+            chat.showNotice(message)
+            return
+        }
         ToastView.show(
             message,
             symbol: "exclamationmark.circle",
-            over: sheet?.view ?? chat?.view ?? root.view,
-            above: chat?.noticeAnchor,
+            over: sheet?.view ?? root.view,
             hold: ToastView.readingHoldSeconds
         )
     }

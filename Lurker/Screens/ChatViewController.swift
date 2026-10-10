@@ -64,7 +64,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the caret). The composer reports what *kind* of completion is live; this screen owns
     /// the candidates, because they come from state the bar never sees — the command table,
     /// the network's channels, this buffer's members.
-    private let suggestions = SuggestionsView()
+    private var suggestions: SuggestionsView { composer.suggestions }
     private var activeCompletion: ComposerBar.Completion?
     /// How far the keyboard currently intrudes into the view, above the safe area — i.e.
     /// "is the keyboard actually up". The keyboard layout guide moves the composer; this
@@ -122,13 +122,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var historyLanded = false
     /// The settings in force as of the last apply.
     ///
-    /// Snapshotted alongside `typists` rather than read live inside `buildRows`, so every path
-    /// that builds rows agrees on which state it's rendering. The sink is
-    /// `.receive(on: .main)`, so `apply`'s argument is an instant behind `viewModel.state`; a
-    /// live read would let one frame mix old messages with new consolidation rules, and would
-    /// disagree with the dedupe predicate about which snapshot is authoritative. It also gives
-    /// the typing ticker's `rebuildRows()` — which has no `state` to thread through — the same
-    /// answer.
+    /// Snapshotted in `apply` rather than read live inside `buildRows`, so every path that
+    /// builds rows agrees on which state it's rendering. The sink is `.receive(on: .main)`, so
+    /// `apply`'s argument is an instant behind `viewModel.state`; a live read would let one frame
+    /// mix old messages with new consolidation rules, and would disagree with the dedupe
+    /// predicate about which snapshot is authoritative. It also gives a `rebuildRows()` outside
+    /// `apply` — which has no `state` to thread through — the same answer.
     private var settings = Settings()
     /// Your own away state for this buffer's network, as of the last apply (#68) — nil for a
     /// buffer that doesn't take presence markers.
@@ -370,7 +369,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // the send. Nothing retries a Back, so say so, or the strip staying put reads as a
             // Back that ignored you.
             if viewModel.setBack(networkId: buffer.key.networkId) { return }
-            ToastView.showNotConnected(over: view, above: noticeAnchor)
+            showNotice("Not connected — you're still away")
         }
         composer.onAttach = { [weak self] in self?.attach(from: $0) }
         composer.canAttach = { [weak self] in self.map { $0.takesUploads && !$0.isUploadBusy } ?? false }
@@ -414,6 +413,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         unreadBanner.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(unreadBanner)
 
+        // In-app notifications in the status row (exploration).
+        composer.onToastTap = { [weak self] notification in self?.open(notification) }
+        composer.canShowToasts = { [weak self] in self?.isUncovered ?? false }
+        composer.onNoticeOverflow = { [weak self] message in self?.floatNotice(message) }
+        // The highlight count goes where the highlights are.
+        composer.onHighlightCountTap = { [weak self] in
+            self?.navigationController?.popViewController(animated: true)
+        }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(toastCenterChanged(_:)), name: ToastCenter.didChange, object: nil
+        )
+
         composer.onCompletion = { [weak self] completion in
             self?.activeCompletion = completion
             self?.updateSuggestions()
@@ -441,8 +452,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 punctuation: addressPunctuation
             )
         }
-        suggestions.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(suggestions)
 
         // To the keyboard layout guide, not the safe area: at rest the guide's top *is*
         // the safe-area bottom, and with the keyboard up (or mid-drag — see
@@ -504,22 +513,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
             ),
 
-            // The suggestion pills: centered over the field for tap reach (the jump pill
-            // owns the trailing edge), riding the composer for the same
-            // keyboard-carries-both reason. The edge insets only bite on a title long
-            // enough to need truncating.
-            suggestions.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
-            suggestions.leadingAnchor.constraint(
-                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
-            ),
-            suggestions.trailingAnchor.constraint(
-                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
-            ),
-            suggestions.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
-
-            // Centered just above the composer, riding it up with the keyboard — the same
-            // slot the suggestion pills use, which is fine because an upload and mid-token
-            // completion never run at once.
+            // Centered just above the composer, riding it up with the keyboard.
             uploadStatus.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             uploadStatus.leadingAnchor.constraint(
                 greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
@@ -599,18 +593,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // kind of state that changes with nothing else changing alongside it,
                     // which is the trap typing and the mode glyph both fell into.
                     && old.networks == new.networks
-                    // Typing is this buffer's only state that changes with nothing else
-                    // changing alongside it — leave it out and every `typing` frame is
-                    // dropped here as a duplicate and the line never appears (#61).
-                    //
-                    // Compared as the RENDERED list, not as the raw entries. A peer re-sends
-                    // `active` every ~3s while they keep typing, and each one carries a fresh
-                    // `expiresAt` — so comparing entries makes every refresh a change, and
-                    // every refresh would run a full `apply`: consolidation over the entire
-                    // loaded history, a `reloadData`, and the anchor-restore dance. With three
-                    // people typing in a busy channel that's a table reload a second to draw
-                    // a line that hasn't changed. The nick list is what's on screen.
-                    && old.typists(in: bufferKey, now: now) == new.typists(in: bufferKey, now: now)
                     // Settings reshape the rows (consolidation on/off, its name cap) and
                     // arrive on their own, from another device or the bootstrap fetch — the
                     // same trap typing hit: leave it out and a change made on the web does
@@ -698,6 +680,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.updateTitle(state) }
+            .store(in: &cancellables)
+        // Typing turns over with nothing else changing, and now touches only the composer's
+        // status row — so its own subscription, kept out of the `apply` gate above, whose every
+        // pass is consolidation and a table reload. Compared as the rendered list: a peer
+        // re-sends `active` every ~3s with a fresh lease, which changes nothing on screen.
+        viewModel.statePublisher
+            .map { $0.typists(in: bufferKey) }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] current in self?.showTypists(current) }
+            .store(in: &cancellables)
+        // The back button's count is about every OTHER buffer, which is exactly what the gate
+        // above filters out — so it gets its own, on the one number it shows.
+        viewModel.statePublisher
+            .map { Self.backCount($0, excluding: bufferKey) }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] count in self?.otherHighlights = count }
             .store(in: &cancellables)
     }
 
@@ -1173,7 +1173,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
 
         messages = updated
-        typists = state.typists(in: buffer.key)
         settings = state.settings
         speakers = state.speakers[buffer.key.id] ?? SpeakerMap()
         ownNick = Self.ownNick(for: state, buffer: buffer)
@@ -1205,7 +1204,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
         modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
         rebuildRows()
-        updateTypingTicker()
         updateTitle(state)
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
         // the most recent speaker, and a leaver stops being offered.
@@ -1797,10 +1795,37 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 connection: state.connection,
                 network: buffer.networkId.flatMap { state.networks[$0]?.state }
             )
-        navigationItem.apply(StatusTitle(
-            title: displayName, status: status, detail: titleDetail,
-            peer: Self.titlePeer(for: state, buffer: buffer)
+        // Exploration: no title in the nav bar — where you are and how the connection is doing
+        // sit in the composer's status row instead, and the top of the screen goes back to the
+        // conversation.
+        if navigationItem.title != nil { navigationItem.title = nil }
+        if navigationItem.subtitle != nil { navigationItem.subtitle = nil }
+        let peer = Self.titlePeer(for: state, buffer: buffer)
+        let connection: String? = switch status {
+        case .good: nil
+        case .warn: "(Connecting…)"
+        case .bad: "(Offline)"
+        }
+        // A DM peer's presence, only when it's news — "Online" is the expected case.
+        let presence: String? = switch peer {
+        case .away?: "Away"
+        case .offline?: "Offline"
+        case .online?, .unknown?, nil: nil
+        }
+        composer.showLocation(ComposerBar.Location(
+            name: statusLocation,
+            connection: connection,
+            detail: status == .good ? presence : nil
         ))
+    }
+
+    /// "#lurker" — the network is left off for room; just the network for a server buffer.
+    private var statusLocation: String {
+        switch buffer.kind {
+        case .channel, .dm: return buffer.target
+        case .dcc: return "DCC/" + buffer.target
+        case .server, .system: return displayName
+        }
     }
 
     /// A DM's peer presence for the subtitle (#55): whether the person is there, which the
@@ -1809,18 +1834,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private static func titlePeer(for state: ChatState, buffer: Buffer) -> FriendPresence? {
         guard buffer.kind == .dm, let networkId = buffer.networkId else { return nil }
         return state.rowPresence(networkId: networkId, nick: buffer.target)
-    }
-
-    /// What the subtitle names beside the status: the network a conversation is on. Nothing for
-    /// a server buffer, whose title already is the network, or for the system buffer, which has
-    /// none. A DCC chat's light is its own session rather than the network (lurker#270), so it
-    /// says that instead.
-    private var titleDetail: String? {
-        switch buffer.kind {
-        case .channel, .dm: buffer.networkId.flatMap { networks[$0]?.name }
-        case .dcc: "DCC chat"
-        case .server, .system: nil
-        }
     }
 
     /// The channel-mode glyph for each current member, keyed by lowercased nick.
@@ -1867,9 +1880,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Rebuild `rows` from the current `messages` + `typists`, and re-cache the divider index.
+    /// Rebuild `rows` from the current `messages`, and re-cache the divider index.
     ///
-    /// Two callers with different triggers — a state apply and the typing ticker — so the
+    /// Two callers with different triggers — a state apply and returning to the tail — so the
     /// bookkeeping that has to stay in step with `rows` lives here rather than being repeated
     /// (and eventually forgotten) at each one.
     ///
@@ -1886,7 +1899,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             clearedBeforeId: clearedBeforeId,
             clearedAt: clearedAt,
             showsClearedHistory: showsClearedHistory,
-            typists: typists,
+            // The typing line lives in the composer's status row now.
+            typists: [],
             settings: settings,
             speakers: speakers,
             ownNick: ownNick,
@@ -2102,20 +2116,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         typingTicker = ticker
     }
 
-    /// Re-read the typists and redraw only if the list actually changed.
-    ///
-    /// The guard is what makes a once-a-second timer acceptable: for most ticks nothing has
-    /// changed and this costs a dictionary lookup and a comparison, not a table reload.
-    ///
-    /// Redrawing goes through `apply` rather than reloading here, because adding or removing
-    /// a row is exactly the event `apply` already knows how to survive: it re-pins a
-    /// scrolled-up reader to the line they were on (a bare `reloadData` re-estimates
-    /// off-screen row heights and shoves the viewport — the lurch that was fixed in #42), and
-    /// it stays out of the way of a landing that hasn't happened yet, which a direct
-    /// `scrollToBottom` here would steal from a jump mid-converge.
+    /// Re-read the typists and redraw only if the list actually changed — for most ticks
+    /// nothing has, and this costs a dictionary lookup and a comparison.
     private func refreshTypists() {
-        guard viewModel.state.typists(in: buffer.key) != typists else { return }
-        apply(viewModel.state)
+        let current = viewModel.state.typists(in: buffer.key)
+        guard current != typists else { return }
+        showTypists(current)
+    }
+
+    /// Who's typing, in the composer's status row (#61) — not the list, so it stays visible at
+    /// any scroll position and never adds or removes a row. One label: no `apply`, no reload.
+    private func showTypists(_ current: [String]) {
+        typists = current
+        composer.showTyping(current)
+        updateTypingTicker()
     }
 
     /// The draft changed — tell the network, and re-arm the idle downgrade.
@@ -2396,10 +2410,51 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
-    /// Where a passing notice sits on this screen: just above the composer, which the keyboard
-    /// carries up, so a join's refusal (#57) isn't drawn behind either. The jump pill and the
-    /// suggestions ride the same edge.
-    var noticeAnchor: NSLayoutYAxisAnchor { composer.topAnchor }
+    /// Say something that didn't work, in the composer's status row — this screen's one place
+    /// for passing news (exploration). Screens without a composer still float a `ToastView`.
+    func showNotice(_ message: String) {
+        guard composer.fitsAsNotice(message) else { return floatNotice(message) }
+        composer.showToast(.notice(message))
+    }
+
+    /// A notice too long for the one-line row, floated above the composer where it can wrap.
+    private func floatNotice(_ message: String) {
+        ToastView.show(
+            message, symbol: "exclamationmark.circle", over: view, above: composer.topAnchor,
+            hold: ToastView.readingHoldSeconds
+        )
+    }
+
+    /// Whether this screen is showing `key` right now — what keeps a notification for it from
+    /// toasting, since its line is arriving in plain view.
+    func showsBuffer(_ key: BufferKey) -> Bool {
+        // By `id`, which folds case: `#Lurker` and `#lurker` are one conversation.
+        key.id == buffer.key.id && isUncovered
+    }
+
+    /// On screen with nothing over it — where a toast in the status row can be seen. A sheet
+    /// over the conversation (info, members, the color editor) hides the row.
+    var isUncovered: Bool {
+        view.window != nil && presentedViewController == nil
+            && navigationController?.presentedViewController == nil
+            && splitViewController?.presentedViewController == nil
+    }
+
+    @objc private func toastCenterChanged(_ note: Notification) {
+        // Not into a row a sheet is covering: it would expire there unseen.
+        guard isUncovered,
+              let notification = note.userInfo?[ToastCenter.toastKey] as? StatusNotification
+        else { return }
+        composer.showToast(.notification(notification))
+    }
+
+    /// Go to a notification's line.
+    private func open(_ notification: StatusNotification) {
+        navigationController?.showBuffer(
+            viewModel.state.buffer(for: notification.key), viewModel: viewModel,
+            jumpTo: notification.messageId > 0 ? notification.messageId : nil, animated: true
+        )
+    }
 
     /// Switch to a channel — what `/msg` and `/query` to one ask for. The target may not be in
     /// state yet, which is what `buffer(for:)` synthesizes for.
@@ -2856,7 +2911,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .channelArg(let query):
             suggestions.show(channelCandidates(matching: query).map { Suggestion.channel($0) })
         case .nickArg(let query), .mention(let query):
-            suggestions.show(nickCandidates(matching: query).map { Suggestion.nick($0) })
+            suggestions.show(nickCandidates(matching: query, limit: 10).map { Suggestion.nick($0) })
         case nil:
             suggestions.show([])
         }
@@ -2978,7 +3033,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// runs. Not the iOS 26 `splitViewControllerLayoutEnvironment` trait either — measured on an
     /// iPad collapsing, every screen in the split went on reading `.expanded`.
     var isBesideList = false {
-        didSet { applyBarLayout() }
+        didSet {
+            applyBarLayout()
+            if isViewLoaded { showHighlightCount() }
+        }
     }
 
     /// The layout the bar was last fitted to, so re-asserting the same one doesn't replace the
@@ -3018,6 +3076,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             : layout.rail ? [infoItem] + views + [searchItem]
             : [overflowItem, infoItem]
         applyColumnSearch()
+    }
+
+    /// Highlights waiting in other buffers, at the end of the status row: the web's #636 chip,
+    /// which rides its back button. The same total as the app-icon badge, less this buffer's own,
+    /// which are on screen. Not beside the list, where the rows themselves show it.
+    ///
+    /// In the row rather than on the back button: iOS 26 drops a badge on a back button, a
+    /// replacement button loses swipe-back, and a count written into the list's back-button title
+    /// flashed or went missing as the push built the button.
+    private var otherHighlights = 0 {
+        didSet { if otherHighlights != oldValue { showHighlightCount() } }
+    }
+
+    private func showHighlightCount() {
+        composer.showHighlightCount(isBesideList ? 0 : otherHighlights)
+    }
+
+    private static func backCount(_ state: ChatState, excluding key: BufferKey) -> Int {
+        // `off` is the buffer list's "color is the only cue" mode — a number is exactly what it
+        // turns down, so the count goes too, as the web's chip does.
+        guard state.settings.string("look.buffer_list.unread_display", default: "full") != "off" else { return 0 }
+        return state.totalHighlights - (state.buffers[key.id]?.highlights ?? 0)
     }
 
     /// This buffer's info sheet: its members, its settings, and searching just this buffer.
@@ -3476,8 +3556,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // nowhere has to say so or it reads as a tap that missed (sweep L53).
                     guard let self else { return }
                     if viewModel.setBookmark(messageId: id, saved: saved) { return }
-                    ToastView.showNotConnected(
-                        "Not connected — the bookmark didn't change.", over: view, above: noticeAnchor)
+                    showNotice("Not connected — bookmark unchanged")
                 },
                 showProfile: { [weak self] nick in
                     // Safe to present straight away: the action sheet runs this from its own
