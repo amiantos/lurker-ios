@@ -112,28 +112,15 @@ enum ComposerColors {
         return NSAttributedString(string: line, attributes: plainAttributes(font: font))
     }
 
-    /// The line `text` sends as.
-    static func line(_ text: NSAttributedString) -> String {
+    /// The draft `text` holds — colour written out, nothing else rewritten (`encodeDraft`).
+    static func draft(_ text: NSAttributedString) -> String {
         let spans = spans(of: text)
-        return ColorMarkup.isColored(spans) ? ColorMarkup.encode(spans) : text.string
+        return ColorMarkup.isColored(spans) ? ColorMarkup.encodeDraft(spans) : text.string
     }
 
-    /// The smallest edit that turns `old` into `new`, in UTF-16 — so a programmatic rewrite of the
-    /// field (a completion, a Reply's address) touches only what changed, and the colour on the
-    /// rest of the text survives it.
-    static func difference(from old: String, to new: String) -> (range: NSRange, replacement: String) {
-        let a = old as NSString, b = new as NSString
-        let shorter = min(a.length, b.length)
-        var prefix = 0
-        while prefix < shorter, a.character(at: prefix) == b.character(at: prefix) { prefix += 1 }
-        var suffix = 0
-        while suffix < shorter - prefix,
-              a.character(at: a.length - 1 - suffix) == b.character(at: b.length - 1 - suffix) {
-            suffix += 1
-        }
-        return (
-            NSRange(location: prefix, length: a.length - prefix - suffix),
-            b.substring(with: NSRange(location: prefix, length: b.length - prefix - suffix))
-        )
+    /// The line `text` sends as (`encode`) — spoilers made, colour only on a chat body.
+    static func wireLine(_ text: NSAttributedString) -> String {
+        let spans = spans(of: text)
+        return ColorMarkup.isColored(spans) ? ColorMarkup.encode(spans) : text.string
     }
 }

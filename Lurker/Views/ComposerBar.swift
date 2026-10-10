@@ -125,6 +125,11 @@ final class ComposerBar: UIView {
     /// Set while `restore(_:)` is putting a refused line back — see its note.
     private var isRestoring = false
 
+    /// The last few coloured lines sent, with the draft each was sent from. A refused send comes
+    /// home as the line that went out, and a coloured one has had its spoilers made and its `||`
+    /// escaped on the way — so `restore` puts back what was typed instead.
+    private var sentDrafts: [(line: String, draft: String)] = []
+
     /// The field as `onEdit` last saw it, so a re-measure or a caret move isn't an edit.
     private var lastEdit = (text: "", composing: false)
 
@@ -546,7 +551,7 @@ final class ComposerBar: UIView {
 
     /// What's in the field, as it will be sent: its colour written out as `\x03` codes. The
     /// line a send takes and the draft that syncs.
-    var text: String { ComposerColors.line(textView.attributedText) }
+    var text: String { ComposerColors.draft(textView.attributedText) }
 
     /// The characters in the field, without colour — what completion, the typing signal and the
     /// send-button state read.
@@ -562,12 +567,19 @@ final class ComposerBar: UIView {
     var draftSelection: NSRange { textView.selectedRange }
 
     /// Take back the colour editor's text — an edit of the user's, so it reaches the draft and
-    /// the typing signal like a keystroke.
-    func replaceDraft(_ draft: NSAttributedString, selection: NSRange) {
+    /// the typing signal like a keystroke. `typing` is a colour picked at a bare caret and not
+    /// yet typed with: it's still what the next keystroke writes in, here as it was there.
+    func replaceDraft(_ draft: NSAttributedString, selection: NSRange, typing: (fg: Int?, bg: Int?)?) {
         textView.attributedText = ComposerColors.restyled(draft, font: bodyFont)
         let length = textView.attributedText.length
         let location = min(selection.location, length)
         textView.selectedRange = NSRange(location: location, length: min(selection.length, length - location))
+        if let typing {
+            var attributes = plainAttributes
+            attributes = ComposerColors.applying(typing.fg, layer: .text, to: attributes)
+            attributes = ComposerColors.applying(typing.bg, layer: .highlight, to: attributes)
+            textView.typingAttributes = attributes
+        }
         textViewDidChange(textView)
     }
 
@@ -598,8 +610,12 @@ final class ComposerBar: UIView {
         isRestoring = true
         defer { isRestoring = false }
         // Colour comes back as colour; a line with formatting the field can't show stays raw.
-        textView.attributedText = ComposerColors.attributed(line: text, font: bodyFont)
+        let typed = sentDrafts.last { $0.line == text }?.draft ?? text
+        textView.attributedText = ComposerColors.attributed(line: typed, font: bodyFont)
         textView.selectedRange = NSRange(location: textView.attributedText.length, length: 0)
+        // An emptied field writes plain, whatever was being typed in before. (Text left behind
+        // carries its own colour to the caret, as it would after a keystroke.)
+        if textView.attributedText.length == 0 { textView.typingAttributes = plainAttributes }
         // ⚠⚠ Silently. `textViewDidChange` is needed for the height, the send button and the
         // placeholder, but its two announcements must not fire: `onDraftChange` would tell the
         // CHANNEL you had resumed typing because the server handed your own message back, and
@@ -717,20 +733,22 @@ final class ComposerBar: UIView {
 
     /// Replace `range` through the text storage, so the rest of the line keeps its colour. The
     /// new text takes the colour of what it replaces, or of the character before it — a nick
-    /// completed inside a red sentence is red.
+    /// completed inside a red sentence is red — and is plain at the very start, so a Reply's
+    /// `bob: ` doesn't take the colour of the words it's put in front of.
     private func splice(_ range: NSRange, with replacement: String) {
         let storage = textView.textStorage
         var attributes = plainAttributes
-        if storage.length > 0 {
-            let index = range.length > 0 ? range.location : max(0, min(range.location, storage.length) - 1)
-            attributes = storage.attributes(at: index, effectiveRange: nil)
+        if range.length > 0 {
+            attributes = storage.attributes(at: range.location, effectiveRange: nil)
+        } else if range.location > 0, storage.length > 0 {
+            attributes = storage.attributes(at: min(range.location, storage.length) - 1, effectiveRange: nil)
         }
         storage.replaceCharacters(in: range, with: NSAttributedString(string: replacement, attributes: attributes))
     }
 
     /// Make the field read `next`, rewriting only the stretch that differs.
     private func rewrite(to next: String) {
-        let edit = ComposerColors.difference(from: plainText, to: next)
+        let edit = TextEdit.difference(from: plainText, to: next)
         splice(edit.range, with: edit.replacement)
     }
 
@@ -835,9 +853,18 @@ final class ComposerBar: UIView {
     /// path, so one set of checks.
     private func fire() {
         // Trailing whitespace only: a leading space keeps ` /whois bob` text (lurker-ios#210).
-        // Emptiness from the characters: a field of coloured spaces is still empty, though its
-        // line isn't.
-        guard CommandParser.sendable(plainText) != nil, let line = CommandParser.sendable(text) else { return }
+        // Trimmed as characters, BEFORE the colour is written: trimming the written line would
+        // strand the code for a trailing coloured space at its end. And emptiness from the
+        // characters too — a field of coloured spaces is empty, though its line isn't.
+        guard let sendable = CommandParser.sendable(plainText) else { return }
+        let kept = textView.attributedText.attributedSubstring(
+            from: NSRange(location: 0, length: (sendable as NSString).length))
+        let line = ComposerColors.wireLine(kept)
+        let draft = ComposerColors.draft(kept)
+        if line != draft {
+            sentDrafts.append((line, draft))
+            if sentDrafts.count > 8 { sentDrafts.removeFirst() }
+        }
         onSend?(line)
     }
 
@@ -872,7 +899,7 @@ final class ComposerBar: UIView {
         // Through `replace`, not `text =`: a programmatic set registers no undo, and a hardware
         // keyboard's Cmd-Z would then replay older typing ranges against the rewritten text. Only
         // the stretch that changed, so the colour on the rest of the line survives.
-        let change = ComposerColors.difference(from: text, to: edit.text)
+        let change = TextEdit.difference(from: text, to: edit.text)
         if let start = textView.position(from: textView.beginningOfDocument, offset: change.range.location),
            let end = textView.position(from: start, offset: change.range.length),
            let range = textView.textRange(from: start, to: end) {

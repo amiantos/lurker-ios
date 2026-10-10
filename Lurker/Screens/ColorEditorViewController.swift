@@ -17,10 +17,18 @@ import UIKit
 /// draws them in the same palette (`MessageRenderer.mircSlot`).
 final class ColorEditorViewController: UIViewController {
 
-    /// Done: the text and where the selection was, for the composer to take back.
-    var onDone: ((NSAttributedString, NSRange) -> Void)?
+    /// What the editor hands back: the text, where the selection was, and a colour picked at a
+    /// bare caret and not yet typed with — so "pick red, tap Done, type" types red.
+    struct Result {
+        let text: NSAttributedString
+        let selection: NSRange
+        let typing: (fg: Int?, bg: Int?)?
+    }
+
+    /// Done: for the composer to take back.
+    var onDone: ((Result) -> Void)?
     /// Send: the same, then send it.
-    var onSend: ((NSAttributedString, NSRange) -> Void)?
+    var onSend: ((Result) -> Void)?
 
     private let textView = UITextView()
     private let panel = UIVisualEffectView()
@@ -202,9 +210,15 @@ final class ColorEditorViewController: UIViewController {
     @objc private func sendTapped() { finish(sending: true) }
 
     private func finish(sending: Bool) {
-        let text = textView.attributedText ?? NSAttributedString()
         let selection = textView.selectedRange
-        (sending ? onSend : onDone)?(text, selection)
+        let typing = textView.typingAttributes
+        let result = Result(
+            text: textView.attributedText ?? NSAttributedString(),
+            selection: selection,
+            typing: selection.length == 0
+                ? (ComposerColors.slot(.text, in: typing), ComposerColors.slot(.highlight, in: typing))
+                : nil)
+        (sending ? onSend : onDone)?(result)
     }
 }
 

@@ -2448,12 +2448,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Edit Color: the draft full screen, handed back on Done — or sent, on Send.
     private func presentColorEditor() {
         let editor = ColorEditorViewController(text: composer.attributedDraft, selection: composer.draftSelection)
-        editor.onDone = { [weak self, weak editor] text, selection in
-            self?.composer.replaceDraft(text, selection: selection)
+        editor.onDone = { [weak self, weak editor] result in
+            self?.composer.replaceDraft(result.text, selection: result.selection, typing: result.typing)
             editor?.dismiss(animated: true)
         }
-        editor.onSend = { [weak self, weak editor] text, selection in
-            self?.composer.replaceDraft(text, selection: selection)
+        editor.onSend = { [weak self, weak editor] result in
+            self?.composer.replaceDraft(result.text, selection: result.selection, typing: nil)
             // After the dismissal: a send can present (a refusal, a confirm) or switch buffers.
             editor?.dismiss(animated: true) { self?.composer.send() }
         }
