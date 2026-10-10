@@ -112,10 +112,16 @@ final class StatusToastPresenter {
 extension UIViewController {
     /// In a window with nothing presented over it — where a toast on this screen can be seen. A
     /// sheet (a conversation's info, Settings, the color editor) covers it.
+    ///
+    /// ⚠ Side by side, a sheet from EITHER column covers it. Each column presents its own sheets,
+    /// so Settings opened from the sidebar is the list's, and none of the three checks below would
+    /// see it from the conversation: the toast would run out behind the dimmed sheet, sound and
+    /// all. `topPresented` asks both columns.
     var isUncovered: Bool {
         view.window != nil && presentedViewController == nil
             && navigationController?.presentedViewController == nil
             && splitViewController?.presentedViewController == nil
+            && (splitViewController as? BufferSplitViewController)?.topPresented == nil
     }
 }
 
