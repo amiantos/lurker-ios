@@ -108,7 +108,10 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             self?.invitePrompt?.offer(networkId: networkId, channel: channel, from: from)
         }
         // A highlight, DM or always-notify line while the app is open — push's foreground half.
-        viewModel.onNotify = { notification in ToastCenter.shared.post(notification) }
+        viewModel.onNotify = { [weak viewModel] notification in
+            guard let viewModel else { return }
+            ToastCenter.shared.post(notification, settings: viewModel.state.settings)
+        }
 
         // Local→server favorites migration (lurker#721 moved favorites into
         // `favorite_buffers`). CONVERGES rather than one-shot-and-clear: nothing here

@@ -198,46 +198,11 @@ final class ComposerBar: UIView {
     private let backButton = UIButton(type: .system)
     private var containerAtTop: NSLayoutConstraint!
     private var containerBelowAway: NSLayoutConstraint!
-    /// What the status row can flash for a few seconds.
-    enum StatusToast {
-        /// Something in another conversation; a tap goes there.
-        case notification(StatusNotification)
-        /// Something you just did that didn't work: "Not connected — try again when you're back
-        /// online". A tap just clears it.
-        case notice(String)
-
-        var isNotification: Bool {
-            if case .notification = self { true } else { false }
-        }
-
-        /// The same person, buffer and kind — or the same notice. What a newer toast updates in
-        /// place rather than queueing behind.
-        func sameSource(as other: StatusToast) -> Bool {
-            switch (self, other) {
-            case let (.notification(a), .notification(b)):
-                a.key.id == b.key.id && a.kind == b.kind
-                    && a.nick?.lowercased() == b.nick?.lowercased()
-            case let (.notice(a), .notice(b)):
-                a == b
-            default:
-                false
-            }
-        }
-    }
     /// The status row's right end: highlights waiting in other buffers, a plain gold number like
     /// a buffer row's count. Tapping it goes back to the list. Hidden at 0.
     private let highlightCountButton = UIButton(type: .system)
-    /// The toast showing now, and the ones waiting their turn, oldest first.
-    private var activeToast: StatusToast?
-    private var toastQueue: [StatusToast] = []
-    private var toastTimer: Timer?
-    /// Shorter while others wait, so a burst drains rather than backing up.
-    private static let toastHoldBusy: TimeInterval = 2.5
-    /// How many notifications may wait. Past it the oldest goes: its line is still in its
-    /// buffer, and the highlight count and buffer list still show it.
-    private static let toastQueueCap = 3
-    /// How long a notification holds the row.
-    private static let toastHold: TimeInterval = 4
+    /// The toast showing now, and the ones waiting their turn.
+    private let toasts = StatusToastPresenter()
     private let statusRule = UIView()
     /// The completion chips, owned by the chat screen's suggestion logic but drawn in the row.
     let suggestions = SuggestionsView()
@@ -496,17 +461,15 @@ final class ComposerBar: UIView {
         }
 
         suggestions.translatesAutoresizingMaskIntoConstraints = false
+        configureToasts()
         suggestions.onVisibilityChange = { [weak self] in
             guard let self else { return }
             // Chips over a toast: it goes back to the front of the queue, to be shown in full
             // once they close, rather than running out its time underneath them.
-            if !suggestions.isHidden, let active = activeToast {
-                endActiveToast()
-                toastQueue.insert(active, at: 0)
-            }
+            if !suggestions.isHidden { toasts.requeueActive() }
             self.renderStatus()
             // Toasts that arrived mid-completion waited for the chips to close.
-            self.presentNextToast()
+            self.toasts.presentNext()
         }
 
         let lead = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton])
@@ -650,8 +613,8 @@ final class ComposerBar: UIView {
         // and they're gone the moment it's finished.
         statusContent?.isHidden = !suggestions.isHidden
 
-        if let toast = activeToast {
-            let text = Self.toastText(toast, font: font)
+        if let toast = toasts.active {
+            let text = toast.attributedText(font: font)
             leadLabel.attributedText = text
             // A notification goes somewhere when tapped; say so.
             if case .notification = toast { leadLabel.accessibilityTraits = .button }
@@ -788,36 +751,10 @@ final class ComposerBar: UIView {
         highlightCountButton.accessibilityLabel = "\(count) highlight" + (count == 1 ? "" : "s") + " in other buffers"
     }
 
-    /// Show a toast in the status row for a few seconds, in turn. Never over the completion chips
-    /// — they're what you're tapping — so the queue waits for them to close.
-    ///
-    /// - A newer line from the same person in the same buffer updates their toast where it is,
-    ///   showing or waiting, rather than queueing behind it or being dropped: a burst (ChanServ
-    ///   answering /HELP) is one toast that reads its latest line. It doesn't buy more time.
-    /// - A notice is about something you just did, so it goes first, and a notification
-    ///   showing gives way to it.
+    /// Show a toast in the status row for a few seconds, in turn (`StatusToastQueue`). Never over
+    /// the completion chips — they're what you're tapping — so the queue waits for them to close.
     func showToast(_ toast: StatusToast) {
-        if let active = activeToast, active.sameSource(as: toast) {
-            activeToast = toast
-            renderStatus()
-            announce(toast)
-            return
-        }
-        if let waiting = toastQueue.firstIndex(where: { $0.sameSource(as: toast) }) {
-            toastQueue[waiting] = toast
-            return
-        }
-        if case .notice = toast {
-            toastQueue.insert(toast, at: 0)
-            if case .notification? = activeToast { endActiveToast() }
-        } else {
-            toastQueue.append(toast)
-            while toastQueue.filter(\.isNotification).count > Self.toastQueueCap,
-                  let oldest = toastQueue.firstIndex(where: \.isNotification) {
-                toastQueue.remove(at: oldest)
-            }
-        }
-        presentNextToast()
+        toasts.show(toast)
     }
 
     /// Whether `message` fits the row as a notice without being cut off. The row is one line;
@@ -826,97 +763,35 @@ final class ComposerBar: UIView {
         let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
         let count = highlightCountButton.isHidden ? 0 : highlightCountButton.intrinsicContentSize.width
         let room = statusRow.bounds.width - Self.textInset.left - count - 8
-        return Self.toastText(.notice(message), font: font).size().width <= room
+        return StatusToast.notice(message).attributedText(font: font).size().width <= room
     }
 
-    private func presentNextToast() {
-        guard suggestions.isHidden, activeToast == nil, !toastQueue.isEmpty else { return }
-        guard canShowToasts?() ?? true else {
-            // Passing news, gone stale while nobody could see it; the count still has the rest.
-            toastQueue.removeAll()
-            return
-        }
-        let next = toastQueue.removeFirst()
-        if case .notice(let message) = next, !fitsAsNotice(message) {
+    private func configureToasts() {
+        toasts.isReady = { [weak self] in self?.suggestions.isHidden ?? false }
+        toasts.isVisible = { [weak self] in self?.canShowToasts?() ?? true }
+        toasts.shouldPresent = { [weak self] toast in
+            guard let self, case .notice(let message) = toast, !fitsAsNotice(message) else { return true }
             onNoticeOverflow?(message)
-            presentNextToast()
-            return
+            return false
         }
-        activeToast = next
-        let timer = Timer(
-            timeInterval: toastQueue.isEmpty ? Self.toastHold : Self.toastHoldBusy, repeats: false
-        ) { [weak self] _ in
-            guard let self else { return }
-            toastTimer = nil
-            activeToast = nil
-            renderStatus()
-            presentNextToast()
+        toasts.onChange = { [weak self] in self?.renderStatus() }
+        toasts.onShow = { [weak self] toast, isNew in
+            // A notice gets the floating toast's light tap — the only feedback its action has.
+            if isNew, case .notice = toast { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+            self?.announce(toast)
         }
-        RunLoop.main.add(timer, forMode: .common)
-        toastTimer = timer
-        renderStatus()
-        // A notice gets the floating toast's light tap — the only feedback its action has.
-        if case .notice = next { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-        announce(next)
     }
 
     /// Said as well as shown, as the floating toast did: the row's text changes in place, which
     /// VoiceOver doesn't announce on its own.
     private func announce(_ toast: StatusToast) {
         let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
-        UIAccessibility.post(notification: .announcement, argument: Self.toastText(toast, font: font).string)
-    }
-
-    private func endActiveToast() {
-        toastTimer?.invalidate()
-        toastTimer = nil
-        activeToast = nil
-        renderStatus()
-    }
-
-    /// Who and what — "bob: are you around?" — the way the line reads in the buffer; where it
-    /// happened is the tap's job. A kick has no speaker worth naming, so it says where. A notice
-    /// is in the error color behind a glyph, so "Not connected" can't be read as someone's line.
-    private static func toastText(_ toast: StatusToast, font: UIFont) -> NSAttributedString {
-        let text = NSMutableAttributedString()
-        let muted: [NSAttributedString.Key: Any] = [.foregroundColor: Palette.fgMuted, .font: font]
-        switch toast {
-        case .notice(let message):
-            let glyph = UIImage(
-                systemName: "exclamationmark.circle.fill",
-                withConfiguration: UIImage.SymbolConfiguration(font: font, scale: .small)
-            )?.withTintColor(Palette.bad, renderingMode: .alwaysOriginal)
-            if let glyph {
-                text.append(NSAttributedString(attachment: NSTextAttachment(image: glyph)))
-                text.append(NSAttributedString(string: " ", attributes: [.font: font]))
-            }
-            text.append(NSAttributedString(string: message, attributes: [.foregroundColor: Palette.bad, .font: font]))
-        case .notification(let notification):
-            if notification.kind == .kicked {
-                text.append(NSAttributedString(string: "Kicked from " + notification.key.target, attributes: muted))
-            } else {
-                let nick = notification.nick ?? "?"
-                text.append(NSAttributedString(string: nick, attributes: [
-                    .foregroundColor: MessageRenderer.hashedColor(nick), .font: font,
-                ]))
-                if notification.kind == .friendOnline {
-                    text.append(NSAttributedString(string: " came online", attributes: muted))
-                }
-            }
-            if !notification.text.isEmpty {
-                text.append(NSAttributedString(
-                    string: ": " + notification.text, attributes: [.foregroundColor: Palette.fg, .font: font]
-                ))
-            }
-        }
-        return text
+        UIAccessibility.post(notification: .announcement, argument: toast.attributedText(font: font).string)
     }
 
     @objc private func leadTapped() {
-        guard let toast = activeToast else { return }
-        endActiveToast()
-        if case .notification(let notification) = toast { onToastTap?(notification) }
-        presentNextToast()
+        if case .notification(let notification)? = toasts.takeActive() { onToastTap?(notification) }
+        toasts.presentNext()
     }
 
     /// Clears the field after a send the owner accepted, and collapses it back to one line.

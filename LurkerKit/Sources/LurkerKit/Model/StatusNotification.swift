@@ -68,5 +68,34 @@ public struct StatusNotification: Equatable, Sendable, Identifiable {
         return StatusNotification(kind: .friendOnline, key: key, nick: nick, text: "", messageId: 0, date: now)
     }
 
+    /// Which bundled sound this kind plays, or nil when its sound is off. The web's
+    /// `notifications.<kind>.sound.enabled` and `.choice`, with the registry's defaults for the
+    /// moment before bootstrap — always-notify and kick sound by default, the rest don't, and each
+    /// kind has its own default sound so they can be told apart by ear. A volume of 0 is silence.
+    public func sound(in settings: Settings) -> String? {
+        Self.sound(for: kind, in: settings)
+    }
+
+    /// `sound(in:)` for a kind — what the settings screen shows as the sound in force, so the row
+    /// reads exactly what will play.
+    public static func sound(for kind: Kind, in settings: Settings) -> String? {
+        let (enabled, choice): (Bool, String) = switch kind {
+        case .highlight: (false, "ping")
+        case .dm: (false, "chime")
+        case .friendOnline: (false, "knock")
+        case .alwaysNotify: (true, "plink")
+        case .kicked: (true, "beep")
+        }
+        let prefix = "notifications.\(kind.rawValue).sound"
+        guard settings.bool("\(prefix).enabled", default: enabled),
+              settings.int("\(prefix).volume", default: 60) > 0
+        else { return nil }
+        let picked = settings.string("\(prefix).choice", default: choice)
+        return sounds.contains(picked) ? picked : choice
+    }
+
+    /// The bundled sounds, the registry's `sound.choice` enum.
+    public static let sounds: Set<String> = ["ping", "chime", "pop", "beep", "knock", "plink"]
+
     public static func == (lhs: StatusNotification, rhs: StatusNotification) -> Bool { lhs.id == rhs.id }
 }

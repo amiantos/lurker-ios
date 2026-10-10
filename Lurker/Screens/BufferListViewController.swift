@@ -236,6 +236,12 @@ final class BufferListViewController: UICollectionViewController {
     /// What the banner would show if this screen were frontmost. Held separately so the answer
     /// is already current the moment it becomes frontmost, without waiting for a state change.
     private var bannerState: ConnectionBannerState = .hidden
+    /// In-app notifications while no conversation is on screen to carry them in its status row
+    /// (lurker#1098): a highlight, a DM, a friend coming online. Tapping one goes to the line.
+    private let notificationToast = NotificationToastView()
+    private let toasts = StatusToastPresenter()
+    /// Between `viewDidAppear` and `viewWillDisappear`: the list has arrived, and isn't leaving.
+    private var takesToasts = false
     /// Whether this screen is actually on screen, as against merely alive under a chat screen.
     /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
     /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
@@ -327,6 +333,41 @@ final class BufferListViewController: UICollectionViewController {
                 lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
             ),
         ])
+
+        // Along the bottom, above the search field when it rides a toolbar there (the safe area
+        // includes it), and over the rows the same way the banner is.
+        notificationToast.translatesAutoresizingMaskIntoConstraints = false
+        notificationToast.layer.zPosition = 1
+        view.addSubview(notificationToast)
+        NSLayoutConstraint.activate([
+            notificationToast.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            notificationToast.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            notificationToast.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            notificationToast.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
+        ])
+        toasts.isVisible = { [weak self] in self?.showsToasts ?? false }
+        toasts.onChange = { [weak self] in
+            guard let self else { return }
+            if toasts.active != nil { view.bringSubviewToFront(notificationToast) }
+            notificationToast.render(toasts.active)
+        }
+        // The capsule appearing isn't announced on its own.
+        toasts.onShow = { toast, _ in
+            let text = toast.attributedText(font: .preferredFont(forTextStyle: .body)).string
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
+        notificationToast.onTap = { [weak self] in
+            guard let self, case .notification(let notification)? = toasts.takeActive() else { return }
+            navigationController?.showNotification(notification, viewModel: viewModel)
+            toasts.presentNext()
+        }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(toastCenterChanged(_:)), name: ToastCenter.didChange, object: nil
+        )
 
         // Force the lazy registrations to instantiate here, up front. UIKit throws if a
         // registration is first *created* inside `cellForItemAt` — a lazy var is created
@@ -420,6 +461,10 @@ final class BufferListViewController: UICollectionViewController {
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
+        // Passing news: not carried over the screen arriving, nor still up, for a buffer just
+        // visited, when you come back.
+        takesToasts = false
+        toasts.clear()
         refreshBanner()
         if usesBottomSearchBar { navigationController?.setToolbarHidden(true, animated: animated) }
     }
@@ -427,6 +472,34 @@ final class BufferListViewController: UICollectionViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         isOnScreen = false
+    }
+
+    /// ⚠ A toast that takes touches has to be the collection view's LAST subview, not just drawn
+    /// on top: hit-testing goes by subview order, which `zPosition` doesn't change, and cells are
+    /// inserted above it as they're dequeued — so a tap on the capsule would select the row
+    /// under it. Kept in front through every scroll while it's up.
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if toasts.active != nil, view.subviews.last !== notificationToast {
+            view.bringSubviewToFront(notificationToast)
+        }
+    }
+
+    /// Whether this list is where an in-app notification goes: on screen, uncovered, and with no
+    /// conversation beside it — one there shows it in its status row instead. Side by side there
+    /// always is one (the system buffer at rest), so that's `marksOpenBuffer`.
+    ///
+    /// `takesToasts`, not `isOnScreen`: that one goes up in `viewWillAppear`, while a popped chat
+    /// is still in the window taking toasts itself, and both would show the same one.
+    private var showsToasts: Bool {
+        takesToasts && isUncovered && navigationController?.topViewController === self && !marksOpenBuffer
+    }
+
+    @objc private func toastCenterChanged(_ note: Notification) {
+        guard showsToasts, let notification = note.userInfo?[ToastCenter.toastKey] as? StatusNotification
+        else { return }
+        toasts.show(.notification(notification))
+        ToastCenter.shared.didShow()
     }
 
     /// Show the banner only once this screen is genuinely frontmost, and hide it the instant a
@@ -442,6 +515,7 @@ final class BufferListViewController: UICollectionViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         refreshBanner()
+        takesToasts = true
     }
 
     private func refreshBanner() {
@@ -810,6 +884,8 @@ final class BufferListViewController: UICollectionViewController {
         didSet {
             guard marksOpenBuffer != oldValue else { return }
             markingChanged()
+            // A conversation came up beside the list, and takes the toasts from here on.
+            if marksOpenBuffer { toasts.clear() }
             // The banner yields to the conversation column's whenever there is one, so this
             // flag flipping is exactly when that answer changes.
             refreshBanner()

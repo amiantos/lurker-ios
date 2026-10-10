@@ -221,6 +221,15 @@ extension UINavigationController {
         setBufferStack(buffer, viewModel: viewModel, jumpTo: messageId, animated: animated)
     }
 
+    /// Where an in-app notification goes when tapped: its line, or for a friend coming online,
+    /// the conversation with them.
+    func showNotification(_ notification: StatusNotification, viewModel: ChatViewModel) {
+        showBuffer(
+            viewModel.state.buffer(for: notification.key), viewModel: viewModel,
+            jumpTo: notification.messageId > 0 ? notification.messageId : nil, animated: true
+        )
+    }
+
     /// The stack arrangement itself: this conversation, with the list under it.
     ///
     /// Split out from `showBuffer` so a COLLAPSED split can reuse it. Collapsed, the split keeps

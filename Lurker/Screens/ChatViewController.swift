@@ -2432,28 +2432,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         key.id == buffer.key.id && isUncovered
     }
 
-    /// On screen with nothing over it — where a toast in the status row can be seen. A sheet
-    /// over the conversation (info, members, the color editor) hides the row.
-    var isUncovered: Bool {
-        view.window != nil && presentedViewController == nil
-            && navigationController?.presentedViewController == nil
-            && splitViewController?.presentedViewController == nil
-    }
-
     @objc private func toastCenterChanged(_ note: Notification) {
         // Not into a row a sheet is covering: it would expire there unseen.
         guard isUncovered,
               let notification = note.userInfo?[ToastCenter.toastKey] as? StatusNotification
         else { return }
         composer.showToast(.notification(notification))
+        ToastCenter.shared.didShow()
     }
 
     /// Go to a notification's line.
     private func open(_ notification: StatusNotification) {
-        navigationController?.showBuffer(
-            viewModel.state.buffer(for: notification.key), viewModel: viewModel,
-            jumpTo: notification.messageId > 0 ? notification.messageId : nil, animated: true
-        )
+        navigationController?.showNotification(notification, viewModel: viewModel)
     }
 
     /// Switch to a channel — what `/msg` and `/query` to one ask for. The target may not be in
