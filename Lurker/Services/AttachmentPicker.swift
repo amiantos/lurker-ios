@@ -6,9 +6,10 @@ import PhotosUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// Presents the two attachment sources — the photo library (`PHPickerViewController`, which
-/// runs out of process and so needs *no* photo-library permission prompt) and the file
-/// browser (`UIDocumentPickerViewController`) — and hands back what the user chose. Sharing
+/// Presents the attachment sources — the photo library (`PHPickerViewController`, which
+/// runs out of process and so needs *no* photo-library permission prompt), the camera
+/// (`UIImagePickerController`, which does prompt) and the file browser
+/// (`UIDocumentPickerViewController`) — and hands back what the user chose. Sharing
 /// from other apps via the system share sheet is a separate, later card.
 ///
 /// **The pick and the copy are deliberately separate steps.** Choosing returns `Source`
@@ -97,6 +98,17 @@ final class AttachmentPicker: NSObject {
         presenter?.present(picker, animated: true)
     }
 
+    /// A photo taken now. Photos only, as the menu says; it arrives already staged (`.ready`),
+    /// since the camera hands over an image in memory rather than a file to copy later.
+    func takePhoto(completion: @escaping (Result<[Source], PickError>) -> Void) {
+        self.completion = completion
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.mediaTypes = [UTType.image.identifier]
+        picker.delegate = self
+        presenter?.present(picker, animated: true)
+    }
+
     // MARK: - Staging
 
     /// Copy one source into a temp file the caller owns and must delete.
@@ -119,7 +131,7 @@ final class AttachmentPicker: NSObject {
             // rather than run the batch out. And it's the one step whose completion is not
             // ours to guarantee: it comes from an out-of-process picker extension, which can
             // be jetsammed mid-load. Without a way out, that would hang the run forever and,
-            // because the task never ends, leave the paperclip dead until the app relaunched.
+            // because the task never ends, leave attaching dead until the app relaunched.
             // `Handoff` resumes on cancel WITHOUT waiting for the provider, so the way out
             // exists even when the callback never comes.
             let handoff = Handoff()
@@ -338,5 +350,50 @@ extension AttachmentPicker: UIDocumentPickerDelegate {
 
     func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         deliver(.failure(.cancelled))
+    }
+}
+
+// MARK: - Camera
+
+extension AttachmentPicker: UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+    func imagePickerController(
+        _ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+    ) {
+        picker.dismiss(animated: true)
+        guard let image = info[.originalImage] as? UIImage else {
+            deliver(.failure(.failed("Couldn't read the photo.")))
+            return
+        }
+        // Off main: a full-resolution JPEG encode is long enough to hitch the dismissal.
+        Task.detached(priority: .userInitiated) {
+            let staged = Self.stageCapture(image)
+            await MainActor.run { self.deliver(staged.map { [.ready($0)] }) }
+        }
+    }
+
+    func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+        picker.dismiss(animated: true)
+        deliver(.failure(.cancelled))
+    }
+
+    /// The capture as a JPEG in a temp file the caller owns. `jpegData` writes the orientation
+    /// the camera recorded, so a portrait shot stays upright. The server re-encodes images, so
+    /// this only has to be a faithful one.
+    private nonisolated static func stageCapture(_ image: UIImage) -> Result<Picked, PickError> {
+        guard let data = image.jpegData(compressionQuality: 0.9) else {
+            return .failure(.failed("Couldn't read the photo."))
+        }
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("lurker-camera-\(UUID().uuidString).jpg")
+        do {
+            try data.write(to: url)
+        } catch {
+            return .failure(.failed(error.localizedDescription))
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        return .success(Picked(url: url, filename: "photo-\(stamp).jpg", mime: "image/jpeg", isVideo: false))
     }
 }

@@ -950,6 +950,12 @@ enum MessageRenderer {
         nickColors[NickColor.index(for: name)]
     }
 
+    /// A palette slot's colour (0–15), as the list paints it — for the composer's colour editor,
+    /// which has to show a message in the colours it will be read in.
+    static func mircSlot(_ index: Int) -> UIColor? {
+        mircColors.indices.contains(index) ? mircColors[index] : nil
+    }
+
     /// The colour a formatting code named, or nil for a slot the palette can't paint (16+).
     ///
     /// Every value is a literal: a slot is the palette's, and a truecolour `\x04` is exactly what

@@ -263,6 +263,7 @@
 				INFOPLIST_FILE = Lurker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Lurker;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Lurker uses the camera to take a photo you send in a conversation.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIStatusBarStyle = "";
@@ -301,6 +302,7 @@
 				INFOPLIST_FILE = Lurker/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Lurker;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.social-networking";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Lurker uses the camera to take a photo you send in a conversation.";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UIStatusBarStyle = "";
