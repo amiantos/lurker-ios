@@ -934,9 +934,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
         guard let nick = chrome.nick, !nick.isEmpty else { return "Message" }
         // The network's own glyph (its PREFIX), the one your own lines and the nicklist show — the
-        // prompt disagreeing with them about you would be the stranger mistake.
-        return MemberPrefix.of(chrome.ownModes, prefix: chrome.prefix) + nick
+        // prompt disagreeing with them about you would be the stranger mistake. Behind a `> `, the
+        // shell's prompt mark, so the slab's lower row reads as the input and the name as who's at it
+        // rather than as a line someone wrote. Only in the placeholder: typing replaces the whole thing.
+        return promptMark + MemberPrefix.of(chrome.ownModes, prefix: chrome.prefix) + nick
     }
+
+    /// The prompt mark before your name in the empty field.
+    private static let promptMark = "> "
 
     /// Leave this screen when the buffer it is showing isn't open any more.
     ///
