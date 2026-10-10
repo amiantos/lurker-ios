@@ -236,6 +236,10 @@ final class BufferListViewController: UICollectionViewController {
     /// What the banner would show if this screen were frontmost. Held separately so the answer
     /// is already current the moment it becomes frontmost, without waiting for a state change.
     private var bannerState: ConnectionBannerState = .hidden
+    /// In-app notifications while no conversation is on screen to carry them in its status row
+    /// (lurker#1098): a highlight, a DM, a friend coming online. Tapping one goes to the line.
+    private let notificationToast = NotificationToastView()
+    private let toasts = StatusToastPresenter()
     /// Whether this screen is actually on screen, as against merely alive under a chat screen.
     /// It is the stack's *root* now and outlives every buffer you open, so `apply` runs for the
     /// whole session — every message anywhere lands as a read-state change on `buffers`. Without
@@ -327,6 +331,43 @@ final class BufferListViewController: UICollectionViewController {
                 lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
             ),
         ])
+
+        // Along the bottom, above the search field when it rides a toolbar there (the safe area
+        // includes it), and over the rows the same way the banner is.
+        notificationToast.translatesAutoresizingMaskIntoConstraints = false
+        notificationToast.layer.zPosition = 1
+        view.addSubview(notificationToast)
+        NSLayoutConstraint.activate([
+            notificationToast.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
+            notificationToast.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -16),
+            notificationToast.leadingAnchor.constraint(
+                greaterThanOrEqualTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16
+            ),
+            notificationToast.trailingAnchor.constraint(
+                lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
+            ),
+        ])
+        toasts.isVisible = { [weak self] in self?.showsToasts ?? false }
+        toasts.onChange = { [weak self] in
+            guard let self else { return }
+            notificationToast.render(toasts.active)
+        }
+        // The capsule appearing isn't announced on its own.
+        toasts.onShow = { toast, _ in
+            let text = toast.attributedText(font: .preferredFont(forTextStyle: .body)).string
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
+        notificationToast.onTap = { [weak self] in
+            guard let self, case .notification(let notification)? = toasts.takeActive() else { return }
+            navigationController?.showBuffer(
+                viewModel.state.buffer(for: notification.key), viewModel: viewModel,
+                jumpTo: notification.messageId > 0 ? notification.messageId : nil, animated: true
+            )
+            toasts.presentNext()
+        }
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(toastCenterChanged(_:)), name: ToastCenter.didChange, object: nil
+        )
 
         // Force the lazy registrations to instantiate here, up front. UIKit throws if a
         // registration is first *created* inside `cellForItemAt` — a lazy var is created
@@ -427,6 +468,25 @@ final class BufferListViewController: UICollectionViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         isOnScreen = false
+        // Passing news: not still up, for a buffer just visited, when you come back.
+        toasts.clear()
+    }
+
+    /// Whether this list is where an in-app notification goes: on screen, uncovered, and with no
+    /// conversation beside it — one there shows it in its status row instead.
+    private var showsToasts: Bool {
+        isOnScreen && view.window != nil
+            && navigationController?.topViewController === self
+            && presentedViewController == nil
+            && navigationController?.presentedViewController == nil
+            && splitViewController?.presentedViewController == nil
+            && ChatViewController.activeChat()?.view.window == nil
+    }
+
+    @objc private func toastCenterChanged(_ note: Notification) {
+        guard showsToasts, let notification = note.userInfo?[ToastCenter.toastKey] as? StatusNotification
+        else { return }
+        toasts.show(.notification(notification))
     }
 
     /// Show the banner only once this screen is genuinely frontmost, and hide it the instant a

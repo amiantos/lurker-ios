@@ -100,6 +100,47 @@ final class StatusNotificationTests: XCTestCase {
         XCTAssertEqual(n?.key, BufferKey(networkId: 1, target: "#a"))
     }
 
+    // MARK: - Sounds
+
+    func testEachKindsSoundFollowsTheRegistryDefaults() {
+        func sound(_ m: Message, _ s: Settings = Settings(registry: [:], values: [:])) -> String? {
+            StatusNotification.make(networkId: 1, target: "#a", message: m, settings: s)?.sound(in: s)
+        }
+        // Off by default for the everyday kinds, on for the ones that are rarer and louder.
+        XCTAssertNil(sound(line(matched: true)))
+        XCTAssertNil(sound(line(dm: true)))
+        XCTAssertEqual(sound(line(notifyAlways: true)), "plink")
+        XCTAssertEqual(sound(line(selfKicked: true)), "beep")
+        // Switched on, each has its own default sound.
+        let on = settings([
+            "notifications.highlight.sound.enabled": .bool(true),
+            "notifications.dm.sound.enabled": .bool(true),
+        ])
+        XCTAssertEqual(sound(line(matched: true), on), "ping")
+        XCTAssertEqual(sound(line(dm: true), on), "chime")
+    }
+
+    func testTheChosenSoundAndVolume() {
+        let n = StatusNotification.make(networkId: 1, target: "#a", message: line(matched: true), settings: settings())!
+        func sound(_ values: [String: SettingValue]) -> String? {
+            n.sound(in: settings(["notifications.highlight.sound.enabled": .bool(true)].merging(values) { $1 }))
+        }
+        XCTAssertEqual(sound(["notifications.highlight.sound.choice": .string("knock")]), "knock")
+        // A choice this build doesn't bundle falls back to the kind's default rather than silence.
+        XCTAssertEqual(sound(["notifications.highlight.sound.choice": .string("gong")]), "ping")
+        XCTAssertNil(sound(["notifications.highlight.sound.volume": .int(0)]))
+        XCTAssertNil(sound(["notifications.highlight.sound.enabled": .bool(false)]))
+    }
+
+    func testAFriendComingOnlineHasItsOwnSound() {
+        var state = ChatState()
+        state.peerPresence[1] = ["bob": .offline]
+        state.favorites = [FavoriteEntry(networkId: 1, target: "Bob", bufferId: 9)]
+        let n = StatusNotification.cameOnline(.peerPresence(networkId: 1, nick: "Bob", state: .online), before: state)
+        XCTAssertNil(n?.sound(in: state.settings))
+        XCTAssertEqual(n?.sound(in: settings(["notifications.friend_online.sound.enabled": .bool(true)])), "knock")
+    }
+
     // MARK: - Came online
 
     private func state(was presence: PresenceState?, favorite: Bool = true, enabled: Bool? = nil) -> ChatState {
