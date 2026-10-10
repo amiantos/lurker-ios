@@ -155,7 +155,13 @@ final class ComposerBar: UIView {
     private var lastEdit = (text: "", composing: false)
 
     var placeholder: String = "" {
-        didSet { placeholderLabel.text = placeholder }
+        didSet {
+            placeholderLabel.text = placeholder
+            // The prompt mark is punctuation to look at, not to hear: "at amiantos", not "greater
+            // than at amiantos".
+            placeholderLabel.accessibilityLabel = placeholder.hasPrefix(ChatViewController.promptMark)
+                ? String(placeholder.dropFirst(ChatViewController.promptMark.count)) : placeholder
+        }
     }
 
     /// Whether this is a conversation, which takes attachments and colour. The system buffer and
