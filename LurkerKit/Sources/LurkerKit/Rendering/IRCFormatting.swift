@@ -220,8 +220,6 @@ public enum IRCFormatting {
         return i
     }
 
-    /// Read up to two ASCII digits from `start`; returns the value (nil if none) and the
-    /// index just past them.
     /// Every slot a `\x03` code in `text` names, in order — including codes no text follows,
     /// which `parse` makes no run for. Read by the same scanner `parse` uses, so the two agree on
     /// what a code is (`ColorMarkup.decode` vets slots with this).
@@ -252,6 +250,8 @@ public enum IRCFormatting {
         return (foreground, background, afterBg)
     }
 
+    /// Read up to two ASCII digits from `start`; returns the value (nil if none) and the
+    /// index just past them.
     private static func readDigits(_ scalars: [Unicode.Scalar], from start: Int) -> (Int?, Int) {
         var digits = ""
         var i = start
