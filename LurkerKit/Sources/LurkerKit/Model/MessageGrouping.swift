@@ -12,6 +12,9 @@ import Foundation
 public enum MessageGrouping {
     /// A gap longer than this breaks a run even for the same author. Without it, two
     /// messages from the same nick three hours apart would render as one conversation.
+    ///
+    /// The default of `look.message.collapse_authors_window` (5 minutes), for callers with no
+    /// settings to hand. The list reads the user's value — see `MessageRows.build`.
     public static let runGap: TimeInterval = 5 * 60
 
     /// Whether `message` continues the run that `previous` is part of.
@@ -24,17 +27,24 @@ public enum MessageGrouping {
     /// same nick are different kinds of utterance — NOTICE is what a bot uses precisely to
     /// say "this is not a reply to talk back to" — and grouping them would caption the run
     /// once and render the rest identically, erasing the distinction the sender chose.
-    public static func continuesRun(_ message: Message, after previous: Message?) -> Bool {
+    ///
+    /// `window` is the largest gap a run survives, as the web's `collapseDisplay` judges it.
+    public static func continuesRun(
+        _ message: Message, after previous: Message?, window: TimeInterval = runGap
+    ) -> Bool {
         guard let previous,
               message.type.isBubble, previous.type.isBubble,
               message.type == previous.type,
               message.isSelf == previous.isSelf,
               sameAuthor(message, previous)
         else { return false }
-        // No clock on one side → fall back to author alone rather than splitting a run
-        // that probably belongs together.
-        guard let earlier = previous.date, let later = message.date else { return true }
-        return abs(later.timeIntervalSince(earlier)) <= runGap
+        // No clock on one side → a new run, as the web has it. A header is where a run's time
+        // shows, so a dated line joined under an undated header would never show its time.
+        guard let earlier = previous.date, let later = message.date else { return false }
+        // Non-negative, as the web has it: a bouncer replay can stamp a line OLDER than the one
+        // above it, and that's not more of the same run.
+        let gap = later.timeIntervalSince(earlier)
+        return gap >= 0 && gap <= window
     }
 
     /// IRC nicks are case-insensitive and servers send them inconsistently cased, so a
@@ -62,8 +72,7 @@ public enum MessageGrouping {
 ///
 /// `isFirst` is what decides whether a message opens an author block, and so whether it draws a
 /// header. `isLast` is computed for symmetry and currently read by nothing — the list works out
-/// where a block *ends* from the following row, because a block can also be ended by a minute
-/// change, which a run position knows nothing about.
+/// where a block *ends* from the following row.
 public struct RunPosition: Equatable, Sendable {
     public let isFirst: Bool
     public let isLast: Bool

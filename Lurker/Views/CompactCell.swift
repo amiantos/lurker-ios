@@ -14,14 +14,10 @@ import UIKit
 ///  yeah, ten minutes ago
 /// ```
 ///
-/// The shape is the PWA's mobile compact mode, with one deliberate difference: the timestamp sits
-/// on the author line rather than floating at the right edge of whichever body line happens to
-/// start a new minute. Same rule about *when* it appears — only when the minute changes — but it
-/// lands somewhere structural instead of somewhere incidental.
-///
-/// That rule is also why a header appears on an author change **or** a minute change: a stamp needs
-/// a header to sit on, so a run crossing a minute boundary starts a new one rather than losing the
-/// time. See `MessageListRenderer`, which decides.
+/// The shape is the PWA's compact layout: a header with the nick and the time at the trailing
+/// edge opens each author run, and the run's later lines carry no time. A run lasts while the
+/// same author keeps talking within `look.message.collapse_authors_window`, whatever the minute.
+/// See `MessageListRenderer`, which decides.
 ///
 /// Anything that names its own actor — a `/me`, a join, a collapsed run — is header-less and draws
 /// as a body line, because a nick header above "alice waves" would say her name twice.
@@ -31,11 +27,11 @@ import UIKit
 final class CompactCell: UITableViewCell, MessageBodyHosting {
     static let reuseID = "compact"
 
-    /// What to draw above the body, when the row starts a new author/minute block.
+    /// What to draw above the body, when the row starts a new author block.
     struct Header {
         let nick: String
         let color: UIColor
-        /// Nil unless the minute changed — the whole point of the format.
+        /// Nil only for a line with no clock.
         let time: String?
         /// The speaker's channel-mode glyph, when `nick` opens with one. Carried separately from
         /// the name it's already part of, because it doesn't wear the name's color: a rank is a

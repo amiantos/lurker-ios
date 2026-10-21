@@ -64,9 +64,24 @@ final class MessageGroupingTests: XCTestCase {
         XCTAssertTrue(MessageGrouping.continuesRun(message("alice", at: MessageGrouping.runGap), after: first))
     }
 
-    func testAMissingTimestampFallsBackToTheAuthorRatherThanSplitting() {
+    func testTheWindowIsTheCallersToSet() {
+        let first = message("alice", at: 0)
+        let later = message("alice", at: 8 * 60)
+        XCTAssertFalse(MessageGrouping.continuesRun(later, after: first))
+        XCTAssertTrue(MessageGrouping.continuesRun(later, after: first, window: 10 * 60))
+    }
+
+    func testALineStampedBeforeTheOneAboveBreaksTheRun() {
+        // A bouncer replay can land an older line under a newer one. The web treats that as a
+        // new run (`collapseDisplay`'s non-negative delta), and so does this.
+        let first = message("alice", at: 60)
+        XCTAssertFalse(MessageGrouping.continuesRun(message("alice", at: 30), after: first))
+    }
+
+    func testAMissingTimestampStartsANewRun() {
         let undated = Message(id: 2, type: .message, nick: "alice", text: "hi", date: nil)
-        XCTAssertTrue(MessageGrouping.continuesRun(undated, after: message("alice", at: 0)))
+        XCTAssertFalse(MessageGrouping.continuesRun(undated, after: message("alice", at: 0)))
+        XCTAssertFalse(MessageGrouping.continuesRun(message("alice", at: 1), after: undated))
     }
 
     // MARK: - Self

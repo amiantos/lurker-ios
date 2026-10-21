@@ -432,8 +432,7 @@ class HistoryFeedViewController: UITableViewController {
         let section = sections[indexPath.section]
         let item = section.items[indexPath.row]
         // Every row is its own block — they come from different buffers and hours — so each gets a
-        // header and each carries its time, rather than the message list's "only when the minute
-        // changed" rule, which means nothing across unrelated conversations.
+        // header and each carries its time, as a run's first line does in the message list.
         //
         // `highlighted: false` keeps the matched wash off: in Highlights every row matched, so it
         // would be a monotone wall, and in Bookmarks the wash would claim a mention that isn't
