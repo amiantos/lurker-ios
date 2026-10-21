@@ -199,7 +199,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// one-shot grant, and a prompt on the sign-in screen asks the user to authorize
     /// notifications for an account they haven't named yet.
     private func enablePushIfSignedIn() {
-        guard viewModel.session == .loggedIn, pushEnableTask == nil else { return }
+        // Not while paused: the server refuses the registration (a write), and the sink calls this
+        // again on resume.
+        guard viewModel.session == .loggedIn, viewModel.access == .active, pushEnableTask == nil else { return }
         pushEnableTask = Task { [weak self] in
             defer { self?.pushEnableTask = nil }
             guard let self else { return }
@@ -336,6 +338,8 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // A remembered system buffer is restored like any other. That's safe only because the
         // screen the conversation column merely rests on no longer records itself as the last
         // buffer (`ChatViewController.isResting`) — so one stored here was opened on purpose.
+        // Resumed: whatever went up over the paused screen comes down with it.
+        if shownRoot == .paused { dismissPresented() }
         let restored = launchBuffer()
         let split = BufferSplitViewController(viewModel: viewModel)
         self.split = split
@@ -427,15 +431,20 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func dismissPresented() {
         if let split {
             split.dismissPresented()
+        } else if let navigation {
+            navigation.dismiss(animated: false)
         } else {
-            navigation?.dismiss(animated: false)
+            // The paused screen, which has neither (ios#18). Something can still present over the
+            // root while it's up — an upload that finished, say — and must not outlive it.
+            window?.rootViewController?.dismiss(animated: false)
         }
     }
 
     /// What a prompt (a DCC offer, an invitation) presents over: the sheet on top, else the root.
     /// Nil while signed out — there is no one to ask.
     private func promptHost() -> UIViewController? {
-        guard viewModel.session == .loggedIn else { return nil }
+        // Nor while paused: every answer to a prompt is a write the server refuses (ios#18).
+        guard viewModel.session == .loggedIn, viewModel.access == .active else { return nil }
         return presentedSheet() ?? window?.rootViewController
     }
 

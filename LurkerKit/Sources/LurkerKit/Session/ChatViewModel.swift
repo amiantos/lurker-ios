@@ -737,7 +737,7 @@ public final class ChatViewModel {
         else { return }
         let wasEnabled = features.linkPreviews
         features = config.features
-        hostedInstance = config.hosted
+        instanceHosted = config.hosted
         publishAccess()
         if config.features.linkPreviews, !wasEnabled { primeLoadedBuffers() }
         if let incompatibility = config.incompatibility {
@@ -754,13 +754,18 @@ public final class ChatViewModel {
     /// live `account-state` frame supersedes every read already out: one sent before a pause must
     /// not land after the frame and lift it.
     private var accountReads = NewestAnswer()
-    /// What the server last said about the account, and about itself. Kept apart so a config answer
-    /// that lands after the pause still picks the right copy.
+    /// What the server last said about the account, and about itself — nil until `/api/config`
+    /// answers. Kept apart so a config answer that lands after the pause still picks the copy.
     private var accountPaused = false
-    private var hostedInstance = false
+    private var instanceHosted: Bool?
 
     /// Read `/api/auth/me` for whether the account is paused (ios#18). Not awaited ahead of the
     /// socket, for `loadConfig`'s reason. A failed read keeps the last answer.
+    ///
+    /// Read at sign-in and launch, so a paused account finds out early, and again on every
+    /// `.socketOpen`: a pause or resume is fanned out only to sockets already open, so one between
+    /// the last read and this socket listening reached no one. That covers every reconnect too,
+    /// the ones that recover from an incompatible server included.
     private func loadAccount() async {
         let read = accountReads.start()
         guard let paused = await client.fetchAccountPaused(), session == .loggedIn, accountReads.accept(read)
@@ -770,7 +775,7 @@ public final class ChatViewModel {
     }
 
     private func publishAccess() {
-        accessSubject.value = accountPaused ? .paused(hosted: hostedInstance) : .active
+        accessSubject.value = accountPaused ? .paused(selfHosted: instanceHosted == false) : .active
     }
 
     /// Both teardowns. Called after the session goes `.loggedOut`, so nothing watching the pair sees
@@ -778,7 +783,7 @@ public final class ChatViewModel {
     private func resetAccess() {
         accountReads.supersedeInFlight()
         accountPaused = false
-        hostedInstance = false
+        instanceHosted = nil
         publishAccess()
     }
 
@@ -2317,6 +2322,7 @@ public final class ChatViewModel {
             lastMarked.removeAll()
             store.apply(frame)
             reconnectAttempt = 0 // a clean connection resets the backoff
+            Task { await loadAccount() }
         case .socketClosed:
             loadingOlder.removeAll() // in-flight history pages won't get a reply now
             loadingNewer.removeAll()
@@ -2602,9 +2608,6 @@ public final class ChatViewModel {
         // Every attempt re-reads the config, not only while it's unanswered: it carries the
         // server's version, which moves exactly when a deploy drops the socket. See `loadConfig`.
         Task { await loadConfig() }
-        // And whether the account is paused: a pause or a resume while the socket was down was
-        // fanned out to no one.
-        Task { await loadAccount() }
         reconnectSocket()
     }
 

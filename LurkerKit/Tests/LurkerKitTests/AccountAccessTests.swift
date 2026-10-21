@@ -82,21 +82,41 @@ final class AccountAccessTests: XCTestCase {
         return (model, server)
     }
 
-    func testAPausedAccountOnAHostedCellIsPausedHosted() async throws {
+    func testAPausedAccountOnAHostedCellNamesNoAdmin() async throws {
         let (model, _) = try await signedIn([
             "GET /api/auth/me": me(paused: true),
             "GET /api/config": config(edition: "node"),
         ])
-        try await waitUntil { model.access == .paused(hosted: true) }
+        try await waitUntil { model.access == .paused(selfHosted: false) }
     }
 
-    func testAPausedAccountOnASelfHostedServerIsNotHosted() async throws {
-        let (model, server) = try await signedIn([
+    func testAPausedAccountOnASelfHostedServerSaysSo() async throws {
+        let (model, _) = try await signedIn([
             "GET /api/auth/me": me(paused: true),
             "GET /api/config": config(edition: "standalone"),
         ])
+        try await waitUntil { model.access == .paused(selfHosted: true) }
+    }
+
+    /// Without the config's word, a lurker.chat user would be told to ask an admin who isn't there.
+    func testAConfigThatDidntAnswerNamesNoAdmin() async throws {
+        let (model, server) = try await signedIn([
+            "GET /api/auth/me": me(paused: true),
+            "GET /api/config": .init(status: 502, body: ""),
+        ])
         try await waitUntil { server.requests.contains { $0.hasPrefix("GET /api/config") } }
-        try await waitUntil { model.access == .paused(hosted: false) }
+        try await waitUntil { model.access == .paused(selfHosted: false) }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(model.access, .paused(selfHosted: false))
+    }
+
+    /// A pause fanned out before this socket was listening reached no one, so every open asks again.
+    func testEverySocketOpenAsksAgain() async throws {
+        let (model, server) = try await signedIn(["GET /api/auth/me": me(paused: false)])
+        try await waitUntil { model.access == .active && server.requests.contains { $0.hasPrefix("GET /api/auth/me") } }
+        server.route("GET /api/auth/me", me(paused: true))
+        model.handle(.socketOpen)
+        try await waitUntil { model.access == .paused(selfHosted: false) }
     }
 
     func testAnActiveAccountStaysActive() async throws {
@@ -110,7 +130,7 @@ final class AccountAccessTests: XCTestCase {
         let (model, server) = try await signedIn(["GET /api/auth/me": me(paused: false)])
         try await waitUntil { server.requests.contains { $0.hasPrefix("GET /api/auth/me") } }
         model.handle(.accountState(paused: true))
-        XCTAssertEqual(model.access, .paused(hosted: false))
+        XCTAssertEqual(model.access, .paused(selfHosted: false))
         model.handle(.accountState(paused: false))
         XCTAssertEqual(model.access, .active)
     }
@@ -121,14 +141,14 @@ final class AccountAccessTests: XCTestCase {
         try await waitUntil { server.requests.contains { $0.hasPrefix("GET /api/auth/me") } }
         model.handle(.accountState(paused: true))
         try await Task.sleep(for: .milliseconds(900))
-        XCTAssertEqual(model.access, .paused(hosted: false))
+        XCTAssertEqual(model.access, .paused(selfHosted: false))
     }
 
     /// Sign-out lands on sign-in and leaves the next account active — and the session goes first,
     /// so nothing watching both sees a signed-in, active account in between and builds the app.
     func testSigningOutResetsItAfterTheSession() async throws {
         let (model, _) = try await signedIn(["GET /api/auth/me": me(paused: true)])
-        try await waitUntil { model.access == .paused(hosted: false) }
+        try await waitUntil { model.access == .paused(selfHosted: false) }
         var seen: [(ChatViewModel.SessionState, AccountAccess)] = []
         model.sessionPublisher.combineLatest(model.accessPublisher)
             .sink { seen.append($0) }

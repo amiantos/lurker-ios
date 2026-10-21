@@ -38,9 +38,12 @@ final class PausedAccountViewController: UIViewController {
             stateView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             stateView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
         ])
-        stateView.onAction = { [weak self] in self?.viewModel.logout() }
-        // Followed rather than read once: whether the server is hosted comes from `/api/config`,
-        // which can answer after the pause did.
+        stateView.onAction = { [weak self] in self?.confirmSignOut() }
+        // Drawn now, not on the publisher's next hop to main: this screen is installed inside the
+        // root cross-dissolve, which would otherwise fade to a blank one.
+        render(viewModel.access)
+        // And followed: whether the server is self-hosted comes from `/api/config`, which can answer
+        // after the pause did.
         viewModel.accessPublisher
             .receive(on: DispatchQueue.main)
             .sink { [weak self] access in self?.render(access) }
@@ -48,12 +51,27 @@ final class PausedAccountViewController: UIViewController {
     }
 
     private func render(_ access: AccountAccess) {
-        guard case .paused(let hosted) = access else { return }
+        guard case .paused(let selfHosted) = access else { return }
         stateView.configure(StateView.Model(
             symbol: "pause.circle",
             title: "This account is paused",
-            subtitle: hosted ? nil : "Ask your server's admin to restore it.",
+            subtitle: selfHosted ? "Ask your server's admin to restore it." : nil,
             actionTitle: "Sign Out"
         ))
+    }
+
+    /// Asks first, as Settings does. It's the only button here, and a resume would have brought the
+    /// session back by itself; signing out means signing in again.
+    private func confirmSignOut() {
+        let alert = UIAlertController(
+            title: "Sign out of Lurker?",
+            message: "You'll need your password to sign back in.",
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Sign Out", style: .destructive) { [weak self] _ in
+            self?.viewModel.logout()
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 }

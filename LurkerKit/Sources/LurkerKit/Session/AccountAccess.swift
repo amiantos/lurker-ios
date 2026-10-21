@@ -7,7 +7,7 @@
 /// take a write, so the app shows one screen instead of a client that can't do anything.
 public enum AccountAccess: Equatable, Sendable {
     case active
-    /// Paused by the server. `hosted` is a lurker.chat cell, where the control plane did it; a
-    /// self-hosted instance's admin did it otherwise, and is the one to ask.
-    case paused(hosted: Bool)
+    /// Paused by the server. `selfHosted` only when `/api/config` said so: there an admin did it and
+    /// is the one to ask. On lurker.chat, or before the config answers, there's no one to name.
+    case paused(selfHosted: Bool)
 }
