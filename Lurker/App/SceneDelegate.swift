@@ -79,7 +79,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
         // Restore already ran in the view model's init, so the current session state is
         // known — build the right screen up front, no login flash on a restored session.
-        render(viewModel.session, animated: false)
+        render(viewModel.session, viewModel.access, animated: false)
         window.makeKeyAndVisible()
 
         // A rename has to chase the buffer's key through the preferences that store it —
@@ -153,11 +153,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
 
         // Session transitions drive navigation: sign-in and restore → the buffer list;
-        // sign-out and a mid-session 401 → back to sign-in (with an explanation).
+        // sign-out and a mid-session 401 → back to sign-in (with an explanation). A paused
+        // account → the paused screen, and back to the list when it's resumed (ios#18).
         viewModel.sessionPublisher
+            .combineLatest(viewModel.accessPublisher)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] session in
-                self?.render(session, animated: true)
+            .sink { [weak self] session, access in
+                self?.render(session, access, animated: true)
                 // Signing in is the moment push becomes askable — there's finally an
                 // account to attach a device to. Needed alongside sceneDidBecomeActive
                 // because the first sign-in happens while the scene is already active, and
@@ -294,9 +296,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// top of it when there is one (#49). So a returning user is back in their conversation
     /// immediately, and back is right there when they aren't where they wanted to be — which
     /// is what makes going straight in safe (see `launchBuffer`).
-    private func render(_ session: ChatViewModel.SessionState, animated: Bool) {
+    private func render(_ session: ChatViewModel.SessionState, _ access: AccountAccess, animated: Bool) {
         switch session {
         case .loggedIn:
+            if case .paused = access {
+                guard shownRoot != .paused else { return }
+                showPaused(animated: animated)
+                return
+            }
             // Already up — a re-render on a session republish must not throw away the
             // conversation being read. `shownRoot` replaces the old "is the list still the
             // root of the stack" test, which could only ask that of a stack.
@@ -315,7 +322,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// They were two states of one stack, which worked while every layout was a stack. On iPad
     /// it would leave the sign-in screen in a column with the previous account's buffer list
     /// beside it.
-    private enum Root { case none, main, login }
+    private enum Root { case none, main, login, paused }
     private var shownRoot: Root = .none
 
     /// The app proper: the buffer list and the conversation, side by side wherever there's room
@@ -335,6 +342,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         navigation = split.primaryNavigation
         if let restored { split.showBuffer(restored, animated: false) }
         setRoot(split, as: .main, animated: animated)
+    }
+
+    /// A paused account (ios#18): one screen in place of the app, with the last buffer kept, so a
+    /// resume lands where the reader was. Sheets come down for `showLogin`'s reason.
+    private func showPaused(animated: Bool) {
+        dismissPresented()
+        navigation = nil
+        split = nil
+        setRoot(PausedAccountViewController(viewModel: viewModel), as: .paused, animated: animated)
     }
 
     private func showLogin(animated: Bool) {

@@ -5,6 +5,8 @@
 /// speaks.
 struct InstanceConfig: Equatable, Sendable {
     var features = InstanceFeatures()
+    /// A hosted cell (`edition: "node"`), where a pause is the control plane's, not an admin's.
+    var hosted = false
     /// The protocol the server speaks. Nil when it didn't say.
     var protocolVersion: Int?
     /// The oldest client protocol the server still serves. Nil when it didn't say.

@@ -2045,6 +2045,35 @@ final class LurkerClient {
         }
     }
 
+    /// `GET /api/auth/me` → whether the account is paused (ios#18), or nil for no answer.
+    ///
+    /// Asked on every connect, because the socket only says so on a change: a pause that happened
+    /// while the app was away arrives as nothing at all. A 401 isn't reported here — the roster
+    /// read beside it is the token check.
+    ///
+    /// ⚠ Nil for an answer to a session that has since ended, as `fetchConfig` does.
+    func fetchAccountPaused() async -> Bool? {
+        let sentWith = token
+        guard let sentWith, let url = URL(string: baseURL + "/api/auth/me") else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(sentWith)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard sentWith == token else { return nil }
+            return Self.parseAccountPaused(data, code: (response as? HTTPURLResponse)?.statusCode ?? 0)
+        } catch {
+            return nil
+        }
+    }
+
+    /// `/api/auth/me`'s `user.is_paused`, or nil when the body doesn't say.
+    nonisolated static func parseAccountPaused(_ data: Data, code: Int) -> Bool? {
+        guard (200..<300).contains(code),
+            let user = FrameParser.jsonObject(from: data)?["user"] as? [String: Any]
+        else { return nil }
+        return user.boolOrNull("is_paused")
+    }
+
     /// The request for `/api/config`.
     ///
     /// ⚠⚠ It carries the bearer token, even though the server calls this endpoint "public,
@@ -2088,6 +2117,7 @@ final class LurkerClient {
         let features = body["features"] as? [String: Any]
         return InstanceConfig(
             features: InstanceFeatures(linkPreviews: features?["linkPreviews"] as? Bool == true),
+            hosted: body["edition"] as? String == "node",
             protocolVersion: body.intOrNull("protocolVersion"),
             minProtocolVersion: body.intOrNull("minProtocolVersion")
         )

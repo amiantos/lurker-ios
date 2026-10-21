@@ -1565,9 +1565,9 @@ final class LurkerStore {
             // of the session, leaving the profile on "waiting…" with an inert Refresh.
             next.whoisPending = []
             return next
-        case .unauthorized, .incompatible, .ignored:
-            // Session-level / no-op; the view model intercepts `.unauthorized` and
-            // `.incompatible` first.
+        case .unauthorized, .incompatible, .accountState, .ignored:
+            // Session-level / no-op; the view model intercepts `.unauthorized`, `.incompatible`
+            // and `.accountState` first.
             return state
         case .uploadProgress:
             // Doesn't reach here — `LurkerClient` consumes it: an upload's progress drives the

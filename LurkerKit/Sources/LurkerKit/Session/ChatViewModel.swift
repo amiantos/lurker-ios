@@ -32,6 +32,7 @@ public final class ChatViewModel {
 
     private let sessionSubject = CurrentValueSubject<SessionState, Never>(.loggedOut)
     private let statusSubject = CurrentValueSubject<String?, Never>(nil)
+    private let accessSubject = CurrentValueSubject<AccountAccess, Never>(.active)
 
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
@@ -156,6 +157,13 @@ public final class ChatViewModel {
     /// session ended).
     public var statusPublisher: AnyPublisher<String?, Never> { statusSubject.eraseToAnyPublisher() }
 
+    /// Whether the account is paused (ios#18). Active until the server says otherwise, and reset
+    /// to active by either teardown, after the session has gone to `.loggedOut`.
+    public var access: AccountAccess { accessSubject.value }
+    public var accessPublisher: AnyPublisher<AccountAccess, Never> {
+        accessSubject.removeDuplicates().eraseToAnyPublisher()
+    }
+
     // MARK: - Actions
 
     /// Sign in through the server's approval page, then load the roster and open the socket,
@@ -216,6 +224,7 @@ public final class ChatViewModel {
             client.restore(server: server, token: token)
             sessionSubject.value = .loggedIn
             Task { await loadConfig() }
+            Task { await loadAccount() }
             store.setSocketOpening()
             await client.start()
             return true
@@ -298,6 +307,7 @@ public final class ChatViewModel {
         lastMarked.removeAll()
         statusSubject.value = nil
         sessionSubject.value = .loggedOut
+        resetAccess()
     }
 
     // MARK: - Push (#490)
@@ -727,6 +737,8 @@ public final class ChatViewModel {
         else { return }
         let wasEnabled = features.linkPreviews
         features = config.features
+        hostedInstance = config.hosted
+        publishAccess()
         if config.features.linkPreviews, !wasEnabled { primeLoadedBuffers() }
         if let incompatibility = config.incompatibility {
             onIncompatible(incompatibility)
@@ -736,6 +748,38 @@ public final class ChatViewModel {
             guard isForeground else { return }
             reconnectSocket()
         }
+    }
+
+    /// Which `/api/auth/me` answer is the current one, the way `configReads` is for the config. The
+    /// live `account-state` frame supersedes every read already out: one sent before a pause must
+    /// not land after the frame and lift it.
+    private var accountReads = NewestAnswer()
+    /// What the server last said about the account, and about itself. Kept apart so a config answer
+    /// that lands after the pause still picks the right copy.
+    private var accountPaused = false
+    private var hostedInstance = false
+
+    /// Read `/api/auth/me` for whether the account is paused (ios#18). Not awaited ahead of the
+    /// socket, for `loadConfig`'s reason. A failed read keeps the last answer.
+    private func loadAccount() async {
+        let read = accountReads.start()
+        guard let paused = await client.fetchAccountPaused(), session == .loggedIn, accountReads.accept(read)
+        else { return }
+        accountPaused = paused
+        publishAccess()
+    }
+
+    private func publishAccess() {
+        accessSubject.value = accountPaused ? .paused(hosted: hostedInstance) : .active
+    }
+
+    /// Both teardowns. Called after the session goes `.loggedOut`, so nothing watching the pair sees
+    /// a signed-in, active account for a moment and builds the app for it.
+    private func resetAccess() {
+        accountReads.supersedeInFlight()
+        accountPaused = false
+        hostedInstance = false
+        publishAccess()
     }
 
     /// The server and this build can't talk (#17). Reconnecting stops, because every attempt
@@ -2102,6 +2146,7 @@ public final class ChatViewModel {
         sessionSubject.value = .loggedIn
         client.restore(server: saved.server, token: saved.token)
         Task { await loadConfig() }
+        Task { await loadAccount() }
         store.setSocketOpening()
         Task { await client.start() }
     }
@@ -2251,6 +2296,10 @@ public final class ChatViewModel {
             if case .settingsBootstrap = frame { syncTimeZone() }
         case .unauthorized:
             onAuthLost()
+        case .accountState(let paused):
+            accountReads.supersedeInFlight()
+            accountPaused = paused
+            publishAccess()
         case .incompatible(let incompatibility):
             // A 426 is newer than any `/api/config` read already out, so none of those may clear it.
             configReads.supersedeInFlight()
@@ -2553,6 +2602,9 @@ public final class ChatViewModel {
         // Every attempt re-reads the config, not only while it's unanswered: it carries the
         // server's version, which moves exactly when a deploy drops the socket. See `loadConfig`.
         Task { await loadConfig() }
+        // And whether the account is paused: a pause or a resume while the socket was down was
+        // fanned out to no one.
+        Task { await loadAccount() }
         reconnectSocket()
     }
 
@@ -2618,6 +2670,7 @@ public final class ChatViewModel {
         lastMarked.removeAll()
         statusSubject.value = "Your session ended — please sign in again."
         sessionSubject.value = .loggedOut
+        resetAccess()
     }
 
     /// 1s, 2s, 4s … capped at 30s.
