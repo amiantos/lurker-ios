@@ -57,6 +57,11 @@ enum FrameParser {
             )
         case "error":
             return .serverError(obj.string("text"))
+        case "account-state":
+            // A frame that doesn't say which way is dropped rather than read as "not paused". This
+            // one decides whether the app is usable at all.
+            guard let paused = obj.boolOrNull("paused") else { return .ignored }
+            return .accountState(paused: paused)
         case "favorites-changed":
             // The FULL global order, replace wholesale — the same frame seeds the
             // connect burst, so this one handler covers seed and every correction.

@@ -398,6 +398,10 @@ enum ServerFrame: Equatable, Sendable {
     /// WS `error`.
     case serverError(String)
 
+    /// WS `account-state`: the account was paused or resumed while this socket was open (ios#18).
+    /// Sent only on a change, so a new connection learns where it stands from `/api/auth/me`.
+    case accountState(paused: Bool)
+
     /// A 401 mid-session (REST or the WS upgrade): the token expired or was revoked
     /// from another device. The owner drops to sign-in rather than a dead-end (#3).
     case unauthorized

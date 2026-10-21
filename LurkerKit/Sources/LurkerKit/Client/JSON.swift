@@ -31,6 +31,13 @@ extension Dictionary where Key == String, Value == Any {
         self[key] as? Bool ?? fallback
     }
 
+    /// nil unless the value is a JSON boolean. `as? Bool` alone also takes `1` and `0`, because
+    /// JSONSerialization hands both back as the same NSNumber.
+    func boolOrNull(_ key: String) -> Bool? {
+        guard let number = self[key] as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
     func objects(_ key: String) -> [[String: Any]] {
         self[key] as? [[String: Any]] ?? []
     }
