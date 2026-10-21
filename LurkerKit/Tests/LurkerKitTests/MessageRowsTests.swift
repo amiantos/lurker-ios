@@ -480,6 +480,20 @@ final class MessageRowsTests: XCTestCase {
         XCTAssertEqual(secondOpensARun(none), true)
     }
 
+    func testAZeroWindowGroupsOnlyTheSameInstant() {
+        let none = Settings(registry: [:], values: ["look.message.collapse_authors_window": .int(0)])
+        func secondOpensARun(_ gap: TimeInterval) -> Bool? {
+            let rows = build([msg(1, at: noon), msg(2, at: noon.addingTimeInterval(gap))], settings: none)
+            guard case .bubble(_, let second) = row(rows, 2) else {
+                XCTFail("expected the second message as a bubble")
+                return nil
+            }
+            return second.isFirst
+        }
+        XCTAssertEqual(secondOpensARun(0), false, "same timestamp still groups")
+        XCTAssertEqual(secondOpensARun(1), true, "a second apart does not")
+    }
+
     // MARK: - Settings
 
     func testConsolidationOffPassesEveryEventThrough() {

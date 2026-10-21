@@ -481,9 +481,9 @@ enum MessageRenderer {
 
     /// `14:42` for a compact header.
     ///
-    /// Minutes, not seconds: `look.buffer.time_format_compact`'s default, and the stamp speaks for
-    /// a whole run. Fixed 24-hour through a POSIX locale, since `HH` still renders 12-hour under
-    /// some region settings.
+    /// Minutes, not seconds: the stamp speaks for a whole run. Fixed rather than read from
+    /// `look.buffer.time_format_compact`, whose default this matches. 24-hour through a POSIX
+    /// locale, since `HH` still renders 12-hour under some region settings.
     static func compactHeaderTime(_ date: Date) -> String {
         compactTimeFormatter.string(from: date)
     }

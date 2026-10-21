@@ -130,8 +130,8 @@ struct MessageListRenderer {
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
         switch row {
         case .bubble(let message, let position):
-            // Once, not three times: it walks the neighbouring rows, builds a caption and hits
-            // `Calendar`, and this runs for every visible cell on every reload.
+            // Once, not three times: it builds a caption and formats a time, and this runs for
+            // every visible cell on every reload.
             let blockHeader = header(for: message, position: position, context: context)
             let plan = Self.previewPlan(for: message, context: context)
             cell.onToggleSpoiler = { [onToggleSpoiler = context.onToggleSpoiler] ordinal in
@@ -379,8 +379,8 @@ struct MessageListRenderer {
         !(context.isStatusRow(index) && context.isStatusRow(index - 1))
     }
 
-    /// The nearest message above `index`, skipping the rows that carry none (dividers). Those are
-    /// hard breaks in the flow anyway.
+    /// The message on the row above `index`, or nil when that row carries none (a divider). A
+    /// divider is a hard break in the flow anyway.
     private func previousMessage(before index: Int, context: MessageListContext) -> Message? {
         guard index > 0, let previous = context.row(index - 1) else { return nil }
         return previous.message

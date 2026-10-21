@@ -12,7 +12,8 @@ final class RelayBotsTests: XCTestCase {
     private func message(
         _ id: Int, nick: String, text: String, type: EventType = .message, isSelf: Bool = false
     ) -> Message {
-        Message(id: id, type: type, nick: nick, text: text, isSelf: isSelf)
+        // One instant for every line: run grouping needs a clock on both sides.
+        Message(id: id, type: type, nick: nick, text: text, isSelf: isSelf, date: Date(timeIntervalSince1970: 1_700_000_000))
     }
 
     // MARK: - The set

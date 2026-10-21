@@ -38,9 +38,9 @@ public enum MessageGrouping {
               message.isSelf == previous.isSelf,
               sameAuthor(message, previous)
         else { return false }
-        // No clock on one side → fall back to author alone rather than splitting a run
-        // that probably belongs together.
-        guard let earlier = previous.date, let later = message.date else { return true }
+        // No clock on one side → a new run, as the web has it. A header is where a run's time
+        // shows, so a dated line joined under an undated header would never show its time.
+        guard let earlier = previous.date, let later = message.date else { return false }
         // Non-negative, as the web has it: a bouncer replay can stamp a line OLDER than the one
         // above it, and that's not more of the same run.
         let gap = later.timeIntervalSince(earlier)

@@ -78,9 +78,10 @@ final class MessageGroupingTests: XCTestCase {
         XCTAssertFalse(MessageGrouping.continuesRun(message("alice", at: 30), after: first))
     }
 
-    func testAMissingTimestampFallsBackToTheAuthorRatherThanSplitting() {
+    func testAMissingTimestampStartsANewRun() {
         let undated = Message(id: 2, type: .message, nick: "alice", text: "hi", date: nil)
-        XCTAssertTrue(MessageGrouping.continuesRun(undated, after: message("alice", at: 0)))
+        XCTAssertFalse(MessageGrouping.continuesRun(undated, after: message("alice", at: 0)))
+        XCTAssertFalse(MessageGrouping.continuesRun(message("alice", at: 1), after: undated))
     }
 
     // MARK: - Self
