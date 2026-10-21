@@ -463,6 +463,23 @@ final class MessageRowsTests: XCTestCase {
         XCTAssertTrue(second.isLast)
     }
 
+    func testTheRunWindowIsTheUsersCollapseAuthorsWindow() {
+        // Eight minutes apart: past the 5-minute default, inside a 10-minute window.
+        let messages = [msg(1, at: noon), msg(2, at: noon.addingTimeInterval(8 * 60))]
+        func secondOpensARun(_ settings: Settings) -> Bool? {
+            guard case .bubble(_, let second) = row(build(messages, settings: settings), 2) else {
+                XCTFail("expected the second message as a bubble")
+                return nil
+            }
+            return second.isFirst
+        }
+        XCTAssertEqual(secondOpensARun(Settings()), true, "the registry default is 5 minutes")
+        let wide = Settings(registry: [:], values: ["look.message.collapse_authors_window": .int(10)])
+        XCTAssertEqual(secondOpensARun(wide), false)
+        let none = Settings(registry: [:], values: ["look.message.collapse_authors_window": .int(0)])
+        XCTAssertEqual(secondOpensARun(none), true)
+    }
+
     // MARK: - Settings
 
     func testConsolidationOffPassesEveryEventThrough() {

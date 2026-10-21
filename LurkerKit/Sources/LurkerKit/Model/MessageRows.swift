@@ -174,7 +174,8 @@ public enum MessageRows {
     ///     iff this is non-nil, so a boundary with no instant hides rows and says nothing —
     ///     which is why `Buffer.applyCleared` moves the two together.
     ///   - typists: who is composing right now, for the foot of the list.
-    ///   - settings: the user's settings, for the event tier and the two consolidation keys.
+    ///   - settings: the user's settings, for the event tier, the two consolidation keys and
+    ///     the author-run window.
     ///   - speakers: who has spoken in this buffer and when. Feeds both the `.smart` tier and
     ///     consolidation's truncated name lists — see `SpeakerMap`.
     ///   - ownNick: your nick on this buffer's network, so the `.smart` tier never hides your
@@ -403,7 +404,12 @@ public enum MessageRows {
         // describes the present rather than the past. Appended *after* the run pass so it
         // never participates in one: it isn't a bubble, and a run that tried to include it
         // would re-tighten its corners every time somebody started or stopped typing.
-        var built = withBubbleRuns(rows)
+        // The web's author window (`look.message.collapse_authors_window`, minutes), so a run
+        // groups on the phone exactly as it does in the browser.
+        let runWindow = TimeInterval(
+            max(0, settings.int("look.message.collapse_authors_window", default: 5))
+        ) * 60
+        var built = withBubbleRuns(rows, window: runWindow)
         if !typists.isEmpty { built.append(.typing(typists)) }
         return built
     }
@@ -411,15 +417,17 @@ public enum MessageRows {
     /// Second pass: fill in each bubble's `RunPosition` by looking at its neighbours. Only
     /// consecutive bubble rows group; a line, a summary, or a divider between two bubbles is a
     /// non-bubble neighbour and so breaks the run — exactly what we want.
-    private static func withBubbleRuns(_ rows: [MessageRow]) -> [MessageRow] {
+    private static func withBubbleRuns(_ rows: [MessageRow], window: TimeInterval) -> [MessageRow] {
         func bubble(at index: Int) -> Message? {
             guard rows.indices.contains(index), case .bubble(let message, _) = rows[index] else { return nil }
             return message
         }
         return rows.enumerated().map { index, row in
             guard case .bubble(let message, _) = row else { return row }
-            let isFirst = !MessageGrouping.continuesRun(message, after: bubble(at: index - 1))
-            let isLast = bubble(at: index + 1).map { !MessageGrouping.continuesRun($0, after: message) } ?? true
+            let isFirst = !MessageGrouping.continuesRun(message, after: bubble(at: index - 1), window: window)
+            let isLast = bubble(at: index + 1).map {
+                !MessageGrouping.continuesRun($0, after: message, window: window)
+            } ?? true
             return .bubble(message, RunPosition(isFirst: isFirst, isLast: isLast))
         }
     }

@@ -116,11 +116,9 @@ struct MessageListRenderer {
 
     /// A row's cell.
     ///
-    /// The shape: an author header (nick, plus the time when the minute changed) and the message
-    /// indented one character under it, several messages stacking beneath one header. A header
-    /// appears on an author change — `RunPosition.isFirst`, which `MessageRows` already computed —
-    /// **or** on a minute change, because the stamp needs a header to sit on and a run crossing a
-    /// minute boundary would otherwise lose it.
+    /// The shape: an author header (nick and time) and the message indented one character under
+    /// it, several messages stacking beneath one header. A header appears where a run starts —
+    /// `RunPosition.isFirst`, which `MessageRows` already computed.
     ///
     /// Anything that names its own actor — a `/me`, a join, a collapsed run, the typing line — is
     /// header-less and starts flush with the nicks, because it *is* that line.
@@ -134,7 +132,7 @@ struct MessageListRenderer {
         case .bubble(let message, let position):
             // Once, not three times: it walks the neighbouring rows, builds a caption and hits
             // `Calendar`, and this runs for every visible cell on every reload.
-            let blockHeader = header(for: message, position: position, at: index, context: context)
+            let blockHeader = header(for: message, position: position, context: context)
             let plan = Self.previewPlan(for: message, context: context)
             cell.onToggleSpoiler = { [onToggleSpoiler = context.onToggleSpoiler] ordinal in
                 onToggleSpoiler(message, ordinal)
@@ -315,14 +313,12 @@ struct MessageListRenderer {
 
     /// The header for a message, or nil when it continues the block above it.
     ///
-    /// The time is carried only when the minute differs from the previous message's — that's the
-    /// format's whole idea, and why a minute change forces a header even mid-run.
+    /// Every header carries its time and no continuation does, as the web's compact layout has
+    /// it: the run is the unit, so a run that crosses a minute keeps going under its first stamp.
     func header(
-        for message: Message, position: RunPosition, at index: Int, context: MessageListContext
+        for message: Message, position: RunPosition, context: MessageListContext
     ) -> CompactCell.Header? {
-        let previous = previousMessage(before: index, context: context)
-        let minuteChanged = changedMinute(message.date, previous?.date)
-        guard position.isFirst || minuteChanged else { return nil }
+        guard position.isFirst else { return nil }
 
         // No rank glyph on a re-attributed relay line (#277). The name in that header belongs to
         // someone speaking through a bridge, not to a member of this channel — so a hit in the
@@ -342,7 +338,7 @@ struct MessageListRenderer {
             // Called rather than passed as a function value: an unapplied reference to a
             // main-actor method crosses isolation on its own, which the compiler warns about even
             // though every caller here is already on the main actor.
-            time: minuteChanged ? message.date.map { MessageRenderer.compactHeaderTime($0) } : nil,
+            time: message.date.map { MessageRenderer.compactHeaderTime($0) },
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
             // notice or a network line gets the glyph resolved and then discarded. ⚠ Asked by
             // building the caption without it, never by `name.hasPrefix(prefix)`: a network's own
@@ -374,7 +370,7 @@ struct MessageListRenderer {
             // end of whatever it was part of.
             return true
         }
-        return header(for: message, position: position, at: index + 1, context: context) != nil
+        return header(for: message, position: position, context: context) != nil
     }
 
     /// Whether a header-less row opens a block. Only status narration ever doesn't: a run of joins
@@ -384,20 +380,10 @@ struct MessageListRenderer {
     }
 
     /// The nearest message above `index`, skipping the rows that carry none (dividers). Those are
-    /// hard breaks in the flow anyway: a header under one is wanted regardless.
+    /// hard breaks in the flow anyway.
     private func previousMessage(before index: Int, context: MessageListContext) -> Message? {
         guard index > 0, let previous = context.row(index - 1) else { return nil }
         return previous.message
-    }
-
-    /// Whether these two instants fall in different minutes.
-    ///
-    /// A message with no clock never counts as a change: it has no stamp to show, so breaking the
-    /// block for it would cost a header and gain nothing. A message *following* one with no clock
-    /// does count, so the first line that knows what time it is says so.
-    private func changedMinute(_ date: Date?, _ previous: Date?) -> Bool {
-        guard let date, let previous else { return date != nil }
-        return !Calendar.current.isDate(date, equalTo: previous, toGranularity: .minute)
     }
 }
 
