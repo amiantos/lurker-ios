@@ -49,11 +49,15 @@ final class InvitePrompt {
         }
     }
 
+    /// How long an Accept stays up unanswered: the web's toast, 15 s. Not sticky, unlike the
+    /// invite, since nothing waits on an answer and a modal left up would block the chat.
+    private static let acceptLifetime: TimeInterval = 15
+
     /// Accept lets their NEXT message through; the one that was blocked is gone.
     func offerAccept(networkId: Int, from: String) {
         let network = viewModel.state.networks[networkId]?.displayName
         let place = network.map { " on \($0)" } ?? ""
-        present(
+        let shown = present(
             title: "\(from) tried to message you",
             message: "Caller ID blocked it\(place). Accept to let their next message through.",
             action: "Accept"
@@ -61,12 +65,21 @@ final class InvitePrompt {
             guard let self, !viewModel.acceptCaller(networkId: networkId, nick: from) else { return }
             onRefusal("Couldn't accept \(from) — \(network ?? "the network") isn't connected.")
         }
+        guard let shown else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.acceptLifetime) { [weak shown] in
+            guard let shown, shown.presentingViewController != nil, !shown.isBeingDismissed else { return }
+            shown.dismiss(animated: true)
+        }
     }
 
-    private func present(title: String, message: String, action: String, perform: @escaping () -> Void) {
+    /// The alert, or nil when another is up or there's nowhere to show it.
+    @discardableResult
+    private func present(
+        title: String, message: String, action: String, perform: @escaping () -> Void
+    ) -> UIAlertController? {
         guard alert == nil, let host = host(), !(host is UIAlertController),
               !host.isBeingDismissed, !host.isBeingPresented
-        else { return }
+        else { return nil }
         let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
         let primary = UIAlertAction(title: action, style: .default) { _ in perform() }
@@ -74,5 +87,6 @@ final class InvitePrompt {
         alert.preferredAction = primary
         self.alert = alert
         host.present(alert, animated: true)
+        return alert
     }
 }
