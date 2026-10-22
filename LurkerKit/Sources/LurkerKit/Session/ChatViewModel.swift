@@ -1834,6 +1834,22 @@ public final class ChatViewModel {
         canWrite && client.setBack(networkId: networkId, all: nil)
     }
 
+    /// Let `nick` through our caller ID (+g) on this network (lurker#1184): `ACCEPT nick`, which
+    /// is what `/accept nick` sends. The server's reply, if any, lands in the server log. One nick
+    /// only, since the line is raw: a comma would accept a list, a leading `-` take someone off,
+    /// `*` list them; a `=bob` DCC chat is bob. False when it didn't go: the network can't be
+    /// written to, or the nick isn't one.
+    @discardableResult
+    public func acceptCaller(networkId: Int, nick: String) -> Bool {
+        let nick = DccChat.peer(nick.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !nick.isEmpty, !nick.hasPrefix("-"),
+              !nick.contains(where: { $0.isWhitespace || $0 == "," || $0 == "*" }),
+              store.state.canWrite(networkId: networkId)
+        else { return false }
+        let line = "ACCEPT \(nick)"
+        return sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line)
+    }
+
     /// Ask the network who `nick` is (#12) — what the profile screen sends on open, and what
     /// its Refresh does.
     ///
@@ -1866,16 +1882,6 @@ public final class ChatViewModel {
     /// skips every `=` guard the server has — by design, since it is what `/quote` uses — so a
     /// caller handing over the buffer's target would put `WHOIS =bob` on the wire. Normalized
     /// here, at the one door every profile goes through, rather than trusted to each screen.
-    /// Let `nick` through our caller ID (+g) on this network (lurker#1184): `ACCEPT nick`, which
-    /// is what `/accept nick` sends. The server's reply, if any, lands in the server log.
-    @discardableResult
-    public func acceptCaller(networkId: Int, nick: String) -> Bool {
-        let nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !nick.isEmpty, !nick.contains(" ") else { return false }
-        let line = "ACCEPT \(nick)"
-        return sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line)
-    }
-
     public func requestWhois(networkId: Int, nick: String) {
         let nick = DccChat.peer(nick.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !nick.isEmpty, !store.state.isWhoisPending(networkId: networkId, nick: nick)

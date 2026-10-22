@@ -103,7 +103,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             onRefusal: { [weak self] message in self?.showNotice(message) }
         )
         // …and so does an invitation, offering a Join (lurker#261).
-        invitePrompt = InvitePrompt(viewModel: viewModel, host: { [weak self] in self?.promptHost() })
+        invitePrompt = InvitePrompt(
+            viewModel: viewModel,
+            host: { [weak self] in self?.promptHost() },
+            onRefusal: { [weak self] message in self?.showNotice(message) }
+        )
         viewModel.onInvited = { [weak self] networkId, channel, from in
             self?.invitePrompt?.offer(networkId: networkId, channel: channel, from: from)
         }

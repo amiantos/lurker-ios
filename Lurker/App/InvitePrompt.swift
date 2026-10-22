@@ -23,10 +23,17 @@ final class InvitePrompt {
     /// What to present over: the sheet on top, else the root. Nil when there's nowhere sensible.
     private let host: () -> UIViewController?
     private weak var alert: UIAlertController?
+    /// An Accept that couldn't go: the network isn't connected.
+    private let onRefusal: (String) -> Void
 
-    init(viewModel: ChatViewModel, host: @escaping () -> UIViewController?) {
+    init(
+        viewModel: ChatViewModel,
+        host: @escaping () -> UIViewController?,
+        onRefusal: @escaping (String) -> Void
+    ) {
         self.viewModel = viewModel
         self.host = host
+        self.onRefusal = onRefusal
     }
 
     func offer(networkId: Int, channel: String, from: String) {
@@ -51,7 +58,8 @@ final class InvitePrompt {
             message: "Caller ID blocked it\(place). Accept to let their next message through.",
             action: "Accept"
         ) { [weak self] in
-            self?.viewModel.acceptCaller(networkId: networkId, nick: from)
+            guard let self, !viewModel.acceptCaller(networkId: networkId, nick: from) else { return }
+            onRefusal("Couldn't accept \(from) — \(network ?? "the network") isn't connected.")
         }
     }
 

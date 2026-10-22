@@ -290,7 +290,13 @@ final class ProtocolSweepTests: XCTestCase {
         var sent: [String] = []
         model.sendRawSeam = { line in sent.append(line); return true }
         XCTAssertTrue(model.acceptCaller(networkId: 1, nick: " bob "))
-        XCTAssertFalse(model.acceptCaller(networkId: 1, nick: "bob carol"))
-        XCTAssertEqual(sent, ["ACCEPT bob"])
+        XCTAssertTrue(model.acceptCaller(networkId: 1, nick: "=carol"))
+        // One nick, never a different ACCEPT: a list, a removal, the listing.
+        for nick in ["bob carol", "bob\tcarol", "bob,carol", "-bob", "*", ""] {
+            XCTAssertFalse(model.acceptCaller(networkId: 1, nick: nick), nick)
+        }
+        // Not where the network can't be written to.
+        XCTAssertFalse(model.acceptCaller(networkId: 2, nick: "bob"))
+        XCTAssertEqual(sent, ["ACCEPT bob", "ACCEPT carol"])
     }
 }
