@@ -103,9 +103,17 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             onRefusal: { [weak self] message in self?.showNotice(message) }
         )
         // …and so does an invitation, offering a Join (lurker#261).
-        invitePrompt = InvitePrompt(viewModel: viewModel, host: { [weak self] in self?.promptHost() })
+        invitePrompt = InvitePrompt(
+            viewModel: viewModel,
+            host: { [weak self] in self?.promptHost() },
+            onRefusal: { [weak self] message in self?.showNotice(message) }
+        )
         viewModel.onInvited = { [weak self] networkId, channel, from in
             self?.invitePrompt?.offer(networkId: networkId, channel: channel, from: from)
+        }
+        // …and a message our caller ID (+g) blocked, offering an Accept (lurker#1184).
+        viewModel.onCallerIdBlocked = { [weak self] networkId, from in
+            self?.invitePrompt?.offerAccept(networkId: networkId, from: from)
         }
         // A highlight, DM or always-notify line while the app is open — push's foreground half.
         viewModel.onNotify = { [weak viewModel] notification in

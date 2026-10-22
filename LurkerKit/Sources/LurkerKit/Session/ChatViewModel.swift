@@ -77,6 +77,11 @@ public final class ChatViewModel {
     /// is never answered loses nothing. Not fired for a channel we're already in.
     public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
 
+    /// Our caller ID (+g) discarded a message from `from` (lurker#1184). The app offers an
+    /// Accept, which is `acceptCaller`; it lets their NEXT message through, since this one is
+    /// gone. The system buffer already holds the line, so a prompt never answered loses nothing.
+    public var onCallerIdBlocked: ((_ networkId: Int, _ from: String) -> Void)?
+
     /// A live line the server says to alert about, with its kind's toggle on (see
     /// `StatusNotification`). The app decides whether it's worth showing — not for the buffer
     /// already on screen, not while backgrounded, where push has it.
@@ -1829,6 +1834,22 @@ public final class ChatViewModel {
         canWrite && client.setBack(networkId: networkId, all: nil)
     }
 
+    /// Let `nick` through our caller ID (+g) on this network (lurker#1184): `ACCEPT nick`, which
+    /// is what `/accept nick` sends. The server's reply, if any, lands in the server log. One nick
+    /// only, since the line is raw: a comma would accept a list, a leading `-` take someone off,
+    /// `*` list them; a `=bob` DCC chat is bob. False when it didn't go: the network can't be
+    /// written to, or the nick isn't one.
+    @discardableResult
+    public func acceptCaller(networkId: Int, nick: String) -> Bool {
+        let nick = DccChat.peer(nick.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !nick.isEmpty, !nick.hasPrefix("-"),
+              !nick.contains(where: { $0.isWhitespace || $0 == "," || $0 == "*" }),
+              store.state.canWrite(networkId: networkId)
+        else { return false }
+        let line = "ACCEPT \(nick)"
+        return sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line)
+    }
+
     /// Ask the network who `nick` is (#12) — what the profile screen sends on open, and what
     /// its Refresh does.
     ///
@@ -2438,6 +2459,8 @@ public final class ChatViewModel {
                   )
             else { break }
             onInvited?(networkId, channel, from)
+        case .callerIdBlocked(let networkId, let from):
+            onCallerIdBlocked?(networkId, from)
         default:
             break
         }

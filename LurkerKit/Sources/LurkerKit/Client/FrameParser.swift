@@ -956,6 +956,14 @@ enum FrameParser {
                 networkId: networkId, channel: channel, from: from, userhost: obj.stringOrNull("userhost")
             )
         }
+        // `callerid-blocked` (lurker#1184) is the invite's shape again: someone messaged us and
+        // our caller ID discarded it. Below the guard it has no text and would be dropped.
+        if obj.string("type") == "callerid-blocked" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let from = obj.string("from")
+            if from.isEmpty { return .ignored }
+            return .callerIdBlocked(networkId: networkId, from: from)
+        }
         // `react-support` is network-scoped state on a `:server:<id>` carrier, like those above.
         if obj.string("type") == "react-support" {
             guard let networkId = obj.intOrNull("networkId") else { return .ignored }

@@ -318,6 +318,12 @@ public enum CommandParser {
             let who = rest.first ?? bufferPeer(target)
             guard !who.isEmpty else { return [.info("usage: /whois <nick>")] }
             return [.showProfile(nick: who)]
+        case "accept":
+            // Caller ID (lurker#1184): `/accept alice bob -carol` → `ACCEPT alice,bob,-carol`.
+            // The wire wants one comma list (a second word is ignored), and no argument asks for
+            // the list, as irssi's /accept does. The reply lands in the server log.
+            let nicks = rest.joined(separator: ",").split(separator: ",").joined(separator: ",")
+            return [.raw(line: nicks.isEmpty ? "ACCEPT *" : "ACCEPT \(nicks)")]
         case "invite":
             // `/invite <nick> [#chan]`, or channel-first as /kick takes it: `/invite #chan <nick>`.
             // The channel defaults to the current buffer, but only if that's a channel — an
