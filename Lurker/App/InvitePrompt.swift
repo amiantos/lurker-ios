@@ -13,6 +13,10 @@ import UIKit
 /// there, so an invite that arrives while something else is up — another alert, a sheet on the
 /// move, an invite already being asked about — is simply not asked about. That also keeps an
 /// invite flood to one alert.
+///
+/// It also offers an Accept when our caller ID (+g) discarded someone's message (lurker#1184):
+/// "bob tried to message you" — Not Now, Accept. The same kind of moment, so the same rules,
+/// and one alert between the two.
 @MainActor
 final class InvitePrompt {
     private let viewModel: ChatViewModel
@@ -26,23 +30,40 @@ final class InvitePrompt {
     }
 
     func offer(networkId: Int, channel: String, from: String) {
-        guard alert == nil, let host = host(), !(host is UIAlertController),
-              !host.isBeingDismissed, !host.isBeingPresented
-        else { return }
         let network = viewModel.state.networks[networkId]?.displayName
-        let alert = UIAlertController(
+        present(
             title: "Invitation to \(channel)",
             message: network.map { "\(from) invited you on \($0)." } ?? "\(from) invited you.",
-            preferredStyle: .alert
-        )
-        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
-        let join = UIAlertAction(title: "Join", style: .default) { [weak self] _ in
+            action: "Join"
+        ) { [weak self] in
             // On success the app is taken there by `onJoinOpened`; a refusal comes back through
             // `onJoinNotice`, the same as a join from the Join Channel sheet.
             self?.viewModel.requestJoin(networkId: networkId, channel: channel, opens: true)
         }
-        alert.addAction(join)
-        alert.preferredAction = join
+    }
+
+    /// Accept lets their NEXT message through; the one that was blocked is gone.
+    func offerAccept(networkId: Int, from: String) {
+        let network = viewModel.state.networks[networkId]?.displayName
+        let place = network.map { " on \($0)" } ?? ""
+        present(
+            title: "\(from) tried to message you",
+            message: "Caller ID blocked it\(place). Accept to let their next message through.",
+            action: "Accept"
+        ) { [weak self] in
+            self?.viewModel.acceptCaller(networkId: networkId, nick: from)
+        }
+    }
+
+    private func present(title: String, message: String, action: String, perform: @escaping () -> Void) {
+        guard alert == nil, let host = host(), !(host is UIAlertController),
+              !host.isBeingDismissed, !host.isBeingPresented
+        else { return }
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel))
+        let primary = UIAlertAction(title: action, style: .default) { _ in perform() }
+        alert.addAction(primary)
+        alert.preferredAction = primary
         self.alert = alert
         host.present(alert, animated: true)
     }

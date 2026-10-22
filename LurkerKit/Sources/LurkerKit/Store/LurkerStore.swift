@@ -1475,9 +1475,9 @@ final class LurkerStore {
             if live { peers.append(nick) }
             next.dccChats[networkId] = peers.isEmpty ? nil : peers
             return next
-        case .invited:
-            // A moment, not state: the view model offers the Join, and the system buffer's line
-            // is the record.
+        case .invited, .callerIdBlocked:
+            // A moment, not state: the view model offers the Join or the Accept, and the system
+            // buffer's line is the record.
             return state
         case .typing(let networkId, let target, let nick, let activity, let userhost):
             return applyTyping(

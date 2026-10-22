@@ -245,6 +245,13 @@ final class CommandParserTests: XCTestCase {
         XCTAssertEqual(effects("/whois", target: "bob"), [.showProfile(nick: "bob")])
     }
 
+    /// Caller ID (lurker#1184): one comma list, as the wire wants; none lists them.
+    func testAcceptSendsOneCommaList() {
+        XCTAssertEqual(effects("/accept alice bob -carol"), [.raw(line: "ACCEPT alice,bob,-carol")])
+        XCTAssertEqual(effects("/accept alice,bob"), [.raw(line: "ACCEPT alice,bob")])
+        XCTAssertEqual(effects("/accept"), [.raw(line: "ACCEPT *")])
+    }
+
     func testInviteDefaultsChannelToCurrentBuffer() {
         XCTAssertEqual(effects("/invite bob"), [.raw(line: "INVITE bob #chan")])
         XCTAssertEqual(effects("/invite bob #other"), [.raw(line: "INVITE bob #other")])

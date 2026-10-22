@@ -343,6 +343,9 @@ public enum CommandRegistry {
                     args: [ArgSpec("target", .nick), ArgSpec("type", .word), ArgSpec("args", .text, optional: true, rest: true)]),
         CommandSpec(["ping"], .messaging, "CTCP PING a user",
                     args: [ArgSpec("nick", .nick)]),
+        // Caller ID (lurker#1184): `-nick` takes one off, and no argument lists them.
+        CommandSpec(["accept"], .messaging, "Caller ID (+g): let nicks message you",
+                    args: [ArgSpec("nick", .nick, optional: true, rest: true)]),
         // irssi's syntax exactly (lurker#270), type-first on close: `/dcc close chat bob`.
         // `-passive` asks the peer to listen, for when this server can't be reached.
         CommandSpec(["dcc"], .messaging, "Start a direct (DCC) chat, or end one",

@@ -77,6 +77,11 @@ public final class ChatViewModel {
     /// is never answered loses nothing. Not fired for a channel we're already in.
     public var onInvited: ((_ networkId: Int, _ channel: String, _ from: String) -> Void)?
 
+    /// Our caller ID (+g) discarded a message from `from` (lurker#1184). The app offers an
+    /// Accept, which is `acceptCaller`; it lets their NEXT message through, since this one is
+    /// gone. The system buffer already holds the line, so a prompt never answered loses nothing.
+    public var onCallerIdBlocked: ((_ networkId: Int, _ from: String) -> Void)?
+
     /// A live line the server says to alert about, with its kind's toggle on (see
     /// `StatusNotification`). The app decides whether it's worth showing — not for the buffer
     /// already on screen, not while backgrounded, where push has it.
@@ -1861,6 +1866,16 @@ public final class ChatViewModel {
     /// skips every `=` guard the server has — by design, since it is what `/quote` uses — so a
     /// caller handing over the buffer's target would put `WHOIS =bob` on the wire. Normalized
     /// here, at the one door every profile goes through, rather than trusted to each screen.
+    /// Let `nick` through our caller ID (+g) on this network (lurker#1184): `ACCEPT nick`, which
+    /// is what `/accept nick` sends. The server's reply, if any, lands in the server log.
+    @discardableResult
+    public func acceptCaller(networkId: Int, nick: String) -> Bool {
+        let nick = nick.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !nick.isEmpty, !nick.contains(" ") else { return false }
+        let line = "ACCEPT \(nick)"
+        return sendRawSeam?(line) ?? client.sendRaw(networkId: networkId, line: line)
+    }
+
     public func requestWhois(networkId: Int, nick: String) {
         let nick = DccChat.peer(nick.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !nick.isEmpty, !store.state.isWhoisPending(networkId: networkId, nick: nick)
@@ -2438,6 +2453,8 @@ public final class ChatViewModel {
                   )
             else { break }
             onInvited?(networkId, channel, from)
+        case .callerIdBlocked(let networkId, let from):
+            onCallerIdBlocked?(networkId, from)
         default:
             break
         }

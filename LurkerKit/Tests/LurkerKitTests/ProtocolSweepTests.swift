@@ -264,4 +264,33 @@ final class ProtocolSweepTests: XCTestCase {
         model.handle(.invited(networkId: 1, channel: "#secret", from: "bob", userhost: "bob!b@example.org"))
         XCTAssertEqual(offered, ["#secret bob"])
     }
+
+    // MARK: - Caller ID (lurker#1184)
+
+    func testACallerIdBlockIsItsOwnFrame() {
+        XCTAssertEqual(
+            FrameParser.parseWs(
+                ##"{"kind":"irc","networkId":1,"target":":server:1","type":"callerid-blocked","from":"bob","userhost":"bob!b@example.org"}"##
+            ),
+            .callerIdBlocked(networkId: 1, from: "bob")
+        )
+        XCTAssertEqual(
+            FrameParser.parseWs(##"{"kind":"irc","networkId":1,"target":":server:1","type":"callerid-blocked"}"##),
+            .ignored
+        )
+    }
+
+    func testABlockedCallerIsOfferedAndAcceptSendsAccept() {
+        let model = viewModel()
+        var offered: [String] = []
+        model.onCallerIdBlocked = { networkId, from in offered.append("\(networkId) \(from)") }
+        model.handle(.callerIdBlocked(networkId: 1, from: "bob"))
+        XCTAssertEqual(offered, ["1 bob"])
+
+        var sent: [String] = []
+        model.sendRawSeam = { line in sent.append(line); return true }
+        XCTAssertTrue(model.acceptCaller(networkId: 1, nick: " bob "))
+        XCTAssertFalse(model.acceptCaller(networkId: 1, nick: "bob carol"))
+        XCTAssertEqual(sent, ["ACCEPT bob"])
+    }
 }
