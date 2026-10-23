@@ -294,8 +294,9 @@ final class BufferRowCell: UICollectionViewListCell {
     /// The ground is named every time and nothing else is left to the list cell's defaults,
     /// whose highlight would paint the system grey over the theme. The press shows on `band`.
     ///
-    /// ⚠ Opaque, swiped or not: a row sliding over its Leave/Close action shows whatever is
-    /// behind it, and behind a clear row is the red action, through the text.
+    /// ⚠ Opaque, still, with the row's swipe action gone (lurker#1102): a lifted drag
+    /// preview is the row drawn on its own ground, and a clear one would show whatever sits
+    /// beneath it through the text.
     override func updateConfiguration(using state: UICellConfigurationState) {
         var background = UIBackgroundConfiguration.clear()
         background.backgroundColor = .rosterGround
