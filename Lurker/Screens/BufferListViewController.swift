@@ -1599,17 +1599,15 @@ final class BufferListViewController: UICollectionViewController {
     ///
     /// Offline it says so and leaves the row (sweep L16). Removing it anyway sent no PART, so the
     /// reconnect's snapshot put the row back and the channel had never been left.
-    @discardableResult
-    private func close(_ buffer: Buffer) -> Bool {
+    private func close(_ buffer: Buffer) {
         guard viewModel.closeBuffer(buffer.key) else {
             ToastView.showNotConnected(over: navigationController?.view ?? view)
-            return false
+            return
         }
         // Leaving here is the one moment the client *knows* a buffer is gone. Restoring into
         // one that isn't there lands on a spinner that never resolves (see
         // `SceneDelegate.launchBuffer`), and that path can't detect it — so tell it.
         UserPreferences.standard.forgetLastBuffer(ifMatching: buffer.key)
-        return true
     }
 
     /// Long-press to pin. The Favorites section is only as real as the way to fill it, and

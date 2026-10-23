@@ -1003,7 +1003,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // the phone was away. `sawBufferRow` never becomes true there, because the row
             // never existed on this run.
             // ⚠⚠ A SERVER LOG's absence is not evidence of a close. It can't be closed —
-            // the swipe action and the server both refuse — so a missing row means "no row
+            // the row's menu and the server both refuse — so a missing row means "no row
             // yet", which the buffer list now makes reachable: it offers a network's log
             // whether or not one has arrived. Without this exemption, opening that row popped
             // straight back to the list, because `sawBufferRow` is false and the roster is
