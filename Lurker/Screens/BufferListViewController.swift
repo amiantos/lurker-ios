@@ -266,9 +266,7 @@ final class BufferListViewController: UICollectionViewController {
 
     init(viewModel: ChatViewModel) {
         self.viewModel = viewModel
-        // The real layout needs `self` for its swipe actions, which isn't available until after
-        // `super.init`; it's swapped in from `viewDidLoad`.
-        super.init(collectionViewLayout: UICollectionViewFlowLayout())
+        super.init(collectionViewLayout: Self.makeLayout())
     }
 
     @available(*, unavailable)
@@ -298,7 +296,6 @@ final class BufferListViewController: UICollectionViewController {
         // `UICollectionViewController` installs itself as the collection view's data source in
         // `loadView`; constructing the diffable one is what replaces it.
         _ = dataSource
-        collectionView.setCollectionViewLayout(makeLayout(), animated: false)
 
         // Drag-and-drop rather than `moveItemAt` + the standard interactive-movement gesture
         // (#53). That gesture is a long press, which is already the row's context menu — the
@@ -702,8 +699,8 @@ final class BufferListViewController: UICollectionViewController {
 
     /// One plain list, section by section: a section per group, each opening with its header
     /// item, no separators, and a gap under each group for the rule over the next.
-    private func makeLayout() -> UICollectionViewLayout {
-        UICollectionViewCompositionalLayout { [weak self] _, environment in
+    private static func makeLayout() -> UICollectionViewLayout {
+        UICollectionViewCompositionalLayout { _, environment in
             var config = UICollectionLayoutListConfiguration(appearance: .plain)
             config.showsSeparators = false
             // Named rather than left to the plain appearance's default, which happens to be the
@@ -714,9 +711,9 @@ final class BufferListViewController: UICollectionViewController {
             // you can open, and an item is what can be tapped, marked open, and reconfigured
             // when its network's state changes.
             config.headerMode = .none
-            config.trailingSwipeActionsConfigurationProvider = { [weak self] indexPath in
-                self?.trailingSwipe(at: indexPath)
-            }
+            // No trailing swipe action. The network rows used to leave/close on a full swipe,
+            // and people left channels by accident scrolling past them (lurker#1102). A
+            // destructive action lives on the long-press menu alone.
             let section = NSCollectionLayoutSection.list(using: config, layoutEnvironment: environment)
             section.contentInsets = NSDirectionalEdgeInsets(
                 top: 0, leading: 0, bottom: RosterMetrics.groupGap, trailing: 0
@@ -1596,25 +1593,8 @@ final class BufferListViewController: UICollectionViewController {
         onSelect?(row.buffer)
     }
 
-    /// Trailing swipe on a network's row leaves/closes the buffer. Friends and Favorites get
-    /// nothing: closing a favorite also unfavorites it, and a full swipe fires the action
-    /// outright — too easy a way to drop a friend. Their long-press menu has Close.
-    private func trailingSwipe(at indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard sectionID(at: indexPath)?.reorderable == false, let buffer = row(at: indexPath)?.buffer
-        else { return nil }
-        // The server log and the system buffer can't be closed.
-        guard buffer.kind != .server, buffer.kind != .system else { return nil }
-        // A parted channel has nothing to leave, so it's Close — as on the long-press menu.
-        let title = buffer.kind == .channel && !state.isParted(buffer.key) ? "Leave" : "Close"
-        let close = UIContextualAction(style: .destructive, title: title) { [weak self] _, _, done in
-            // False leaves the row where it is, swipe and all: it's still there.
-            done(self?.close(buffer) ?? false)
-        }
-        return UISwipeActionsConfiguration(actions: [close])
-    }
-
-    /// Leave a channel / close a DM. Shared by the swipe and the context menu rather than
-    /// written twice: the `forgetLastBuffer` half is easy to leave out of a second copy and
+    /// Leave a channel / close a DM, from the row's context menu. One path, even with one
+    /// caller: the `forgetLastBuffer` half is easy to leave out of a second copy and
     /// impossible to notice missing until a relaunch strands someone on a spinner.
     ///
     /// Offline it says so and leaves the row (sweep L16). Removing it anyway sent no PART, so the
@@ -1661,13 +1641,12 @@ final class BufferListViewController: UICollectionViewController {
         let image = isFavorite
             ? UIImage(systemName: isDm ? "person.badge.minus" : "star.slash")
             : UIImage(systemName: isDm ? "person.badge.plus" : "star")
-        // ⚠⚠ Close belongs on THIS menu, not only on the roster row's swipe. A favorited
-        // buffer has no network row any more — its Favorites row is where it lives — so without this
-        // there is no way to leave a favorited channel short of unfavoriting it first, and
-        // the buffers people favorite are exactly the ones they keep. (Favorited DMs had
-        // this hole already, having been lifted out since Friends landed.) The web reaches
-        // the same conclusion by giving every row, favorites included, one menu ending in
-        // Close.
+        // ⚠⚠ Close belongs on THIS menu, for every row. It is the only way to leave now that
+        // the network rows' trailing swipe is gone (lurker#1102), and it was already the only
+        // way for a favorited buffer: that has no network row any more — its Favorites row is
+        // where it lives — and the buffers people favorite are exactly the ones they keep. The
+        // web reaches the same conclusion by giving every row, favorites included, one menu
+        // ending in Close.
         //
         // Its own inline section, so the separator sets a destructive action apart from the
         // favorite toggle above rather than leaving them a thumb-slip apart.
