@@ -282,8 +282,7 @@ enum MessageRenderer {
     /// actually found. A row with nothing to substitute also returns the plain string untouched,
     /// so the trim can't turn a whitespace-only body into an empty label.
     static func spoken(_ attributed: NSAttributedString) -> String {
-        // A trailing time's word joiners are layout, not words (`appendCompactTime`).
-        let plain = attributed.string.replacingOccurrences(of: String(wordJoiner), with: "")
+        let plain = attributed.string
         let whole = NSRange(location: 0, length: attributed.length)
 
         var ranges: [(NSRange, String)] = []
@@ -297,7 +296,7 @@ enum MessageRenderer {
             guard let announcement = value as? String else { return }
             ranges.append((range, announcement))
         }
-        guard !ranges.isEmpty else { return plain }
+        guard !ranges.isEmpty else { return withoutWordJoiners(plain) }
 
         let text = NSMutableAttributedString(attributedString: attributed)
         // Backwards, so replacing one range doesn't shift the ranges of the ones before it.
@@ -306,8 +305,14 @@ enum MessageRenderer {
         for (range, label) in ranges.sorted(by: { $0.0.location < $1.0.location }).reversed() {
             text.replaceCharacters(in: range, with: label)
         }
-        return text.string.replacingOccurrences(of: String(wordJoiner), with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return withoutWordJoiners(text.string).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A trailing time's word joiners are layout, not words (`appendCompactTime`). Copied only
+    /// when there's one to take out, which is a header-less row's label and nothing else.
+    private static func withoutWordJoiners(_ text: String) -> String {
+        guard text.unicodeScalars.contains(wordJoiner) else { return text }
+        return text.replacingOccurrences(of: String(wordJoiner), with: "")
     }
 
     // MARK: - Compact (terminal) style
@@ -482,34 +487,36 @@ enum MessageRenderer {
         return spaced(line, firstLine: 0, rest: compactIndent(compatibleWith: traits), spacing: spacing)
     }
 
+    /// What keeps a trailing time in one piece (`appendCompactTime`); layout, not words, so
+    /// `spoken` leaves it out.
+    private static let wordJoiner: Unicode.Scalar = "\u{2060}"
+
     /// A header-less row's time, after its text in the muted grey (lurker#1237).
     ///
-    /// Three quarters of a character in, the web's gap: a space kerned back by a quarter. The
-    /// space is an ordinary one — or none, after a line that already ends in one (a `/me` whose
-    /// only text was a picture's address) — so a long line can wrap the time to the next row, and
-    /// the time itself can't break, as the web's `white-space: nowrap` has it: its spaces are
-    /// non-breaking and a word joiner sits between every other pair of characters, so
-    /// "2026-10-20 14:42" — or a format with no spaces to protect, like `YYYY年MM月DD日` — moves
-    /// as one piece. Between grapheme clusters, never inside one, so an accent or an emoji's
-    /// selector stays on its character.
+    /// Three quarters of a character in, the web's gap: a space kerned back by a quarter — the
+    /// line's own, when it already ends in one (a `/me` whose only text was a picture's address).
+    /// The space is an ordinary one, never a no-break space, so a long line can wrap the time to
+    /// the next row, and the time itself can't break, as the web's `white-space: nowrap` has it:
+    /// its spaces are non-breaking and a word joiner sits between every other pair of characters,
+    /// so "2026-10-20 14:42" — or a format with no spaces to protect, like `YYYY年MM月DD日` —
+    /// moves as one piece. Between grapheme clusters, never inside one, so an accent or an
+    /// emoji's selector stays on its character.
     ///
     /// Nothing on a line with no text at all — one whose only words were an address its picture
     /// stands in for: a lone time over the picture would read as the row's text, and keep the
-    /// body from collapsing.
-    /// What keeps a trailing time in one piece.
-    private static let wordJoiner: Unicode.Scalar = "\u{2060}"
-
+    /// body from collapsing (`CompactCell` collapses on exactly this, a zero length). A line of
+    /// colour-painted spaces is text: it draws.
     private static func appendCompactTime(
         _ time: String?, to line: NSMutableAttributedString, traits: UITraitCollection
     ) {
         guard let time, !time.isEmpty else { return }
-        let text = line.string
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard line.length > 0 else { return }
         let base = compactFont(compatibleWith: traits)
-        if text.last?.isWhitespace != true {
-            line.append(NSAttributedString(
-                string: " ", attributes: [.font: base, .kern: -compactIndent(compatibleWith: traits) / 4]
-            ))
+        let kern = -compactIndent(compatibleWith: traits) / 4
+        if line.string.hasSuffix(" ") {
+            line.addAttribute(.kern, value: kern, range: NSRange(location: line.length - 1, length: 1))
+        } else {
+            line.append(NSAttributedString(string: " ", attributes: [.font: base, .kern: kern]))
         }
         // By Character, which is a grapheme cluster: the joiner goes between two, never inside one.
         var unbreakable = ""
