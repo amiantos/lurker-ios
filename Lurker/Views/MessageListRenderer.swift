@@ -500,9 +500,19 @@ enum MessageListMarker {
             let caption = UIFont.preferredFont(forTextStyle: .caption1, compatibleWith: traits)
             label.font = bold ? caption.bold : caption
             let padding = UIFontMetrics(forTextStyle: .subheadline).scaledValue(for: 6, compatibleWith: traits)
-            top.constant = padding + spacing.washPadding
-            bottom.constant = padding + spacing.blockGap - spacing.washPadding + CompactCell.washBottomNudge
+            let gaps = MessageListMarker.gaps(spacing)
+            top.constant = padding + gaps.above
+            bottom.constant = padding + gaps.below
         }
+    }
+
+    /// The group gap a marker carries either side of its label: above, the wash a block opens
+    /// with; below, the rest of the block gap and the nudge (`Cell.configure`).
+    ///
+    /// Part of the space between two rows, not of the marker, so it doesn't count toward the
+    /// marker being on screen (`ChatViewController.dividerFrame`).
+    static func gaps(_ spacing: MessageRenderer.CompactSpacing) -> (above: CGFloat, below: CGFloat) {
+        (spacing.washPadding, spacing.blockGap - spacing.washPadding + CompactCell.washBottomNudge)
     }
 
     /// Whether `row` is a marker — what closes the block above it, whatever comes next.

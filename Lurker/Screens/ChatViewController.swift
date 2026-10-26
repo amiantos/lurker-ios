@@ -2243,7 +2243,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
               row < tableView.numberOfRows(inSection: 0)
         else { return nil }
         let frame = tableView.rectForRow(at: IndexPath(row: row, section: 0))
-        return frame.isEmpty ? nil : frame
+        guard !frame.isEmpty else { return nil }
+        // The label and its padding, without the group gap the marker carries either side
+        // (lurker#1238): at a wide gap, the empty space under "New messages" peeking in at the
+        // top edge isn't the reader having reached it.
+        let gaps = MessageListMarker.gaps(
+            MessageRenderer.CompactSpacing(CompactDensity(settings: settings), traits: traitCollection)
+        )
+        return frame.inset(by: UIEdgeInsets(top: gaps.above, left: 0, bottom: gaps.below, right: 0))
     }
 
     /// The content the reader can actually see — the table runs under the nav bar and the
