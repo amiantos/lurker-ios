@@ -155,7 +155,9 @@ struct MessageListRenderer {
                     hiddenUrls: plan.hidden
                 ),
                 header: blockHeader,
-                startsBlock: blockHeader != nil,
+                // A caption-less line under a marker still opens a block: the marker closed the
+                // one above it, and leaves the wash for the row below to take (lurker#1238).
+                startsBlock: blockHeader != nil || MessageListMarker.isMarker(context.row(index - 1)),
                 endsBlock: endsBlock(at: index, context: context),
                 highlighted: message.matched,
                 reactions: Self.reactions(for: message, context: context),
@@ -461,9 +463,15 @@ enum MessageListMarker {
             label.translatesAutoresizingMaskIntoConstraints = false
             label.numberOfLines = 0
             label.textAlignment = .center
+            // What the list content configuration did for it: the text follows a Dynamic Type
+            // change without waiting for a reload.
+            label.adjustsFontForContentSizeCategory = true
             contentView.addSubview(label)
             top = label.topAnchor.constraint(equalTo: contentView.topAnchor)
             bottom = contentView.bottomAnchor.constraint(equalTo: label.bottomAnchor)
+            // Below required, so a reused cell's old height gives way while the table re-measures
+            // instead of breaking a constraint.
+            bottom.priority = .required - 1
             NSLayoutConstraint.activate([
                 top, bottom,
                 label.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
@@ -475,11 +483,14 @@ enum MessageListMarker {
         required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
         /// A marker is a block of its own: a cluster boundary, as the web's compact layout treats
-        /// a divider. So it takes the wash a block opens with above its label, and the rest of the
-        /// block gap below it, the way any block's last row does (`CompactCell.configure`). The
-        /// row above a marker always ends its block (`endsBlock`) and the row below always starts
-        /// one (a divider breaks a run), so the marker sits one gap from each neighbour, and two
-        /// markers in a row sit one gap apart, not two.
+        /// a divider. So it takes the wash a block opens with above its label, and below it the
+        /// rest of the block gap and the nudge, the way any block's last row does
+        /// (`CompactCell.configure`). The row above a marker always ends its block (`endsBlock`)
+        /// and the row below always starts one, so the marker sits one gap from each neighbour,
+        /// and two markers in a row sit one gap apart, not two.
+        ///
+        /// Around the label, the web's 6px divider padding, scaled like the gap. Fixed, not a
+        /// density: the setting moves the gap around a marker, never the marker itself.
         func configure(
             _ text: String, color: UIColor, bold: Bool,
             spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
@@ -488,18 +499,20 @@ enum MessageListMarker {
             label.textColor = color
             let caption = UIFont.preferredFont(forTextStyle: .caption1, compatibleWith: traits)
             label.font = bold ? caption.bold : caption
-            top.constant = spacing.markerPadding + spacing.washPadding
-            bottom.constant = spacing.markerPadding + spacing.blockGap - spacing.washPadding
+            let padding = UIFontMetrics(forTextStyle: .subheadline).scaledValue(for: 6, compatibleWith: traits)
+            top.constant = padding + spacing.washPadding
+            bottom.constant = padding + spacing.blockGap - spacing.washPadding + CompactCell.washBottomNudge
         }
     }
 
-    static func cell(
-        _ text: String, color: UIColor, bold: Bool, in tableView: UITableView,
-        spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
-    ) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: reuseID) as! Cell
-        cell.configure(text, color: color, bold: bold, spacing: spacing, traits: traits)
-        return cell
+    /// Whether `row` is a marker — what closes the block above it, whatever comes next.
+    static func isMarker(_ row: MessageRow?) -> Bool {
+        switch row {
+        case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider:
+            true
+        case .bubble, .line, .consolidated, .typing, nil:
+            false
+        }
     }
 
     /// The markers. Nil for anything that isn't one.
@@ -512,7 +525,9 @@ enum MessageListMarker {
         spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
     ) -> UITableViewCell? {
         func marker(_ text: String, color: UIColor, bold: Bool = false) -> UITableViewCell {
-            cell(text, color: color, bold: bold, in: tableView, spacing: spacing, traits: traits)
+            let cell = tableView.dequeueReusableCell(withIdentifier: reuseID) as! Cell
+            cell.configure(text, color: color, bold: bold, spacing: spacing, traits: traits)
+            return cell
         }
         switch row {
         case .unreadDivider:
