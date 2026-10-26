@@ -7,20 +7,25 @@ import UIKit
 /// One row of the compact message list: an optional author header, then the text indented under it.
 ///
 /// ```
-/// alice                      14:42
+/// alice 14:42
 ///  morning — did the deploy land?
 ///  and is the changelog updated?
-/// bob
+/// bob joined 14:43
+/// bob 14:43
 ///  yeah, ten minutes ago
 /// ```
 ///
-/// The shape is the PWA's compact layout: a header with the nick and the time at the trailing
-/// edge opens each author run, and the run's later lines carry no time. A run lasts while the
-/// same author keeps talking within `look.message.collapse_authors_window`, whatever the minute.
-/// See `MessageListRenderer`, which decides.
+/// The shape is the PWA's compact layout: a header with the nick and then its time opens each
+/// author run, and the run's later lines carry no time. A run lasts while the same author keeps
+/// talking within `look.message.collapse_authors_window`, whatever the minute. See
+/// `MessageListRenderer`, which decides. Nothing sits at the trailing edge (lurker#1237).
 ///
 /// Anything that names its own actor — a `/me`, a join, a collapsed run — is header-less and draws
-/// as a body line, because a nick header above "alice waves" would say her name twice.
+/// as a body line, because a nick header above "alice waves" would say her name twice. Its time
+/// follows its text, inside the body (`MessageRenderer.renderCompactBody`).
+///
+/// How far apart it all sits is `look.message.compact.*` (lurker#1224), handed in per configure as
+/// `MessageRenderer.CompactSpacing`.
 ///
 /// There's no drag-to-reveal timestamp gesture anywhere in the app any more: the times are already
 /// here, on the block headers.
@@ -93,6 +98,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let headerRow = UIStackView()
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
+    /// Takes the rest of a horizontal header, so neither label stretches.
+    private let headerSpacer = UIView()
     private let messageText = MessageTextView()
     /// A reply's quote, as the body's first line — part of the message, so a reply doesn't break
     /// its author's run. Faded as a whole (the web's opacity 0.45), so the quoted nick keeps its
@@ -121,6 +128,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// the top even when both are the same number. One point, measured by eye rather than derived
     /// — which is what an optical correction is.
     private static let washBottomNudge: CGFloat = 1
+
+    /// How far the body sits in, as the last `configure` resolved it — what attachments line up
+    /// with.
+    private var bodyIndent: CGFloat = 0
 
     /// Held so the block gap can be taken *outside* the wash: the fill stops at the text, and the
     /// separating space below is plain background. Otherwise a matched block's band hangs three
@@ -158,8 +169,11 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         headerRow.axis = .horizontal
         headerRow.alignment = .firstBaseline
         headerRow.addArrangedSubview(nickLabel)
-        headerRow.addArrangedSubview(UIView()) // spacer: pushes the time to the trailing edge
+        // The time right after the nick, as Slack and Discord place it; the spacer behind them
+        // takes the rest of the row, so neither label stretches.
         headerRow.addArrangedSubview(timeLabel)
+        headerSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        headerRow.addArrangedSubview(headerSpacer)
 
         messageText.isScrollEnabled = false
         messageText.backgroundColor = .clear
@@ -190,8 +204,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         attachments.onOpenGallery = { [weak self] previews, at in
             self?.onOpenMedia?(previews, at)
         }
-        // Line up with the message body, which sits one character in from its author (the
-        // paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
+        // Line up with the message body, which sits `look.message.compact.indent` characters in
+        // from its author (the paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
         // starts flush with the nick while the words above it don't, and the block loses the
         // single left edge that makes a run of messages read as one column.
         attachments.isLayoutMarginsRelativeArrangement = true
@@ -277,6 +291,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         reactions: ReactionChips? = nil,
         reply: ReplyLine? = nil,
         indentsBody: Bool = true,
+        spacing: MessageRenderer.CompactSpacing,
         traits: UITraitCollection
     ) {
         // A results list turns this off so a tap anywhere reaches the row's own selection (the
@@ -285,7 +300,24 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The screen's live traits, handed down with the row — a cell's own `traitCollection` isn't
         // settled while it's being configured, and neither is `UITraitCollection.current`.
         let font = MessageRenderer.compactFont(compatibleWith: traits)
+        // What the reactions and attachments line up with: the body's setting under a header, the
+        // narration's own one-character hang on a header-less line (a `/me`), whose words start
+        // flush and which the setting leaves alone.
+        bodyIndent = indentsBody ? spacing.bodyIndent : MessageRenderer.compactIndent(compatibleWith: traits)
         headerRow.isHidden = header == nil
+        // The web's 0.75ch between the name and its time. A stack view drops the spacing beside a
+        // hidden arranged view, so a header with no time leaves no gap behind.
+        headerRow.spacing = MessageRenderer.compactIndent(compatibleWith: traits) * 0.75
+        // At the accessibility sizes the time goes under the name and may wrap: an older line's
+        // `2026-10-20 14:42` is wider than a phone at 49pt, and beside the nick on one line it
+        // could only overflow the row. The stacked-at-large-sizes layout Apple's own lists use.
+        let stacked = traits.preferredContentSizeCategory.isAccessibilityCategory
+        headerRow.axis = stacked ? .vertical : .horizontal
+        headerRow.alignment = stacked ? .leading : .firstBaseline
+        headerSpacer.isHidden = stacked
+        timeLabel.numberOfLines = stacked ? 0 : 1
+        // A required resistance would still claim its one-line width and push past the row.
+        timeLabel.setContentCompressionResistancePriority(stacked ? .defaultHigh : .required, for: .horizontal)
         if let header {
             // The name at the body's weight, as the web draws it.
             let name = NSMutableAttributedString(
@@ -306,17 +338,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
                 )
             }
             // Relay provenance (#277), trailing the name it qualifies: `alice github`.
-            // Unbracketed, and `fgFaint` — a tier below the timestamp at the other end of this
-            // row, not level with it. It's a hint, not a field: you read it when you wonder where
-            // someone is speaking from, and the rest of the time it shouldn't be pulling at a name
-            // that's already carrying a colour of its own.
+            // Unbracketed, and in the timestamp's `fgMuted`, as the web draws it: it sits between
+            // the name and the time now, and reads as part of the grey that follows the name.
+            // It's a hint, not a field — you read it when you wonder where someone is speaking
+            // from, and the rest of the time it shouldn't be pulling at a name that's already
+            // carrying a colour of its own.
             //
-            // Last on the line on purpose: the label truncates from the tail, so under width
-            // pressure the provenance goes before the speaker's name does.
+            // Last in the label on purpose: it truncates from the tail, so under width pressure
+            // the provenance goes before the speaker's name does.
             if let source = header.relaySource, !source.isEmpty {
                 name.append(NSAttributedString(
                     string: " \(source)",
-                    attributes: [.font: font, .foregroundColor: Palette.fgFaint]
+                    attributes: [.font: font, .foregroundColor: Palette.fgMuted]
                 ))
             }
             // Always attributed, never `text`. Cells are reused, and a header that took an
@@ -324,19 +357,22 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             // clears — a hazard that existed while this was two branches and doesn't now that
             // it's one.
             nickLabel.attributedText = name
+            // Hidden when there's no name to show (a reaction to a `/me` in the highlights feed),
+            // so the stack's spacing doesn't push the time off the left edge.
+            nickLabel.isHidden = name.length == 0
             timeLabel.font = font
             timeLabel.text = header.time
-            // Hidden rather than left empty, so the spacer doesn't hold a gap open for a stamp
-            // that isn't there.
+            // Hidden rather than left empty, so the stack's spacing doesn't hold a gap open for a
+            // stamp that isn't there.
             timeLabel.isHidden = header.time == nil
         }
 
         // Half the line gap at each end, so two adjacent cells put exactly one gap between their
         // text — the same distance `MessageRenderer` puts between two wrapped lines of one message.
-        // A header takes a slightly wider gap of its own (`compactHeaderGap`), because a name and
-        // the words under it are less alike than two body lines are.
-        let padding = MessageRenderer.compactLineGap / 2
-        let wash = MessageRenderer.compactWashPadding(compatibleWith: traits)
+        // A header takes a slightly wider gap of its own (`headerGap`), because a name and the
+        // words under it are less alike than two body lines are.
+        let padding = spacing.lineGap / 2
+        let wash = spacing.washPadding
         column.layoutMargins = UIEdgeInsets(
             top: (header == nil ? 0 : padding) + (startsBlock ? wash : 0), left: 0, bottom: 0, right: 0
         )
@@ -346,14 +382,14 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         let showsReactions = !(reactions?.groups.isEmpty ?? true)
         // A quote takes the gap above the body, and the body follows it a line-gap down — the
         // distance between two lines of one message, which is what the two are.
-        let topGap = header == nil ? padding : MessageRenderer.compactHeaderGap
+        let topGap = header == nil ? padding : spacing.headerGap
         replyHolder.isHidden = reply == nil
         onJumpToReply = nil
         if let reply {
             replyTop.constant = topGap
             replyLabel.attributedText = MessageRenderer.renderReplyQuote(
                 reply.quote,
-                indent: indentsBody ? MessageRenderer.compactIndent(compatibleWith: traits) : 0,
+                indent: indentsBody ? spacing.bodyIndent : 0,
                 traits: traits
             )
             replyLabel.accessibilityLabel = MessageRenderer.spokenReplyQuote(reply.quote)
@@ -368,14 +404,14 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             replyLabel.isUserInteractionEnabled = interactive && onJumpToReply != nil
         }
         messageText.textContainerInset = UIEdgeInsets(
-            top: reply != nil ? MessageRenderer.compactLineGap : topGap,
+            top: reply != nil ? spacing.lineGap : topGap,
             left: 0, // indentation is the paragraph style's — see `MessageRenderer.spaced`
             bottom: padding + (showsReactions ? 0 : closing),
             right: 0
         )
         reactionHolder.isHidden = !showsReactions
         if let reactions, showsReactions {
-            reactionIndent.constant = MessageRenderer.compactIndent(compatibleWith: traits)
+            reactionIndent.constant = bodyIndent
             reactionBottom.constant = -(padding + 2 + closing)
             reactionRow.onToggle = reactions.onToggle
             reactionRow.onOpen = reactions.onOpen
@@ -388,7 +424,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The rest of the gap — the part that isn't inside either block's fill — is reserved by
         // the cell and excluded from it, so what separates two blocks is background.
         fillBottom.constant = endsBlock
-            ? -(MessageRenderer.compactBlockGap(compatibleWith: traits) - 2 * wash)
+            ? -(spacing.blockGap - 2 * wash)
             : 0
 
         messageText.attributedText = attributed
@@ -412,8 +448,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
-        // Empties dropped as well as nils: a header can carry a time with no nick (a `/me` in the
-        // highlights feed), and an unfiltered join would open the spoken label with a comma.
+        // Empties dropped as well as nils: a header can carry a time with no nick (a reaction to a
+        // `/me` in the highlights feed), and an unfiltered join would open the spoken label with a comma.
         //
         // Relay provenance needs a connective it doesn't need in print, where colour separates the
         // two words: read out bare, "alice github" is two names. It says "from" rather than the
@@ -480,11 +516,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// `onToggleSpoiler` — a cell has no business knowing how to present a view controller.
     var onOpenMedia: (([LinkPreview], Int) -> Void)?
 
-    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel, traits: UITraitCollection) {
-        // Resolved from the screen's traits, not `UITraitCollection.current`, which isn't
-        // reliably set during `cellForRowAt` — the same trap MessageRenderer.compactFont was
-        // caught in. The indent scales with Dynamic Type, so it can't be a constant.
-        let indent = MessageRenderer.compactIndent(compatibleWith: traits)
+    func showAttachments(_ previews: [LinkPreview], model: ChatViewModel) {
+        // The indent `configure` resolved, from the screen's traits and the density — so a
+        // picture lines up with the words above it at any text size and any indent.
+        let indent = bodyIndent
         // Breathing room below as well as above, matching the web client. Without it an image
         // sits flush against the next author's name and reads as belonging to the message below
         // it rather than the one above. INSIDE the cell's fill on purpose: on a highlighted row

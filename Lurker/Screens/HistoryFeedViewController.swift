@@ -446,9 +446,9 @@ class HistoryFeedViewController: UITableViewController {
         // say it twice. `isBubble` is the same test the list routes on — "does this line need to
         // be told who said it".
         //
-        // The header itself stays, carrying the time alone. In the list a header-less row can go
-        // without a stamp because the rows around it have one; here every row is a standalone
-        // entry from a different buffer and hour, and the section header gives only the day.
+        // Their time follows their text instead, as it does in the list (lurker#1237). Every row
+        // carries one, since each is a standalone entry from a different buffer and hour — but
+        // never the date, which the section header already gives.
         // A line from a marked relay bot reads as the person inside its envelope, as it does in
         // its buffer (#277) — and before replies are presented, which judge the line as it reads.
         // A reaction row is the reactor's, never relayed.
@@ -459,7 +459,11 @@ class HistoryFeedViewController: UITableViewController {
         let name = line.type.isBubble
             ? MessageRenderer.caption(line, networkName: section.networkName)
             : nil
-        let time = line.date.map { MessageRenderer.compactHeaderTime($0) }
+        let time = line.date.flatMap { TimestampFormat.compact($0, settings: state.settings, withDate: false) }
+        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: state.settings), traits: traitCollection)
+        // A reaction row is headed whatever its line: its body is the reaction, not a sentence
+        // that could carry the time.
+        let headed = name != nil || item.reaction != nil
         // A reaction to one of your lines (iOS #183): the reactor heads the row, as the speaker
         // does a highlight, and the body says what they reacted and to which line — the web's
         // `bob | 👍 on "…"`.
@@ -472,11 +476,14 @@ class HistoryFeedViewController: UITableViewController {
                 ownNick: item.networkId.flatMap { state.networks[$0]?.nick }
             ).first ?? line
             : line
-        let body = item.reaction.map { Self.reactionBody($0, traits: traitCollection) }
-            ?? MessageRenderer.renderCompactBody(shown, traits: traitCollection)
+        let body = item.reaction.map { Self.reactionBody($0, spacing: spacing, traits: traitCollection) }
+            ?? MessageRenderer.renderCompactBody(
+                shown, spacing: spacing, trailingTime: headed ? nil : time, traits: traitCollection,
+                settings: state.settings
+            )
         cell.configure(
             body,
-            header: name == nil && time == nil ? nil : CompactCell.Header(
+            header: !headed || (name == nil && time == nil) ? nil : CompactCell.Header(
                 nick: name ?? "",
                 color: MessageRenderer.captionColor(line, networkName: section.networkName),
                 time: time,
@@ -487,6 +494,7 @@ class HistoryFeedViewController: UITableViewController {
             interactive: false,
             reply: shown.replyTo == nil ? nil : CompactCell.ReplyLine(quote: shown.replyQuote, onJump: nil),
             indentsBody: shown.type != .action,
+            spacing: spacing,
             traits: traitCollection
         )
         // Tapping jumps, so the row has to acknowledge the touch. `CompactCell` defaults to no
@@ -538,23 +546,19 @@ class HistoryFeedViewController: UITableViewController {
     }
 
     /// `👍 on "your line"`, the value in the body's ink and the rest muted, indented like a body.
-    private static func reactionBody(_ reaction: FeedReaction, traits: UITraitCollection) -> NSAttributedString {
+    private static func reactionBody(
+        _ reaction: FeedReaction, spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
+    ) -> NSAttributedString {
         let font = MessageRenderer.compactFont(compatibleWith: traits)
-        let indent = MessageRenderer.compactIndent(compatibleWith: traits)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.firstLineHeadIndent = indent
-        paragraph.headIndent = indent
-        paragraph.lineSpacing = MessageRenderer.compactLineGap
         let text = NSMutableAttributedString(
-            string: reaction.value,
-            attributes: [.font: font, .foregroundColor: Palette.fg, .paragraphStyle: paragraph]
+            string: reaction.value, attributes: [.font: font, .foregroundColor: Palette.fg]
         )
         let line = reaction.lineText.map { IRCFormatting.strip($0) } ?? ""
         text.append(NSAttributedString(
             string: " on \u{201C}\(line)\u{201D}",
-            attributes: [.font: font, .foregroundColor: Palette.fgMuted, .paragraphStyle: paragraph]
+            attributes: [.font: font, .foregroundColor: Palette.fgMuted]
         ))
-        return text
+        return MessageRenderer.spaced(text, firstLine: spacing.bodyIndent, rest: spacing.bodyIndent, spacing: spacing)
     }
 
     /// The network's name for a row — the server-resolved one, falling back to the client's own
