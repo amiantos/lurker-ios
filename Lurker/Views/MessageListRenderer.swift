@@ -128,6 +128,7 @@ struct MessageListRenderer {
         if let marker = MessageListMarker.cell(for: row, in: tableView) { return marker }
 
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
+        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: context.settings), traits: context.traits)
         switch row {
         case .bubble(let message, let position):
             // Once, not three times: it builds a caption and formats a time, and this runs for
@@ -139,7 +140,7 @@ struct MessageListRenderer {
             }
             cell.configure(
                 MessageRenderer.renderCompactBody(
-                    message, traits: context.traits, settings: context.settings,
+                    message, spacing: spacing, traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
                     revealed: context.revealedSpoilers(message),
                     hiddenUrls: plan.hidden
@@ -150,6 +151,7 @@ struct MessageListRenderer {
                 highlighted: message.matched,
                 reactions: Self.reactions(for: message, context: context),
                 reply: replyLine(for: message, position: position, at: index, context: context),
+                spacing: spacing,
                 traits: context.traits
             )
             attach(plan, to: cell, context: context)
@@ -159,8 +161,10 @@ struct MessageListRenderer {
                 onToggleSpoiler(message, ordinal)
             }
             cell.configure(
+                // No header to carry its time, so the time follows the text (lurker#1237).
                 MessageRenderer.renderCompactBody(
-                    message, traits: context.traits, settings: context.settings,
+                    message, spacing: spacing, trailingTime: Self.time(message.date, context: context),
+                    traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
                     revealed: context.revealedSpoilers(message),
                     hiddenUrls: plan.hidden
@@ -173,23 +177,30 @@ struct MessageListRenderer {
                 // A header-less narration line (a `/me`) starts flush with the nicks, so its
                 // quote does too.
                 indentsBody: false,
+                spacing: spacing,
                 traits: context.traits
             )
             attach(plan, to: cell, context: context)
         case .consolidated(let summary):
             cell.configure(
-                MessageRenderer.renderCompactConsolidation(summary, traits: context.traits),
+                MessageRenderer.renderCompactConsolidation(
+                    summary, spacing: spacing, trailingTime: Self.time(summary.date, context: context),
+                    traits: context.traits
+                ),
                 header: nil,
                 startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
+                spacing: spacing,
                 traits: context.traits
             )
         case .typing(let nicks):
             cell.configure(
-                MessageRenderer.renderCompactTyping(nicks, traits: context.traits) ?? NSAttributedString(),
+                MessageRenderer.renderCompactTyping(nicks, spacing: spacing, traits: context.traits)
+                    ?? NSAttributedString(),
                 header: nil,
                 startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
+                spacing: spacing,
                 traits: context.traits
             )
         case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider,
@@ -308,7 +319,13 @@ struct MessageListRenderer {
     ) {
         guard let previews = context.previews, !plan.resolved.isEmpty else { return }
         cell.onOpenMedia = context.onOpenMedia
-        cell.showAttachments(plan.resolved, model: previews.model, traits: context.traits)
+        cell.showAttachments(plan.resolved, model: previews.model)
+    }
+
+    /// A compact line's time: `look.buffer.time_format_compact`, with the date before it on a line
+    /// from another day. Nil when the format hides it, or the line has no clock.
+    static func time(_ date: Date?, context: MessageListContext) -> String? {
+        date.flatMap { TimestampFormat.compact($0, settings: context.settings) }
     }
 
     /// The header for a message, or nil when it continues the block above it.
@@ -327,18 +344,15 @@ struct MessageListRenderer {
         let mark = message.relayBot == nil ? message.nick.flatMap { context.modePrefixes[$0.lowercased()] } : nil
         let prefix = mark?.glyph ?? ""
         // Nil means there's nothing to call this line: server text whose network hasn't resolved
-        // yet, most often. An empty header is a blank line above the text with a stray
-        // right-aligned timestamp beside it, so there just isn't one.
+        // yet, most often. An empty header is a blank line above the text with a stray timestamp
+        // in it, so there just isn't one.
         guard let name = MessageRenderer.caption(
             message, networkName: context.networkName(message), modePrefix: prefix
         ) else { return nil }
         return CompactCell.Header(
             nick: name,
             color: MessageRenderer.captionColor(message, networkName: context.networkName(message)),
-            // Called rather than passed as a function value: an unapplied reference to a
-            // main-actor method crosses isolation on its own, which the compiler warns about even
-            // though every caller here is already on the main actor.
-            time: message.date.map { MessageRenderer.compactHeaderTime($0) },
+            time: Self.time(message.date, context: context),
             // Only when `caption` actually used it: it prefixes a nick and nothing else, so a
             // notice or a network line gets the glyph resolved and then discarded. ⚠ Asked by
             // building the caption without it, never by `name.hasPrefix(prefix)`: a network's own
