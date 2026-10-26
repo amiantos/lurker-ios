@@ -296,7 +296,7 @@ enum MessageRenderer {
             guard let announcement = value as? String else { return }
             ranges.append((range, announcement))
         }
-        guard !ranges.isEmpty else { return plain }
+        guard !ranges.isEmpty else { return withoutWordJoiners(plain) }
 
         let text = NSMutableAttributedString(attributedString: attributed)
         // Backwards, so replacing one range doesn't shift the ranges of the ones before it.
@@ -305,7 +305,14 @@ enum MessageRenderer {
         for (range, label) in ranges.sorted(by: { $0.0.location < $1.0.location }).reversed() {
             text.replaceCharacters(in: range, with: label)
         }
-        return text.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return withoutWordJoiners(text.string).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A trailing time's word joiners are layout, not words (`appendCompactTime`). Copied only
+    /// when there's one to take out, which is a header-less row's label and nothing else.
+    private static func withoutWordJoiners(_ text: String) -> String {
+        guard text.unicodeScalars.contains(wordJoiner) else { return text }
+        return text.replacingOccurrences(of: String(wordJoiner), with: "")
     }
 
     // MARK: - Compact (terminal) style
@@ -480,31 +487,55 @@ enum MessageRenderer {
         return spaced(line, firstLine: 0, rest: compactIndent(compatibleWith: traits), spacing: spacing)
     }
 
+    /// What keeps a trailing time in one piece (`appendCompactTime`); layout, not words, so
+    /// `spoken` leaves it out.
+    private static let wordJoiner: Unicode.Scalar = "\u{2060}"
+
     /// A header-less row's time, after its text in the muted grey (lurker#1237).
     ///
-    /// Three quarters of a character in, the web's gap: a space kerned back by a quarter. The
-    /// space is an ordinary one so a long line can wrap the time to the next row, and the time
-    /// itself can't break, as the web's `white-space: nowrap` has it: its spaces are non-breaking
-    /// and a word joiner sits between every other pair of characters, so "2026-10-20 14:42" — or
-    /// a format with no spaces to protect, like `YYYY年MM月DD日` — moves as one piece.
+    /// Three quarters of a character in, the web's gap: a space kerned back by a quarter — the
+    /// line's own, when it already ends in one (a `/me` whose only text was a picture's address).
+    /// The space is an ordinary one, never a no-break space, so a long line can wrap the time to
+    /// the next row, and the time itself can't break, as the web's `white-space: nowrap` has it:
+    /// its spaces are non-breaking and a word joiner sits between every other pair of characters,
+    /// so "2026-10-20 14:42" — or a format with no spaces to protect, like `YYYY年MM月DD日` —
+    /// moves as one piece. Between grapheme clusters, never inside one, so an accent or an
+    /// emoji's selector stays on its character.
+    ///
+    /// Nothing on a line with no text at all — one whose only words were an address its picture
+    /// stands in for: a lone time over the picture would read as the row's text, and keep the
+    /// body from collapsing (`CompactCell` collapses on exactly this, a zero length). A line of
+    /// colour-painted spaces is text: it draws.
     private static func appendCompactTime(
         _ time: String?, to line: NSMutableAttributedString, traits: UITraitCollection
     ) {
         guard let time, !time.isEmpty else { return }
+        guard line.length > 0 else { return }
         let base = compactFont(compatibleWith: traits)
-        line.append(NSAttributedString(
-            string: " ", attributes: [.font: base, .kern: -compactIndent(compatibleWith: traits) / 4]
-        ))
+        let kern = -compactIndent(compatibleWith: traits) / 4
+        // Only a plain space: one under a hidden spoiler is replaced in speech along with the box,
+        // which would run the time into the announcement.
+        if line.string.hasSuffix(" "),
+           line.attribute(.spoilerHidden, at: line.length - 1, effectiveRange: nil) == nil {
+            line.addAttribute(.kern, value: kern, range: NSRange(location: line.length - 1, length: 1))
+        } else {
+            line.append(NSAttributedString(string: " ", attributes: [.font: base, .kern: kern]))
+        }
+        // By Character, which is a grapheme cluster: the joiner goes between two, never inside one.
         var unbreakable = ""
-        for scalar in time.unicodeScalars {
-            if scalar == " " {
-                unbreakable.unicodeScalars.append("\u{00A0}")
+        for character in time {
+            if character == " " {
+                unbreakable.append("\u{00A0}")
                 continue
             }
-            if let last = unbreakable.unicodeScalars.last, last != "\u{00A0}" {
-                unbreakable.unicodeScalars.append("\u{2060}")
+            if let last = unbreakable.last, last != "\u{00A0}" {
+                unbreakable.unicodeScalars.append(wordJoiner)
             }
-            unbreakable.unicodeScalars.append(scalar)
+            // A space a combining mark sits on is one Character with it, and still a break.
+            // By scalar: a Foundation search can match by canonical equivalence and pass over it.
+            unbreakable.unicodeScalars.append(
+                contentsOf: character.unicodeScalars.map { $0 == " " ? "\u{00A0}" : $0 }
+            )
         }
         line.append(NSAttributedString(
             string: unbreakable, attributes: [.font: base, .foregroundColor: Palette.fgMuted]
