@@ -513,7 +513,10 @@ enum MessageRenderer {
         guard line.length > 0 else { return }
         let base = compactFont(compatibleWith: traits)
         let kern = -compactIndent(compatibleWith: traits) / 4
-        if line.string.hasSuffix(" ") {
+        // Only a plain space: one under a hidden spoiler is replaced in speech along with the box,
+        // which would run the time into the announcement.
+        if line.string.hasSuffix(" "),
+           line.attribute(.spoilerHidden, at: line.length - 1, effectiveRange: nil) == nil {
             line.addAttribute(.kern, value: kern, range: NSRange(location: line.length - 1, length: 1))
         } else {
             line.append(NSAttributedString(string: " ", attributes: [.font: base, .kern: kern]))
@@ -528,7 +531,11 @@ enum MessageRenderer {
             if let last = unbreakable.last, last != "\u{00A0}" {
                 unbreakable.unicodeScalars.append(wordJoiner)
             }
-            unbreakable.append(character)
+            // A space a combining mark sits on is one Character with it, and still a break.
+            // By scalar: a Foundation search can match by canonical equivalence and pass over it.
+            unbreakable.unicodeScalars.append(
+                contentsOf: character.unicodeScalars.map { $0 == " " ? "\u{00A0}" : $0 }
+            )
         }
         line.append(NSAttributedString(
             string: unbreakable, attributes: [.font: base, .foregroundColor: Palette.fgMuted]
