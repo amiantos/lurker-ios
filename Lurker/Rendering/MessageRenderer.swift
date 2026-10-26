@@ -356,13 +356,18 @@ enum MessageRenderer {
         /// stays outside as background, so the distance between two blocks is unchanged — the gap
         /// is split, not added to.
         var washPadding: CGFloat { blockGap / 3 }
+        /// The air a marker's label keeps above and below it inside its own row — the web's
+        /// 6px divider padding, scaled like the block gap. Fixed, not a density: the setting moves
+        /// the gap *around* a marker (lurker#1238), never the marker itself.
+        let markerPadding: CGFloat
 
         init(_ density: CompactDensity, traits: UITraitCollection) {
             let font = MessageRenderer.compactFont(compatibleWith: traits)
             lineGap = max(0, font.pointSize * CGFloat(density.lineHeightPercent) / 100 - font.lineHeight)
             headerGap = lineGap + 1
-            blockGap = UIFontMetrics(forTextStyle: .subheadline)
-                .scaledValue(for: CGFloat(density.groupGap), compatibleWith: traits)
+            let metrics = UIFontMetrics(forTextStyle: .subheadline)
+            blockGap = metrics.scaledValue(for: CGFloat(density.groupGap), compatibleWith: traits)
+            markerPadding = metrics.scaledValue(for: 6, compatibleWith: traits)
             bodyIndent = MessageRenderer.compactIndent(compatibleWith: traits) * CGFloat(density.indent)
         }
     }

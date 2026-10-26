@@ -111,7 +111,7 @@ struct MessageListRenderer {
 
     func register(in tableView: UITableView) {
         tableView.register(CompactCell.self, forCellReuseIdentifier: CompactCell.reuseID)
-        tableView.register(UITableViewCell.self, forCellReuseIdentifier: MessageListMarker.reuseID)
+        tableView.register(MessageListMarker.Cell.self, forCellReuseIdentifier: MessageListMarker.reuseID)
     }
 
     /// A row's cell.
@@ -125,10 +125,12 @@ struct MessageListRenderer {
     func cell(
         for row: MessageRow, at index: Int, in tableView: UITableView, context: MessageListContext
     ) -> UITableViewCell {
-        if let marker = MessageListMarker.cell(for: row, in: tableView) { return marker }
+        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: context.settings), traits: context.traits)
+        if let marker = MessageListMarker.cell(for: row, in: tableView, spacing: spacing, traits: context.traits) {
+            return marker
+        }
 
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
-        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: context.settings), traits: context.traits)
         switch row {
         case .bubble(let message, let position):
             // Once, not three times: it builds a caption and formats a time, and this runs for
@@ -439,22 +441,64 @@ extension MessageListRenderer {
 enum MessageListMarker {
     static let reuseID = "divider"
 
-    static func cell(_ text: String, color: UIColor, bold: Bool, in tableView: UITableView) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(withIdentifier: reuseID)!
-        // Centred text is centred between the margins, so a swallowed one pushes it off centre
-        // by half the difference — see `useOwnSideMargins`.
-        MessageListRenderer.useOwnSideMargins(cell.contentView)
-        var content = cell.defaultContentConfiguration()
-        content.text = text
-        content.textProperties.color = color
-        let caption = UIFont.preferredFont(forTextStyle: .caption1)
-        content.textProperties.font = bold
-            ? caption.fontDescriptor.withSymbolicTraits(.traitBold)
-                .map { UIFont(descriptor: $0, size: 0) } ?? caption
-            : caption
-        content.textProperties.alignment = .center
-        cell.contentConfiguration = content
-        cell.backgroundColor = .clear
+    /// A label in a row, and nothing else.
+    ///
+    /// ⚠ Not a `defaultContentConfiguration()`. A list content view keeps a minimum row height
+    /// of its own — 52pt on iOS 27, measured — and centres the text inside it whatever margins
+    /// it's given, so a marker could never sit closer than that and `group_gap` (lurker#1238) moved
+    /// nothing around it. A label pinned top and bottom is exactly as tall as its insets say.
+    final class Cell: UITableViewCell {
+        let label = UILabel()
+        private var top: NSLayoutConstraint!
+        private var bottom: NSLayoutConstraint!
+
+        override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+            super.init(style: style, reuseIdentifier: reuseIdentifier)
+            backgroundColor = .clear
+            // Centred text is centred between the margins, so a swallowed one pushes it off
+            // centre by half the difference — see `useOwnSideMargins`.
+            MessageListRenderer.useOwnSideMargins(contentView)
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.numberOfLines = 0
+            label.textAlignment = .center
+            contentView.addSubview(label)
+            top = label.topAnchor.constraint(equalTo: contentView.topAnchor)
+            bottom = contentView.bottomAnchor.constraint(equalTo: label.bottomAnchor)
+            NSLayoutConstraint.activate([
+                top, bottom,
+                label.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+                label.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            ])
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+        /// A marker is a block of its own: a cluster boundary, as the web's compact layout treats
+        /// a divider. So it takes the wash a block opens with above its label, and the rest of the
+        /// block gap below it, the way any block's last row does (`CompactCell.configure`). The
+        /// row above a marker always ends its block (`endsBlock`) and the row below always starts
+        /// one (a divider breaks a run), so the marker sits one gap from each neighbour, and two
+        /// markers in a row sit one gap apart, not two.
+        func configure(
+            _ text: String, color: UIColor, bold: Bool,
+            spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
+        ) {
+            label.text = text
+            label.textColor = color
+            let caption = UIFont.preferredFont(forTextStyle: .caption1, compatibleWith: traits)
+            label.font = bold ? caption.bold : caption
+            top.constant = spacing.markerPadding + spacing.washPadding
+            bottom.constant = spacing.markerPadding + spacing.blockGap - spacing.washPadding
+        }
+    }
+
+    static func cell(
+        _ text: String, color: UIColor, bold: Bool, in tableView: UITableView,
+        spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
+    ) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: reuseID) as! Cell
+        cell.configure(text, color: color, bold: bold, spacing: spacing, traits: traits)
         return cell
     }
 
@@ -463,32 +507,33 @@ enum MessageListMarker {
     /// Only the unread divider is loud. It's the one the reader is *looking for* — everything
     /// else here is context they read past on the way to it, and a second red row would cost
     /// the first one its meaning.
-    static func cell(for row: MessageRow, in tableView: UITableView) -> UITableViewCell? {
+    static func cell(
+        for row: MessageRow, in tableView: UITableView,
+        spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
+    ) -> UITableViewCell? {
+        func marker(_ text: String, color: UIColor, bold: Bool = false) -> UITableViewCell {
+            cell(text, color: color, bold: bold, in: tableView, spacing: spacing, traits: traits)
+        }
         switch row {
         case .unreadDivider:
-            cell("New messages", color: Palette.bad, bold: true, in: tableView)
+            return marker("New messages", color: Palette.bad, bold: true)
         case .dateDivider(let day):
-            cell(MessageRenderer.dayLabel(day), color: Palette.fgMuted, bold: false, in: tableView)
+            return marker(MessageRenderer.dayLabel(day), color: Palette.fgMuted)
         case .startOfHistory:
-            cell("— start of history —", color: Palette.fgFaint, bold: false, in: tableView)
+            return marker("— start of history —", color: Palette.fgFaint)
         case .clearedDivider(let at):
             // The same muted grey as the date and presence markers, which is also what the web
             // draws (`.cleared-divider` is `--fg-muted`, and so is its undo button — the accent
             // is a HOVER state, which a touch screen has no equivalent of). It is a marker
             // among markers here, not a control: the way back is `/clear off`, which the label
             // names.
-            cell(
-                MessageRenderer.clearedLabel(at: at), color: Palette.fgMuted, bold: false,
-                in: tableView)
+            return marker(MessageRenderer.clearedLabel(at: at), color: Palette.fgMuted)
         case .awayDivider(_, let message):
-            cell(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted, bold: false, in: tableView)
+            return marker(MessageRenderer.awayLabel(message: message), color: Palette.fgMuted)
         case .backDivider(let awayAt, let backAt):
-            cell(
-                MessageRenderer.backLabel(awayAt: awayAt, backAt: backAt),
-                color: Palette.fgMuted, bold: false, in: tableView
-            )
+            return marker(MessageRenderer.backLabel(awayAt: awayAt, backAt: backAt), color: Palette.fgMuted)
         default:
-            nil
+            return nil
         }
     }
 }
