@@ -77,10 +77,12 @@ final class TimestampFormatTests: XCTestCase {
         XCTAssertEqual(format("2026-05-21T13:05:00", "at h:mm"), "pmt 1:05")
     }
 
-    func testTheYearIsGregorianWhateverTheDeviceCalendar() {
-        // `TimestampFormat.calendar` is Gregorian however the device is set; a Buddhist calendar
-        // would print 2569 for the same instant.
+    func testTheDefaultCalendarIsGregorian() {
+        // Whatever the device is set to: a Buddhist calendar would print 2569 for the same
+        // instant. (The test machine's own calendar can't be switched, so this checks the default
+        // rather than formatting under another one.)
         XCTAssertEqual(TimestampFormat.calendar.identifier, .gregorian)
+        XCTAssertEqual(TimestampFormat.calendar.timeZone, .autoupdatingCurrent)
     }
 
     // MARK: - The compact layout's time

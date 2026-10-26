@@ -22,11 +22,14 @@ public enum TimestampFormat {
     /// Gregorian in the device's time zone, whatever calendar the device is set to. The web's
     /// `Date` is always Gregorian, and a phone set to the Buddhist or Japanese calendar would
     /// otherwise print a different year for the same line.
-    public static var calendar: Calendar {
+    ///
+    /// One instance, built once, on the autoupdating zone: it follows the device across a time
+    /// zone change while the app stays alive, as the `DateFormatter` it replaced did.
+    public static let calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        calendar.timeZone = .autoupdatingCurrent
         return calendar
-    }
+    }()
 
     /// `date` in `format`, or "" for an empty format.
     public static func string(_ date: Date, format: String, calendar: Calendar = calendar) -> String {

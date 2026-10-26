@@ -550,20 +550,15 @@ class HistoryFeedViewController: UITableViewController {
         _ reaction: FeedReaction, spacing: MessageRenderer.CompactSpacing, traits: UITraitCollection
     ) -> NSAttributedString {
         let font = MessageRenderer.compactFont(compatibleWith: traits)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.firstLineHeadIndent = spacing.bodyIndent
-        paragraph.headIndent = spacing.bodyIndent
-        paragraph.lineSpacing = spacing.lineGap
         let text = NSMutableAttributedString(
-            string: reaction.value,
-            attributes: [.font: font, .foregroundColor: Palette.fg, .paragraphStyle: paragraph]
+            string: reaction.value, attributes: [.font: font, .foregroundColor: Palette.fg]
         )
         let line = reaction.lineText.map { IRCFormatting.strip($0) } ?? ""
         text.append(NSAttributedString(
             string: " on \u{201C}\(line)\u{201D}",
-            attributes: [.font: font, .foregroundColor: Palette.fgMuted, .paragraphStyle: paragraph]
+            attributes: [.font: font, .foregroundColor: Palette.fgMuted]
         ))
-        return text
+        return MessageRenderer.spaced(text, firstLine: spacing.bodyIndent, rest: spacing.bodyIndent, spacing: spacing)
     }
 
     /// The network's name for a row — the server-resolved one, falling back to the client's own

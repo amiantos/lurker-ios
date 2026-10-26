@@ -11,7 +11,9 @@ import Foundation
 /// density saved into a custom theme only reaches the phone once the apps resolve themes
 /// (lurker#1094) — the same gap every other themed key has today.
 public struct CompactDensity: Equatable, Sendable {
-    /// Space before each block (a head line, an action, an event), in points. Rows within a run
+    /// Space between blocks, in points. The web puts it before each head line, action, notice,
+    /// event and divider; iOS puts it after the block above, which is the same gap between two
+    /// blocks, and gives a run of status events one gap rather than one each. Rows within a run
     /// stay flush.
     public let groupGap: Int
     /// The line height, as a percentage of the font size.

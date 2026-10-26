@@ -140,7 +140,12 @@ struct MessageListRenderer {
             }
             cell.configure(
                 MessageRenderer.renderCompactBody(
-                    message, spacing: spacing, traits: context.traits, settings: context.settings,
+                    message, spacing: spacing,
+                    // A run's first line with nothing to call it has no header to carry its time,
+                    // so it follows the text, as on any header-less row.
+                    trailingTime: blockHeader == nil && position.isFirst
+                        ? Self.time(message.date, context: context) : nil,
+                    traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
                     revealed: context.revealedSpoilers(message),
                     hiddenUrls: plan.hidden

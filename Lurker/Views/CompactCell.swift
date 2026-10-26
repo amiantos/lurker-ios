@@ -299,7 +299,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The screen's live traits, handed down with the row — a cell's own `traitCollection` isn't
         // settled while it's being configured, and neither is `UITraitCollection.current`.
         let font = MessageRenderer.compactFont(compatibleWith: traits)
-        bodyIndent = spacing.bodyIndent
+        // What the reactions and attachments line up with: the body's setting under a header, the
+        // narration's own one-character hang on a header-less line (a `/me`), whose words start
+        // flush and which the setting leaves alone.
+        bodyIndent = indentsBody ? spacing.bodyIndent : MessageRenderer.compactIndent(compatibleWith: traits)
         headerRow.isHidden = header == nil
         // The web's 0.75ch between the name and its time. A stack view drops the spacing beside a
         // hidden arranged view, so a header with no time leaves no gap behind.
@@ -343,6 +346,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             // clears — a hazard that existed while this was two branches and doesn't now that
             // it's one.
             nickLabel.attributedText = name
+            // Hidden when there's no name to show (a reaction to a `/me` in the highlights feed),
+            // so the stack's spacing doesn't push the time off the left edge.
+            nickLabel.isHidden = name.length == 0
             timeLabel.font = font
             timeLabel.text = header.time
             // Hidden rather than left empty, so the stack's spacing doesn't hold a gap open for a
@@ -394,7 +400,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         )
         reactionHolder.isHidden = !showsReactions
         if let reactions, showsReactions {
-            reactionIndent.constant = spacing.bodyIndent
+            reactionIndent.constant = bodyIndent
             reactionBottom.constant = -(padding + 2 + closing)
             reactionRow.onToggle = reactions.onToggle
             reactionRow.onOpen = reactions.onOpen
@@ -431,8 +437,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // No zebra of any kind: the author header marks where a block starts, which is the job the
         // striping was doing. Only a matched rule paints a row.
         fill.backgroundColor = highlighted ? Palette.highlightBubble : .clear
-        // Empties dropped as well as nils: a header can carry a time with no nick (a `/me` in the
-        // highlights feed), and an unfiltered join would open the spoken label with a comma.
+        // Empties dropped as well as nils: a header can carry a time with no nick (a reaction to a
+        // `/me` in the highlights feed), and an unfiltered join would open the spoken label with a comma.
         //
         // Relay provenance needs a connective it doesn't need in print, where colour separates the
         // two words: read out bare, "alice github" is two names. It says "from" rather than the
@@ -500,8 +506,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     var onOpenMedia: (([LinkPreview], Int) -> Void)?
 
     func showAttachments(_ previews: [LinkPreview], model: ChatViewModel) {
-        // The body's indent as `configure` resolved it, from the screen's traits and the density
-        // — so a picture lines up with the words above it at any text size and any indent.
+        // The indent `configure` resolved, from the screen's traits and the density — so a
+        // picture lines up with the words above it at any text size and any indent.
         let indent = bodyIndent
         // Breathing room below as well as above, matching the web client. Without it an image
         // sits flush against the next author's name and reads as belonging to the message below

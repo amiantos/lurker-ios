@@ -545,7 +545,7 @@ enum MessageRenderer {
     ///
     /// Set on the whole range last, so it wins over any paragraph style a shared builder left on
     /// the text.
-    private static func spaced(
+    static func spaced(
         _ line: NSMutableAttributedString, firstLine: CGFloat, rest: CGFloat, spacing: CompactSpacing
     ) -> NSAttributedString {
         let style = NSMutableParagraphStyle()
