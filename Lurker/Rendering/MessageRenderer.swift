@@ -484,8 +484,9 @@ enum MessageRenderer {
     ///
     /// Three quarters of a character in, the web's gap: a space kerned back by a quarter. The
     /// space is an ordinary one so a long line can wrap the time to the next row, and the time
-    /// itself can't break — its spaces are non-breaking and a word joiner follows each `-` or
-    /// `/`, so "2026-10-20 14:42" moves as one piece.
+    /// itself can't break, as the web's `white-space: nowrap` has it: its spaces are non-breaking
+    /// and a word joiner sits between every other pair of characters, so "2026-10-20 14:42" — or
+    /// a format with no spaces to protect, like `YYYY年MM月DD日` — moves as one piece.
     private static func appendCompactTime(
         _ time: String?, to line: NSMutableAttributedString, traits: UITraitCollection
     ) {
@@ -496,13 +497,14 @@ enum MessageRenderer {
         ))
         var unbreakable = ""
         for scalar in time.unicodeScalars {
-            switch scalar {
-            case " ": unbreakable.unicodeScalars.append("\u{00A0}")
-            case "-", "/":
-                unbreakable.unicodeScalars.append(scalar)
-                unbreakable.unicodeScalars.append("\u{2060}")
-            default: unbreakable.unicodeScalars.append(scalar)
+            if scalar == " " {
+                unbreakable.unicodeScalars.append("\u{00A0}")
+                continue
             }
+            if let last = unbreakable.unicodeScalars.last, last != "\u{00A0}" {
+                unbreakable.unicodeScalars.append("\u{2060}")
+            }
+            unbreakable.unicodeScalars.append(scalar)
         }
         line.append(NSAttributedString(
             string: unbreakable, attributes: [.font: base, .foregroundColor: Palette.fgMuted]

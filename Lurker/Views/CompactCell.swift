@@ -98,6 +98,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private let headerRow = UIStackView()
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
+    /// Takes the rest of a horizontal header, so neither label stretches.
+    private let headerSpacer = UIView()
     private let messageText = MessageTextView()
     /// A reply's quote, as the body's first line — part of the message, so a reply doesn't break
     /// its author's run. Faded as a whole (the web's opacity 0.45), so the quoted nick keeps its
@@ -170,9 +172,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The time right after the nick, as Slack and Discord place it; the spacer behind them
         // takes the rest of the row, so neither label stretches.
         headerRow.addArrangedSubview(timeLabel)
-        let spacer = UIView()
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        headerRow.addArrangedSubview(spacer)
+        headerSpacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        headerRow.addArrangedSubview(headerSpacer)
 
         messageText.isScrollEnabled = false
         messageText.backgroundColor = .clear
@@ -307,6 +308,16 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The web's 0.75ch between the name and its time. A stack view drops the spacing beside a
         // hidden arranged view, so a header with no time leaves no gap behind.
         headerRow.spacing = MessageRenderer.compactIndent(compatibleWith: traits) * 0.75
+        // At the accessibility sizes the time goes under the name and may wrap: an older line's
+        // `2026-10-20 14:42` is wider than a phone at 49pt, and beside the nick on one line it
+        // could only overflow the row. The stacked-at-large-sizes layout Apple's own lists use.
+        let stacked = traits.preferredContentSizeCategory.isAccessibilityCategory
+        headerRow.axis = stacked ? .vertical : .horizontal
+        headerRow.alignment = stacked ? .leading : .firstBaseline
+        headerSpacer.isHidden = stacked
+        timeLabel.numberOfLines = stacked ? 0 : 1
+        // A required resistance would still claim its one-line width and push past the row.
+        timeLabel.setContentCompressionResistancePriority(stacked ? .defaultHigh : .required, for: .horizontal)
         if let header {
             // The name at the body's weight, as the web draws it.
             let name = NSMutableAttributedString(

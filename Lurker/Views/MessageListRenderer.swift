@@ -141,9 +141,11 @@ struct MessageListRenderer {
             cell.configure(
                 MessageRenderer.renderCompactBody(
                     message, spacing: spacing,
-                    // A run's first line with nothing to call it has no header to carry its time,
-                    // so it follows the text, as on any header-less row.
-                    trailingTime: blockHeader == nil && position.isFirst
+                    // A line with nothing to call it — a nick-less error, server text before its
+                    // network resolves — has no header to carry its time, at the head of its run
+                    // or after it, so the time follows the text as on any header-less row.
+                    trailingTime: blockHeader == nil
+                        && MessageRenderer.caption(message, networkName: context.networkName(message)) == nil
                         ? Self.time(message.date, context: context) : nil,
                     traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
