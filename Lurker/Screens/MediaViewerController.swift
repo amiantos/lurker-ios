@@ -328,7 +328,7 @@ extension MediaViewerController: UICollectionViewDataSource, UICollectionViewDel
         cell.configure(
             preview, model: model, host: self,
             openExternally: { [weak self] url in
-                self?.dismiss(animated: true) { UIApplication.shared.open(url) }
+                self?.dismiss(animated: true) { UIApplication.shared.openExternal(url) }
             },
             onPlayerDismissed: { [weak self] in self?.dismiss(animated: true) })
     }

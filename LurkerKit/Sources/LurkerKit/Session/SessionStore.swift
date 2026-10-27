@@ -123,7 +123,12 @@ public final class SessionStore: Sendable {
         // out of encrypted backups and off a migrated device, so a restored backup can't
         // silently carry a live session onto new hardware (the user re-signs-in there).
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        SecItemAdd(attributes as CFDictionary, nil)
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        // ⚠ Loud, status only — never the data. A device where the add fails is signed out on
+        // every launch with nothing to explain it, and this line is the one trace that says why.
+        if status != errSecSuccess {
+            NSLog("[session] keychain write of %@ failed: OSStatus %d", account, status)
+        }
     }
 
     private func read(_ account: String) -> Data? {

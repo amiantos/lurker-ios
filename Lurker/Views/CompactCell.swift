@@ -222,13 +222,13 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // the two can't both be immovable: if something has to yield it is the decoration, which
         // is recoverable by looking, not the sentence, which is not.
         messageText.setContentCompressionResistancePriority(.required, for: .vertical)
-        messageText.onOpenURL = { url in UIApplication.shared.open(url) }
+        messageText.onOpenURL = { url in UIApplication.shared.openExternal(url) }
         messageText.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
 
         column.axis = .vertical
         column.isLayoutMarginsRelativeArrangement = true
         attachments.isHidden = true
-        attachments.onOpen = { url in UIApplication.shared.open(url) }
+        attachments.onOpen = { url in UIApplication.shared.openExternal(url) }
         attachments.onOpenGallery = { [weak self] previews, at in
             self?.onOpenMedia?(previews, at)
         }

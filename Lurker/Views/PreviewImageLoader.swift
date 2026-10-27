@@ -35,9 +35,9 @@ final class PreviewImageLoader {
 
     /// Paths that failed, so they aren't refetched on every cell dequeue.
     ///
-    /// Without this a broken image — a proxy 404/413, or anything `UIImage(data:)` can't
-    /// decode — started a fresh download and decode every time its row was configured, which
-    /// during a scroll is several times a second.
+    /// Without this a broken image — a proxy 404/413, anything ImageIO can't decode, or a
+    /// canvas past `PreviewImageBudget` — started a fresh download and decode every time its
+    /// row was configured, which during a scroll is several times a second.
     private var failed = Set<String>()
 
     private init() {
@@ -118,17 +118,50 @@ final class PreviewImageLoader {
     /// whether or not anybody is watching. A still costs exactly what a JPEG costs.
     nonisolated private static func decode(_ data: Data) async -> (image: UIImage?, plays: Bool) {
         await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+                return (nil as UIImage?, false)
+            }
             // Whether it plays, not how many images it holds: most containers with several are
             // stills (`ImageAnimation`).
-            let plays = CGImageSourceCreateWithData(data as CFData, nil).map { source in
-                ImageAnimation.plays(
-                    frameCount: CGImageSourceGetCount(source), typeIdentifier: CGImageSourceGetType(source) as String?)
-            } ?? false
-            guard let image = UIImage(data: data) else { return (nil as UIImage?, plays) }
-            // Force the decode now rather than on first draw, which would otherwise happen on
-            // the main thread at exactly the wrong moment.
-            return (image.preparingForDisplay() ?? image, plays)
+            let plays = ImageAnimation.plays(
+                frameCount: CGImageSourceGetCount(source), typeIdentifier: CGImageSourceGetType(source) as String?)
+            // ⚠⚠ The canvas is judged from the HEADER, before a pixel is decoded, and a refusal
+            // is a verdict the caller latches. This was `UIImage(data:)` + `preparingForDisplay()`
+            // — the whole image, at full size — and a PNG under the relay's 8 MB cap can declare
+            // 20,000 on a side: 1.6 GB, which jetsams the app during backlog paint and again on
+            // every relaunch while that row is in the visible backlog, for every reader with
+            // inline media on. Any channel peer can post the link. See `PreviewImageBudget`.
+            guard withinBudget(source) else { return (nil as UIImage?, plays) }
+            // Downsampled AT decode, exactly as `animate` does its frames: ImageIO streams the
+            // source into a bitmap of at most `maxPixelSize` on its longest edge rather than
+            // decoding the full canvas and shrinking it, so a large ordinary photo costs what
+            // the thumbnail costs. `ShouldCacheImmediately` is `preparingForDisplay()` by another
+            // name — the decode happens here, off the main thread, not at first draw.
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: PreviewImageBudget.maxPixelSize,
+                kCGImageSourceShouldCacheImmediately: true,
+            ]
+            guard let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                return (nil as UIImage?, plays)
+            }
+            return (UIImage(cgImage: frame), plays)
         }.value
+    }
+
+    /// Whether the container's declared canvas is one the app will decode.
+    ///
+    /// Read from the header: `CGImageSourceCopyPropertiesAtIndex` parses dimensions without
+    /// decoding a pixel, which is the whole point. A container that declares nothing is refused
+    /// — a size we cannot see is a size we cannot bound.
+    nonisolated private static func withinBudget(_ source: CGImageSource) -> Bool {
+        guard
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? Int,
+            let height = properties[kCGImagePropertyPixelHeight] as? Int
+        else { return false }
+        return PreviewImageBudget.admits(pixelWidth: width, pixelHeight: height)
     }
 
     // MARK: - Animation, on request
@@ -182,6 +215,9 @@ final class PreviewImageLoader {
     nonisolated private static func animate(_ data: Data) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
             guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+            // The still's verdict again, because `loadAnimated` is a door of its own: the bytes
+            // are the same, but nothing here proves a caller came through `load` first.
+            guard withinBudget(source) else { return nil }
             let count = CGImageSourceGetCount(source)
             guard ImageAnimation.plays(frameCount: count, typeIdentifier: CGImageSourceGetType(source) as String?) else {
                 return nil

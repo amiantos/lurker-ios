@@ -16,14 +16,23 @@ import Foundation
 /// unqualified single-label names, and the private IPv4 ranges. Loopback and IPv6's local ranges
 /// are included on the same reasoning. Anything else — a name with a dot in it, a public
 /// address — is a public cleartext load and is refused.
+///
+/// ⚠⚠ The ONE definition of "local" in the app. `ServerAddress` judges a typed-in server by it
+/// too, so the sign-in gate and the media gate cannot drift: they once did (sign-in admitted any
+/// IP literal, on a pre-iOS 17 reading of the exemption), and the drift was a public address
+/// that passed the sign-in copy and then died inside the first request.
 enum LocalNetworking {
 
     /// Whether `http` to this host is permitted rather than merely attempted.
     static func permitsCleartext(host: String) -> Bool {
-        let host = host.lowercased()
+        var host = host.lowercased()
+        // ⚠ An IPv6 literal arrives both ways: `URL.host` hands it over bare, and since iOS 17
+        // `URLComponents.host` keeps the brackets (`[fe80::1]`). One definition has to read
+        // both, or the sign-in gate and the media gate disagree about the same address.
+        if host.hasPrefix("["), host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
         guard !host.isEmpty else { return false }
         if host == "localhost" { return true }
-        // An IPv6 literal, which `URL.host` hands over without its brackets.
+        // An IPv6 literal.
         if host.contains(":") { return isLocalIPv6(host) }
         if host.hasSuffix(".local") { return true }
         if isLocalIPv4(host) { return true }

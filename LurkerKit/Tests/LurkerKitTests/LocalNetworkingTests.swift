@@ -35,6 +35,15 @@ final class LocalNetworkingTests: XCTestCase {
         }
     }
 
+    /// `URLComponents.host` keeps an IPv6 literal's brackets (iOS 17+); `URL.host` strips them.
+    /// The rule reads both, so the sign-in gate and the media gate judge one address alike.
+    func testBracketedIPv6LiteralsReadTheSame() {
+        XCTAssertTrue(permits("[fe80::1]"))
+        XCTAssertTrue(permits("[::1]"))
+        XCTAssertFalse(permits("[2001:db8::1]"))
+        XCTAssertFalse(permits("[]"))
+    }
+
     // MARK: - Refused, because ATS refuses them
 
     func testPublicNames() {

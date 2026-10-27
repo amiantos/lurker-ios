@@ -37,16 +37,33 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertNil(ServerAddress.rejection(of: "https://chat.example.org:8443"))
     }
 
-    func testPlainHTTPPassesForApplesThreeLocalHostClasses() {
+    func testPlainHTTPPassesForLocalHosts() {
         // Unqualified single-label names.
         XCTAssertNil(ServerAddress.rejection(of: "http://localhost:8010"))
         XCTAssertNil(ServerAddress.rejection(of: "http://xerxes:8010"))
         // .local names (case-insensitively — DNS names have no case).
         XCTAssertNil(ServerAddress.rejection(of: "http://xerxes.local:8010"))
         XCTAssertNil(ServerAddress.rejection(of: "http://Xerxes.LOCAL:8010"))
-        // IP literals, v4 and v6 (URLComponents strips the v6 brackets).
+        // Private and machine-local addresses, v4 and v6 (URLComponents strips the v6
+        // brackets) — the same ranges `LocalNetworking` admits a media load from.
         XCTAssertNil(ServerAddress.rejection(of: "http://192.168.1.5:8010"))
+        XCTAssertNil(ServerAddress.rejection(of: "http://10.0.0.5:8010"))
+        XCTAssertNil(ServerAddress.rejection(of: "http://172.16.0.5:8010"))
+        XCTAssertNil(ServerAddress.rejection(of: "http://127.0.0.1:8010"))
         XCTAssertNil(ServerAddress.rejection(of: "http://[fe80::1]:8010"))
+        XCTAssertNil(ServerAddress.rejection(of: "http://[::1]:8010"))
+    }
+
+    /// ⚠ The carve-out is the PRIVATE ranges, not "any IP literal". A public address over plain
+    /// http is the bearer token in the clear across the internet — and on iOS 17+ ATS refuses
+    /// the connection anyway, after the copy had promised it would work. One definition with
+    /// `LocalNetworking`, so this and `LocalNetworkingTests` can never disagree.
+    func testPlainHTTPToAPublicAddressIsRejectedWithTheHTTPSMessage() {
+        for address in ["http://8.8.8.8", "http://203.0.113.5:8010", "http://[2001:db8::1]:8010"] {
+            let reason = ServerAddress.rejection(of: address)
+            XCTAssertNotNil(reason, "\(address) is a public address")
+            XCTAssertTrue(reason?.contains("HTTPS") ?? false, "the copy must say what to do")
+        }
     }
 
     /// The server the sign-in screen prefills must pass — a rejected default would

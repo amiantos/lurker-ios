@@ -96,9 +96,10 @@ final class DccOfferPrompt {
                 await $0.closeDccChat(networkId: offer.networkId, nick: offer.nick)
             }
         })
-        alert.addAction(UIAlertAction(title: "Not Now", style: .cancel) { [weak self] _ in
+        let notNow = UIAlertAction(title: "Not Now", style: .cancel) { [weak self] _ in
             self?.answered(nil)
-        })
+        }
+        alert.addAction(notNow)
         let accept = UIAlertAction(title: "Accept", style: .default) { [weak self] _ in
             // On success the app is taken to the chat by `onBufferOpened`.
             self?.answered {
@@ -106,7 +107,11 @@ final class DccOfferPrompt {
             }
         }
         alert.addAction(accept)
-        alert.preferredAction = accept
+        // ⚠ Not Now is the bold, Return-key action — NOT Accept. Accepting makes the server dial
+        // an address a stranger chose, and the default must not be the one choice a reflexive
+        // tap or a hardware keyboard's Return commits to. Accept stays a deliberate tap away,
+        // and Not Now costs nothing: the offer stands until it expires.
+        alert.preferredAction = notNow
         asked.insert(offer.id)
         alertOfferId = offer.id
         self.alert = alert
