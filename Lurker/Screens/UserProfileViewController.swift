@@ -479,7 +479,7 @@ final class UserProfileViewController: UITableViewController {
             UIPasteboard.general.string = value
 
         case .link(_, let url):
-            UIApplication.shared.open(url)
+            UIApplication.shared.openExternal(url)
 
         case .channel(let entry):
             // Through the one join path (#57): a channel you're already in opens at once, one you

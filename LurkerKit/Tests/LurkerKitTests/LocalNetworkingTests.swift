@@ -35,6 +35,27 @@ final class LocalNetworkingTests: XCTestCase {
         }
     }
 
+    /// `URLComponents.host` keeps an IPv6 literal's brackets (iOS 17+); `URL.host` strips them.
+    /// The rule reads both, so the sign-in gate and the media gate judge one address alike.
+    func testBracketedIPv6LiteralsReadTheSame() {
+        XCTAssertTrue(permits("[fe80::1]"))
+        XCTAssertTrue(permits("[::1]"))
+        XCTAssertFalse(permits("[2001:db8::1]"))
+        XCTAssertFalse(permits("[]"))
+    }
+
+    /// The address, not its spelling: every way of writing loopback is loopback, and a
+    /// mapped IPv4 address is judged as the IPv4 address.
+    func testIPv6SpellingsAreOneAddress() {
+        for host in ["0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001", "::0001", "FE80::1",
+                     "fd12:3456:789a::1", "fc00::", "::ffff:192.168.1.5", "::ffff:10.0.0.1"] {
+            XCTAssertTrue(permits(host), "\(host) is local")
+        }
+        for host in ["::", "::2", "fe00::1", "fec0::1", "::ffff:8.8.8.8", "2001:db8::1", "fe80:::1", "::1::"] {
+            XCTAssertFalse(permits(host), "\(host) is not local")
+        }
+    }
+
     // MARK: - Refused, because ATS refuses them
 
     func testPublicNames() {
@@ -49,6 +70,18 @@ final class LocalNetworkingTests: XCTestCase {
         for host in ["8.8.8.8", "172.32.0.1", "172.15.255.254", "192.169.1.1", "1.1.1.1",
                      "2606:4700::1111"] {
             XCTAssertFalse(permits(host), "\(host) is a public address")
+        }
+    }
+
+    /// ⚠ A host made only of numbers is judged as the address the resolver would DIAL, never as
+    /// a decimal quad or a "name": `inet_aton` reads a leading zero as octal, a lone number as a
+    /// 32-bit address, `0x` as hex, and `127.1` as `127.0.0.1`. Only the strict quad is an address
+    /// here; every other spelling is refused, whatever it might mean.
+    func testNumericSpellingsAreNotLoopholes() {
+        XCTAssertTrue(permits("10.0.0.1"))
+        for host in ["010.0.0.1", "0010.0.0.1", "192.168.001.1", "134744072", "0x8080808", "0x7f.0.0.1",
+                     "127.1", "1.2.3.4.5", "1..2.3", "1.2.3.999"] {
+            XCTAssertFalse(permits(host), "\(host) is not read as a local address")
         }
     }
 

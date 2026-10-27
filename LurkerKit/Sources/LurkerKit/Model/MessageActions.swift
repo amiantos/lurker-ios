@@ -278,15 +278,20 @@ public enum MessageActions {
 
     /// The actions for a link, when the press landed on one rather than on the line around it.
     ///
-    /// A fixed list — a URL is a URL, there's nothing to gate on. It's here beside the message
-    /// actions rather than in the sheet that draws it for the same reason as the rest: the second
-    /// message-list style should offer the same three things without either style deciding.
+    /// Open is offered only for a link the app will hand to the system (`ExternalLink`): an
+    /// `ftp://` match is a link for parity with the web client, but opening it means launching
+    /// whatever third-party app took the scheme, so it copies and shares and nothing more, and the
+    /// menu says so by omission rather than offering a tap that does nothing. It's here beside the
+    /// message actions rather than in the sheet that draws it for the same reason as the rest: the
+    /// second message-list style should offer the same things without either style deciding.
     public static func build(for url: URL) -> [MessageAction] {
-        [
-            MessageAction(key: .openLink, title: "Open Link", symbol: "safari"),
-            MessageAction(key: .copyLink, title: "Copy Link", symbol: "doc.on.doc"),
-            MessageAction(key: .shareLink, title: "Share Link", symbol: "square.and.arrow.up"),
-        ]
+        var actions: [MessageAction] = []
+        if ExternalLink.isOpenable(url) {
+            actions.append(MessageAction(key: .openLink, title: "Open Link", symbol: "safari"))
+        }
+        actions.append(MessageAction(key: .copyLink, title: "Copy Link", symbol: "doc.on.doc"))
+        actions.append(MessageAction(key: .shareLink, title: "Share Link", symbol: "square.and.arrow.up"))
+        return actions
     }
 
     /// Perform `key` against `url`. Keys that aren't a link's are ignored rather than trapped —

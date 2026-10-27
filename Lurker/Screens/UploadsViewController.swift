@@ -522,7 +522,7 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
         // Nothing the viewer can present — a text file, a PDF, or an address this app is not
         // allowed to load. The browser can, and handing it over beats a tap that does nothing.
         guard let url = URL(string: item.url) else { return }
-        UIApplication.shared.open(url)
+        UIApplication.shared.openExternal(url)
     }
 
     /// An upload as the media viewer's descriptor, or nil for one it cannot show.

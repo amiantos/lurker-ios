@@ -7,12 +7,20 @@ import Foundation
 ///
 /// The app ships with App Transport Security on, plus the `NSAllowsLocalNetworking`
 /// exception — the narrow carve-out App Review accepts without a written justification.
-/// That means HTTPS everywhere, except the exact host classes Apple defines as local:
-/// unqualified single-label names (`localhost`, `xerxes`), `.local` names, and IP-address
-/// literals. This mirrors that definition rather than inventing its own (e.g. "private
-/// ranges only") so the sign-in check and what the OS will actually permit can't drift
-/// apart: everything allowed here is loadable, and everything blocked here fails with our
-/// copy instead of a `-1022` deep in a URLSession error.
+/// That means HTTPS everywhere, except hosts on the local network, and "local" is ONE
+/// definition for the whole app: `LocalNetworking.permitsCleartext`, the rule a cleartext
+/// media load is judged by. Sharing it means the sign-in check, the playback check and what
+/// the OS will actually permit can't drift apart: everything allowed here is loadable, and
+/// everything blocked here fails with our copy instead of a `-1022` deep in a URLSession
+/// error.
+///
+/// ⚠ This used to hold its own, wider reading — ANY IP literal was local, as Apple's
+/// pre-iOS 17 documentation of the exemption had it. Since iOS 17 ATS applies to a public
+/// address through `URLSession` like any other host, so the drift showed as a confusing
+/// failure: `http://203.0.113.5` passed the sign-in copy, then died inside the first request
+/// with "iOS blocked the connection". On a platform whose OS does not backstop it (Android
+/// permits cleartext app-wide), the same drift is the bearer token in the clear across the
+/// internet. One definition closes both.
 ///
 /// Self-signed HTTPS is deliberately not handled — ATS rejects it regardless of plist
 /// keys, and supporting it means a per-server trust prompt, which is a feature, not
@@ -31,7 +39,12 @@ public enum ServerAddress {
         var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
         guard !trimmed.isEmpty else { return trimmed }
-        return trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard let separator = trimmed.range(of: "://") else { return "https://" + trimmed }
+        // ⚠ The scheme lower-cased, and only the scheme: a phone keyboard capitalises the first
+        // letter of a typed address, and `HTTPS://` loads like `https://` — but the socket URL is
+        // built by rewriting a lowercase `http` to `ws`, so a scheme left as typed would reach
+        // `webSocketTask(with:)` as `HTTPS://`, which it refuses by trapping.
+        return trimmed[..<separator.lowerBound].lowercased() + trimmed[separator.lowerBound...]
     }
 
     /// Why a normalized address fails the transport policy, or nil if it passes.
@@ -42,37 +55,19 @@ public enum ServerAddress {
         guard let components = URLComponents(string: normalized),
               let host = components.host, !host.isEmpty
         else { return "That server URL doesn't look right." }
-        switch components.scheme {
+        // Schemes have no case (`HTTPS://` is what a phone keyboard's auto-capital makes of a
+        // typed address), and URLSession loads either spelling.
+        switch components.scheme?.lowercased() {
         case "https":
             return nil
-        case "http" where isLocalHost(host):
+        // `host` keeps an IPv6 literal's brackets here; `LocalNetworking` reads it either way.
+        case "http" where LocalNetworking.permitsCleartext(host: host):
             return nil
         case "http":
             return "That server needs HTTPS — plain http:// only works for local "
-                + "addresses (an IP, a .local name, or a single-word host like localhost)."
+                + "addresses (a private IP, a .local name, or a single-word host like localhost)."
         default:
             return "Server URLs start with https:// (or http:// for a local server)."
-        }
-    }
-
-    /// Apple's three "local" host classes, verbatim from the `NSAllowsLocalNetworking`
-    /// documentation: unqualified domains, `.local` domains, and IP addresses.
-    private static func isLocalHost(_ host: String) -> Bool {
-        let lower = host.lowercased()
-        if lower.hasSuffix(".local") { return true }
-        if !lower.contains(".") { return true } // unqualified: localhost, xerxes, …
-        return isIPLiteral(lower)
-    }
-
-    /// IPv6 is any host with a colon — URLComponents has already stripped the brackets,
-    /// and a colon can't appear in a hostname. IPv4 is exactly four in-range octets;
-    /// near-misses like `999.1.1.1` are hostnames to ATS too (and dead ones), so they
-    /// fall through to the HTTPS requirement rather than getting the carve-out.
-    private static func isIPLiteral(_ host: String) -> Bool {
-        if host.contains(":") { return true }
-        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
-        return octets.count == 4 && octets.allSatisfy { octet in
-            !octet.isEmpty && octet.allSatisfy { $0.isASCII && $0.isNumber } && UInt8(octet) != nil
         }
     }
 }

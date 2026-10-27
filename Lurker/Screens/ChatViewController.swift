@@ -3553,7 +3553,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         MessageActions.run(
             key, on: url,
             context: LinkActionContext(
-                open: { UIApplication.shared.open($0) },
+                open: { UIApplication.shared.openExternal($0) },
                 copy: { UIPasteboard.general.url = $0 },
                 share: { [weak self] url in self?.share(url) }
             )

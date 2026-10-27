@@ -95,7 +95,12 @@ public final class KeychainWebPushKeyStore: WebPushKeyStore {
         // them out of backups: a restored phone has a new APNs token and registers afresh.
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let added = SecItemAdd(attributes as CFDictionary, nil)
-        if added == errSecMissingEntitlement { Self.missingEntitlement(accessGroup) }
+        if added == errSecMissingEntitlement {
+            Self.missingEntitlement(accessGroup)
+        } else if added != errSecSuccess {
+            // Status only, never the key: the one trace of a device whose relay keys never persist.
+            NSLog("[push] keychain write failed: OSStatus %d", added)
+        }
         return added == errSecSuccess
     }
 
