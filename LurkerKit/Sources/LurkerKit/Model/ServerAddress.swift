@@ -50,7 +50,9 @@ public enum ServerAddress {
         guard let components = URLComponents(string: normalized),
               let host = components.host, !host.isEmpty
         else { return "That server URL doesn't look right." }
-        switch components.scheme {
+        // Schemes have no case (`HTTPS://` is what a phone keyboard's auto-capital makes of a
+        // typed address), and URLSession loads either spelling.
+        switch components.scheme?.lowercased() {
         case "https":
             return nil
         // `host` keeps an IPv6 literal's brackets here; `LocalNetworking` reads it either way.

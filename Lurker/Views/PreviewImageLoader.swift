@@ -40,6 +40,16 @@ final class PreviewImageLoader {
     /// row was configured, which during a scroll is several times a second.
     private var failed = Set<String>()
 
+    /// The one decoder, so decodes run ONE AT A TIME.
+    ///
+    /// ⚠ The bound in `PreviewImageBudget` is per image, and a backlog restore configures a
+    /// dozen attachment rows in one layout pass. A detached decode per row — which is what
+    /// this was — ran all of them at once, each peaking at the ~70 MB a 24 MP still costs, which
+    /// is the jetsam the bound exists to prevent, one layer up. Serial, not a small pool: a
+    /// still decodes in tens of milliseconds, and nothing a reader could see is gained by two
+    /// at once.
+    private static let decoder = StillDecoder()
+
     private init() {
         // Counted in decoded bytes via `cost` below; a few dozen full-width previews.
         cache.totalCostLimit = 32 * 1024 * 1024
@@ -77,10 +87,11 @@ final class PreviewImageLoader {
             var isVerdict = true
             switch await model.proxiedMedia(path: path) {
             case .success(let data):
-                let decoded = await Self.decode(data)
+                let decoded = await Self.decoder.still(data)
                 image = decoded.image
                 // Recorded whether or not it animates, so `isAnimated` can answer "no" without
-                // confusing it with "not loaded yet".
+                // confusing it with "not loaded yet". A refused or undecodable still answers
+                // "no" too: there is nothing for the viewer to animate.
                 animates[path] = decoded.plays
                 // Bytes we cannot decode are a verdict: asking again gets the same bytes.
             case .retryable:
@@ -110,60 +121,6 @@ final class PreviewImageLoader {
         }
     }
 
-    /// The still, plus whether the file plays as an animation.
-    ///
-    /// ⚠ Only the FIRST frame is decoded here, even for an animation. That is the whole reason
-    /// playback is opt-in: a hundred-frame GIF held as decoded frames is hundreds of megabytes
-    /// against a 32 MB cache budget, and autoplay pays that for every animation in scrollback
-    /// whether or not anybody is watching. A still costs exactly what a JPEG costs.
-    nonisolated private static func decode(_ data: Data) async -> (image: UIImage?, plays: Bool) {
-        await Task.detached(priority: .userInitiated) {
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-                return (nil as UIImage?, false)
-            }
-            // Whether it plays, not how many images it holds: most containers with several are
-            // stills (`ImageAnimation`).
-            let plays = ImageAnimation.plays(
-                frameCount: CGImageSourceGetCount(source), typeIdentifier: CGImageSourceGetType(source) as String?)
-            // ⚠⚠ The canvas is judged from the HEADER, before a pixel is decoded, and a refusal
-            // is a verdict the caller latches. This was `UIImage(data:)` + `preparingForDisplay()`
-            // — the whole image, at full size — and a PNG under the relay's 8 MB cap can declare
-            // 20,000 on a side: 1.6 GB, which jetsams the app during backlog paint and again on
-            // every relaunch while that row is in the visible backlog, for every reader with
-            // inline media on. Any channel peer can post the link. See `PreviewImageBudget`.
-            guard withinBudget(source) else { return (nil as UIImage?, plays) }
-            // Downsampled AT decode, exactly as `animate` does its frames: ImageIO streams the
-            // source into a bitmap of at most `maxPixelSize` on its longest edge rather than
-            // decoding the full canvas and shrinking it, so a large ordinary photo costs what
-            // the thumbnail costs. `ShouldCacheImmediately` is `preparingForDisplay()` by another
-            // name — the decode happens here, off the main thread, not at first draw.
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: PreviewImageBudget.maxPixelSize,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-            guard let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-                return (nil as UIImage?, plays)
-            }
-            return (UIImage(cgImage: frame), plays)
-        }.value
-    }
-
-    /// Whether the container's declared canvas is one the app will decode.
-    ///
-    /// Read from the header: `CGImageSourceCopyPropertiesAtIndex` parses dimensions without
-    /// decoding a pixel, which is the whole point. A container that declares nothing is refused
-    /// — a size we cannot see is a size we cannot bound.
-    nonisolated private static func withinBudget(_ source: CGImageSource) -> Bool {
-        guard
-            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-            let width = properties[kCGImagePropertyPixelWidth] as? Int,
-            let height = properties[kCGImagePropertyPixelHeight] as? Int
-        else { return false }
-        return PreviewImageBudget.admits(pixelWidth: width, pixelHeight: height)
-    }
-
     // MARK: - Animation, on request
 
     /// Whether each path plays, learned when the still was decoded.
@@ -172,17 +129,6 @@ final class PreviewImageLoader {
     /// Bumped by `reset()`, so answers already in the air can tell they belong to the account
     /// that just signed out.
     private var generation = 0
-
-    /// Longest edge an animation frame is decoded to.
-    ///
-    /// ⚠ Downsampled, and the arithmetic is the reason: a 1024x768 frame is 3 MB, so a
-    /// hundred-frame GIF at full size is ~300 MB. 720 covers a 160pt mosaic tile at 3x with room
-    /// to spare, and a lone image is slightly soft WHILE PLAYING — which is the moment nobody is
-    /// studying a still.
-    nonisolated private static let animationMaxPixel: CGFloat = 720
-    /// Ceiling on one animation's decoded frames. Past this we decline to animate at all rather
-    /// than play a truncated loop, which reads as a bug rather than as a limit.
-    nonisolated private static let animationBudget = 48 * 1024 * 1024
 
     /// Whether `path` holds an animation.
     ///
@@ -208,62 +154,8 @@ final class PreviewImageLoader {
                 deliver(nil)
                 return
             }
-            deliver(await Self.animate(data))
+            deliver(await Self.decoder.animation(data))
         }
-    }
-
-    nonisolated private static func animate(_ data: Data) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) {
-            guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-            // The still's verdict again, because `loadAnimated` is a door of its own: the bytes
-            // are the same, but nothing here proves a caller came through `load` first.
-            guard withinBudget(source) else { return nil }
-            let count = CGImageSourceGetCount(source)
-            guard ImageAnimation.plays(frameCount: count, typeIdentifier: CGImageSourceGetType(source) as String?) else {
-                return nil
-            }
-
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: animationMaxPixel,
-                kCGImageSourceShouldCacheImmediately: true,
-            ]
-
-            var images: [UIImage] = []
-            var total = 0.0
-            var bytes = 0
-            for index in 0..<count {
-                guard
-                    let frame = CGImageSourceCreateThumbnailAtIndex(
-                        source, index, options as CFDictionary)
-                else { continue }
-                bytes += frame.width * frame.height * 4
-                // Refuse rather than truncate — see `animationBudget`.
-                if bytes > animationBudget { return nil }
-                images.append(UIImage(cgImage: frame))
-                total += frameDelay(source, at: index)
-            }
-            guard images.count > 1 else { return nil }
-            // ⚠ One duration across the whole loop, which is what `animatedImage` supports, so a
-            // GIF with variable per-frame delays plays at its average pace. The alternative is a
-            // display-link view driving frames by hand; it has not been worth it, and this note
-            // is here so the limitation is a decision rather than a surprise.
-            return UIImage.animatedImage(with: images, duration: total)
-        }.value
-    }
-
-    /// A frame's delay, honouring the 10ms floor every other GIF renderer applies — a great many
-    /// GIFs declare 0 and mean "as fast as sensible", not "infinitely fast".
-    nonisolated private static func frameDelay(_ source: CGImageSource, at index: Int) -> Double {
-        guard
-            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil)
-                as? [CFString: Any],
-            let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any]
-        else { return 0.1 }
-        let delay = (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
-            ?? (gif[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1
-        return delay < 0.011 ? 0.1 : delay
     }
 
     private static func cost(of image: UIImage) -> Int {
@@ -281,5 +173,124 @@ final class PreviewImageLoader {
         failed.removeAll()
         animates.removeAll()
         generation &+= 1
+    }
+}
+
+/// The decoding itself, off the main actor and one image at a time — an actor's calls queue.
+private actor StillDecoder {
+
+    /// Longest edge an animation frame is decoded to.
+    ///
+    /// ⚠ Downsampled, and the arithmetic is the reason: a 1024x768 frame is 3 MB, so a
+    /// hundred-frame GIF at full size is ~300 MB. 720 covers a 160pt mosaic tile at 3x with room
+    /// to spare, and a lone image is slightly soft WHILE PLAYING — which is the moment nobody is
+    /// studying a still.
+    private static let animationMaxPixel: CGFloat = 720
+    /// Ceiling on one animation's decoded frames. Past this we decline to animate at all rather
+    /// than play a truncated loop, which reads as a bug rather than as a limit.
+    private static let animationBudget = 48 * 1024 * 1024
+
+    /// The still, plus whether the file plays as an animation.
+    ///
+    /// ⚠ Only the FIRST frame is decoded here, even for an animation. That is the whole reason
+    /// playback is opt-in: a hundred-frame GIF held as decoded frames is hundreds of megabytes
+    /// against a 32 MB cache budget, and autoplay pays that for every animation in scrollback
+    /// whether or not anybody is watching. A still costs exactly what a JPEG costs.
+    func still(_ data: Data) -> (image: UIImage?, plays: Bool) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return (nil, false) }
+        // ⚠⚠ The canvas is judged from the HEADER, before a pixel is decoded, and a refusal is
+        // a verdict the caller latches. This was `UIImage(data:)` + `preparingForDisplay()` —
+        // the whole image, at full size — and a PNG under the relay's 8 MB cap can declare
+        // 20,000 on a side: 1.6 GB, which jetsams the app during backlog paint and again on
+        // every relaunch while that row is in the visible backlog, for every reader with inline
+        // media on. Any channel peer can post the link. See `PreviewImageBudget`.
+        guard Self.withinBudget(source) else { return (nil, false) }
+        // Whether it plays, not how many images it holds: most containers with several are
+        // stills (`ImageAnimation`).
+        let plays = ImageAnimation.plays(
+            frameCount: CGImageSourceGetCount(source), typeIdentifier: CGImageSourceGetType(source) as String?)
+        // Downsampled AT decode, exactly as `animation` does its frames: ImageIO streams the
+        // source into a bitmap of at most `maxPixelSize` on its longest edge rather than
+        // decoding the full canvas and shrinking it, so a large ordinary photo costs what the
+        // thumbnail costs. `ShouldCacheImmediately` is `preparingForDisplay()` by another name
+        // — the decode happens here, off the main thread, not at first draw.
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: PreviewImageBudget.maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let frame = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return (nil, false)
+        }
+        return (UIImage(cgImage: frame), plays)
+    }
+
+    /// Every frame, downsampled and bounded, or nil if the file can't or won't animate.
+    func animation(_ data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        // The still's verdict again, because `loadAnimated` is a door of its own: the bytes are
+        // the same, but nothing here proves a caller came through `load` first.
+        guard Self.withinBudget(source) else { return nil }
+        let count = CGImageSourceGetCount(source)
+        guard ImageAnimation.plays(frameCount: count, typeIdentifier: CGImageSourceGetType(source) as String?) else {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Self.animationMaxPixel,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+
+        var images: [UIImage] = []
+        var total = 0.0
+        var bytes = 0
+        for index in 0..<count {
+            guard
+                let frame = CGImageSourceCreateThumbnailAtIndex(
+                    source, index, options as CFDictionary)
+            else { continue }
+            bytes += frame.width * frame.height * 4
+            // Refuse rather than truncate — see `animationBudget`.
+            if bytes > Self.animationBudget { return nil }
+            images.append(UIImage(cgImage: frame))
+            total += Self.frameDelay(source, at: index)
+        }
+        guard images.count > 1 else { return nil }
+        // ⚠ One duration across the whole loop, which is what `animatedImage` supports, so a
+        // GIF with variable per-frame delays plays at its average pace. The alternative is a
+        // display-link view driving frames by hand; it has not been worth it, and this note
+        // is here so the limitation is a decision rather than a surprise.
+        return UIImage.animatedImage(with: images, duration: total)
+    }
+
+    /// Whether the container's declared canvas is one the app will decode.
+    ///
+    /// Read from the header: `CGImageSourceCopyPropertiesAtIndex` parses dimensions without
+    /// decoding a pixel, which is the whole point (measured: ~11 MB resident for a 49 MP file).
+    /// A container that declares nothing is refused — a size we cannot see is a size we cannot
+    /// bound.
+    private static func withinBudget(_ source: CGImageSource) -> Bool {
+        guard
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let width = properties[kCGImagePropertyPixelWidth] as? Int,
+            let height = properties[kCGImagePropertyPixelHeight] as? Int
+        else { return false }
+        return PreviewImageBudget.admits(pixelWidth: width, pixelHeight: height)
+    }
+
+    /// A frame's delay, honouring the 10ms floor every other GIF renderer applies — a great many
+    /// GIFs declare 0 and mean "as fast as sensible", not "infinitely fast".
+    private static func frameDelay(_ source: CGImageSource, at index: Int) -> Double {
+        guard
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil)
+                as? [CFString: Any],
+            let gif = properties[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+        else { return 0.1 }
+        let delay = (gif[kCGImagePropertyGIFUnclampedDelayTime] as? Double)
+            ?? (gif[kCGImagePropertyGIFDelayTime] as? Double) ?? 0.1
+        return delay < 0.011 ? 0.1 : delay
     }
 }

@@ -57,12 +57,24 @@ enum LocalNetworking {
         }
     }
 
-    /// Loopback, unique-local (fc00::/7) and link-local (fe80::/10).
+    /// Loopback, unique-local (fc00::/7) and link-local (fe80::/10) — judged on the PARSED
+    /// address, not its spelling. `::1`, `0:0:0:0:0:0:0:1` and `::0001` are one address, and a
+    /// rule that read the text admitted only the first; now that a typed-in server is judged
+    /// here too, a spelling the old sign-in gate accepted must not become a rejection. An
+    /// IPv4-mapped address (`::ffff:192.168.1.5`) is judged as the IPv4 address it carries.
     private static func isLocalIPv6(_ host: String) -> Bool {
-        // A zone index (`fe80::1%en0`) belongs to the address, not to the prefix test.
-        let address = host.split(separator: "%", maxSplits: 1)[0]
-        if address == "::1" { return true }
-        return address.hasPrefix("fc") || address.hasPrefix("fd") || address.hasPrefix("fe8")
-            || address.hasPrefix("fe9") || address.hasPrefix("fea") || address.hasPrefix("feb")
+        // A zone index (`fe80::1%en0`) belongs to the interface, not to the prefix test.
+        let literal = String(host.split(separator: "%", maxSplits: 1)[0])
+        var address = in6_addr()
+        guard inet_pton(AF_INET6, literal, &address) == 1 else { return false }
+        let bytes = withUnsafeBytes(of: &address) { Array($0) }
+        guard bytes.count == 16 else { return false }
+        if bytes[0..<15].allSatisfy({ $0 == 0 }) && bytes[15] == 1 { return true }
+        if bytes[0] & 0xFE == 0xFC { return true }
+        if bytes[0] == 0xFE && bytes[1] & 0xC0 == 0x80 { return true }
+        if bytes[0..<10].allSatisfy({ $0 == 0 }) && bytes[10] == 0xFF && bytes[11] == 0xFF {
+            return isLocalIPv4("\(bytes[12]).\(bytes[13]).\(bytes[14]).\(bytes[15])")
+        }
+        return false
     }
 }

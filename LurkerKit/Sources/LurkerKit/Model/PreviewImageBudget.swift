@@ -16,14 +16,15 @@ import Foundation
 /// This is only the rule. The header read and the downsampled decode are ImageIO and live in
 /// the app (`PreviewImageLoader`), as `ImageShrink`'s redraw lives in `ImageConverter`.
 public enum PreviewImageBudget {
-    /// Pixels a still may declare and still be decoded. 24 MP is twice a phone's everyday 12 MP
-    /// frame and covers a 6000×4000 camera file; a 48 MP shot is a 10–20 MB JPEG that the relay's
-    /// 8 MB byte cap refuses before this rule sees it. The bound matters even though what passes
-    /// is downsampled on the way in: ImageIO's thumbnail decode of a PNG is bounded, not free —
-    /// measured on the host, a 49 MP PNG peaked at ~105 MB resident against ~210 MB for the
-    /// full decode, and a 24 MP PNG or JPEG at ~70 MB, with the header read itself at ~11 MB.
-    /// Past this the still is simply not shown.
-    public static let maxPixels = 24_000_000
+    /// Pixels a still may declare and still be decoded. 50 MP clears a phone's 48 MP frame
+    /// (8064×6048, a 3–6 MB HEIC or JPEG, so under the relay's byte cap) and most panoramas,
+    /// because a refusal is a blank tile with no fallback and must stay rare. The bound still
+    /// matters even though what passes is downsampled on the way in: ImageIO's thumbnail
+    /// decode is bounded, not free — measured on the host, a 49 MP PNG peaked at ~105 MB
+    /// resident against ~210 MB for the full decode, a 24 MP PNG or JPEG at ~70 MB, and the
+    /// header read itself at ~11 MB. Decodes run one at a time (`PreviewImageLoader`), so that
+    /// peak is the app's, not one row's.
+    public static let maxPixels = 50_000_000
 
     /// Longest edge a passing still is decoded to: twice the widest preview column at 3× (a
     /// lone image across a phone), and the viewer's full iPad width at 2×. A 2048² bitmap is

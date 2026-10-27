@@ -44,6 +44,18 @@ final class LocalNetworkingTests: XCTestCase {
         XCTAssertFalse(permits("[]"))
     }
 
+    /// The address, not its spelling: every way of writing loopback is loopback, and a
+    /// mapped IPv4 address is judged as the IPv4 address.
+    func testIPv6SpellingsAreOneAddress() {
+        for host in ["0:0:0:0:0:0:0:1", "0000:0000:0000:0000:0000:0000:0000:0001", "::0001", "FE80::1",
+                     "fd12:3456:789a::1", "fc00::", "::ffff:192.168.1.5", "::ffff:10.0.0.1"] {
+            XCTAssertTrue(permits(host), "\(host) is local")
+        }
+        for host in ["::", "::2", "fe00::1", "fec0::1", "::ffff:8.8.8.8", "2001:db8::1", "fe80:::1", "::1::"] {
+            XCTAssertFalse(permits(host), "\(host) is not local")
+        }
+    }
+
     // MARK: - Refused, because ATS refuses them
 
     func testPublicNames() {

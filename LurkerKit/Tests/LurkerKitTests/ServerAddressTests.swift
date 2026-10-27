@@ -66,6 +66,19 @@ final class ServerAddressTests: XCTestCase {
         }
     }
 
+    /// A scheme has no case; a phone keyboard capitalises the first letter of a typed address.
+    func testSchemeCaseIsNotAParseError() {
+        XCTAssertNil(ServerAddress.rejection(of: "HTTPS://chat.example.org"))
+        XCTAssertNil(ServerAddress.rejection(of: "HTTP://192.168.1.5:8010"))
+        XCTAssertTrue(ServerAddress.rejection(of: "HTTP://chat.example.org")?.contains("HTTPS") ?? false)
+    }
+
+    /// Equivalent spellings of a local address are the same address to the policy.
+    func testIPv6SpellingsPassAlike() {
+        XCTAssertNil(ServerAddress.rejection(of: "http://[0:0:0:0:0:0:0:1]:8010"))
+        XCTAssertNil(ServerAddress.rejection(of: "http://[::0001]:8010"))
+    }
+
     /// The server the sign-in screen prefills must pass — a rejected default would
     /// dead-end the first-run experience.
     func testTheDefaultServerPassesThePolicy() {
