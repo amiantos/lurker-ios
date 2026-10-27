@@ -286,7 +286,8 @@ public final class ChatViewModel {
         // The departing account's sets, for the same reason as `features` (lurker#607) — and a read
         // of them still out, which would otherwise land in the next account's session.
         avatarSetsSubject.send(.none)
-        avatarSetReads.supersedeInFlight()
+        uploadedSetReads.supersedeInFlight()
+        manifestReads.supersedeInFlight()
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
@@ -701,24 +702,32 @@ public final class ChatViewModel {
     public var avatarSets: AvatarSets { avatarSetsSubject.value }
     public var avatarSetsPublisher: AnyPublisher<AvatarSets, Never> { avatarSetsSubject.eraseToAnyPublisher() }
     private let avatarSetsSubject = CurrentValueSubject<AvatarSets, Never>(.none)
-    private var avatarSetReads = NewestAnswer()
+    /// One ticket per answer, not per refresh: a refresh whose list GET failed must not
+    /// outrank an older one whose list arrived late, and the manifests are read on their own.
+    private var uploadedSetReads = NewestAnswer()
+    private var manifestReads = NewestAnswer()
 
     /// Re-read the uploaded sets and every bundled manifest. The manifests too, every time: a
     /// deploy that re-cuts a set changes its count without changing its URL, and a deploy is what
     /// drops the socket — the same reason `/api/config` is read on every reconnect. Three small
     /// revalidating GETs. A failed read keeps the last answer — one 502 must not blank every tile.
     private func refreshAvatarSets() {
-        let read = avatarSetReads.start()
+        let uploadedRead = uploadedSetReads.start()
+        let manifestRead = manifestReads.start()
         Task {
             let uploaded = await client.fetchAvatarSets()
             var manifests: [String: AvatarSetManifest] = [:]
             for id in AvatarSets.builtinTileSetIds {
                 if let manifest = await client.fetchAvatarManifest(setId: id) { manifests[id] = manifest }
             }
-            guard session == .loggedIn, avatarSetReads.accept(read) else { return }
+            guard session == .loggedIn else { return }
             var next = avatarSetsSubject.value
-            next.manifests.merge(manifests) { _, fresh in fresh }
-            if let uploaded { next.uploaded = uploaded }
+            // A failed read consumes no ticket: the answer it didn't get may still come from an
+            // older refresh, and that answer is newer than nothing.
+            if !manifests.isEmpty, manifestReads.accept(manifestRead) {
+                next.manifests.merge(manifests) { _, fresh in fresh }
+            }
+            if let uploaded, uploadedSetReads.accept(uploadedRead) { next.uploaded = uploaded }
             if next != avatarSetsSubject.value { avatarSetsSubject.send(next) }
         }
     }
@@ -2662,7 +2671,8 @@ public final class ChatViewModel {
         // The departing account's sets, for the same reason as `features` (lurker#607) — and a read
         // of them still out, which would otherwise land in the next account's session.
         avatarSetsSubject.send(.none)
-        avatarSetReads.supersedeInFlight()
+        uploadedSetReads.supersedeInFlight()
+        manifestReads.supersedeInFlight()
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import Combine
 import LurkerKit
 import UIKit
 
@@ -60,6 +61,7 @@ class HistoryFeedViewController: UITableViewController {
     /// non-superseding `reload` from overlapping, so this never orphans a task it should have
     /// cancelled.
     private var loadTask: Task<Void, Never>?
+    private var cancellables = Set<AnyCancellable>()
     /// A load was abandoned before it landed, so whatever is on screen answers nothing.
     ///
     /// Read by the screens that cancel — the ones whose reload is a different question each time
@@ -146,6 +148,16 @@ class HistoryFeedViewController: UITableViewController {
             systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) }
         )
         tableView.register(CompactCell.self, forCellReuseIdentifier: CompactCell.reuseID)
+        // The rows read the store as they're dequeued, so a display name that changes while the
+        // feed is open (a profile edit, the setting) would show on the rows scrolled in since and
+        // not on the ones already drawn (lurker#1203). Redraw the lot: the pages themselves don't
+        // move, only what the heads and quotes print. Identity test on the set — see `UserMetadataSet`.
+        viewModel.statePublisher
+            .removeDuplicates { $0.userMetadata === $1.userMetadata && $0.settings == $1.settings }
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.tableView.reloadData() }
+            .store(in: &cancellables)
         // The same backdrop the message list uses, since a row is supposed to read as a slice of
         // one — on the system background it read as a different surface quoting the conversation.
         tableView.backgroundColor = MessageListRenderer().listBackground

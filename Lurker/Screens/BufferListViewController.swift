@@ -1495,13 +1495,17 @@ final class BufferListViewController: UICollectionViewController {
     private static func addNetworkHints(_ abbreviations: [Int: String], _ rows: inout [Row]) {
         guard abbreviations.count > 1 else { return }
 
+        // Counted on what the row PRINTS — a DM's display name where it has one (lurker#1203) —
+        // since two friends on two networks with one display name collide on screen whatever
+        // their nicks are.
+        func printed(_ row: Row) -> String { (row.label ?? row.buffer.target).lowercased() }
         var counts: [String: Int] = [:]
-        for row in rows { counts[row.buffer.target.lowercased(), default: 0] += 1 }
+        for row in rows { counts[printed(row), default: 0] += 1 }
         let hinted = Set(counts.filter { $0.value > 1 }.keys)
         guard !hinted.isEmpty else { return }
 
         for index in rows.indices {
-            guard hinted.contains(rows[index].buffer.target.lowercased()),
+            guard hinted.contains(printed(rows[index])),
                   let networkId = rows[index].buffer.networkId,
                   let abbreviation = abbreviations[networkId]
             else { continue }

@@ -201,11 +201,17 @@ final class UserProfileViewController: UITableViewController {
             guard let meta else { return }
             if !realName {
                 if let shown = UserMetadata.shown(meta.displayName), let raw = meta.displayName {
-                    let font = UIFont.preferredFont(forTextStyle: .body)
-                    let value = MessageRenderer.formattedName(raw, color: .label, base: font)
-                    rows.append(value.string == shown
-                        ? .detail(title: "Display name", value: shown, copyable: false)
-                        : .richDetail(title: "Display name", value: value))
+                    // Plain when the raw name IS the plain name; attributed when it carried codes
+                    // (compared on the raw text — the rendered string strips to the plain one
+                    // either way, so that comparison says nothing about formatting).
+                    if raw.trimmingCharacters(in: .whitespacesAndNewlines) == shown {
+                        rows.append(.detail(title: "Display name", value: shown, copyable: false))
+                    } else {
+                        let font = UIFont.preferredFont(forTextStyle: .body)
+                        rows.append(.richDetail(
+                            title: "Display name", value: MessageRenderer.formattedName(raw, color: .label, base: font)
+                        ))
+                    }
                 }
             } else {
                 add("Pronouns", meta.pronouns)
@@ -533,22 +539,31 @@ final class UserProfileViewController: UITableViewController {
         return header
     }()
 
+    /// The path on screen, as distinct from the one asked for: a fetch the proxy answered 503 to
+    /// delivers nothing, and asking again on the next apply (or Refresh) is how it recovers.
+    /// `PreviewImageLoader` coalesces the waiters and latches only a verdict, so a re-ask while
+    /// one is in flight costs a closure, not a request.
+    private var avatarShown: String?
+
     private func showAvatar(_ path: String?) {
-        guard path != avatarPath else { return }
-        avatarPath = path
-        tableView.tableHeaderView = nil
-        guard let path else { return }
+        if path != avatarPath {
+            avatarPath = path
+            avatarShown = nil
+            tableView.tableHeaderView = nil
+        }
+        guard let path, avatarShown != path else { return }
         if let cached = PreviewImageLoader.shared.image(for: path) {
-            placeAvatar(cached)
+            placeAvatar(cached, path: path)
             return
         }
         PreviewImageLoader.shared.load(path: path, using: viewModel) { [weak self] image in
             guard let self, avatarPath == path else { return }
-            placeAvatar(image)
+            placeAvatar(image, path: path)
         }
     }
 
-    private func placeAvatar(_ image: UIImage) {
+    private func placeAvatar(_ image: UIImage, path: String) {
+        avatarShown = path
         avatarImage.image = image
         avatarImage.accessibilityLabel = "\(nick)'s avatar"
         tableView.tableHeaderView = avatarHeader
