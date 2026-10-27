@@ -96,6 +96,9 @@ final class UserProfileViewController: UITableViewController {
                     && old.networks[networkId]?.nick == new.networks[networkId]?.nick
                     // Their conversation's rename is their nick change — see `NickFollower`.
                     && old.keysById == new.keysById
+                    // Display name, pronouns, status, homepage, avatar (lurker#1203). Identity
+                    // again — the set is only ever replaced.
+                    && old.userMetadata === new.userMetadata
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -110,6 +113,11 @@ final class UserProfileViewController: UITableViewController {
         /// A labelled fact. `copyable` rows put their value on the pasteboard when tapped —
         /// a hostmask is the one thing here people actually retype elsewhere.
         case detail(title: String, value: String, copyable: Bool)
+        /// A labelled fact whose value carries its own formatting — the display name's mIRC
+        /// codes (lurker#1203), which the web renders here too.
+        case richDetail(title: String, value: NSAttributedString)
+        /// A labelled fact that is an address: the homepage. Tapping it opens the link.
+        case link(title: String, url: URL)
         /// A standing fact about the account rather than a value: TLS, bot, operator.
         case flag(title: String, symbol: String)
         case channel(WhoisResult.ChannelEntry)
@@ -150,7 +158,9 @@ final class UserProfileViewController: UITableViewController {
         // Each built once. `flags` re-reads the relay set and `whois.channels` re-splits the
         // channels line on every access, so testing one call's emptiness and then making a
         // second did the work twice per rebuild.
-        let detailRows = details(whois)  // status leads it — see `details`
+        let meta = state.metadata(networkId: networkId, nick: nick)
+        showAvatar(meta?.avatarUrl)
+        let detailRows = details(whois, meta)  // status leads it — see `details`
         if !detailRows.isEmpty {
             built.append(Section(header: nil, footer: nil, rows: detailRows))
         }
@@ -178,11 +188,37 @@ final class UserProfileViewController: UITableViewController {
     /// twice — and once the nick goes, a lone dot has nothing to sit beside. As a labelled row
     /// it reads the same way as everything under it, and it says its state in words, which is
     /// what a colour was only standing in for.
-    private func details(_ whois: WhoisResult?) -> [Row] {
+    private func details(_ whois: WhoisResult?, _ meta: UserMetadata?) -> [Row] {
         var rows: [Row] = []
         func add(_ title: String, _ value: String?, copyable: Bool = false) {
             guard let value, !value.isEmpty else { return }
             rows.append(.detail(title: title, value: value, copyable: copyable))
+        }
+        /// The metadata rows (lurker#607), in the web's order around the WHOIS real name. Read
+        /// off the record directly, setting or not: the setting decides whether the list renames
+        /// people, and a profile is where you come to read what they set either way.
+        func addMetadata(after realName: Bool) {
+            guard let meta else { return }
+            if !realName {
+                if let shown = UserMetadata.shown(meta.displayName), let raw = meta.displayName {
+                    let font = UIFont.preferredFont(forTextStyle: .body)
+                    let value = MessageRenderer.formattedName(raw, color: .label, base: font)
+                    rows.append(value.string == shown
+                        ? .detail(title: "Display name", value: shown, copyable: false)
+                        : .richDetail(title: "Display name", value: value))
+                }
+            } else {
+                add("Pronouns", meta.pronouns)
+                // "Status message", not "Status": the row above says whether they're here, and the
+                // web's two "Status" words sit in different places. The server keeps this to
+                // text Lurker will show; the value is theirs.
+                add("Status message", meta.status)
+                // The server keeps only http(s) values (`ircMetadata.ts`), so a value is a link.
+                if let homepage = meta.homepage, let url = URL(string: homepage),
+                   url.scheme == "https" || url.scheme == "http" {
+                    rows.append(.link(title: "Homepage", url: url))
+                }
+            }
         }
         // ⚠ Omitted rather than shown as "Unknown" while we're still asking. The status LINE
         // above already says "Looking up alice…", and a row asserting we don't know, directly
@@ -192,8 +228,13 @@ final class UserProfileViewController: UITableViewController {
             add("Status", status.awayMessage.map { "\(status.presence.title) — \($0)" }
                 ?? status.presence.title)
         }
-        guard let whois else { return rows }
+        addMetadata(after: false)
+        guard let whois else {
+            addMetadata(after: true)
+            return rows
+        }
         add("Real name", whois.realName)
+        addMetadata(after: true)
         add("Hostmask", whois.hostmask, copyable: true)
         // Only opers and the account itself are told this, so it's absent far more often than
         // present — which is why it's a row that appears rather than one that says "unknown".
@@ -362,6 +403,26 @@ final class UserProfileViewController: UITableViewController {
                 cell.accessoryView?.tintColor = .secondaryLabel
             }
 
+        case .richDetail(let title, let value):
+            content = UIListContentConfiguration.subtitleCell()
+            content.text = title
+            content.textProperties.font = .preferredFont(forTextStyle: .footnote)
+            content.textProperties.color = .secondaryLabel
+            content.secondaryAttributedText = value
+            content.secondaryTextProperties.numberOfLines = 0
+
+        case .link(let title, let url):
+            content = UIListContentConfiguration.subtitleCell()
+            content.text = title
+            content.textProperties.font = .preferredFont(forTextStyle: .footnote)
+            content.textProperties.color = .secondaryLabel
+            content.secondaryText = url.absoluteString
+            content.secondaryTextProperties.font = .preferredFont(forTextStyle: .body)
+            content.secondaryTextProperties.color = .tintColor
+            content.secondaryTextProperties.numberOfLines = 0
+            cell.selectionStyle = .default
+            cell.accessoryType = .disclosureIndicator
+
         case .flag(let title, let symbol):
             content.text = title
             content.image = UIImage(systemName: symbol)
@@ -411,6 +472,9 @@ final class UserProfileViewController: UITableViewController {
             guard copyable else { return }
             UIPasteboard.general.string = value
 
+        case .link(_, let url):
+            UIApplication.shared.open(url)
+
         case .channel(let entry):
             // Through the one join path (#57): a channel you're already in opens at once, one you
             // aren't opens when the server says you're in, and a refusal toasts over this sheet
@@ -437,8 +501,51 @@ final class UserProfileViewController: UITableViewController {
             // an impatient double tap can't queue a second WHOIS.
             viewModel.requestWhois(networkId: networkId, nick: nick)
 
-        case .status, .flag, .note:
+        case .status, .flag, .note, .richDetail:
             break
         }
+    }
+
+    // MARK: - Avatar (lurker#607)
+
+    /// The metadata avatar the profile shows — the picture only, 64pt, as the web's 4em `<img>`;
+    /// never the generated tile, which is the list's shorthand for a face and would be a strange
+    /// thing to put at the head of a page about the person. Nil takes it down.
+    private var avatarPath: String?
+    private let avatarImage = UIImageView()
+
+    private func showAvatar(_ path: String?) {
+        guard path != avatarPath else { return }
+        avatarPath = path
+        tableView.tableHeaderView = nil
+        guard let path else { return }
+        if let cached = PreviewImageLoader.shared.image(for: path) {
+            placeAvatar(cached)
+            return
+        }
+        PreviewImageLoader.shared.load(path: path, using: viewModel) { [weak self] image in
+            guard let self, avatarPath == path else { return }
+            placeAvatar(image)
+        }
+    }
+
+    private func placeAvatar(_ image: UIImage) {
+        avatarImage.image = image
+        avatarImage.contentMode = .scaleAspectFill
+        avatarImage.clipsToBounds = true
+        avatarImage.layer.cornerRadius = 6
+        avatarImage.layer.cornerCurve = .continuous
+        avatarImage.translatesAutoresizingMaskIntoConstraints = false
+        avatarImage.isAccessibilityElement = true
+        avatarImage.accessibilityLabel = "\(nick)'s avatar"
+        let header = UIView(frame: CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 88))
+        header.addSubview(avatarImage)
+        NSLayoutConstraint.activate([
+            avatarImage.widthAnchor.constraint(equalToConstant: 64),
+            avatarImage.heightAnchor.constraint(equalToConstant: 64),
+            avatarImage.centerXAnchor.constraint(equalTo: header.centerXAnchor),
+            avatarImage.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
+        ])
+        tableView.tableHeaderView = header
     }
 }

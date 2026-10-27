@@ -28,9 +28,15 @@ struct Suggestion: Equatable {
 
     /// A nick: in the nick's own palette color — the same identity signal the conversation
     /// above uses.
-    static func nick(_ nick: String) -> Suggestion {
-        Suggestion(title: nick, value: nick, color: MessageRenderer.hashedColor(nick),
-                   accessibility: "Insert \(nick)")
+    static func nick(_ nick: String, displayName: String? = nil) -> Suggestion {
+        // With a display name (lurker#1203) the chip says both — the name you recognise and the
+        // nick a pick inserts, as the web's picker shows the name with the nick in a badge. A chip
+        // reading only "Brad Root" that types `amiantos` would be a chip that lies about its tap.
+        Suggestion(
+            title: displayName.map { "\($0) · \(nick)" } ?? nick,
+            value: nick, color: MessageRenderer.hashedColor(nick),
+            accessibility: displayName.map { "Insert \(nick), \($0)" } ?? "Insert \(nick)"
+        )
     }
 }
 

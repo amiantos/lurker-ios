@@ -78,10 +78,11 @@ enum MessageRenderer {
     /// `revealed` reaches the one body a line can carry — a topic or a reason — so a spoiler in it
     /// opens like one in a message.
     private static func renderActivity(
-        _ message: Message, base: UIFont, settings: Settings = Settings(), revealed: Set<Int> = []
+        _ message: Message, base: UIFont, settings: Settings = Settings(), revealed: Set<Int> = [],
+        names: NameLookup? = nil
     ) -> NSAttributedString {
         let line = NSMutableAttributedString()
-        let actor = nickToken(message.nick, isSelf: message.isSelf, base: base)
+        let actor = nickToken(message.nick, isSelf: message.isSelf, base: base, names: names)
         // Both off by default, matching the registry. The account sits between the nick and
         // the host, as it does on the web (and in weechat, irssi and thelounge).
         let account = settings.bool("chat.show_join_account", default: false)
@@ -103,10 +104,10 @@ enum MessageRenderer {
         case .nick:
             line.append(actor)
             line.append(muted(" is now ", base: base))
-            line.append(nickToken(message.newNick, isSelf: message.isSelf, base: base))
+            line.append(nickToken(message.newNick, isSelf: message.isSelf, base: base, names: names))
             line.append(muted(host, base: base))
         case .kick:
-            line.append(nickToken(message.kicked, base: base))
+            line.append(nickToken(message.kicked, base: base, names: names))
             line.append(muted(" was kicked by ", base: base))
             line.append(actor)
             appendReason(message, to: line, base: base, revealed: revealed)
@@ -119,7 +120,7 @@ enum MessageRenderer {
                 case .nick(let n):
                     // Only ever emitted for a `prefix` change, so this is a real member and
                     // never a mask — a ban's target must not get a nick's colour and menu.
-                    line.append(nickToken(n, base: base))
+                    line.append(nickToken(n, base: base, names: names))
                 }
             }
         case .chghost:
@@ -137,7 +138,7 @@ enum MessageRenderer {
         case .invite:
             line.append(actor)
             line.append(muted(" invited ", base: base))
-            line.append(nickToken(message.invited, base: base))
+            line.append(nickToken(message.invited, base: base, names: names))
         default:
             // render() only routes actions and activity types here, but a line still has to
             // show *something* if that ever changes: the actor, then whatever text it has.
@@ -151,9 +152,10 @@ enum MessageRenderer {
     /// colors; the categories and connectives are muted. Mirrors how the web client colors
     /// its `NickRef`s and leaves the rest as meta text.
     static func renderConsolidation(
-        _ summary: ConsolidationSummary, base: UIFont = .preferredFont(forTextStyle: .subheadline)
+        _ summary: ConsolidationSummary, base: UIFont = .preferredFont(forTextStyle: .subheadline),
+        names: NameLookup? = nil
     ) -> NSAttributedString {
-        let clauses = summary.groups.map { identityClause($0, base: base) }
+        let clauses = summary.groups.map { identityClause($0, base: base, names: names) }
 
         let line = NSMutableAttributedString()
         for (index, clause) in clauses.enumerated() {
@@ -428,7 +430,8 @@ enum MessageRenderer {
         settings: Settings = Settings(),
         highlighter: NickHighlighter? = nil,
         revealed: Set<Int> = [],
-        hiddenUrls: Set<String> = []
+        hiddenUrls: Set<String> = [],
+        names: NameLookup? = nil
     ) -> NSAttributedString {
         let base = compactFont(compatibleWith: traits)
         let narrationIndent = compactIndent(compatibleWith: traits)
@@ -437,8 +440,11 @@ enum MessageRenderer {
         if message.type == .action {
             let color = nickColor(message)
             let line = NSMutableAttributedString()
+            // The shown name (lurker#1203), never on a relayed line: a bridged speaker isn't a
+            // network nick, so a record under that spelling would be someone else's.
+            let actor = message.relayBot == nil ? message.nick.flatMap { names?($0) } : nil
             line.append(NSAttributedString(
-                string: "* \(message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
+                string: "* \(actor ?? message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
             line.append(
                 body(
@@ -453,7 +459,7 @@ enum MessageRenderer {
             // narration starts flush with the nicks above it now, so the arrows were an extra
             // column of punctuation buying nothing.
             let line = NSMutableAttributedString(
-                attributedString: renderActivity(message, base: base, settings: settings, revealed: revealed)
+                attributedString: renderActivity(message, base: base, settings: settings, revealed: revealed, names: names)
             )
             appendCompactTime(trailingTime, to: line, traits: traits)
             return spaced(line, firstLine: 0, rest: narrationIndent, spacing: spacing)
@@ -478,10 +484,10 @@ enum MessageRenderer {
     /// with its time after its text.
     static func renderCompactConsolidation(
         _ summary: ConsolidationSummary, spacing: CompactSpacing, trailingTime: String?,
-        traits: UITraitCollection = .current
+        traits: UITraitCollection = .current, names: NameLookup? = nil
     ) -> NSAttributedString {
         let line = NSMutableAttributedString(
-            attributedString: renderConsolidation(summary, base: compactFont(compatibleWith: traits))
+            attributedString: renderConsolidation(summary, base: compactFont(compatibleWith: traits), names: names)
         )
         appendCompactTime(trailingTime, to: line, traits: traits)
         return spaced(line, firstLine: 0, rest: compactIndent(compatibleWith: traits), spacing: spacing)
@@ -593,12 +599,22 @@ enum MessageRenderer {
 
     /// A nick in its own color. Falls back to "someone" for the nick-less event that shouldn't
     /// happen but mustn't render blank.
-    private static func nickToken(_ nick: String?, isSelf: Bool = false, base: UIFont) -> NSAttributedString {
+    private static func nickToken(
+        _ nick: String?, isSelf: Bool = false, base: UIFont, names: NameLookup? = nil
+    ) -> NSAttributedString {
         let name = (nick?.isEmpty == false) ? nick! : "someone"
+        // The display name where one is shown (lurker#1203), plain: narration is a sentence and a
+        // colour code mid-sentence is noise. The colour stays the nick's — it is the identity.
+        let shown = nick.flatMap { names?($0) } ?? name
         return NSAttributedString(
-            string: name, attributes: [.font: base, .foregroundColor: nickColor(nick, isSelf: isSelf)]
+            string: shown, attributes: [.font: base, .foregroundColor: nickColor(nick, isSelf: isSelf)]
         )
     }
+
+    /// A nick's shown name for a plain surface — the stripped display name, or nil to print the
+    /// nick (`ChatState.plainDisplayName`). Handed down per render rather than reached for, like
+    /// everything else the renderer needs from the store.
+    typealias NameLookup = (String) -> String?
 
     private static func muted(_ text: String, base: UIFont) -> NSAttributedString {
         NSAttributedString(string: text, attributes: [.font: base, .foregroundColor: Palette.fgMuted])
@@ -631,7 +647,7 @@ enum MessageRenderer {
     /// One summary category as "alice, bob and carol joined" — the names as nick tokens, the
     /// separators and the verb muted.
     private static func identityClause(
-        _ group: ConsolidationSummary.IdentityGroup, base: UIFont
+        _ group: ConsolidationSummary.IdentityGroup, base: UIFont, names: NameLookup? = nil
     ) -> NSAttributedString {
         let clause = NSMutableAttributedString()
         for (index, entry) in group.visible.enumerated() {
@@ -641,7 +657,7 @@ enum MessageRenderer {
                 let isLast = index == group.visible.count - 1
                 clause.append(muted(isLast && group.hidden == 0 ? " and " : ", ", base: base))
             }
-            clause.append(entryToken(entry, base: base))
+            clause.append(entryToken(entry, base: base, names: names))
         }
         if group.hidden > 0 {
             clause.append(muted(", and \(group.hidden) other\(group.hidden == 1 ? "" : "s")", base: base))
@@ -650,15 +666,17 @@ enum MessageRenderer {
         return clause
     }
 
-    private static func entryToken(_ entry: ConsolidationSummary.Entry, base: UIFont) -> NSAttributedString {
+    private static func entryToken(
+        _ entry: ConsolidationSummary.Entry, base: UIFont, names: NameLookup? = nil
+    ) -> NSAttributedString {
         switch entry {
         case .nick(let nick):
-            return nickToken(nick, base: base)
+            return nickToken(nick, base: base, names: names)
         case .renamed(let from, let to):
             let token = NSMutableAttributedString()
-            token.append(nickToken(from, base: base))
+            token.append(nickToken(from, base: base, names: names))
             token.append(muted(" → ", base: base))
-            token.append(nickToken(to, base: base))
+            token.append(nickToken(to, base: base, names: names))
             return token
         }
     }
@@ -709,6 +727,30 @@ enum MessageRenderer {
         case .modeBriefly: return " briefly had +\(letter)"
         default: return "\(be)given +\(letter) again"
         }
+    }
+
+    // MARK: - Display names (lurker#1203)
+
+    /// A display name as the head draws it: its mIRC formatting rendered — bold, italic,
+    /// underline, strike, colours — over the nick's own colour, the web's `formattingSegments`.
+    /// No links, no nick detection, no spoiler boxes: it's a label, not a message. Trimmed at
+    /// the ends, as the plain form is.
+    static func formattedName(_ raw: String, color: UIColor, base: UIFont) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        for run in IRCFormatting.parse(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            let (foreground, background) = run.paint(
+                fg: run.fg.flatMap(ircColor), bg: run.bg.flatMap(ircColor), text: color, canvas: Palette.bg
+            )
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: font(base, bold: run.bold, italic: run.italic),
+                .foregroundColor: foreground,
+            ]
+            if let background { attributes[.backgroundColor] = background }
+            if run.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+            if run.strike { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            out.append(NSAttributedString(string: run.text, attributes: attributes))
+        }
+        return out
     }
 
     // MARK: - Body

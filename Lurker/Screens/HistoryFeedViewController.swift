@@ -476,10 +476,16 @@ class HistoryFeedViewController: UITableViewController {
                 ownNick: item.networkId.flatMap { state.networks[$0]?.nick }
             ).first ?? line
             : line
+        // Display names (lurker#1203) on the row's own network: the plain form inside the
+        // sentence and the quote, the raw one in the head. Never for a relayed line's bridged
+        // speaker, who isn't a network nick.
+        let names: MessageRenderer.NameLookup = { state.plainDisplayName(networkId: item.networkId, nick: $0) }
+        let displayName = line.relayBot == nil && line.type != .notice && line.type.isBubble
+            ? line.nick.flatMap { state.displayName(networkId: item.networkId, nick: $0) } : nil
         let body = item.reaction.map { Self.reactionBody($0, spacing: spacing, traits: traitCollection) }
             ?? MessageRenderer.renderCompactBody(
                 shown, spacing: spacing, trailingTime: headed ? nil : time, traits: traitCollection,
-                settings: state.settings
+                settings: state.settings, names: names
             )
         cell.configure(
             body,
@@ -487,12 +493,13 @@ class HistoryFeedViewController: UITableViewController {
                 nick: name ?? "",
                 color: MessageRenderer.captionColor(line, networkName: section.networkName),
                 time: time,
-                relaySource: line.relaySource
+                relaySource: line.relaySource,
+                displayName: displayName
             ),
             startsBlock: true,
             endsBlock: true,
             interactive: false,
-            reply: shown.replyTo == nil ? nil : CompactCell.ReplyLine(quote: shown.replyQuote, onJump: nil),
+            reply: shown.replyTo == nil ? nil : CompactCell.ReplyLine(quote: shown.replyQuote, onJump: nil, names: names),
             indentsBody: shown.type != .action,
             spacing: spacing,
             traits: traitCollection

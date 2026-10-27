@@ -1090,6 +1090,47 @@ final class LurkerClient {
         }
     }
 
+    // MARK: - Avatar sets (lurker#607)
+
+    /// The account's uploaded avatar tile sets — `GET /api/avatar-sets`. Nil for no answer, so
+    /// the caller keeps what it had; a 401 is reported like every other read's.
+    func fetchAvatarSets() async -> [UploadedAvatarSet]? {
+        guard let token, let url = URL(string: baseURL + "/api/avatar-sets") else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, response) = try await session.data(for: request)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401 {
+                reportUnauthorized(sentWith: token)
+                return nil
+            }
+            guard (200..<300).contains(code) else { return nil }
+            return AvatarSets.parseList(data)
+        } catch {
+            return nil
+        }
+    }
+
+    /// A bundled tile set's `manifest.json` — a static file beside the web client, so no token:
+    /// `/avatars/<id>/manifest.json`. Nil for a server that doesn't ship the set (older than #607)
+    /// or an unreadable manifest, which the caller reads as "no tiles to draw".
+    ///
+    /// Revalidated on every read (`reloadRevalidatingCacheData`), as the web's `cache: 'no-cache'`
+    /// does: a release that re-cuts a set changes its count without changing its URL.
+    func fetchAvatarManifest(setId: String) async -> AvatarSetManifest? {
+        guard let url = URL(string: baseURL + "/avatars/\(setId)/manifest.json") else { return nil }
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadRevalidatingCacheData
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard (200..<300).contains((response as? HTTPURLResponse)?.statusCode ?? 0) else { return nil }
+            return AvatarSets.parseManifest(data)
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - Search
 
     /// Full-text search across every buffer the account owns — `GET /api/search`.

@@ -103,6 +103,9 @@ final class BufferListViewController: UICollectionViewController {
         var parted: Bool = false
         /// `├─` or `└─`, set once the group's rows are known — see `Section.init`.
         var guide: TreeGuideView.Shape = .tee
+        /// The peer's display name on a DM row (lurker#1203), or nil to print the target. Set
+        /// where the row is built (`peerLabel`), compared by `Equatable` like `presence`.
+        var label: String?
         /// Something half-written waits in this buffer's composer, here or on another device
         /// (iOS #188) — the pencil.
         var hasDraft: Bool = false
@@ -123,13 +126,15 @@ final class BufferListViewController: UICollectionViewController {
             isFriend: Bool = false,
             muted: Bool = false,
             parted: Bool = false,
-            hasDraft: Bool = false
+            hasDraft: Bool = false,
+            label: String? = nil
         ) {
             self.buffer = buffer
             self.networkName = networkName
             self.presence = presence
             self.isFriend = isFriend
             self.muted = muted
+            self.label = label
             self.parted = parted
             self.hasDraft = hasDraft
         }
@@ -435,6 +440,10 @@ final class BufferListViewController: UICollectionViewController {
                     // The pencil (iOS #188). Which buffers have a draft, not what's in them: a
                     // flush while you type changes the text and nothing this list draws.
                     && Self.sameDraftedBuffers($0.drafts, $1.drafts)
+                    // A DM row prints its peer's display name (lurker#1203), which changes with
+                    // a profile and with the setting — neither moves anything else here.
+                    && $0.userMetadata === $1.userMetadata
+                    && $0.settings == $1.settings
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -731,7 +740,7 @@ final class BufferListViewController: UICollectionViewController {
         cell.configure(
             // No server log reaches a row — it's its network's header — so there's no network
             // name for `displayName` to fall back on.
-            name: row.buffer.displayName(),
+            name: row.label ?? row.buffer.displayName(),
             // An offline person's name is italic (#167).
             font: row.presence?.italicizesName == true ? listFont(italic: true) : font,
             hintFont: font,
@@ -1385,7 +1394,8 @@ final class BufferListViewController: UICollectionViewController {
                 presence: state.rowPresence(networkId: entry.networkId, nick: entry.target),
                 isFriend: true,
                 muted: Self.isMuted(buffer, state),
-                hasDraft: state.hasDraft(buffer.key)
+                hasDraft: state.hasDraft(buffer.key),
+                label: Self.peerLabel(buffer, state)
             )
         }
     }
@@ -1446,8 +1456,16 @@ final class BufferListViewController: UICollectionViewController {
         Row(
             buffer: buffer, networkName: nil, presence: Self.peerPresence(buffer, state),
             muted: Self.isMuted(buffer, state), parted: state.isParted(buffer.key),
-            hasDraft: state.hasDraft(buffer.key)
+            hasDraft: state.hasDraft(buffer.key), label: Self.peerLabel(buffer, state)
         )
+    }
+
+    /// A DM peer's display name (lurker#1203), plain, or nil for anything that isn't a DM or a peer
+    /// without one. The row's key, order and presence stay on the target — the nick is the
+    /// identity; this is only what's written.
+    private static func peerLabel(_ buffer: Buffer, _ state: ChatState) -> String? {
+        guard buffer.kind == .dm, let networkId = buffer.networkId else { return nil }
+        return state.plainDisplayName(networkId: networkId, nick: buffer.target)
     }
 
     /// A DM's peer presence, nil for anything that isn't a DM (#167). Every DM row reads it,

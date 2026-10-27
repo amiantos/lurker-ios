@@ -283,6 +283,8 @@ public final class ChatViewModel {
         client.clearMediaCache()
         client.clearStagedMedia()
         features = InstanceFeatures()
+        // The departing account's sets, for the same reason as `features` (lurker#607).
+        avatarSetsSubject.send(.none)
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
@@ -689,6 +691,34 @@ public final class ChatViewModel {
     /// it's off the server doesn't even mount the routes, so the settings rows are HIDDEN rather
     /// than offered inert, and nothing is primed.
     public private(set) var features = InstanceFeatures()
+
+    /// Which avatar tile sets exist (lurker#607, Mobile lurker#1203): the bundled sets' counts
+    /// from their manifests, the account's uploaded sets from `GET /api/avatar-sets`. REST-fed,
+    /// so it lives here rather than in `ChatState`; read again on every connect snapshot and on
+    /// `avatar-sets-changed`. The pointer itself (`look.avatars.set`) is in `state.settings`.
+    public var avatarSets: AvatarSets { avatarSetsSubject.value }
+    public var avatarSetsPublisher: AnyPublisher<AvatarSets, Never> { avatarSetsSubject.eraseToAnyPublisher() }
+    private let avatarSetsSubject = CurrentValueSubject<AvatarSets, Never>(.none)
+    private var avatarSetReads = NewestAnswer()
+
+    /// Re-read the uploaded sets, and any bundled manifest not read yet this sign-in. A failed
+    /// read keeps the last answer — one 502 must not blank every tile.
+    private func refreshAvatarSets() {
+        let read = avatarSetReads.start()
+        let missing = AvatarSets.builtinTileSetIds.filter { avatarSets.manifests[$0] == nil }
+        Task {
+            let uploaded = await client.fetchAvatarSets()
+            var manifests: [String: AvatarSetManifest] = [:]
+            for id in missing {
+                if let manifest = await client.fetchAvatarManifest(setId: id) { manifests[id] = manifest }
+            }
+            guard session == .loggedIn, avatarSetReads.accept(read) else { return }
+            var next = avatarSetsSubject.value
+            next.manifests.merge(manifests) { _, fresh in fresh }
+            if let uploaded { next.uploaded = uploaded }
+            if next != avatarSetsSubject.value { avatarSetsSubject.send(next) }
+        }
+    }
 
     /// The size to compress media to before uploading — the server's advertised cap when it
     /// has given one, else `Uploads.fallbackMaxBytes` (#149).
@@ -2447,6 +2477,11 @@ public final class ChatViewModel {
             }
         case .snapshot:
             channelEventsSubject.send(.resynced)
+            // Like `/api/config`, re-read on every connect: a set uploaded or deleted on the web
+            // while this socket was down sent its `avatar-sets-changed` to nobody here.
+            refreshAvatarSets()
+        case .avatarSetsChanged:
+            refreshAvatarSets()
         case .peerPresence:
             if let cameOnline { onNotify?(cameOnline) }
         case .invited(let networkId, let channel, let from, let userhost):
@@ -2621,6 +2656,8 @@ public final class ChatViewModel {
         client.clearMediaCache()
         client.clearStagedMedia()
         features = InstanceFeatures()
+        // The departing account's sets, for the same reason as `features` (lurker#607).
+        avatarSetsSubject.send(.none)
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
