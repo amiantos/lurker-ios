@@ -74,6 +74,22 @@ final class SettingsViewController: UITableViewController {
         /// web that isn't offered here. A function rather than a name per row, so the value
         /// this control can't otherwise explain is the one value it can't fail to read.
         let spoken: (String) -> String
+        /// The label for a stored value that isn't one of `values`, shown as itself and checked.
+        var custom: (String) -> String = { $0 }
+    }
+
+    /// Choices that depend on what the server holds, so they can't be a static table: the avatar
+    /// sets (lurker#607) are the five bundled ones plus whatever the account uploaded on the web.
+    /// A pointer at a set we don't know — one deleted elsewhere, or not fetched yet — reads as the
+    /// registry default, which is what the list then draws (`AvatarSets.active`).
+    private func dynamicChoices(for key: String) -> StringChoices? {
+        guard key == AvatarSets.settingKey else { return nil }
+        let sets = viewModel.avatarSets
+        return StringChoices(
+            values: sets.all.map { ($0.id, $0.name) },
+            normalize: { stored in sets.set(id: stored)?.id ?? AvatarSets.defaultSetId },
+            spoken: { id in sets.set(id: id)?.name ?? id }
+        )
     }
 
     private static let stringChoices: [String: StringChoices] = [
@@ -88,7 +104,8 @@ final class SettingsViewController: UITableViewController {
         "input.completion.nick_suffix": StringChoices(
             values: [(":", "nick:"), (",", "nick,"), (";", "nick;"), ("", "nick")],
             normalize: NickCompletion.addressPunctuation,
-            spoken: NickCompletion.spokenPunctuation
+            spoken: NickCompletion.spokenPunctuation,
+            custom: { "nick\($0)" }
         )
     ]
 
@@ -174,6 +191,12 @@ final class SettingsViewController: UITableViewController {
 
     private static let appearanceSettings: [(key: String, label: String)] = [
         ("look.nick.show_mode_prefix", "Show mode prefix on nicks"),
+        // IRCv3 metadata (lurker#607, Mobile lurker#1203): the name a user set in place of their
+        // nick, and the avatar column — the compact layout is the only one this app has, so the
+        // web's "compact only" caveat is every row here.
+        (ChatState.displayNamesKey, "Show display names"),
+        (CompactDensity.avatarsKey, "Show avatars"),
+        (AvatarSets.settingKey, "Avatar placeholders"),
         ("chat.inline_media.enabled", "Inline media"),
         ("chat.link_previews.enabled", "Link previews"),
     ]
@@ -313,6 +336,14 @@ final class SettingsViewController: UITableViewController {
         // The push notice follows the route: it's asked again on every activation, so the
         // admin turning the relay on (or off) shows here without reopening Settings.
         viewModel.pushRoutePublisher
+            .removeDuplicates()
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebuild() }
+            .store(in: &cancellables)
+        // The avatar set pull-down lists the account's uploaded sets (lurker#607), which arrive by
+        // REST after the screen is built and change when a set is uploaded on the web.
+        viewModel.avatarSetsPublisher
             .removeDuplicates()
             .dropFirst()
             .receive(on: DispatchQueue.main)
@@ -577,7 +608,7 @@ final class SettingsViewController: UITableViewController {
             // Only a key this screen has curated choices for. A `string` with no list gets a
             // plain row rather than a control that can't offer anything — the same rule the
             // `default` arm applies to the types no row uses.
-            guard let curated = Self.stringChoices[option.key] else {
+            guard let curated = Self.stringChoices[option.key] ?? dynamicChoices(for: option.key) else {
                 cell.accessoryType = .none
                 return
             }
@@ -590,7 +621,7 @@ final class SettingsViewController: UITableViewController {
             // force, and picking one of the offered forms is how you leave it. It is dropped
             // from the list again as soon as it is, because it is only ever the stored value.
             if !values.contains(where: { $0.value == current }) {
-                values.append((current, "nick\(current)"))
+                values.append((current, curated.custom(current)))
             }
             // Read aloud through the SAME function as the four, so the one value this control
             // can't otherwise explain is not the one it declines to name.

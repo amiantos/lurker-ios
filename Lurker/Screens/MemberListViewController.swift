@@ -28,6 +28,9 @@ final class MemberListViewController: UITableViewController {
     private var members: [Member] = []
     /// The network's PREFIX — its symbols and ranks (lurker-ios#191); nil before ISUPPORT.
     private var prefix: [PrefixMode]?
+    /// Lowercased nick → what the row prints (lurker#1203).
+    private var labels: [String: String] = [:]
+    private func label(for member: Member) -> String { labels[member.nick.lowercased()] ?? member.nick }
     private var visible: [Member] = []
 
     /// Below this, the field is clutter: every nick already fits on a screen or two, and
@@ -70,6 +73,10 @@ final class MemberListViewController: UITableViewController {
             .removeDuplicates { old, new in
                 old.members[key] == new.members[key] && old.ignores === new.ignores
                     && networkId.flatMap { old.networks[$0]?.modeSpec?.prefix } == networkId.flatMap { new.networks[$0]?.modeSpec?.prefix }
+                    // The names the rows print (lurker#1203): a profile change, or the setting
+                    // that shows them, arrives with no join alongside it.
+                    && old.userMetadata === new.userMetadata
+                    && old.settings == new.settings
             }
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in self?.apply(state) }
@@ -80,6 +87,12 @@ final class MemberListViewController: UITableViewController {
     private func apply(_ state: ChatState) {
         prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
         members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key), prefix: prefix)
+        // What each row prints (lurker#1203): the display name, else the nick. Keyed, sorted and
+        // coloured on the nick still — the name is only what's written.
+        labels = Dictionary(
+            members.map { ($0.nick.lowercased(), state.label(networkId: buffer.networkId, nick: $0.nick)) },
+            uniquingKeysWith: { first, _ in first }
+        )
         title = members.isEmpty ? "Members" : "Members (\(members.count))"
         // The field appears and disappears with the channel's size, so a room that empties out
         // below the threshold stops offering one. Assigned only on change: reassigning
@@ -111,7 +124,7 @@ final class MemberListViewController: UITableViewController {
             .lowercased()
         visible = query.isEmpty
             ? members
-            : members.filter { $0.nick.lowercased().contains(query) }
+            : members.filter { $0.nick.lowercased().contains(query) || label(for: $0).lowercased().contains(query) }
         tableView.backgroundView = visible.isEmpty ? emptyLabel : nil
         if visible.isEmpty { emptyLabel.text = emptyText(searching: !query.isEmpty) }
         tableView.reloadData()
@@ -172,7 +185,7 @@ final class MemberListViewController: UITableViewController {
         // Away members stay in place rather than sorting to the bottom — you look for a
         // nick where you last saw it — and are dimmed instead.
         let base: UIColor = member.away ? .tertiaryLabel : .label
-        content.text = glyph + member.nick
+        content.text = glyph + label(for: member)
         content.textProperties.color = base
 
         // The mode glyph wears its rank's color (`look.color.member.*`), the nick does not —

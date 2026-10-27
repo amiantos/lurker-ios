@@ -628,6 +628,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // its raw envelope until the next line happens to land. (`===` is the right
                     // test — see `RelayBotSet`.)
                     && old.relayBots === new.relayBots
+                    // Display names and avatars (lurker#1203) arrive on their own, as a profile
+                    // changes — same trap, same shape, same pointer test (see `UserMetadataSet`).
+                    && old.userMetadata === new.userMetadata
                     // A DCC chat's session opens and ends with nothing else changing — the
                     // light and the field both read it (lurker#270).
                     && old.dccChatSession(bufferKey) == new.dccChatSession(bufferKey)
@@ -698,6 +701,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] count in self?.otherHighlights = count }
+            .store(in: &cancellables)
+        // The tile sets (lurker#607) are REST-fed and beside the store, so their arrival — a
+        // manifest read, a set uploaded on the web — is a redraw the gate above can't see. Only
+        // the rows' pictures change, so a reload rather than an `apply`, and only while the
+        // column is drawn at all.
+        viewModel.avatarSetsPublisher
+            .dropFirst()
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, CompactDensity.avatarsOn(settings) else { return }
+                refreshAvatarSpec(viewModel.state)
+                tableView.reloadData()
+            }
             .store(in: &cancellables)
     }
 
@@ -1182,6 +1199,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         messages = updated
         settings = state.settings
+        refreshAvatarSpec(state)
         speakers = state.speakers[buffer.key.id] ?? SpeakerMap()
         ownNick = Self.ownNick(for: state, buffer: buffer)
         awayState = Self.awayState(for: state, buffer: buffer)
@@ -2916,7 +2934,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         case .channelArg(let query):
             suggestions.show(channelCandidates(matching: query).map { Suggestion.channel($0) })
         case .nickArg(let query), .mention(let query):
-            suggestions.show(nickCandidates(matching: query, limit: 10).map { Suggestion.nick($0) })
+            suggestions.show(nickRows(matching: query, limit: 10).map { Suggestion.nick($0.nick, displayName: $0.displayName) })
         case nil:
             suggestions.show([])
         }
@@ -2951,16 +2969,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The strip's four, or Tab's deeper list (`limit`) — one ranking, so Tab's first pick is the
     /// strip's best.
     private func nickCandidates(matching query: String, limit: Int = 4) -> [String] {
-        NickCompletion.candidates(
+        nickRows(matching: query, limit: limit).map(\.nick)
+    }
+
+    /// The candidates with the display name each wears or matched on (lurker#1203), for the chip.
+    /// The name source is the store's `plainDisplayName`, which answers nil when the setting is
+    /// off — so the matcher is the old nick-only one then, as on the web.
+    private func nickRows(matching query: String, limit: Int) -> [NickCompletion.Candidate] {
+        let state = viewModel.state
+        let networkId = buffer.networkId
+        return NickCompletion.rows(
             speakers: speakers,
-            members: viewModel.state.visibleMembers(in: buffer.key),
-            selfNick: buffer.networkId.flatMap { networks[$0]?.nick },
+            members: state.visibleMembers(in: buffer.key),
+            selfNick: networkId.flatMap { networks[$0]?.nick },
             query: query,
             isChannel: buffer.kind == .channel,
             limit: limit,
-            ignores: viewModel.state.ignores,
-            networkId: buffer.networkId,
-            channel: buffer.target
+            ignores: state.ignores,
+            networkId: networkId,
+            channel: buffer.target,
+            displayName: { state.plainDisplayName(networkId: networkId, nick: $0) }
         )
     }
 
@@ -3792,8 +3820,60 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             },
             onJumpToReply: { [weak self] quote in self?.jumpToMessage(quote.id) },
             reactions: reactionContext,
-            previews: previewContext
+            previews: previewContext,
+            displayName: { [weak self] nick in
+                guard let self else { return nil }
+                return viewModel.state.displayName(networkId: buffer.networkId, nick: nick)
+            },
+            plainName: { [weak self] nick in
+                guard let self else { return nil }
+                return viewModel.state.plainDisplayName(networkId: buffer.networkId, nick: nick)
+            },
+            avatars: avatarSpec.map { spec in
+                AvatarContext(
+                    // The size follows the traits, which can change without an `apply` (Dynamic
+                    // Type rebuilds the cells); cheap, the font metrics are cached.
+                    size: NickAvatarView.size(
+                        spacing: MessageRenderer.CompactSpacing(CompactDensity(settings: settings), traits: traitCollection),
+                        traits: traitCollection
+                    ),
+                    model: viewModel,
+                    spec: spec,
+                    onTap: { [weak self] message in self?.avatarTapped(message) }
+                )
+            }
         )
+    }
+
+    /// What a row's tile is (lurker#607), or nil while `look.message.avatars` is off. Snapshotted
+    /// per apply rather than built per row, like `modePrefixes`: the active set is resolved once
+    /// (it walks every set) and the state it reads is the one the rows were built from.
+    private var avatarSpec: ((Message) -> NickAvatarView.Spec)?
+
+    private func refreshAvatarSpec(_ state: ChatState) {
+        guard CompactDensity.avatarsOn(state.settings) else {
+            avatarSpec = nil
+            return
+        }
+        let active = viewModel.avatarSets.active(settings: state.settings)
+        let stopChars = AvatarSets.stopChars(settings: state.settings)
+        let networkId = buffer.networkId
+        avatarSpec = { [weak self] message in
+            NickAvatarView.spec(
+                for: message, networkId: networkId, state: state, active: active, stopChars: stopChars,
+                networkName: self?.networkName(for: message)
+            )
+        }
+    }
+
+    /// A tap on a tile opens the profile (lurker#1203) — the one-tap "who is this"; the row's long
+    /// press keeps the actions. The web's tile opens its nick menu, which the apps don't have. On a
+    /// re-attributed relay line the profile is the bridge's, as the action sheet's is
+    /// (`MessageActions.profileSubject`): the bot is the only real IRC entity in the line.
+    private func avatarTapped(_ message: Message) {
+        guard let networkId = buffer.networkId, let who = message.relayBot ?? message.nick, !who.isEmpty
+        else { return }
+        showProfile(networkId: networkId, nick: who)
     }
 
     /// Which spoilers the reader has opened, by message id and then by the spoiler's ordinal

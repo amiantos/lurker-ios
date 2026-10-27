@@ -56,16 +56,32 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         /// says who spoke, and this says where. Living here also means it's drawn exactly once per
         /// author block, which is where a run of one speaker's lines wants it.
         let relaySource: String?
+        /// The display name to draw in place of the nick (lurker#1203), raw with its mIRC codes,
+        /// or nil to draw `nick`. The caller has already applied the setting, the strip-to-empty
+        /// rule and the relay exclusion; this only paints. The colour stays `color`, the nick's.
+        let displayName: String?
 
         init(
-            nick: String, color: UIColor, time: String?, modeMark: MemberPrefix.Mark? = nil, relaySource: String? = nil
+            nick: String, color: UIColor, time: String?, modeMark: MemberPrefix.Mark? = nil,
+            relaySource: String? = nil, displayName: String? = nil
         ) {
             self.nick = nick
             self.color = color
             self.time = time
             self.modeMark = modeMark
             self.relaySource = relaySource
+            self.displayName = displayName
         }
+    }
+
+    /// The avatar column (lurker#607): present when `look.message.avatars` is on. `spec` is the
+    /// tile to draw on a run's first row, nil on a continuation or a narration line, which keep
+    /// the gutter so bodies stay on one edge.
+    struct Avatar {
+        let size: CGFloat
+        let spec: NickAvatarView.Spec?
+        let model: ChatViewModel?
+        let onTap: (() -> Void)?
     }
 
     /// The reaction chips under a line (iOS #183), and what tapping them does. The closures
@@ -88,6 +104,8 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     struct ReplyLine {
         let quote: ReplyQuote?
         let onJump: ((ReplyQuote) -> Void)?
+        /// The quoted nick's shown name (lurker#1203), or nil for nicks.
+        var names: MessageRenderer.NameLookup? = nil
     }
 
     /// A spoiler in this cell's message was tapped, by its ordinal within the message. Set per
@@ -121,6 +139,16 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     private var reactionBottom: NSLayoutConstraint!
     /// Carries the matched-rule wash — see `configure`.
     private let fill = UIView()
+    /// The avatar column (lurker#607): the tile on a run's first row, and the hairline down the
+    /// gutter's right edge that makes it read as a panel beside the text — on the cell rather than
+    /// the table so a washed row doesn't cut it, and full height so it runs through the gaps.
+    private let avatarView = NickAvatarView()
+    private let hairline = UIView()
+    private var avatarSize: NSLayoutConstraint!
+    private var avatarTop: NSLayoutConstraint!
+    private var hairlineLeading: NSLayoutConstraint!
+    /// How far the text column sits in from the side margin: 0, or the gutter when avatars are on.
+    private var columnLeading: NSLayoutConstraint!
     /// An optical correction on the bottom of a block's fill.
     ///
     /// Equal padding above and below doesn't *look* equal: a line box carries its descender space
@@ -253,8 +281,20 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         fill.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(fill)
         fill.addSubview(column)
+        // Over the fill, as the web paints its `::before` hairline over a hovered row's ground.
+        hairline.backgroundColor = Palette.border
+        hairline.isHidden = true
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(hairline)
+        avatarView.isHidden = true
+        avatarView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(avatarView)
 
         fillBottom = fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+        columnLeading = column.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
+        avatarSize = avatarView.widthAnchor.constraint(equalToConstant: 0)
+        avatarTop = avatarView.topAnchor.constraint(equalTo: contentView.topAnchor)
+        hairlineLeading = hairline.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
         NSLayoutConstraint.activate([
             // Full-bleed and flush to the cell, so two washed rows meet with no seam.
             fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
@@ -264,8 +304,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
             column.topAnchor.constraint(equalTo: fill.topAnchor),
             column.bottomAnchor.constraint(equalTo: fill.bottomAnchor),
-            column.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            columnLeading,
             column.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+
+            avatarView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            avatarSize,
+            avatarView.heightAnchor.constraint(equalTo: avatarView.widthAnchor),
+            avatarTop,
+            // Through the row's whole height, gaps included: the cells abut, so the line is one.
+            hairlineLeading,
+            hairline.widthAnchor.constraint(equalToConstant: 1),
+            hairline.topAnchor.constraint(equalTo: contentView.topAnchor),
+            hairline.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
         ])
     }
 
@@ -291,6 +341,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         reactions: ReactionChips? = nil,
         reply: ReplyLine? = nil,
         indentsBody: Bool = true,
+        avatar: Avatar? = nil,
         spacing: MessageRenderer.CompactSpacing,
         traits: UITraitCollection
     ) {
@@ -319,23 +370,40 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // A required resistance would still claim its one-line width and push past the row.
         timeLabel.setContentCompressionResistancePriority(stacked ? .defaultHigh : .required, for: .horizontal)
         if let header {
-            // The name at the body's weight, as the web draws it.
-            let name = NSMutableAttributedString(
-                string: header.nick,
-                attributes: [.font: font, .foregroundColor: header.color]
-            )
-            // The mode glyph in its rank's color, the name in the speaker's — the split the web's
-            // `NickRef` makes.
-            //
-            // Bold via `withTrait`, the only weight that takes on this monospaced face (`semibold`
-            // resolves to the same Regular). The glyph needs the weight for contrast: the rank hues
-            // are ~3.5-4:1 on the light canvas.
-            if let mark = header.modeMark, header.nick.hasPrefix(mark.glyph) {
-                let rank = Palette.memberPrefix(mark.tier)
-                name.addAttributes(
-                    [.foregroundColor: rank, .font: font.bold],
-                    range: NSRange(location: 0, length: header.modePrefix.utf16.count)
+            // The name at the body's weight, as the web draws it — except beside the avatar gutter,
+            // where the body sits flush under the nick and weight is what tells the head line from
+            // the text (the web's `font-weight: 600` there; bold is the only weight this face has).
+            let nameFont = avatar == nil ? font : font.bold
+            let name: NSMutableAttributedString
+            if let shown = header.displayName {
+                // The display name (lurker#1203) with its own formatting over the nick's colour;
+                // the rank glyph ahead of it as it is ahead of a nick.
+                name = NSMutableAttributedString()
+                if let mark = header.modeMark {
+                    name.append(NSAttributedString(
+                        string: mark.glyph,
+                        attributes: [.font: font.bold, .foregroundColor: Palette.memberPrefix(mark.tier)]
+                    ))
+                }
+                name.append(MessageRenderer.formattedName(shown, color: header.color, base: nameFont))
+            } else {
+                name = NSMutableAttributedString(
+                    string: header.nick,
+                    attributes: [.font: nameFont, .foregroundColor: header.color]
                 )
+                // The mode glyph in its rank's color, the name in the speaker's — the split the
+                // web's `NickRef` makes.
+                //
+                // Bold via `withTrait`, the only weight that takes on this monospaced face
+                // (`semibold` resolves to the same Regular). The glyph needs the weight for
+                // contrast: the rank hues are ~3.5-4:1 on the light canvas.
+                if let mark = header.modeMark, header.nick.hasPrefix(mark.glyph) {
+                    let rank = Palette.memberPrefix(mark.tier)
+                    name.addAttributes(
+                        [.foregroundColor: rank, .font: font.bold],
+                        range: NSRange(location: 0, length: header.modePrefix.utf16.count)
+                    )
+                }
             }
             // Relay provenance (#277), trailing the name it qualifies: `alice github`.
             // Unbracketed, and in the timestamp's `fgMuted`, as the web draws it: it sits between
@@ -390,9 +458,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             replyLabel.attributedText = MessageRenderer.renderReplyQuote(
                 reply.quote,
                 indent: indentsBody ? spacing.bodyIndent : 0,
-                traits: traits
+                traits: traits,
+                names: reply.names
             )
-            replyLabel.accessibilityLabel = MessageRenderer.spokenReplyQuote(reply.quote)
+            replyLabel.accessibilityLabel = MessageRenderer.spokenReplyQuote(reply.quote, names: reply.names)
             if let quote = reply.quote, let jump = reply.onJump {
                 onJumpToReply = { jump(quote) }
                 replyLabel.accessibilityTraits = .button
@@ -427,6 +496,32 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             ? -(spacing.blockGap - 2 * wash)
             : 0
 
+        // The avatar column (lurker#607). Every row takes the gutter while avatars are on —
+        // continuations and narration too, so bodies stay on one edge — and only a run's first
+        // row draws a tile, centred on its head and first body line, the two lines a short
+        // message's wash covers. The tile at the side margin where the text otherwise starts,
+        // the web's `--space-4`, a hairline, then `--space-5` before the text.
+        avatarView.onTap = nil
+        if let avatar {
+            columnLeading.constant = avatar.size + NickAvatarView.gutterPadding + NickAvatarView.gutterAfterLine
+            hairlineLeading.constant = avatar.size + NickAvatarView.gutterPadding
+            hairline.isHidden = false
+            avatarSize.constant = avatar.size
+            if let spec = avatar.spec, header != nil {
+                let headAndFirstLine = 2 * font.lineHeight + spacing.headerGap
+                avatarTop.constant = column.layoutMargins.top + max(0, (headAndFirstLine - avatar.size) / 2)
+                avatarView.configure(spec, size: avatar.size, model: avatar.model)
+                avatarView.onTap = avatar.onTap
+                avatarView.isHidden = false
+            } else {
+                avatarView.isHidden = true
+            }
+        } else {
+            columnLeading.constant = 0
+            hairline.isHidden = true
+            avatarView.isHidden = true
+        }
+
         messageText.attributedText = attributed
         // ⚠⚠ Collapsed when the body has no text left, which happens exactly when every URL in
         // the message was hidden because its picture is standing in for it — the common shape
@@ -455,7 +550,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // two words: read out bare, "alice github" is two names. It says "from" rather than the
         // action sheet's "via", because the two name different things — a source and the bot.
         let spokenNick = header.map { head in
-            head.relaySource.flatMap { $0.isEmpty ? nil : "\(head.nick) from \($0)" } ?? head.nick
+            // The shown name where there is one (lurker#1203), with the rank glyph the nick carries.
+            let said = UserMetadata.shown(head.displayName).map { head.modePrefix + $0 } ?? head.nick
+            return head.relaySource.flatMap { $0.isEmpty ? nil : "\(said) from \($0)" } ?? said
         }
         messageText.accessibilityLabel = [spokenNick, MessageRenderer.spoken(attributed), header?.time]
             .compactMap { $0 }
@@ -578,5 +675,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         reactionRow.onOpen = nil
         reactionRow.onHeightChange = nil
         onJumpToReply = nil
+        avatarView.onTap = nil
     }
 }

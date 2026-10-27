@@ -318,6 +318,19 @@ enum ServerFrame: Equatable, Sendable {
     /// reports no known state, which the store reads as `unknown`.
     case peerPresence(networkId: Int, nick: String, state: PresenceState?)
 
+    /// A `user-metadata` ephemeral (rides `irc`, `type:"user-metadata"`, network-scoped via a
+    /// `:server:<id>` target): a nick's whole IRCv3 metadata record, to replace what we hold
+    /// (lurker#607, Mobile lurker#1203). `values` nil forgets the nick — a rename arrives as the
+    /// old nick's nil, then the new nick's record.
+    ///
+    /// ⚠ Like `peer-presence`, recognised above the target guard and never a line: left to fall
+    /// through, every profile change on the network drew an empty row in the server buffer.
+    case userMetadata(networkId: Int, nick: String, values: UserMetadata?)
+
+    /// WS `avatar-sets-changed`: the account's uploaded avatar tile sets changed on some device
+    /// (lurker#607). No payload — re-read `GET /api/avatar-sets`.
+    case avatarSetsChanged
+
     /// An `away-state` ephemeral (rides `irc`, `type:"away-state"`, network-scoped via a
     /// `:server:<id>` target): *your own* away state changed — from this device, another one,
     /// or the server's own idle auto-away.
@@ -474,6 +487,12 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// The network's channel-mode vocabulary (§5.1). ⚠ Nil until the registration burst ends —
     /// "unknown", not the RFC defaults — then kept current by `mode-spec`.
     var modeSpec: ModeSpec?
+    /// Every nick's IRCv3 metadata this connection holds, `folded nick → record` (lurker#607) —
+    /// the connect-time seed that live `user-metadata` events then patch. Empty on a server that
+    /// predates it. Defaulted like its neighbours.
+    var userMetadata: [String: UserMetadata] = [:]
+    /// What the network can carry, or nil without `draft/metadata-2` (and on an older server).
+    var metadataLimits: MetadataLimits?
 }
 
 struct ChannelSnapshot: Equatable, Sendable {

@@ -15,7 +15,7 @@ extension MessageRenderer {
     /// The arm is upright and lifted a little: in an italic line a slanted corner stops lining up,
     /// and on the baseline it sits below the text's middle.
     static func renderReplyQuote(
-        _ quote: ReplyQuote?, indent: CGFloat, traits: UITraitCollection
+        _ quote: ReplyQuote?, indent: CGFloat, traits: UITraitCollection, names: NameLookup? = nil
     ) -> NSAttributedString {
         let base = compactFont(compatibleWith: traits)
         let italic = base.italic
@@ -49,7 +49,9 @@ extension MessageRenderer {
         line.append(NSAttributedString(string: marks.0, attributes: plain))
         var nick = plain
         nick[.foregroundColor] = nickColor(quote.nick, isSelf: quote.isSelf)
-        line.append(NSAttributedString(string: quote.nick, attributes: nick))
+        // The shown name (lurker#1203), plain inside the brackets; a relayed quote's nick is a
+        // bridged speaker and keeps its spelling.
+        line.append(NSAttributedString(string: quotedName(quote, names: names), attributes: nick))
         line.append(NSAttributedString(string: marks.1 + " ", attributes: plain))
         if let source = quote.relaySource, !source.isEmpty {
             line.append(NSAttributedString(string: "[\(source)] ", attributes: plain))
@@ -59,8 +61,14 @@ extension MessageRenderer {
     }
 
     /// What VoiceOver says for the quote.
-    static func spokenReplyQuote(_ quote: ReplyQuote?) -> String {
+    static func spokenReplyQuote(_ quote: ReplyQuote?, names: NameLookup? = nil) -> String {
         guard let quote else { return "In reply to a message that's unavailable" }
-        return "In reply to \(quote.nick): \(Replies.excerpt(quote.text))"
+        return "In reply to \(quotedName(quote, names: names)): \(Replies.excerpt(quote.text))"
+    }
+
+    /// The quoted nick as the quote prints it: its shown name (lurker#1203), a relayed speaker's own
+    /// spelling.
+    static func quotedName(_ quote: ReplyQuote, names: NameLookup?) -> String {
+        quote.relayBot == nil ? names?(quote.nick) ?? quote.nick : quote.nick
     }
 }

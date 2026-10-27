@@ -60,6 +60,11 @@ public struct Network: Equatable, Sendable {
     /// goes back to nil whenever the link drops (the next registration restates it). Never read a
     /// nil as the RFC defaults — a default is not the network saying so.
     public var modeSpec: ModeSpec?
+    /// What this network can carry in IRCv3 metadata (lurker#607), or nil: no `draft/metadata-2`,
+    /// an older server, or a link that is down. Same lifecycle as `modeSpec` — the snapshot
+    /// states it, a drop clears it. Edit Profile (lurker#1204) gates on it; the display half
+    /// (lurker#1203) doesn't read it.
+    public var metadataLimits: MetadataLimits?
 
     public init(
         id: Int,
@@ -70,7 +75,8 @@ public struct Network: Equatable, Sendable {
         away: AwayState? = nil,
         blocked: Bool = false,
         tagSupport: TagSupport = .nothing,
-        modeSpec: ModeSpec? = nil
+        modeSpec: ModeSpec? = nil,
+        metadataLimits: MetadataLimits? = nil
     ) {
         self.id = id
         self.name = name
@@ -81,6 +87,7 @@ public struct Network: Equatable, Sendable {
         self.blocked = blocked
         self.tagSupport = tagSupport
         self.modeSpec = modeSpec
+        self.metadataLimits = metadataLimits
     }
 
     /// Take the roster's word for the REST-only fields — `name`, `position`, `blocked` — and

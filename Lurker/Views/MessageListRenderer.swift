@@ -59,6 +59,26 @@ struct MessageListContext {
     /// layout probes build a context without a view model, and previews are decoration those
     /// two have no business fetching.
     let previews: PreviewContext?
+    /// A nick's display name on this screen's network (lurker#1203), raw with its mIRC codes, or
+    /// nil to print the nick — `ChatState.displayName`, which applies the setting and the
+    /// strip-to-empty rule. The renderer decides where a raw name goes (the head) and where its
+    /// plain form does (narration, quotes); the relay exclusion is the renderer's too.
+    var displayName: (String) -> String? = { _ in nil }
+    /// `displayName`'s plain form — `ChatState.plainDisplayName` — for narration and quotes.
+    /// Carried beside the raw one rather than derived here, so the raw→plain rule lives in the
+    /// store alone.
+    var plainName: (String) -> String? = { _ in nil }
+    /// The avatar column (lurker#607), or nil while `look.message.avatars` is off.
+    var avatars: AvatarContext?
+}
+
+/// What the rows need to draw avatar tiles (lurker#607): how big, who fetches the pictures,
+/// what a message's tile is, and where a tap on one goes.
+struct AvatarContext {
+    let size: CGFloat
+    let model: ChatViewModel
+    let spec: (Message) -> NickAvatarView.Spec
+    let onTap: (Message) -> Void
 }
 
 /// What a row needs to draw reaction chips: the groups standing on a line, whether tapping each
@@ -125,12 +145,18 @@ struct MessageListRenderer {
     func cell(
         for row: MessageRow, at index: Int, in tableView: UITableView, context: MessageListContext
     ) -> UITableViewCell {
-        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: context.settings), traits: context.traits)
+        // Under the avatar column the gutter is the body indent (lurker#607) — this list's rule,
+        // taken here where the column is drawn; the feed shares the density and has no column.
+        let density = CompactDensity(settings: context.settings)
+        let spacing = MessageRenderer.CompactSpacing(
+            context.avatars == nil ? density : density.flushBodies, traits: context.traits
+        )
         if let marker = MessageListMarker.cell(for: row, in: tableView, spacing: spacing, traits: context.traits) {
             return marker
         }
 
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
+        let names = context.plainName
         switch row {
         case .bubble(let message, let position):
             // Once, not three times: it builds a caption and formats a time, and this runs for
@@ -152,7 +178,8 @@ struct MessageListRenderer {
                     traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
                     revealed: context.revealedSpoilers(message),
-                    hiddenUrls: plan.hidden
+                    hiddenUrls: plan.hidden,
+                    names: names
                 ),
                 header: blockHeader,
                 // A caption-less line under a marker still opens a block: the marker closed the
@@ -162,6 +189,7 @@ struct MessageListRenderer {
                 highlighted: message.matched,
                 reactions: Self.reactions(for: message, context: context),
                 reply: replyLine(for: message, position: position, at: index, context: context),
+                avatar: Self.avatar(for: message, headed: blockHeader != nil, context: context),
                 spacing: spacing,
                 traits: context.traits
             )
@@ -178,7 +206,8 @@ struct MessageListRenderer {
                     traits: context.traits, settings: context.settings,
                     highlighter: context.highlighter,
                     revealed: context.revealedSpoilers(message),
-                    hiddenUrls: plan.hidden
+                    hiddenUrls: plan.hidden,
+                    names: names
                 ),
                 header: nil, startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
@@ -188,6 +217,7 @@ struct MessageListRenderer {
                 // A header-less narration line (a `/me`) starts flush with the nicks, so its
                 // quote does too.
                 indentsBody: false,
+                avatar: Self.avatar(for: message, headed: false, context: context),
                 spacing: spacing,
                 traits: context.traits
             )
@@ -196,11 +226,12 @@ struct MessageListRenderer {
             cell.configure(
                 MessageRenderer.renderCompactConsolidation(
                     summary, spacing: spacing, trailingTime: Self.time(summary.date, context: context),
-                    traits: context.traits
+                    traits: context.traits, names: names
                 ),
                 header: nil,
                 startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
+                avatar: Self.gutter(context),
                 spacing: spacing,
                 traits: context.traits
             )
@@ -211,6 +242,7 @@ struct MessageListRenderer {
                 header: nil,
                 startsBlock: startsBlock(at: index, context: context),
                 endsBlock: endsBlock(at: index, context: context),
+                avatar: Self.gutter(context),
                 spacing: spacing,
                 traits: context.traits
             )
@@ -307,7 +339,36 @@ struct MessageListRenderer {
            Replies.continues(message, after: previousMessage(before: index, context: context)) {
             return nil
         }
-        return CompactCell.ReplyLine(quote: message.replyQuote, onJump: context.onJumpToReply)
+        return CompactCell.ReplyLine(
+            quote: message.replyQuote, onJump: context.onJumpToReply, names: context.plainName
+        )
+    }
+
+    /// The avatar column for a row (lurker#607): the tile on a headed row, the bare gutter on the
+    /// rest, nothing while avatars are off.
+    static func avatar(for message: Message, headed: Bool, context: MessageListContext) -> CompactCell.Avatar? {
+        guard let avatars = context.avatars else { return nil }
+        return CompactCell.Avatar(
+            size: avatars.size,
+            spec: headed ? avatars.spec(message) : nil,
+            model: avatars.model,
+            // A placeholder tile — a notice's megaphone, the server's rack — isn't a person, so a
+            // tap on it falls through to the row as the web lets it.
+            onTap: headed && Self.isPerson(message) ? { [onTap = avatars.onTap] in onTap(message) } : nil
+        )
+    }
+
+    /// The gutter alone, for a row with no head.
+    static func gutter(_ context: MessageListContext) -> CompactCell.Avatar? {
+        context.avatars.map { CompactCell.Avatar(size: $0.size, spec: nil, model: $0.model, onTap: nil) }
+    }
+
+    /// Whether a line's head names a person: not a notice's `-mark-`, not the server, not the app.
+    private static func isPerson(_ message: Message) -> Bool {
+        switch message.type {
+        case .notice, .system, .motd, .other: false
+        default: message.nick != nil
+        }
     }
 
     /// The chips for a line, or nil when it has none (or the screen draws none).
@@ -375,7 +436,13 @@ struct MessageListRenderer {
             // Where a re-attributed relay line came from (#277). Nil on everything else, and nil
             // for a bare `<nick> message` relay too, whose envelope names no source — that line
             // simply reads as the speaker, which is the call the web makes as well.
-            relaySource: message.relaySource
+            relaySource: message.relaySource,
+            // The display name (lurker#1203) for a head that names a person. Never for a
+            // re-attributed relay line: the bridged speaker isn't a network nick, so a record under
+            // that spelling would be someone else's. A notice keeps its `-nick-`: it's the bot's
+            // mark, not a name.
+            displayName: Self.isPerson(message) && message.relayBot == nil
+                ? message.nick.flatMap(context.displayName) : nil
         )
     }
 

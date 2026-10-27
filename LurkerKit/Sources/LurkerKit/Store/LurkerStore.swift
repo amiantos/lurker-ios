@@ -264,6 +264,12 @@ public struct ChatState: Sendable {
     /// `relayBots` above and for the same reason: both are user-authored, server-stored, and
     /// fanned to every device.
     public var nickNotes: NickNoteSet = .empty
+    /// Every nick's IRCv3 metadata the server holds (lurker#607, Mobile lurker#1203): display
+    /// names, avatars, pronouns, homepage, status. Seeded by the connect `snapshot` — one map per
+    /// network blob — and patched a nick at a time by `user-metadata`, like `relayBots` above.
+    /// Server-authoritative; read through `metadata(networkId:nick:)` and
+    /// `displayName(networkId:nick:)`, which applies the setting.
+    public var userMetadata: UserMetadataSet = .empty
     /// Cached WHOIS replies, `networkId → folded nick → reply` (#12).
     ///
     /// ⚠ Volatile by nature and deliberately not persisted: who is on a network, idle for how
@@ -434,6 +440,7 @@ public struct ChatState: Sendable {
         peerPresence[id] = nil
         pinned[id] = nil
         nickNotes = nickNotes.removing(networkId: id)
+        userMetadata = userMetadata.removing(networkId: id)
         whois[id] = nil
         // Nothing is coming back to free these: the connection they were asked over is gone.
         // Left behind, they'd be a permanent "waiting for whois reply…" on every nick that had
@@ -619,6 +626,42 @@ public struct ChatState: Sendable {
     ///  - a connected network with no row for the nick reads `unknown` ("potentially online",
     ///    the no-MONITOR case), as does a network we've never heard of;
     ///  - otherwise the stored state maps through: `online`/`back` → online, `away`, `offline`.
+    /// The setting that shows display names (lurker#607). Default on.
+    public static let displayNamesKey = "look.nick.display_names"
+
+    /// `nick`'s metadata record on `networkId`, raw — what the profile sheet reads, setting or
+    /// not: a user's pronouns are theirs whether or not we rename them in the list.
+    public func metadata(networkId: Int?, nick: String?) -> UserMetadata? {
+        userMetadata.record(networkId: networkId, nick: nick)
+    }
+
+    /// The name to show for `nick` in place of the nick, raw with its mIRC codes for a surface
+    /// that renders them, or nil to show the nick: the setting is off, there is no record, or the
+    /// name strips to nothing. ⚠ The nick stays the identity — colour, sort, mentions, the
+    /// profile's title — so this answers what to *print*, never what to key on.
+    public func displayName(networkId: Int?, nick: String?) -> String? {
+        shownName(networkId: networkId, nick: nick)?.raw
+    }
+
+    /// `displayName` for a plain surface — the roster, a DM row, a chip: codes stripped.
+    public func plainDisplayName(networkId: Int?, nick: String?) -> String? {
+        shownName(networkId: networkId, nick: nick)?.plain
+    }
+
+    /// Both forms from one strip: the raw name is only shown when its plain form is something.
+    private func shownName(networkId: Int?, nick: String?) -> (raw: String, plain: String)? {
+        guard settings.bool(Self.displayNamesKey, default: true),
+              let raw = metadata(networkId: networkId, nick: nick)?.displayName,
+              let plain = UserMetadata.shown(raw)
+        else { return nil }
+        return (raw, plain)
+    }
+
+    /// What a plain surface prints for `nick`: its display name, else the nick itself.
+    public func label(networkId: Int?, nick: String) -> String {
+        plainDisplayName(networkId: networkId, nick: nick) ?? nick
+    }
+
     public func presence(networkId: Int, nick: String) -> FriendPresence {
         guard reachable, connection == .connected else { return .offline }
         if let network = networks[networkId], network.state != .connected { return .offline }
@@ -1261,6 +1304,8 @@ final class LurkerStore {
                 // Same for the mode vocabulary: the next registration restates it once its
                 // burst ends, and until then the last link's answer is not this one's.
                 if connection != .connected { existing.modeSpec = nil }
+                // And the metadata caps (lurker#607): the next registration states them again.
+                if connection != .connected { existing.metadataLimits = nil }
                 next.networks[networkId] = existing
             } else {
                 next.networks[networkId] = Network(
@@ -1444,6 +1489,16 @@ final class LurkerStore {
             }
             next.peerPresence[networkId] = map
             return next
+        case .userMetadata(let networkId, let nick, let values):
+            // One nick at a time, whole record, nil forgets — see `UserMetadataSet.applying`.
+            // Not gated on holding the network: a record for one we don't hold is harmless and
+            // the snapshot that brings the network replaces the bucket anyway.
+            var next = state
+            next.userMetadata = state.userMetadata.applying(networkId: networkId, nick: nick, values: values)
+            return next
+        case .avatarSetsChanged:
+            // REST-fed state (`ChatViewModel.refreshAvatarSets`), nothing held here.
+            return state
         case .awayState(let networkId, let away):
             // Only ever a patch onto a network we already hold. The away stream is broadcast
             // from a live connection, so its network is in the snapshot by definition —
@@ -1551,7 +1606,10 @@ final class LurkerStore {
             // Every network's mode vocabulary was this socket's word, and a dropped socket can't
             // hear the `state` frame that would retire it. The next snapshot restates it; until
             // then it's unknown, which is what nil says.
-            for id in next.networks.keys { next.networks[id]?.modeSpec = nil }
+            for id in next.networks.keys {
+                next.networks[id]?.modeSpec = nil
+                next.networks[id]?.metadataLimits = nil
+            }
             // Nobody is typing at us over a socket that isn't there. The lease would retire
             // these on its own, but a `paused` entry holds for 30s — long enough to survive a
             // reconnect and show a peer composing when we've heard nothing from them since
@@ -1707,6 +1765,14 @@ final class LurkerStore {
             nickNotesByNetwork[snapshot.id] = snapshot.nickNotes
         }
         next.nickNotes = NickNoteSet(byNetwork: nickNotesByNetwork)
+        // Metadata (lurker#607) replaces wholesale for the same reason again: the snapshot is
+        // what the connection holds now, so a nick forgotten while this device was away is gone
+        // here rather than left showing a stale name.
+        var metadataByNetwork: [Int: [String: UserMetadata]] = [:]
+        for snapshot in networks where !snapshot.userMetadata.isEmpty {
+            metadataByNetwork[snapshot.id] = snapshot.userMetadata
+        }
+        next.userMetadata = UserMetadataSet(byNetwork: metadataByNetwork)
         // DCC chats (lurker#270) replace wholesale too: the snapshot lists every live session,
         // a disconnected network's included, so a chat that ended while this device was away is
         // gone here rather than left reading as live.
@@ -1743,6 +1809,7 @@ final class LurkerStore {
                 existing.away = snapshot.away
                 existing.tagSupport = snapshot.tagSupport
                 existing.modeSpec = snapshot.modeSpec
+                existing.metadataLimits = snapshot.metadataLimits
                 next.networks[snapshot.id] = existing
             } else {
                 // ⚠⚠ No name, rather than a placeholder that reads like one (#136). The
@@ -1755,7 +1822,8 @@ final class LurkerStore {
                 // for a nil name and re-reads the roster.
                 next.networks[snapshot.id] = Network(
                     id: snapshot.id, name: nil, state: snapshot.state, nick: snapshot.nick,
-                    away: snapshot.away, tagSupport: snapshot.tagSupport, modeSpec: snapshot.modeSpec
+                    away: snapshot.away, tagSupport: snapshot.tagSupport, modeSpec: snapshot.modeSpec,
+                    metadataLimits: snapshot.metadataLimits
                 )
             }
             for channel in snapshot.channels {

@@ -57,6 +57,8 @@ enum FrameParser {
             )
         case "error":
             return .serverError(obj.string("text"))
+        case "avatar-sets-changed":
+            return .avatarSetsChanged
         case "favorites-changed":
             // The FULL global order, replace wholesale — the same frame seeds the
             // connect burst, so this one handler covers seed and every correction.
@@ -464,7 +466,9 @@ enum FrameParser {
                 dccChats: nonEmptyStrings(network["dccChats"]),
                 dccChatOffers: nonEmptyStrings(network["dccChatOffers"]),
                 tagSupport: tagSupport(network),
-                modeSpec: parseModeSpec(network["modeSpec"])
+                modeSpec: parseModeSpec(network["modeSpec"]),
+                userMetadata: parseUserMetadata(network["userMetadata"] as? [String: Any]),
+                metadataLimits: parseMetadataLimits(network["metadataLimits"])
             )
         }
         return .snapshot(
@@ -617,6 +621,43 @@ enum FrameParser {
     /// awayMessage}` — flattened to the one field the client acts on. Entries whose `state`
     /// isn't a known value (or is null) are dropped, which reads as `unknown`, exactly as a
     /// live null-state event would.
+    /// A snapshot's `userMetadata` blob (lurker#607): `nick → record`. Keys are folded by
+    /// `UserMetadataSet`, so they're passed as the wire had them; a value that isn't an object is
+    /// skipped.
+    private static func parseUserMetadata(_ blob: [String: Any]?) -> [String: UserMetadata] {
+        guard let blob else { return [:] }
+        var out: [String: UserMetadata] = [:]
+        for (nick, value) in blob {
+            guard !nick.isEmpty, let entry = value as? [String: Any] else { continue }
+            out[nick] = parseUserMetadataRecord(entry)
+        }
+        return out
+    }
+
+    /// One nick's record, as the snapshot and `user-metadata` both carry it. Every key is
+    /// optional and `avatarUrl` may be null — nil either way, which means the generated tile.
+    private static func parseUserMetadataRecord(_ entry: [String: Any]) -> UserMetadata {
+        UserMetadata(
+            displayName: entry.stringOrNull("displayName"),
+            avatarUrl: entry.stringOrNull("avatarUrl"),
+            pronouns: entry.stringOrNull("pronouns"),
+            homepage: entry.stringOrNull("homepage"),
+            status: entry.stringOrNull("status")
+        )
+    }
+
+    /// `metadataLimits`: null (no `draft/metadata-2`) and absent (an older server) both read as
+    /// nil — neither is a network that can carry a profile.
+    private static func parseMetadataLimits(_ raw: Any?) -> MetadataLimits? {
+        guard let obj = raw as? [String: Any] else { return nil }
+        return MetadataLimits(
+            maxSubs: obj.intOrNull("maxSubs"),
+            maxKeys: obj.intOrNull("maxKeys"),
+            maxValueBytes: obj.intOrNull("maxValueBytes"),
+            beforeConnect: obj.bool("beforeConnect")
+        )
+    }
+
     private static func parsePeerPresence(_ blob: [String: Any]?) -> [String: PresenceState] {
         guard let blob else { return [:] }
         var out: [String: PresenceState] = [:]
@@ -914,6 +955,21 @@ enum FrameParser {
                 state: PresenceState(rawValue: obj.string("state"))
             )
         }
+        // `user-metadata` (lurker#607) is `peer-presence`'s shape again: network-scoped state
+        // routed by `nick` on a `:server:<id>` carrier, nothing to render, and `values` is
+        // legitimately null — that is how "forget this nick" arrives. ⚠ Below the guard it fell
+        // through to `.other` and drew an empty row in the server buffer on every profile change.
+        if obj.string("type") == "user-metadata" {
+            guard let networkId = obj.intOrNull("networkId") else { return .ignored }
+            let nick = obj.string("nick")
+            if nick.isEmpty { return .ignored }
+            let values = (obj["values"] as? [String: Any]).map(parseUserMetadataRecord)
+            return .userMetadata(networkId: networkId, nick: nick, values: values)
+        }
+        // `channel-metadata` is a channel's own display name and avatar, whole. The web stores it
+        // and nothing reads it, and channel avatars are outside #607 — so the kit knows the type
+        // only so it is never a line. State it is, state it stays: nothing to apply.
+        if obj.string("type") == "channel-metadata" { return .ignored }
         // `away-state` is network-scoped state like `peer-presence`, and its `:server:<id>`
         // target is the same kind of carrier — so it's handled above the target guard too,
         // and for the extra reason that its payload is legitimately *null*: an account with

@@ -50,8 +50,47 @@ public enum NickCompletion {
         limit: Int = 4,
         ignores: IgnoreSet = .empty,
         networkId: Int? = nil,
-        channel: String = ""
+        channel: String = "",
+        displayName: ((String) -> String?)? = nil
     ) -> [String] {
+        rows(
+            speakers: speakers, members: members, selfNick: selfNick, query: query,
+            isChannel: isChannel, limit: limit, ignores: ignores, networkId: networkId,
+            channel: channel, displayName: displayName
+        ).map(\.nick)
+    }
+
+    /// One offered nick, with the display name it matched or wears (lurker#1203) so the chip can
+    /// show it. ⚠ `nick` is what a pick inserts — always: a display name is text another user
+    /// controls, and addressing someone by it addresses nobody.
+    public struct Candidate: Equatable, Sendable {
+        public let nick: String
+        /// The plain (stripped) display name, when the user has one and the setting shows it.
+        public let displayName: String?
+
+        public init(nick: String, displayName: String? = nil) {
+            self.nick = nick
+            self.displayName = displayName
+        }
+    }
+
+    /// `candidates` with the display name beside each nick. `displayName` answers a nick's plain
+    /// shown name (`ChatState.plainDisplayName`), or nil; with it, a candidate also matches on the
+    /// name — its start, or the start of any of its words, so `bra` finds "Brad Root" and `root`
+    /// does too — the web's `nickCompletion.ts` rule. Without it (or with the setting off, when
+    /// the resolver answers nil) this is the old matcher.
+    public static func rows(
+        speakers: SpeakerMap,
+        members: [Member],
+        selfNick: String?,
+        query: String,
+        isChannel: Bool,
+        limit: Int = 4,
+        ignores: IgnoreSet = .empty,
+        networkId: Int? = nil,
+        channel: String = "",
+        displayName: ((String) -> String?)? = nil
+    ) -> [Candidate] {
         let prefix = query.lowercased()
         var seen = Set<String>()
         if let selfNick { seen.insert(selfNick.lowercased()) }
@@ -66,7 +105,23 @@ public enum NickCompletion {
                 networkId: networkId, nick: nick, userhost: userhost, channel: channel
             )
         }
-        var out: [String] = []
+        func nameOf(_ nick: String) -> String? { displayName?(nick) }
+        func nameMatches(_ name: String?) -> Bool {
+            guard let name = name?.lowercased() else { return false }
+            if name.hasPrefix(prefix) { return true }
+            return name.split(whereSeparator: { $0.isWhitespace }).contains { $0.hasPrefix(prefix) }
+        }
+        /// Whether `nick` is offered, and its name if that was looked up on the way: the nick's
+        /// own prefix is the cheap test and the common hit, so the name — a settings read, a fold
+        /// and a strip per member — is resolved only when the nick alone didn't match. A kept
+        /// candidate gets its name for the chip afterwards, and only the few kept do.
+        func matches(_ nick: String) -> (Bool, String?) {
+            if nick.lowercased().hasPrefix(prefix) { return (true, nil) }
+            guard displayName != nil else { return (false, nil) }
+            let name = nameOf(nick)
+            return (nameMatches(name), name)
+        }
+        var out: [Candidate] = []
 
         // Speakers, newest first. Only speech counts, and never our own — the map records
         // message/action from others alone, so a notice bot or a join flood never crowds it.
@@ -74,14 +129,16 @@ public enum NickCompletion {
             guard out.count < limit else { return out }
             let nick = speaker.nick
             let lc = nick.lowercased()
-            guard !seen.contains(lc), lc.hasPrefix(prefix) else { continue }
+            guard !seen.contains(lc) else { continue }
+            let (matched, name) = matches(nick)
+            guard matched else { continue }
             let member = memberByNick[lc]
             if isChannel, member == nil { continue }
             // Marked seen either way: an ignored nick is *decided*, and leaving it unseen would
             // let the member pass below offer the same person the speaker pass just refused.
             seen.insert(lc)
             if isIgnored(nick, member?.userhost) { continue }
-            out.append(nick)
+            out.append(Candidate(nick: nick, displayName: name ?? nameOf(nick)))
         }
 
         // Then everyone else who's here, in case-folded alphabetical order — the same
@@ -89,14 +146,17 @@ public enum NickCompletion {
         // is about who you're addressing, not who has ops). Filtered before the sort: a
         // bare word asks on most keystrokes, and a big channel's whole member list
         // shouldn't be sorted for the handful that match.
-        let matching = members.filter { $0.nick.lowercased().hasPrefix(prefix) }
-        for member in matching.sorted(by: { $0.nick.lowercased() < $1.nick.lowercased() }) {
+        let matching = members.compactMap { member -> (Member, String?)? in
+            let (matched, name) = matches(member.nick)
+            return matched ? (member, name) : nil
+        }
+        for (member, name) in matching.sorted(by: { $0.0.nick.lowercased() < $1.0.nick.lowercased() }) {
             guard out.count < limit else { return out }
             let lc = member.nick.lowercased()
             guard !seen.contains(lc) else { continue }
             seen.insert(lc)
             if isIgnored(member.nick, member.userhost) { continue }
-            out.append(member.nick)
+            out.append(Candidate(nick: member.nick, displayName: name ?? nameOf(member.nick)))
         }
         return out
     }
