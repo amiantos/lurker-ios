@@ -114,8 +114,14 @@ final class NickAvatarView: UIView {
         imageView.isHidden = true
         accessibilityLabel = spec.nick
         guard let model else { return }
-        // The tile first and the avatar over it: whichever is cached shows at once, and the avatar
-        // replaces the tile when it lands rather than leaving a blank square while it loads.
+        // An avatar already decoded is the whole answer: no tile fetched underneath it to be
+        // thrown away. Otherwise the tile first and the avatar over it, so whichever is cached
+        // shows at once and the avatar replaces the tile when it lands rather than leaving a blank
+        // square while it loads.
+        if let image = spec.imagePath, let cached = PreviewImageLoader.shared.image(for: image) {
+            place(cached, layer: 1)
+            return
+        }
         if let tile = spec.tilePath { show(tile, layer: 0, model: model, generation: generation) }
         if let image = spec.imagePath { show(image, layer: 1, model: model, generation: generation) }
     }
@@ -161,7 +167,8 @@ final class NickAvatarView: UIView {
         return floor(min(em * font.pointSize, twoLines))
     }
 
-    /// The web's `--space-4` beside the tile (8px each side) and `--space-5` after the hairline.
+    /// The web's `--space-4` between the tile and the hairline, and `--space-5` after it. The tile
+    /// itself sits at the row's side margin, where the text sits without the column.
     static let gutterPadding: CGFloat = 8
     static let gutterAfterLine: CGFloat = 10
 
@@ -173,11 +180,13 @@ final class NickAvatarView: UIView {
     /// display name's initial: the bridged speaker isn't a network nick, and a record under that
     /// spelling would be someone else's. Its generated tile still hashes the shown name, as the
     /// web's does.
+    ///
+    /// `active` and `stopChars` are resolved once per list by the caller (`AvatarSets.active`,
+    /// `AvatarSets.stopChars`), not per row: the resolution walks every set.
     static func spec(
-        for message: Message, networkId: Int?, state: ChatState, sets: AvatarSets, networkName: String?
+        for message: Message, networkId: Int?, state: ChatState,
+        active: AvatarSet, stopChars: Set<Unicode.Scalar>, networkName: String?
     ) -> Spec {
-        let settings = state.settings
-        let active = sets.active(settings: settings)
         let nick: String?
         let color: UIColor
         let mark: Mark?
@@ -207,7 +216,7 @@ final class NickAvatarView: UIView {
             nick: nick,
             color: color,
             imagePath: meta?.avatarUrl,
-            tilePath: mark == nil ? sets.tilePath(for: nick, settings: settings) : nil,
+            tilePath: mark == nil ? active.tilePath(for: nick, stopChars: stopChars) : nil,
             letter: letter,
             ink: active.ink,
             mark: mark

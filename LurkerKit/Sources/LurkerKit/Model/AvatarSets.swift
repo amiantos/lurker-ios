@@ -46,6 +46,16 @@ public struct AvatarSet: Equatable, Sendable, Identifiable {
         if case .tiles(_, let count, _) = kind { return count }
         return 0
     }
+
+    /// The server-relative path of `nick`'s tile in this set, or nil when there is no image to
+    /// draw: an Initial set, a tiles set whose manifest hasn't landed, or no nick. `stopChars` is
+    /// the colour's (`look.nick.color_stop_chars`), resolved once by the caller for every row.
+    public func tilePath(for nick: String?, stopChars: Set<Unicode.Scalar>) -> String? {
+        guard case .tiles(let base, let count, let ext) = kind,
+              let index = AvatarTiles.index(for: nick, count: count, stopChars: stopChars)
+        else { return nil }
+        return AvatarTiles.url(base: base, index: index, ext: ext)
+    }
 }
 
 /// An uploaded set as `GET /api/avatar-sets` lists it.
@@ -146,13 +156,15 @@ public struct AvatarSets: Equatable, Sendable {
         return set(id: pointer) ?? set(id: Self.defaultSetId) ?? Self.builtins[Self.builtins.count - 1]
     }
 
-    /// The server-relative path of `nick`'s tile in the active set, or nil when there is no image
-    /// to draw: an Initial set, a tiles set whose manifest hasn't landed, or no nick.
+    /// The colour's stop characters as the tile hash wants them (`look.nick.color_stop_chars`).
+    public static func stopChars(settings: Settings) -> Set<Unicode.Scalar> {
+        AvatarTiles.stopChars(settings.string("look.nick.color_stop_chars", default: "_|"))
+    }
+
+    /// `nick`'s tile in the active set — `AvatarSet.tilePath` after `active(settings:)`. For one
+    /// lookup; a list resolves the set once and asks it per row.
     public func tilePath(for nick: String?, settings: Settings) -> String? {
-        guard case .tiles(let base, let count, let ext) = active(settings: settings).kind else { return nil }
-        let stop = AvatarTiles.stopChars(settings.string("look.nick.color_stop_chars", default: "_|"))
-        guard let index = AvatarTiles.index(for: nick, count: count, stopChars: stop) else { return nil }
-        return AvatarTiles.url(base: base, index: index, ext: ext)
+        active(settings: settings).tilePath(for: nick, stopChars: Self.stopChars(settings: settings))
     }
 
     // MARK: - Decoding

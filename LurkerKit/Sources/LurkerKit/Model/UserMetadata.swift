@@ -98,6 +98,13 @@ public final class UserMetadataSet: Sendable {
         }
     }
 
+    /// An already-folded map, for the patch paths: the set holds a record for every nick the
+    /// server knows across every network, and a join on a busy network arrives as one event per
+    /// nick — re-folding every key on each would be quadratic across the burst.
+    private init(folded: [Int: [String: UserMetadata]]) {
+        byNetwork = folded
+    }
+
     public static let empty = UserMetadataSet()
 
     static func fold(_ nick: String) -> String { NickColor.lowercasedLikeTheWeb(nick) }
@@ -120,8 +127,8 @@ public final class UserMetadataSet: Sendable {
         } else {
             bucket.removeValue(forKey: Self.fold(nick))
         }
-        next[networkId] = bucket
-        return UserMetadataSet(byNetwork: next)
+        next[networkId] = bucket.isEmpty ? nil : bucket
+        return UserMetadataSet(folded: next)
     }
 
     /// This set without `networkId` — the network was deleted.
@@ -129,7 +136,7 @@ public final class UserMetadataSet: Sendable {
         guard byNetwork[networkId] != nil else { return self }
         var next = byNetwork
         next[networkId] = nil
-        return UserMetadataSet(byNetwork: next)
+        return UserMetadataSet(folded: next)
     }
 
     /// How many nicks have a record on `networkId` — for tests and `/metadata list`-style

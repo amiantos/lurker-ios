@@ -64,6 +64,10 @@ struct MessageListContext {
     /// strip-to-empty rule. The renderer decides where a raw name goes (the head) and where its
     /// plain form does (narration, quotes); the relay exclusion is the renderer's too.
     var displayName: (String) -> String? = { _ in nil }
+    /// `displayName`'s plain form — `ChatState.plainDisplayName` — for narration and quotes.
+    /// Carried beside the raw one rather than derived here, so the raw→plain rule lives in the
+    /// store alone.
+    var plainName: (String) -> String? = { _ in nil }
     /// The avatar column (lurker#607), or nil while `look.message.avatars` is off.
     var avatars: AvatarContext?
 }
@@ -141,14 +145,18 @@ struct MessageListRenderer {
     func cell(
         for row: MessageRow, at index: Int, in tableView: UITableView, context: MessageListContext
     ) -> UITableViewCell {
-        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: context.settings), traits: context.traits)
+        // Under the avatar column the gutter is the body indent (lurker#607) — this list's rule,
+        // taken here where the column is drawn; the feed shares the density and has no column.
+        let density = CompactDensity(settings: context.settings)
+        let spacing = MessageRenderer.CompactSpacing(
+            context.avatars == nil ? density : density.flushBodies, traits: context.traits
+        )
         if let marker = MessageListMarker.cell(for: row, in: tableView, spacing: spacing, traits: context.traits) {
             return marker
         }
 
         let cell = tableView.dequeueReusableCell(withIdentifier: CompactCell.reuseID) as! CompactCell
-        // The plain shown name for narration and quotes (lurker#1203).
-        let names: MessageRenderer.NameLookup = { UserMetadata.shown(context.displayName($0)) }
+        let names = context.plainName
         switch row {
         case .bubble(let message, let position):
             // Once, not three times: it builds a caption and formats a time, and this runs for
@@ -332,8 +340,7 @@ struct MessageListRenderer {
             return nil
         }
         return CompactCell.ReplyLine(
-            quote: message.replyQuote, onJump: context.onJumpToReply,
-            names: { UserMetadata.shown(context.displayName($0)) }
+            quote: message.replyQuote, onJump: context.onJumpToReply, names: context.plainName
         )
     }
 

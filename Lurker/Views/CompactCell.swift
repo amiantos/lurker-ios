@@ -499,13 +499,12 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // The avatar column (lurker#607). Every row takes the gutter while avatars are on —
         // continuations and narration too, so bodies stay on one edge — and only a run's first
         // row draws a tile, centred on its head and first body line, the two lines a short
-        // message's wash covers. The web's `--space-4` each side of the tile, a hairline, then
-        // `--space-5` before the text.
+        // message's wash covers. The tile at the side margin where the text otherwise starts,
+        // the web's `--space-4`, a hairline, then `--space-5` before the text.
         avatarView.onTap = nil
         if let avatar {
-            columnLeading.constant = NickAvatarView.gutterPadding + avatar.size
-                + NickAvatarView.gutterPadding + NickAvatarView.gutterAfterLine
-            hairlineLeading.constant = NickAvatarView.gutterPadding + avatar.size + NickAvatarView.gutterPadding
+            columnLeading.constant = avatar.size + NickAvatarView.gutterPadding + NickAvatarView.gutterAfterLine
+            hairlineLeading.constant = avatar.size + NickAvatarView.gutterPadding
             hairline.isHidden = false
             avatarSize.constant = avatar.size
             if let spec = avatar.spec, header != nil {

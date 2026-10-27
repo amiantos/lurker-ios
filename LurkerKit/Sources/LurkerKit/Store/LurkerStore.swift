@@ -640,16 +640,21 @@ public struct ChatState: Sendable {
     /// name strips to nothing. ⚠ The nick stays the identity — colour, sort, mentions, the
     /// profile's title — so this answers what to *print*, never what to key on.
     public func displayName(networkId: Int?, nick: String?) -> String? {
-        guard settings.bool(Self.displayNamesKey, default: true),
-              let raw = metadata(networkId: networkId, nick: nick)?.displayName,
-              UserMetadata.shown(raw) != nil
-        else { return nil }
-        return raw
+        shownName(networkId: networkId, nick: nick)?.raw
     }
 
     /// `displayName` for a plain surface — the roster, a DM row, a chip: codes stripped.
     public func plainDisplayName(networkId: Int?, nick: String?) -> String? {
-        UserMetadata.shown(displayName(networkId: networkId, nick: nick))
+        shownName(networkId: networkId, nick: nick)?.plain
+    }
+
+    /// Both forms from one strip: the raw name is only shown when its plain form is something.
+    private func shownName(networkId: Int?, nick: String?) -> (raw: String, plain: String)? {
+        guard settings.bool(Self.displayNamesKey, default: true),
+              let raw = metadata(networkId: networkId, nick: nick)?.displayName,
+              let plain = UserMetadata.shown(raw)
+        else { return nil }
+        return (raw, plain)
     }
 
     /// What a plain surface prints for `nick`: its display name, else the nick itself.

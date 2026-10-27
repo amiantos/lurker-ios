@@ -513,6 +513,25 @@ final class UserProfileViewController: UITableViewController {
     /// thing to put at the head of a page about the person. Nil takes it down.
     private var avatarPath: String?
     private let avatarImage = UIImageView()
+    /// Built once: the image view's size constraints live on the image view, and re-adding them
+    /// per update would stack identical constraints on it for the page's lifetime.
+    private lazy var avatarHeader: UIView = {
+        avatarImage.contentMode = .scaleAspectFill
+        avatarImage.clipsToBounds = true
+        avatarImage.layer.cornerRadius = 6
+        avatarImage.layer.cornerCurve = .continuous
+        avatarImage.translatesAutoresizingMaskIntoConstraints = false
+        avatarImage.isAccessibilityElement = true
+        let header = UIView(frame: CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 88))
+        header.addSubview(avatarImage)
+        NSLayoutConstraint.activate([
+            avatarImage.widthAnchor.constraint(equalToConstant: 64),
+            avatarImage.heightAnchor.constraint(equalToConstant: 64),
+            avatarImage.centerXAnchor.constraint(equalTo: header.centerXAnchor),
+            avatarImage.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
+        ])
+        return header
+    }()
 
     private func showAvatar(_ path: String?) {
         guard path != avatarPath else { return }
@@ -531,21 +550,7 @@ final class UserProfileViewController: UITableViewController {
 
     private func placeAvatar(_ image: UIImage) {
         avatarImage.image = image
-        avatarImage.contentMode = .scaleAspectFill
-        avatarImage.clipsToBounds = true
-        avatarImage.layer.cornerRadius = 6
-        avatarImage.layer.cornerCurve = .continuous
-        avatarImage.translatesAutoresizingMaskIntoConstraints = false
-        avatarImage.isAccessibilityElement = true
         avatarImage.accessibilityLabel = "\(nick)'s avatar"
-        let header = UIView(frame: CGRect(x: 0, y: 0, width: tableView.bounds.width, height: 88))
-        header.addSubview(avatarImage)
-        NSLayoutConstraint.activate([
-            avatarImage.widthAnchor.constraint(equalToConstant: 64),
-            avatarImage.heightAnchor.constraint(equalToConstant: 64),
-            avatarImage.centerXAnchor.constraint(equalTo: header.centerXAnchor),
-            avatarImage.topAnchor.constraint(equalTo: header.topAnchor, constant: 8),
-        ])
-        tableView.tableHeaderView = header
+        tableView.tableHeaderView = avatarHeader
     }
 }

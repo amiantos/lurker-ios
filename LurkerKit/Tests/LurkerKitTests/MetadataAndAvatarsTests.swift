@@ -130,6 +130,9 @@ final class MetadataAndAvatarsTests: XCTestCase {
         store.apply(.userMetadata(networkId: 2, nick: "alice", values: nil))
         XCTAssertNil(store.state.metadata(networkId: 2, nick: "alice"))
         XCTAssertEqual(store.state.userMetadata.count(networkId: 2), 0)
+        // The patch path folds its one key like the seed folds all of them.
+        store.apply(.userMetadata(networkId: 2, nick: "ΟΔΥΣΣΕΥΣ", values: UserMetadata(status: "x")))
+        XCTAssertEqual(store.state.metadata(networkId: 2, nick: "οδυσσευς")?.status, "x")
     }
 
     func testMetadataIsPerNetworkAndSnapshotReplacesWholesale() {
@@ -318,14 +321,25 @@ final class MetadataAndAvatarsTests: XCTestCase {
 
     // MARK: - Density
 
-    func testCompactIndentIsZeroWhileAvatarsAreOn() {
-        let on = CompactDensity(settings: settings([CompactDensity.indentKey: .int(4), CompactDensity.avatarsKey: .bool(true)]))
-        XCTAssertEqual(on.indent, 0)
-        XCTAssertEqual(on.groupGap, 10)
-        let off = CompactDensity(settings: settings([CompactDensity.indentKey: .int(4), CompactDensity.avatarsKey: .bool(false)]))
-        XCTAssertEqual(off.indent, 4)
+    func testTheGutterIsTheIndentOnlyWhereItIsDrawn() {
+        // The setting reads as stored whatever the avatar switch says — the feed shares it and
+        // draws no gutter; the list takes `flushBodies` where it draws the column.
+        let density = CompactDensity(settings: settings([CompactDensity.indentKey: .int(4), CompactDensity.avatarsKey: .bool(true)]))
+        XCTAssertEqual(density.indent, 4)
+        XCTAssertEqual(density.flushBodies, CompactDensity(groupGap: 10, lineHeightPercent: 155, indent: 0))
         XCTAssertTrue(CompactDensity.avatarsOn(settings([CompactDensity.avatarsKey: .bool(true)])))
         XCTAssertFalse(CompactDensity.avatarsOn(settings([:])))
+    }
+
+    func testASetAnswersTilePathsOnItsOwn() {
+        var sets = AvatarSets()
+        sets.manifests["ealain"] = AvatarSetManifest(count: 140)
+        let active = sets.active(settings: settings([AvatarSets.settingKey: .string("ealain")]))
+        XCTAssertEqual(active.tilePath(for: "bob", stopChars: AvatarTiles.defaultStopChars), "/avatars/ealain/004.webp")
+        XCTAssertEqual(active.tilePath(for: "bob-x", stopChars: ["-"]), "/avatars/ealain/004.webp")
+        XCTAssertNil(active.tilePath(for: nil, stopChars: []))
+        XCTAssertNil(sets.active(settings: settings([:])).tilePath(for: "bob", stopChars: []), "an Initial set draws a letter")
+        XCTAssertEqual(AvatarSets.stopChars(settings: settings(["look.nick.color_stop_chars": .string("-")])), ["-"])
     }
 
     // MARK: - Completion

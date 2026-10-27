@@ -283,8 +283,10 @@ public final class ChatViewModel {
         client.clearMediaCache()
         client.clearStagedMedia()
         features = InstanceFeatures()
-        // The departing account's sets, for the same reason as `features` (lurker#607).
+        // The departing account's sets, for the same reason as `features` (lurker#607) — and a read
+        // of them still out, which would otherwise land in the next account's session.
         avatarSetsSubject.send(.none)
+        avatarSetReads.supersedeInFlight()
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and
@@ -701,15 +703,16 @@ public final class ChatViewModel {
     private let avatarSetsSubject = CurrentValueSubject<AvatarSets, Never>(.none)
     private var avatarSetReads = NewestAnswer()
 
-    /// Re-read the uploaded sets, and any bundled manifest not read yet this sign-in. A failed
-    /// read keeps the last answer — one 502 must not blank every tile.
+    /// Re-read the uploaded sets and every bundled manifest. The manifests too, every time: a
+    /// deploy that re-cuts a set changes its count without changing its URL, and a deploy is what
+    /// drops the socket — the same reason `/api/config` is read on every reconnect. Three small
+    /// revalidating GETs. A failed read keeps the last answer — one 502 must not blank every tile.
     private func refreshAvatarSets() {
         let read = avatarSetReads.start()
-        let missing = AvatarSets.builtinTileSetIds.filter { avatarSets.manifests[$0] == nil }
         Task {
             let uploaded = await client.fetchAvatarSets()
             var manifests: [String: AvatarSetManifest] = [:]
-            for id in missing {
+            for id in AvatarSets.builtinTileSetIds {
                 if let manifest = await client.fetchAvatarManifest(setId: id) { manifests[id] = manifest }
             }
             guard session == .loggedIn, avatarSetReads.accept(read) else { return }
@@ -2656,8 +2659,10 @@ public final class ChatViewModel {
         client.clearMediaCache()
         client.clearStagedMedia()
         features = InstanceFeatures()
-        // The departing account's sets, for the same reason as `features` (lurker#607).
+        // The departing account's sets, for the same reason as `features` (lurker#607) — and a read
+        // of them still out, which would otherwise land in the next account's session.
         avatarSetsSubject.send(.none)
+        avatarSetReads.supersedeInFlight()
         lastPreviewToggles = nil
         store.reset()
         // ⚠ The correlator holds the TEXT of every unanswered send, so it is account data and

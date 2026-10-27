@@ -106,11 +106,20 @@ public enum NickCompletion {
             )
         }
         func nameOf(_ nick: String) -> String? { displayName?(nick) }
-        func matches(_ nick: String, _ name: String?) -> Bool {
-            if nick.lowercased().hasPrefix(prefix) { return true }
+        func nameMatches(_ name: String?) -> Bool {
             guard let name = name?.lowercased() else { return false }
             if name.hasPrefix(prefix) { return true }
             return name.split(whereSeparator: { $0.isWhitespace }).contains { $0.hasPrefix(prefix) }
+        }
+        /// Whether `nick` is offered, and its name if that was looked up on the way: the nick's
+        /// own prefix is the cheap test and the common hit, so the name — a settings read, a fold
+        /// and a strip per member — is resolved only when the nick alone didn't match. A kept
+        /// candidate gets its name for the chip afterwards, and only the few kept do.
+        func matches(_ nick: String) -> (Bool, String?) {
+            if nick.lowercased().hasPrefix(prefix) { return (true, nil) }
+            guard displayName != nil else { return (false, nil) }
+            let name = nameOf(nick)
+            return (nameMatches(name), name)
         }
         var out: [Candidate] = []
 
@@ -121,15 +130,15 @@ public enum NickCompletion {
             let nick = speaker.nick
             let lc = nick.lowercased()
             guard !seen.contains(lc) else { continue }
-            let name = nameOf(nick)
-            guard matches(nick, name) else { continue }
+            let (matched, name) = matches(nick)
+            guard matched else { continue }
             let member = memberByNick[lc]
             if isChannel, member == nil { continue }
             // Marked seen either way: an ignored nick is *decided*, and leaving it unseen would
             // let the member pass below offer the same person the speaker pass just refused.
             seen.insert(lc)
             if isIgnored(nick, member?.userhost) { continue }
-            out.append(Candidate(nick: nick, displayName: name))
+            out.append(Candidate(nick: nick, displayName: name ?? nameOf(nick)))
         }
 
         // Then everyone else who's here, in case-folded alphabetical order — the same
@@ -138,8 +147,8 @@ public enum NickCompletion {
         // bare word asks on most keystrokes, and a big channel's whole member list
         // shouldn't be sorted for the handful that match.
         let matching = members.compactMap { member -> (Member, String?)? in
-            let name = nameOf(member.nick)
-            return matches(member.nick, name) ? (member, name) : nil
+            let (matched, name) = matches(member.nick)
+            return matched ? (member, name) : nil
         }
         for (member, name) in matching.sorted(by: { $0.0.nick.lowercased() < $1.0.nick.lowercased() }) {
             guard out.count < limit else { return out }
@@ -147,7 +156,7 @@ public enum NickCompletion {
             guard !seen.contains(lc) else { continue }
             seen.insert(lc)
             if isIgnored(member.nick, member.userhost) { continue }
-            out.append(Candidate(nick: member.nick, displayName: name))
+            out.append(Candidate(nick: member.nick, displayName: name ?? nameOf(member.nick)))
         }
         return out
     }

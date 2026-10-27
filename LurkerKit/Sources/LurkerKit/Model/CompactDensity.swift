@@ -20,11 +20,11 @@ public struct CompactDensity: Equatable, Sendable {
     public let lineHeightPercent: Int
     /// How far a message body sits in from the nick above it, in characters.
     ///
-    /// ⚠ Zero while `look.message.avatars` is on, whatever the setting says: beside the gutter's
-    /// hairline any body indent reads as a stray margin, so the gutter is the indent and the
-    /// setting does not apply (the registry greys it out, `dependsOn`). Resolved here, in
-    /// `init(settings:)`, so every consumer of the indent — body, reply quote, attachments,
-    /// reactions — gets the rule from one place (lurker#1203).
+    /// ⚠ The web ignores it while `look.message.avatars` is on: beside the gutter's hairline any
+    /// body indent reads as a stray margin, so the gutter is the indent and the setting does not
+    /// apply (the registry greys it out, `dependsOn`). That rule is the LIST's, which draws the
+    /// gutter — `flushBodies`, taken where the column is drawn — not this struct's: the history
+    /// feed reads the same settings and draws no gutter (lurker#1203).
     public let indent: Int
 
     public static let groupGapKey = "look.message.compact.group_gap"
@@ -48,12 +48,19 @@ public struct CompactDensity: Equatable, Sendable {
         self.init(
             groupGap: settings.int(Self.groupGapKey, default: Self.standard.groupGap),
             lineHeightPercent: settings.int(Self.lineHeightKey, default: Self.standard.lineHeightPercent),
-            indent: Self.avatarsOn(settings) ? 0 : settings.int(Self.indentKey, default: Self.standard.indent)
+            indent: settings.int(Self.indentKey, default: Self.standard.indent)
         )
     }
 
     /// Whether the compact layout draws the avatar column (lurker#607).
     public static func avatarsOn(_ settings: Settings) -> Bool {
         settings.bool(avatarsKey, default: false)
+    }
+
+    /// This density with the body indent off — for a list drawing the avatar gutter, where the
+    /// gutter is the indent. One place, so the body, the reply quote, the attachments and the
+    /// reactions can't disagree about it.
+    public var flushBodies: CompactDensity {
+        CompactDensity(groupGap: groupGap, lineHeightPercent: lineHeightPercent, indent: 0)
     }
 }

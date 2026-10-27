@@ -712,6 +712,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self, CompactDensity.avatarsOn(settings) else { return }
+                refreshAvatarSpec(viewModel.state)
                 tableView.reloadData()
             }
             .store(in: &cancellables)
@@ -1198,6 +1199,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         messages = updated
         settings = state.settings
+        refreshAvatarSpec(state)
         speakers = state.speakers[buffer.key.id] ?? SpeakerMap()
         ownNick = Self.ownNick(for: state, buffer: buffer)
         awayState = Self.awayState(for: state, buffer: buffer)
@@ -3823,30 +3825,45 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 guard let self else { return nil }
                 return viewModel.state.displayName(networkId: buffer.networkId, nick: nick)
             },
-            avatars: avatarContext
+            plainName: { [weak self] nick in
+                guard let self else { return nil }
+                return viewModel.state.plainDisplayName(networkId: buffer.networkId, nick: nick)
+            },
+            avatars: avatarSpec.map { spec in
+                AvatarContext(
+                    // The size follows the traits, which can change without an `apply` (Dynamic
+                    // Type rebuilds the cells); cheap, the font metrics are cached.
+                    size: NickAvatarView.size(
+                        spacing: MessageRenderer.CompactSpacing(CompactDensity(settings: settings), traits: traitCollection),
+                        traits: traitCollection
+                    ),
+                    model: viewModel,
+                    spec: spec,
+                    onTap: { [weak self] message in self?.avatarTapped(message) }
+                )
+            }
         )
     }
 
-    /// The avatar column (lurker#607), while `look.message.avatars` is on. The store and the sets
-    /// are read once per context — once per drawn row — and the tile resolved from those, so a
-    /// row can't be drawn from two different states.
-    private var avatarContext: AvatarContext? {
-        guard CompactDensity.avatarsOn(settings) else { return nil }
-        let state = viewModel.state
-        let sets = viewModel.avatarSets
+    /// What a row's tile is (lurker#607), or nil while `look.message.avatars` is off. Snapshotted
+    /// per apply rather than built per row, like `modePrefixes`: the active set is resolved once
+    /// (it walks every set) and the state it reads is the one the rows were built from.
+    private var avatarSpec: ((Message) -> NickAvatarView.Spec)?
+
+    private func refreshAvatarSpec(_ state: ChatState) {
+        guard CompactDensity.avatarsOn(state.settings) else {
+            avatarSpec = nil
+            return
+        }
+        let active = viewModel.avatarSets.active(settings: state.settings)
+        let stopChars = AvatarSets.stopChars(settings: state.settings)
         let networkId = buffer.networkId
-        let spacing = MessageRenderer.CompactSpacing(CompactDensity(settings: settings), traits: traitCollection)
-        return AvatarContext(
-            size: NickAvatarView.size(spacing: spacing, traits: traitCollection),
-            model: viewModel,
-            spec: { [weak self] message in
-                NickAvatarView.spec(
-                    for: message, networkId: networkId, state: state, sets: sets,
-                    networkName: self?.networkName(for: message)
-                )
-            },
-            onTap: { [weak self] message in self?.avatarTapped(message) }
-        )
+        avatarSpec = { [weak self] message in
+            NickAvatarView.spec(
+                for: message, networkId: networkId, state: state, active: active, stopChars: stopChars,
+                networkName: self?.networkName(for: message)
+            )
+        }
     }
 
     /// A tap on a tile opens the profile (lurker#1203) — the one-tap "who is this"; the row's long
