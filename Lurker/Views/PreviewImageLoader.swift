@@ -40,7 +40,7 @@ final class PreviewImageLoader {
     /// row was configured, which during a scroll is several times a second.
     private var failed = Set<String>()
 
-    /// The one decoder, so decodes run ONE AT A TIME.
+    /// The one decoder for stills, so still decodes run ONE AT A TIME.
     ///
     /// ⚠ The bound in `PreviewImageBudget` is per image, and a backlog restore configures a
     /// dozen attachment rows in one layout pass. A detached decode per row — which is what
@@ -48,7 +48,13 @@ final class PreviewImageLoader {
     /// is the jetsam the bound exists to prevent, one layer up. Serial, not a small pool: a
     /// still decodes in tens of milliseconds, and nothing a reader could see is gained by two
     /// at once.
-    private static let decoder = StillDecoder()
+    private static let stills = StillDecoder()
+
+    /// Animations on a lane of their own. A frame loop is bounded by decoded bytes, not by frame
+    /// count or time, so a GIF of forty thousand tiny frames would otherwise hold every still,
+    /// tile and avatar in the app behind it for as long as it took to walk. Two lanes is a peak
+    /// of one still plus one animation — bounded both — not one of each row.
+    private static let animations = StillDecoder()
 
     private init() {
         // Counted in decoded bytes via `cost` below; a few dozen full-width previews.
@@ -87,7 +93,7 @@ final class PreviewImageLoader {
             var isVerdict = true
             switch await model.proxiedMedia(path: path) {
             case .success(let data):
-                let decoded = await Self.decoder.still(data)
+                let decoded = await Self.stills.still(data)
                 image = decoded.image
                 // Recorded whether or not it animates, so `isAnimated` can answer "no" without
                 // confusing it with "not loaded yet". A refused or undecodable still answers
@@ -154,7 +160,7 @@ final class PreviewImageLoader {
                 deliver(nil)
                 return
             }
-            deliver(await Self.decoder.animation(data))
+            deliver(await Self.animations.animation(data))
         }
     }
 
@@ -214,6 +220,10 @@ private actor StillDecoder {
         // decoding the full canvas and shrinking it, so a large ordinary photo costs what the
         // thumbnail costs. `ShouldCacheImmediately` is `preparingForDisplay()` by another name
         // — the decode happens here, off the main thread, not at first draw.
+        // ⚠ The thumbnail path carries no gain map, so an HDR photo decodes SDR. Nothing in the
+        // app displayed HDR before either — no image view sets `preferredImageDynamicRange` — so
+        // this is a note, not a loss. If HDR is ever wanted, decode through `UIImage(data:)` AFTER
+        // the header has passed the budget, never before.
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -248,6 +258,10 @@ private actor StillDecoder {
         var total = 0.0
         var bytes = 0
         for index in 0..<count {
+            // Every frame's own canvas, not just the first's: a container's images need not share
+            // a size (a HEIC collection), and the budget bounds the decode of each, where the byte
+            // counter below sees only the 720 px thumbnail that came out of it.
+            guard Self.withinBudget(source, at: index) else { return nil }
             guard
                 let frame = CGImageSourceCreateThumbnailAtIndex(
                     source, index, options as CFDictionary)
@@ -272,9 +286,9 @@ private actor StillDecoder {
     /// decoding a pixel, which is the whole point (measured: ~11 MB resident for a 49 MP file).
     /// A container that declares nothing is refused — a size we cannot see is a size we cannot
     /// bound.
-    private static func withinBudget(_ source: CGImageSource) -> Bool {
+    private static func withinBudget(_ source: CGImageSource, at index: Int = 0) -> Bool {
         guard
-            let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+            let properties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
             let width = properties[kCGImagePropertyPixelWidth] as? Int,
             let height = properties[kCGImagePropertyPixelHeight] as? Int
         else { return false }

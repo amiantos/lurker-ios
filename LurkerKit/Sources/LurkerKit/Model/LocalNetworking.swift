@@ -34,22 +34,41 @@ enum LocalNetworking {
         if host == "localhost" { return true }
         // An IPv6 literal.
         if host.contains(":") { return isLocalIPv6(host) }
+        // ⚠⚠ A host made only of numbers is an address in SOME notation, and the resolver's
+        // notation is `inet_aton`'s, not this file's: `010.0.0.1` is 8.0.0.1 (octal), `134744072`
+        // and `0x8080808` are 8.8.8.8, `127.1` is 127.0.0.1. Read here as a decimal quad or as a
+        // "single-label name", every one of those was admitted — and the socket then dialled a
+        // public host. So only a strict dotted-decimal quad, no leading zeros, is an address at
+        // all, and every other numeric spelling is refused whatever it might mean. (The Android
+        // port holds the same rule, so one address is judged alike on both.)
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        if labels.allSatisfy({ isNumericLabel($0) }) {
+            guard labels.count == 4, !labels.contains(where: { $0.count > 1 && $0.first == "0" })
+            else { return false }
+            // ⚠ Every octet has to parse, or `1.2.3.999` would be read on its first components.
+            let octets = labels.compactMap { UInt8($0) }
+            return octets.count == 4 && isLocalIPv4(octets: octets)
+        }
         if host.hasSuffix(".local") { return true }
-        if isLocalIPv4(host) { return true }
-        // A single-label name — `box`, not `box.example.com`. Last, so a dotted quad has already
-        // been judged as an address rather than falling in here as a "name".
+        // A single-label name — `box`, not `box.example.com`. A numeric host has already been
+        // judged above, so `134744072` can't fall in here as a "name".
         return !host.contains(".")
     }
 
+    /// A label `inet_aton` reads as a number: decimal or octal digits, or `0x` hex.
+    private static func isNumericLabel(_ label: Substring) -> Bool {
+        guard !label.isEmpty else { return false }
+        if label.hasPrefix("0x") {
+            let digits = label.dropFirst(2)
+            return !digits.isEmpty && digits.allSatisfy { $0.isHexDigit }
+        }
+        return label.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
     /// The private and machine-local IPv4 ranges: 10/8, 172.16/12, 192.168/16, link-local
-    /// 169.254/16, and loopback 127/8.
-    private static func isLocalIPv4(_ host: String) -> Bool {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4 else { return false }
-        // ⚠ Every octet has to parse, or `1.2.3.four` would be read as an address on its first
-        // two components and admitted.
-        let octets = parts.compactMap { UInt8($0) }
-        guard octets.count == 4 else { return false }
+    /// 169.254/16, and loopback 127/8. Four parsed octets, so the mapped-IPv6 branch asks the
+    /// same question of the same table without spelling the address out and reading it back.
+    private static func isLocalIPv4(octets: [UInt8]) -> Bool {
         switch (octets[0], octets[1]) {
         case (10, _), (127, _), (192, 168), (169, 254): return true
         case (172, 16...31): return true
@@ -73,7 +92,7 @@ enum LocalNetworking {
         if bytes[0] & 0xFE == 0xFC { return true }
         if bytes[0] == 0xFE && bytes[1] & 0xC0 == 0x80 { return true }
         if bytes[0..<10].allSatisfy({ $0 == 0 }) && bytes[10] == 0xFF && bytes[11] == 0xFF {
-            return isLocalIPv4("\(bytes[12]).\(bytes[13]).\(bytes[14]).\(bytes[15])")
+            return isLocalIPv4(octets: Array(bytes[12..<16]))
         }
         return false
     }

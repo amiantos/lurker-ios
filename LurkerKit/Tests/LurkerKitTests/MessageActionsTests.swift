@@ -239,11 +239,18 @@ final class MessageActionsTests: XCTestCase {
 
     // MARK: - Links
 
-    /// A URL is a URL — nothing to gate on, so the list is fixed.
+    /// A web link gets all three.
     func testLinkOffersOpenCopyShare() {
         let actions = MessageActions.build(for: URL(string: "https://example.com")!)
         XCTAssertEqual(actions.map(\.key), [.openLink, .copyLink, .shareLink])
         XCTAssertEqual(actions.map(\.title), ["Open Link", "Copy Link", "Share Link"])
+    }
+
+    /// A link the app won't hand to the system (`ExternalLink`) offers no Open: the menu says so
+    /// by omission rather than offering a tap that does nothing.
+    func testAnUnopenableLinkOffersCopyAndShareOnly() {
+        let actions = MessageActions.build(for: URL(string: "ftp://files.example.org/x")!)
+        XCTAssertEqual(actions.map(\.key), [.copyLink, .shareLink])
     }
 
     func testLinkActionsDispatchToTheirHandlers() {

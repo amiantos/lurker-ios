@@ -73,6 +73,17 @@ final class ServerAddressTests: XCTestCase {
         XCTAssertTrue(ServerAddress.rejection(of: "HTTP://chat.example.org")?.contains("HTTPS") ?? false)
     }
 
+    /// ⚠ And canonical after `normalize`, because what passes the policy is what the client is
+    /// handed: the socket URL rewrites a lowercase `http` to `ws`, and `webSocketTask(with:)`
+    /// traps on any other scheme. Only the scheme is folded — a host keeps its spelling.
+    func testNormalizeLowerCasesTheScheme() {
+        XCTAssertEqual(ServerAddress.normalize("HTTPS://Chat.Example.org/"), "https://Chat.Example.org")
+        XCTAssertEqual(ServerAddress.normalize("Http://localhost:8010"), "http://localhost:8010")
+        XCTAssertEqual(
+            LurkerClient.socketURL(baseURL: ServerAddress.normalize("HTTPS://chat.example.org"), since: 0)?.scheme,
+            "wss")
+    }
+
     /// Equivalent spellings of a local address are the same address to the policy.
     func testIPv6SpellingsPassAlike() {
         XCTAssertNil(ServerAddress.rejection(of: "http://[0:0:0:0:0:0:0:1]:8010"))

@@ -115,7 +115,7 @@ public final class SessionStore: Sendable {
 
     private func write(_ data: Data, _ account: String) {
         // Replace any existing item (Keychain add fails on a duplicate).
-        SecItemDelete(baseQuery(account) as CFDictionary)
+        let deleted = SecItemDelete(baseQuery(account) as CFDictionary)
         var attributes = baseQuery(account)
         attributes[kSecValueData as String] = data
         // Available after the first unlock post-boot — survives a locked screen, which a
@@ -126,8 +126,10 @@ public final class SessionStore: Sendable {
         let status = SecItemAdd(attributes as CFDictionary, nil)
         // ⚠ Loud, status only — never the data. A device where the add fails is signed out on
         // every launch with nothing to explain it, and this line is the one trace that says why.
+        // The delete's status rides along: a delete that failed leaves the old item in place, and
+        // the add then fails as "duplicate item", which on its own would point at the wrong bug.
         if status != errSecSuccess {
-            NSLog("[session] keychain write of %@ failed: OSStatus %d", account, status)
+            NSLog("[session] keychain write of %@ failed: OSStatus %d (delete: %d)", account, status, deleted)
         }
     }
 

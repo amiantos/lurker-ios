@@ -39,7 +39,12 @@ public enum ServerAddress {
         var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
         guard !trimmed.isEmpty else { return trimmed }
-        return trimmed.contains("://") ? trimmed : "https://" + trimmed
+        guard let separator = trimmed.range(of: "://") else { return "https://" + trimmed }
+        // ⚠ The scheme lower-cased, and only the scheme: a phone keyboard capitalises the first
+        // letter of a typed address, and `HTTPS://` loads like `https://` — but the socket URL is
+        // built by rewriting a lowercase `http` to `ws`, so a scheme left as typed would reach
+        // `webSocketTask(with:)` as `HTTPS://`, which it refuses by trapping.
+        return trimmed[..<separator.lowerBound].lowercased() + trimmed[separator.lowerBound...]
     }
 
     /// Why a normalized address fails the transport policy, or nil if it passes.

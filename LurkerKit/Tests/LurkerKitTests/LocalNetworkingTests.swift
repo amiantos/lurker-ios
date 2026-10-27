@@ -73,6 +73,18 @@ final class LocalNetworkingTests: XCTestCase {
         }
     }
 
+    /// ⚠ A host made only of numbers is judged as the address the resolver would DIAL, never as
+    /// a decimal quad or a "name": `inet_aton` reads a leading zero as octal, a lone number as a
+    /// 32-bit address, `0x` as hex, and `127.1` as `127.0.0.1`. Only the strict quad is an address
+    /// here; every other spelling is refused, whatever it might mean.
+    func testNumericSpellingsAreNotLoopholes() {
+        XCTAssertTrue(permits("10.0.0.1"))
+        for host in ["010.0.0.1", "0010.0.0.1", "192.168.001.1", "134744072", "0x8080808", "0x7f.0.0.1",
+                     "127.1", "1.2.3.4.5", "1..2.3", "1.2.3.999"] {
+            XCTAssertFalse(permits(host), "\(host) is not read as a local address")
+        }
+    }
+
     /// ⚠ A dotted string that isn't an address must not fall through to the single-label rule
     /// and be admitted as a "name".
     func testMalformedAddressesAreNotNames() {
