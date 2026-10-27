@@ -461,7 +461,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
                 traits: traits,
                 names: reply.names
             )
-            replyLabel.accessibilityLabel = MessageRenderer.spokenReplyQuote(reply.quote)
+            replyLabel.accessibilityLabel = MessageRenderer.spokenReplyQuote(reply.quote, names: reply.names)
             if let quote = reply.quote, let jump = reply.onJump {
                 onJumpToReply = { jump(quote) }
                 replyLabel.accessibilityTraits = .button
