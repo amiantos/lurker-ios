@@ -127,7 +127,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// below the baseline, so text sits high in it and the bottom of the band reads tighter than
     /// the top even when both are the same number. One point, measured by eye rather than derived
     /// — which is what an optical correction is.
-    private static let washBottomNudge: CGFloat = 1
+    static let washBottomNudge: CGFloat = 1
 
     /// How far the body sits in, as the last `configure` resolved it — what attachments line up
     /// with.
