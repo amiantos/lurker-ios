@@ -715,11 +715,23 @@ public final class ChatViewModel {
         let uploadedRead = uploadedSetReads.start()
         let manifestRead = manifestReads.start()
         Task {
-            let uploaded = await client.fetchAvatarSets()
-            var manifests: [String: AvatarSetManifest] = [:]
-            for id in AvatarSets.builtinTileSetIds {
-                if let manifest = await client.fetchAvatarManifest(setId: id) { manifests[id] = manifest }
+            // The four reads at once: they are independent, and tiles after a connect shouldn't wait
+            // for three round trips in a row.
+            async let list = client.fetchAvatarSets()
+            let ids = AvatarSets.builtinTileSetIds
+            let read: [AvatarSetManifest?] = await withTaskGroup(of: (Int, AvatarSetManifest?).self) { group in
+                for (index, id) in ids.enumerated() {
+                    group.addTask { (index, await self.client.fetchAvatarManifest(setId: id)) }
+                }
+                var out = [AvatarSetManifest?](repeating: nil, count: ids.count)
+                for await (index, manifest) in group { out[index] = manifest }
+                return out
             }
+            var manifests: [String: AvatarSetManifest] = [:]
+            for (id, manifest) in zip(ids, read) {
+                if let manifest { manifests[id] = manifest }
+            }
+            let uploaded = await list
             guard session == .loggedIn else { return }
             var next = avatarSetsSubject.value
             // A failed read consumes no ticket: the answer it didn't get may still come from an
