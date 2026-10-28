@@ -526,8 +526,9 @@ public final class ConversationScroll {
     /// skips nothing.
     ///
     /// ⚠⚠ The latch waits for `Buffer.readStateKnown`, never a row merely existing or
-    /// `hydrated`. Three paths materialize a row carrying nothing but defaults (the connect
-    /// `snapshot`, a live event for an unseen target, a `history` reply), and under all of them
+    /// `hydrated`. Three paths leave a row carrying nothing but defaults (the connect
+    /// `snapshot`, a live event for an unseen target, a channel join) and a fourth flips
+    /// `hydrated` on one without a pointer (a `history` reply); under all of them
     /// `lastReadId` is 0 — indistinguishable from "read nothing". Latching there pinned the
     /// divider at 0 for the visit: no divider and no banner however many unreads (every launch
     /// that restored into a buffer, lurker-ios#49). `hydrated` was the first fix and was inert:
@@ -605,10 +606,12 @@ public final class ConversationScroll {
         let held = frame.held ?? []
         // A row the `/clear` marker hides is held but not drawn — `onRows`' reveal resolves that.
         if held.contains(where: { $0.id == pending.anchorId }) { return nil }
-        // Not before the buffer has a row: a reply is recognised on the row (its reply count), so
-        // one sent now could never be seen to land, and the jump would wait forever. The row
-        // arrives with the burst or the screen leaves (`handleBufferDisappeared`); the next
-        // frame asks.
+        // Not before the buffer has a row. A reply is recognised on the row's reply count — a
+        // `history` reply never creates a row, so one that comes back WITHOUT the anchor
+        // (`anchorMissing`, a pruned line) would leave no trace at all, and the jump would wait
+        // forever. (One carrying the anchor would still be seen, by the anchor itself.) The row
+        // arrives with the burst, or the roster settles without it and `abandons` lets go; the
+        // next frame asks.
         guard let row = frame.row else { return nil }
         if held.isEmpty, row.hydrated { return nil }
         pending.fetch = ReplyWatch.from(frame, anchorId: pending.anchorId)
@@ -633,6 +636,9 @@ public final class ConversationScroll {
         }
         if let fetch = tailFetch, fetch.generation != frame.burstGeneration { tailFetch = nil }
         if tailFetch != nil { return false }
+        // The same wait as `requestAround`'s: a `latest` reply into a buffer with no row moves
+        // nothing a watch could see (no anchor to appear, no row to hydrate or re-attach).
+        guard frame.row != nil else { return false }
         tailFetch = ReplyWatch.from(frame)
         log("latest requested generation=\(frame.burstGeneration)")
         return true
@@ -795,7 +801,11 @@ public final class ConversationScroll {
         let held = current.held ?? []
         if held.contains(where: { $0.id == pending.anchorId }) { return true }
         if !kind.hydratesOnDemand { return current.historyLanded }
-        return held.isEmpty && current.buffer?.hydrated == true
+        // No row, and the roster settled without one: nothing is coming for this key. The screen
+        // leaves on the same evidence (`handleBufferDisappeared`); the machine lets go on its
+        // own too, so a jump never holds the hydrate, the follow and the banner for a visit.
+        guard let buffer = current.buffer else { return current.rosterSettled }
+        return held.isEmpty && buffer.hydrated
     }
 
     /// The row a converging jump scrolls to and flashes: the first unread for the unread jump,

@@ -515,13 +515,42 @@ struct ConversationScrollTests {
     @Test("a jump before the buffer has a row waits for the row, then fetches")
     func jumpBeforeRowWaits() {
         let d = Drive(self)
-        // No row at all yet (a DM awaiting its row): a reply couldn't be seen to land, so no fetch.
-        d.frame(state(noBuffer: true))
+        // No row yet (a key opened by a notification tap before its burst): an anchor-missing
+        // reply into it would leave no trace, so no fetch goes out. The burst is still running,
+        // so the roster hasn't settled and the row may yet come.
+        var opening = state(noBuffer: true)
+        opening.backlogComplete = false
+        d.frame(opening)
         d.scroll.jumpTo(4)
         #expect(d.scroll.requestAround(d.last, key: channel) == nil)
         #expect(isWait(d.land()))
         // The row arrives: the fetch goes out on this frame.
         #expect(d.frame(state(row(hydrated: false))).loadAround == 4)
+    }
+
+    @Test("a jump into a buffer the roster settled without lets go")
+    func jumpIntoRowlessSettledBufferLetsGo() {
+        let d = Drive(self)
+        // A stray slice holds lines but no row, and the burst has listed everything: nothing is
+        // coming for this key, so the jump gives up — at the tail of what's drawn.
+        var s = state(nil, msgs(100...110), noBuffer: true)
+        s.backlogComplete = true
+        d.frame(s)
+        d.scroll.jumpTo(4)
+        #expect(d.scroll.requestAround(d.last, key: channel) == nil)
+        #expect(isAtTail(d.land()))
+        #expect(!d.scroll.jumpPending)
+    }
+
+    @Test("a re-attach before the buffer has a row waits for the row too")
+    func reattachBeforeRowWaits() {
+        let d = Drive(self)
+        d.frame(state(row(hasMoreNewer: true), msgs(1...10)))
+        _ = d.built()
+        #expect(d.scroll.jumpToLatest(hasRows: true, detached: true) == .reattach)
+        // The row drops out under a reconciliation burst: no fetch until it's back.
+        #expect(!d.frame(state(nil, msgs(1...10), noBuffer: true)).loadLatest)
+        #expect(d.frame(state(row(hasMoreNewer: true), msgs(1...10))).loadLatest)
     }
 
     @Test("a jump into a buffer the server says is empty lets go without a fetch")
