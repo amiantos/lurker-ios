@@ -13,8 +13,9 @@ import Foundation
 /// trace has to already be running when it happens, on the device it happens on.
 ///
 /// Off by default and costs nothing off: callers check `isEnabled` before building a line.
-/// Bounded, so a long session never grows it past a few hundred kilobytes; lines carry a buffer
-/// key and a timestamp, never message text.
+/// Bounded, so a long session never grows it past a few hundred kilobytes; lines carry a
+/// buffer's ordinal label and a timestamp — never a key (a channel or a DM peer's name) and
+/// never message text.
 final class ScrollTrace {
     static let shared = ScrollTrace()
 
@@ -22,6 +23,9 @@ final class ScrollTrace {
     private static let capacity = 4000
 
     private var lines: [String] = []
+    /// Ordinals in place of buffer keys: a key names a channel or a DM peer, and the file is
+    /// meant to be handed over. Per process, so a label means the same thing across the file.
+    private var labels: [String: String] = [:]
     private let formatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -34,13 +38,23 @@ final class ScrollTrace {
     func setEnabled(_ on: Bool) {
         isEnabled = on
         UserDefaults.standard.set(on, forKey: Self.enabledKey)
-        if on { note("trace", "on \(Self.build)") } else { lines.removeAll() }
+        if on { note("trace", "on \(Self.build)") } else { lines.removeAll(); labels.removeAll() }
     }
 
-    /// One line, stamped. `source` is the buffer's key id (never its content).
+    /// The label a buffer is written under — see `labels`.
+    func label(for keyId: String) -> String {
+        if let label = labels[keyId] { return label }
+        let label = "b\(labels.count + 1)"
+        labels[keyId] = label
+        return label
+    }
+
+    /// One line, stamped with a buffer's label (never its key or its content).
     func note(_ source: String, _ line: String) {
         guard isEnabled else { return }
-        if lines.count >= Self.capacity { lines.removeFirst(lines.count - Self.capacity + 1) }
+        // Trimmed by halves rather than one line at a time: a drop from the front is linear, and
+        // a scroll's ticks arrive on the main thread.
+        if lines.count >= Self.capacity { lines.removeFirst(Self.capacity / 2) }
         lines.append("\(formatter.string(from: Date())) [\(source)] \(line)")
     }
 

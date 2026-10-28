@@ -78,8 +78,10 @@ public struct Buffer: Equatable, Sendable {
     /// `snapshot` (on connect), a `channel-topic` ephemeral (RPL_TOPIC on join, silent),
     /// and a `topic` event (someone changed it, which also prints a line).
     public var topic: String?
-    /// How many `history` replies the store has spliced into this buffer (`before`, `after`,
-    /// `latest` or `around`) — the kit saying "a reply landed", which nothing else said.
+    /// How many slice-replacing `history` replies (`around`, `latest`) the store has spliced
+    /// into this buffer — the kit saying "a reply landed", which nothing else said. Pages
+    /// (`before`, `after`) don't count: nothing waits on one by count, and one already in
+    /// flight when a jump starts would otherwise be taken for the jump's reply.
     ///
     /// The screen's jump and re-attach machinery (`ReplyWatch`) has to tell a reply from a
     /// live append to know its request was answered, and the message list alone can't say: a

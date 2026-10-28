@@ -483,17 +483,33 @@ struct ConversationScrollTests {
         #expect(isAtTail(d.land()))
     }
 
-    @Test("an empty anchorMissing reply into an unhydrated buffer is recognised by it hydrating")
-    func emptyReplyHydrates() {
+    @Test("an anchorMissing reply into an unhydrated buffer is recognised by the reply count, and the hydrate then asks")
+    func anchorMissingIntoShell() {
         let d = Drive(self)
         d.frame(state(row(hydrated: false)))
         d.scroll.jumpTo(4)
         #expect(d.frame(state(row(hydrated: false))).loadAround == 4)
-        // Nothing to replace, no anchor to appear — but a history reply always hydrates.
-        d.frame(state(row(hydrated: true, historyRevision: 1)))
-        // An empty buffer: let go, and let the empty state show.
+        // The store leaves the shell a shell and moves only the count: nothing to land on, so
+        // the jump lets go, and with no jump pending the hydrate is free to ask for the latest.
+        d.frame(state(row(hydrated: false, historyRevision: 1)))
         #expect(isIdle(d.land()))
         #expect(!d.scroll.jumpPending)
+    }
+
+    @Test("a jump after a pruned one still fetches - an anchorMissing reply doesn't empty the buffer")
+    func jumpAfterPrunedOneFetches() {
+        let d = Drive(self)
+        let held = msgs(100...110)
+        d.frame(state(nil, held))
+        d.scroll.jumpTo(4)
+        #expect(d.frame(state(nil, held)).loadAround == 4)
+        // Pruned: the reply moves the count and nothing else. The jump gives up at the tail.
+        d.frame(state(row(historyRevision: 1), held))
+        #expect(isAtTail(d.land()))
+        d.scroll.landedAtTail()
+        // A valid bookmark next: the buffer still holds its lines, so the fetch goes out.
+        d.scroll.jumpTo(60)
+        #expect(d.scroll.requestAround(d.last, key: channel) == 60)
     }
 
     @Test("a jump into a buffer the server says is empty lets go without a fetch")
@@ -521,7 +537,7 @@ struct ConversationScrollTests {
     @Test("a live append and a reply are told apart by the buffer's reply count")
     func appendVsReply() {
         let held = msgs(1...5)
-        let watch = ReplyWatch.from(state(row(historyRevision: 3), held), key: channel)
+        let watch = ReplyWatch.from(.init(state(row(historyRevision: 3), held), key: channel))
         // The same list with more behind it, the same count: an append.
         #expect(!watch.observe(held + [msg(6)], row: row(historyRevision: 3), seq: 2))
         // The list rebuilt from the same ids, the count advanced: a reply.
@@ -1020,7 +1036,7 @@ struct ConversationScrollTests {
     func traceHearsDecisions() {
         let scroll = machine()
         var lines: [String] = []
-        scroll.trace = { lines.append($0) }
+        scroll.trace = { lines.append($0()) }
         _ = scroll.onFrame(state(row(readStateKnown: true, lastReadId: 5), msgs(1...10)), key: channel, seq: 1)
         #expect(lines.contains { $0.hasPrefix("divider latched") })
         let built = build(scroll, state(row(readStateKnown: true, lastReadId: 5), msgs(1...10)), seq: 1)

@@ -394,7 +394,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"before","hasMoreOlder":true,"hasMoreNewer":false,"events":[{"id":10,"type":"message","nick":"a","text":"old"}]}"##
         )
-        guard case let .history(networkId, target, events, mode, hasMoreOlder, hasMoreNewer, _)
+        guard case let .history(networkId, target, events, mode, hasMoreOlder, hasMoreNewer, _, anchorMissing)
             = frame
         else {
             return XCTFail("expected history, got \(frame)")
@@ -405,16 +405,28 @@ final class FrameParserTests: XCTestCase {
         XCTAssertEqual(events.map(\.text), ["old"])
         XCTAssertTrue(hasMoreOlder)
         XCTAssertFalse(hasMoreNewer)
+        XCTAssertFalse(anchorMissing, "absent means the anchor was found")
     }
 
     func testHistoryHasMoreFallsBackToLegacyAlias() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"before","hasMore":true,"events":[]}"##
         )
-        guard case let .history(_, _, _, _, hasMoreOlder, _, _) = frame else {
+        guard case let .history(_, _, _, _, hasMoreOlder, _, _, _) = frame else {
             return XCTFail("expected history, got \(frame)")
         }
         XCTAssertTrue(hasMoreOlder, "hasMore is the legacy alias for hasMoreOlder")
+    }
+
+    func testHistoryAroundCarriesAnchorMissing() {
+        let frame = FrameParser.parseWs(
+            ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"around","hasMoreOlder":false,"hasMoreNewer":false,"anchorMissing":true,"events":[]}"##
+        )
+        guard case let .history(_, _, _, mode, _, _, _, anchorMissing) = frame else {
+            return XCTFail("expected history, got \(frame)")
+        }
+        XCTAssertEqual(mode, .around)
+        XCTAssertTrue(anchorMissing)
     }
 
     // MARK: - Speakers (#63)
@@ -426,7 +438,7 @@ final class FrameParserTests: XCTestCase {
         let frame = FrameParser.parseWs(
             ##"{"kind":"history","networkId":1,"target":"#lurker","mode":"latest","events":[],"speakers":[{"nick":"Alice","lastTime":1784548800000}]}"##
         )
-        guard case let .history(_, _, _, _, _, _, speakers) = frame else {
+        guard case let .history(_, _, _, _, _, _, speakers, _) = frame else {
             return XCTFail("expected history, got \(frame)")
         }
         XCTAssertEqual(speakers?.count, 1)

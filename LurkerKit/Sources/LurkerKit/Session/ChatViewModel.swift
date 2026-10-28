@@ -2221,7 +2221,7 @@ public final class ChatViewModel {
         switch frame {
         case .backlog(let buffer, let messages, _, _, _):
             groups = [(buffer.networkId, buffer.target, messages)]
-        case .history(let networkId, let target, let events, _, _, _, _):
+        case .history(let networkId, let target, let events, _, _, _, _, _):
             groups = [(networkId, target, events)]
         case .live(let networkId, let target, let message):
             groups = [(networkId, target, [message])]
@@ -2377,7 +2377,7 @@ public final class ChatViewModel {
             // A 470 forward parts the name we asked for: the join was answered, under another name.
             store.apply(frame)
             pendingJoins.parted(BufferKey(networkId: networkId, target: target))
-        case .history(let networkId, let target, _, let mode, _, _, _):
+        case .history(let networkId, let target, _, let mode, _, _, _, _):
             // The page in flight is done — clear the set that requested this mode so the next
             // scroll can page again. Only `before` arms `loadingOlder` and only `after` arms
             // `loadingNewer`; `around`/`latest` are one-shots tracked by the screen, not here.

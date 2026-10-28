@@ -1315,12 +1315,12 @@ final class LurkerStore {
             return next
         case .history(
             let networkId, let target, let events, let mode, let hasMoreOlder, let hasMoreNewer,
-            let speakers
+            let speakers, let anchorMissing
         ):
             return applyHistory(
                 state, networkId: networkId, target: target,
                 events: events, mode: mode, hasMoreOlder: hasMoreOlder,
-                hasMoreNewer: hasMoreNewer, speakers: speakers
+                hasMoreNewer: hasMoreNewer, speakers: speakers, anchorMissing: anchorMissing
             )
         case .readState(let networkId, let target, let lastReadId, let unread, let highlights):
             return applyReadState(
@@ -2222,12 +2222,23 @@ final class LurkerStore {
         mode: HistoryMode,
         hasMoreOlder: Bool,
         hasMoreNewer: Bool,
-        speakers: [Speaker]?
+        speakers: [Speaker]?,
+        anchorMissing: Bool = false
     ) -> ChatState {
         var next = state
-        next.noteBookmarks(in: events, networkId: networkId)
-        next.noteReactions(in: events, networkId: networkId, key: BufferKey(networkId: networkId, target: target).id)
         let key = BufferKey(networkId: networkId, target: target).id
+        // An `around` for a message the server no longer has answers with an empty slice and
+        // "no history either side" — about the anchor, not the buffer. Installing it used to
+        // replace a loaded buffer with nothing, hydrated, nowhere to page: "No messages yet"
+        // over a channel full of them, and a later jump refused its fetch on the strength of
+        // it. Only the reply count moves, so the screen's watch sees its answer and the jump
+        // gives up where the reader already is.
+        if mode == .around, anchorMissing {
+            next.buffers[key]?.historyRevision &+= 1
+            return next
+        }
+        next.noteBookmarks(in: events, networkId: networkId)
+        next.noteReactions(in: events, networkId: networkId, key: key)
         next.seedSpeakers(speakers, forKey: key)
         let existing = next.messages[key] ?? []
         let wasDetached = next.buffers[key]?.hasMoreNewer == true
@@ -2251,8 +2262,10 @@ final class LurkerStore {
         }
         if var buffer = next.buffers[key] {
             buffer.hydrated = true
-            // Every reply, every mode: the screen matches replies to its requests in order.
-            buffer.historyRevision &+= 1
+            // The slice-replacing modes only — the ones a screen waits on by count. A page
+            // (`before`/`after`) can be in flight when a jump starts and land first; counting
+            // it would answer the jump's request and abandon the jump onto the stale window.
+            if mode == .around || mode == .latest { buffer.historyRevision &+= 1 }
             if mode != .after { buffer.hasMoreOlder = hasMoreOlder } // `after` pages newer
             // Detach state (#42): an `around` slice may sit below the tail → detached; `latest`
             // is the tail → re-attached; `after` carries whether newer remains. `before` pages

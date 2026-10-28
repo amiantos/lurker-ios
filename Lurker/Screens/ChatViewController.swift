@@ -59,9 +59,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var current: ConversationBuild?
     /// The frame counter the machine stamps builds with (`ReplyWatch.landedIn`).
     private var frameSeq = 0
-    /// The last frame `apply` processed — what a jump's request is asked against, never a fresh
-    /// read of the store: the reply is recognised against the frame after it.
-    private var lastFrame: ChatState?
+    /// The last frame `apply` processed, reduced to what the machine reads of one — what a
+    /// jump's request is asked against, never a fresh read of the store: the reply is
+    /// recognised against the frame after it. Slim, so a resting screen pins no `ChatState`.
+    private var lastFrame: ConversationScroll.Frame?
     /// The jump whose convergence this screen is running, if any.
     private var converging: ConversationScroll.Jump?
     private var convergePass = 0
@@ -86,8 +87,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// builds rows agrees on which state it's rendering. The sink is `.receive(on: .main)`, so
     /// `apply`'s argument is an instant behind `viewModel.state`; a live read would let one frame
     /// mix old messages with new consolidation rules, and would disagree with the dedupe
-    /// predicate about which snapshot is authoritative. It also gives a `rebuildRows()` outside
-    /// `apply` — which has no `state` to thread through — the same answer.
+    /// predicate about which snapshot is authoritative.
     private var settings = Settings()
     /// Whether the connect burst has finished, as of the last apply — snapshotted like
     /// everything else this screen renders from, so the placeholder can't read it a frame
@@ -166,7 +166,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         self.buffer = buffer
         self.scroll = ConversationScroll(kind: buffer.kind)
         super.init(nibName: nil, bundle: nil)
-        scroll.trace = { [weak self] line in self?.trace(line) }
+        scroll.trace = { [weak self] line in
+            guard let self, ScrollTrace.shared.isEnabled else { return }
+            ScrollTrace.shared.note(traceSource, line())
+        }
         if let jumpTo { scroll.jumpTo(jumpTo) }
     }
 
@@ -947,14 +950,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         refreshHighlighter(state)
         hydrateIfNeeded(state)
         frameSeq += 1
-        lastFrame = state
+        let frame = ConversationScroll.Frame(state, key: buffer.key)
+        lastFrame = frame
         // Every frame, in order: the machine watches for the replies it's waiting on, asks for
         // the fetches a jump or a re-attach needs, and latches the read boundary — before the
         // mark below, so the value latched is the server's and never our own mark
         // (`ConversationScroll.onFrame`).
-        let frame = scroll.onFrame(state, key: buffer.key, seq: frameSeq)
-        if let anchor = frame.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
-        if frame.loadLatest { viewModel.loadLatest(buffer.key) }
+        let step = scroll.onFrame(frame, seq: frameSeq)
+        if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
+        if step.loadLatest { viewModel.loadLatest(buffer.key) }
 
         let oldFirstId = messages.first?.id
         let wasNearBottom = isNearBottom
@@ -967,7 +971,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Captured against the rows the table is still showing, so before the build below.
         let landing = scroll.landingPending
         let anchors = landing ? [] : visibleAnchors()
-        let step = buildRows(from: state, wasNearBottom: wasNearBottom)
+        let rowsStep = buildRows(from: state, wasNearBottom: wasNearBottom)
         let newFirstId = current?.visible.first?.id
         settings = current?.settings ?? Settings()
         speakers = current?.speakers ?? SpeakerMap()
@@ -993,7 +997,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // to the tail. Don't auto-scroll here; `landIfNeeded` does the placement once the
             // rows and a height exist.
             tableView.reloadData()
-        } else if step.follow {
+        } else if rowsStep.follow {
             tableView.reloadData()
             scrollToBottom()
         } else {
@@ -1084,8 +1088,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// only ever make it wait for the next unrelated frame.
     private func rebuildRowsIfOptionsChanged() {
         guard current?.options != scroll.options else { return }
-        buildRows(from: lastFrame ?? viewModel.state, wasNearBottom: isNearBottom)
-        tableView.reloadData()
+        // The reader's line stays put across the reload, as it does in `apply`: a jump that
+        // can't land yet (its slice in flight, or no socket to ask over) must not shove the
+        // viewport in the meantime.
+        let anchors = visibleAnchors()
+        buildRows(from: viewModel.state, wasNearBottom: isNearBottom)
+        UIView.performWithoutAnimation {
+            tableView.reloadData()
+            tableView.layoutIfNeeded()
+            restorePosition(anchoredTo: anchors)
+            clampToContent()
+        }
     }
 
 
@@ -1218,7 +1231,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func startJump() {
         landingPasses = 0
         rebuildRowsIfOptionsChanged()
-        if let frame = lastFrame, let anchor = scroll.requestAround(frame, key: buffer.key) {
+        if let frame = lastFrame, let anchor = scroll.requestAround(frame) {
             viewModel.loadAround(buffer.key, anchorId: anchor)
         }
         landIfNeeded()
@@ -1591,7 +1604,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The first captured line that still has a row — see `visibleAnchors`.
         let survivor = anchors.lazy
             .compactMap { anchor in
-                self.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
+                self.current?.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
             }
             .first
         guard let (index, offset) = survivor else { return false }
@@ -1603,10 +1616,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The row that now represents message `id` — its own row, or the summary whose span
     /// covers it after a history page merged it into a consolidated run.
-    private func rowIndex(containing id: Int) -> Int? {
-        rows.firstIndex { $0.represents(id) }
-    }
-
     /// How far the newest message sits below the viewport bottom (0 when parked at the tail).
     ///
     /// The bottom inset is part of the answer, not noise to be left out. `updateBottomInset`
@@ -1626,21 +1635,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
-    /// The reader has taken hold of the list, so the screen's OWN opening landing is spent.
-    ///
-    /// It holds across several layout passes now (see `landInitialIfNeeded`), and a buffer whose
-    /// rows arrive late can still be waiting for one when a finger arrives first. Without this,
-    /// the next pass — a keyboard, a rotation, a composer growing a line — would answer a
-    /// deliberate scroll by pulling the reader back to the bottom.
-    ///
-    /// ⚠⚠ Only that landing, never one that was ASKED for. A jump (#42/#45) and a re-attach
-    /// (`jumpToLatest`, and the re-attach `send` makes for you) both re-arm `needsInitialScroll`
-    /// and then wait on a fetch, and both are the reader's own request — so a drag while the
-    /// slice is in flight must not quietly drop it. Clearing it there would be worse than a
-    /// missed scroll: `beginJumpLanding` is only reachable through that flag, so `pendingJumpId`
-    /// would never clear, and it gates `hydrateIfNeeded`, `apply`'s branch and the unread banner
-    /// for the rest of the screen's life. `isDetached` is the re-attach's tell — the flag is only
-    /// set on a detached buffer there, and by the time the slice lands it has cleared.
+    /// The reader has taken hold of the list. The machine decides what that releases
+    /// (`ConversationScroll.onUserDrag`): the screen's own opening landing, which holds across
+    /// several layout passes (`landIfNeeded`) and would otherwise answer a deliberate scroll by
+    /// pulling the reader back to the bottom on the next pass — and a converging jump, whose
+    /// chain is finished here, interrupted. Never a jump or a re-attach still waiting on its
+    /// fetch: those are the reader's own request, and a pending jump is the only way its state
+    /// clears.
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         landingPasses = 0
         if scroll.onUserDrag(), let jump = converging {
@@ -1805,7 +1806,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return
         case .reattach:
             // A converging chain belongs to the jump this cancelled; its next pass sees so.
-            if let frame = lastFrame, scroll.requestLatest(frame, key: buffer.key) {
+            if let frame = lastFrame, scroll.requestLatest(frame) {
                 viewModel.loadLatest(buffer.key)
             }
         case .scrollDown:
@@ -1827,7 +1828,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// Read from the table's LAYOUT MODEL (`rectForRow`) rather than from its realized cells
     /// (`indexPathsForVisibleRows`), because the two disagree at exactly the moment that
-    /// matters. `updateFloatingPills` runs from `scrollViewDidScroll`, and a scroll delegate
+    /// matters. `applyLayout` runs from `scrollViewDidScroll`, and a scroll delegate
     /// fires synchronously from inside the offset change, *before* the table re-lays out — so
     /// the visible cells there are still the ones from the previous offset. The landing scroll
     /// (`scrollToBottom`, from a top-pinned table) is the worst case: the offset is already at
@@ -2058,21 +2059,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `ScrollTrace` drops it before it's built.
     private func trace(_ line: @autoclosure () -> String) {
         guard ScrollTrace.shared.isEnabled else { return }
-        ScrollTrace.shared.note(buffer.key.id, line())
+        ScrollTrace.shared.note(traceSource, line())
     }
+
+    /// What this buffer is called in the trace: an ordinal the trace hands out, never the key —
+    /// a key names the channel or the DM peer, and the file is for handing to someone else.
+    private var traceSource: String { ScrollTrace.shared.label(for: buffer.key.id) }
 
     /// The geometry a layout pass was judged on and what came of it — deduped on its body, so
     /// a scroll's hundred ticks that change nothing write nothing.
     private func trace(_ facts: LayoutFacts, _ step: ConversationScroll.LayoutStep) {
         guard ScrollTrace.shared.isEnabled else { return }
+        // No raw distance in here: it moves on every tick, and a key that moves every tick
+        // dedupes nothing. The facts carry the thresholds it matters against.
         let body = "layout near=\(facts.nearBottom) divVisible=\(facts.dividerVisible) divAbove=\(facts.dividerAbove)"
-            + " older=\(facts.pagesOlder) newer=\(facts.pagesNewer) distance=\(Int(distanceFromBottom))"
+            + " older=\(facts.pagesOlder) newer=\(facts.pagesNewer)"
             + " divRow=\(dividerRow.map(String.init) ?? "-") rows=\(rows.count) table=\(tableView.numberOfRows(inSection: 0))"
             + " seen=\(scroll.dividerSeen) landing=\(scroll.landingPending) jump=\(scroll.jumpPending)"
             + " -> latest=\(step.pills.showsLatest) unread=\(step.pills.showsUnread) badge=\(step.pills.newCount)"
         guard body != lastTraceBody else { return }
         lastTraceBody = body
-        ScrollTrace.shared.note(buffer.key.id, body)
+        ScrollTrace.shared.note(traceSource, body + " distance=\(Int(distanceFromBottom))")
     }
 
     private var lastTraceBody = ""

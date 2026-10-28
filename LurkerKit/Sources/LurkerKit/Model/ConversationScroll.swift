@@ -192,12 +192,13 @@ public struct ConversationBuild: Sendable {
 /// A history fetch in flight — `around` for a jump, `latest` for a re-attach — and whether its
 /// reply has landed, judged frame by frame.
 ///
-/// The store counts every `history` reply it splices in (`Buffer.historyRevision`), so a reply
-/// is the count advancing — exact, where lurker-android's version has to infer one from the
-/// held objects and documents the cases it gets wrong. The three older tells are kept beside
-/// it: an unhydrated buffer hydrating (an empty reply into a shell), a detached buffer
-/// re-attaching, and the anchor itself appearing (a live line can carry it, and the landing
-/// may as well go straight there).
+/// The store counts the slice-replacing `history` replies it splices in
+/// (`Buffer.historyRevision`), so a reply is the count advancing — exact, where
+/// lurker-android's version has to infer one from the held objects and documents the cases it
+/// gets wrong (a page landing mid-jump among them). The three older tells are kept beside it:
+/// an unhydrated buffer hydrating (an empty reply into a shell), a detached buffer
+/// re-attaching, and the anchor itself appearing (a live line or a page can carry it, and the
+/// landing may as well go straight there).
 ///
 /// Fed every frame, strictly in order (`ConversationScroll.onFrame`); `arrivedAtSeq` is the
 /// frame the reply landed in, so a build of an earlier frame isn't mistaken for rows that show
@@ -222,13 +223,12 @@ public final class ReplyWatch {
     }
 
     /// A watch starting from the frame the request went out after.
-    static func from(_ state: ChatState, key: BufferKey, anchorId: Int? = nil) -> ReplyWatch {
-        let row = state.buffers[key.id]
-        return ReplyWatch(
-            generation: state.burstGeneration,
-            revision: row?.historyRevision ?? 0,
-            hydrated: row?.hydrated == true,
-            detached: row?.hasMoreNewer == true,
+    static func from(_ frame: ConversationScroll.Frame, anchorId: Int? = nil) -> ReplyWatch {
+        ReplyWatch(
+            generation: frame.burstGeneration,
+            revision: frame.row?.historyRevision ?? 0,
+            hydrated: frame.row?.hydrated == true,
+            detached: frame.row?.hasMoreNewer == true,
             anchorId: anchorId
         )
     }
@@ -321,9 +321,27 @@ public final class ConversationScroll {
     /// in history. Zeroed the moment they're back at the bottom, however they got there.
     public private(set) var newWhileAway = 0
 
-    /// Lines of the decisions as they're made, for the diagnostics trace (lurker-ios#137).
-    /// Nil costs nothing: every line is built behind the check.
-    public var trace: ((String) -> Void)?
+    /// Lines of the decisions as they're made, for the diagnostics trace (lurker-ios#137). The
+    /// consumer is handed the line unbuilt and decides whether to build it, so an installed but
+    /// switched-off trace costs a closure call and no string.
+    public var trace: ((() -> String) -> Void)?
+
+    /// What the machine reads of a frame — this buffer's row and list, the socket, the burst —
+    /// so a screen can keep the last frame it processed (to ask a jump's request against)
+    /// without pinning a whole `ChatState`.
+    public struct Frame: Sendable {
+        public let connection: SocketStatus
+        public let burstGeneration: Int
+        public let row: Buffer?
+        public let held: [Message]?
+
+        public init(_ state: ChatState, key: BufferKey) {
+            connection = state.connection
+            burstGeneration = state.burstGeneration
+            row = state.buffers[key.id]
+            held = state.messages[key.id]
+        }
+    }
 
     private var lastClearedBeforeId = 0
 
@@ -391,8 +409,8 @@ public final class ConversationScroll {
         self.kind = kind
     }
 
-    private func log(_ line: @autoclosure () -> String) {
-        if let trace { trace(line()) }
+    private func log(_ line: @escaping @autoclosure () -> String) {
+        if let trace { trace(line) }
     }
 
     /// Keep `watch`'s reply accounted for if it hasn't landed.
@@ -518,13 +536,17 @@ public final class ConversationScroll {
     /// `history mode:latest` sets it without carrying a pointer. Only `backlog` and `read-state`
     /// set `readStateKnown`.
     public func onFrame(_ state: ChatState, key: BufferKey, seq: Int) -> FrameStep {
-        let list = state.messages[key.id]
-        let row = state.buffers[key.id]
+        onFrame(Frame(state, key: key), seq: seq)
+    }
+
+    public func onFrame(_ frame: Frame, seq: Int) -> FrameStep {
+        let list = frame.held
+        let row = frame.row
         // A drop or a new burst voids what was asked over the old socket — no reply is coming.
-        if state.connection != .connected {
+        if frame.connection != .connected {
             strays.removeAll()
         } else {
-            strays.removeAll { $0.generation != state.burstGeneration }
+            strays.removeAll { $0.generation != frame.burstGeneration }
         }
         // Replies are handed out in the order the requests went: the oldest outstanding watch
         // gets this frame's change, and the rest take it as their new starting point.
@@ -539,14 +561,14 @@ public final class ConversationScroll {
         }
         strays.removeAll { $0.arrivedAtSeq != nil }
         // After the replies are accounted for, so a request made now watches from this frame on.
-        let around = requestAround(state, key: key)
+        let around = requestAround(frame)
         var changed = false
         if options.dividerAfterId == nil, let row, row.readStateKnown {
             options.dividerAfterId = row.lastReadId
             changed = true
             log("divider latched after=\(row.lastReadId) seq=\(seq)")
         }
-        let latest = requestLatest(state, key: key)
+        let latest = requestLatest(frame)
         return FrameStep(loadAround: around, loadLatest: latest, optionsChanged: changed)
     }
 
@@ -559,29 +581,35 @@ public final class ConversationScroll {
     ///
     /// Not asked of a buffer the server has already said is empty (hydrated, nothing held):
     /// there is nothing for the slice to find, and an empty reply into an empty buffer changes
-    /// nothing anyone could see it by — `landing` lets go instead.
+    /// nothing anyone could see it by — `landing` lets go instead. A buffer only looks that way
+    /// when the server said so: an `anchorMissing` reply no longer empties one (the store leaves
+    /// the list alone and moves the reply count), so the jump after a pruned one still fetches.
     ///
-    /// `state` must be the last frame the screen processed — never a newer read of the store —
+    /// `frame` must be the last frame the screen processed — never a newer read of the store —
     /// so the reply watch starts from exactly the row the next frame will be compared with.
     @discardableResult
     public func requestAround(_ state: ChatState, key: BufferKey) -> Int? {
+        requestAround(Frame(state, key: key))
+    }
+
+    @discardableResult
+    public func requestAround(_ frame: Frame) -> Int? {
         guard let pending = jump, kind.hydratesOnDemand else { return nil }
-        guard state.connection == .connected else {
+        guard frame.connection == .connected else {
             pending.fetch = nil
             return nil
         }
-        if let fetch = pending.fetch, fetch.generation != state.burstGeneration { pending.fetch = nil }
+        if let fetch = pending.fetch, fetch.generation != frame.burstGeneration { pending.fetch = nil }
         if pending.fetch != nil { return nil }
         // A superseded fetch is still in the air: wait for its reply before sending ours, or its
         // reply would be taken for ours.
         if !strays.isEmpty { return nil }
-        let held = state.messages[key.id] ?? []
+        let held = frame.held ?? []
         // A row the `/clear` marker hides is held but not drawn — `onRows`' reveal resolves that.
         if held.contains(where: { $0.id == pending.anchorId }) { return nil }
-        let row = state.buffers[key.id]
-        if held.isEmpty, row?.hydrated == true { return nil }
-        pending.fetch = ReplyWatch.from(state, key: key, anchorId: pending.anchorId)
-        log("around requested anchor=\(pending.anchorId) generation=\(state.burstGeneration)")
+        if held.isEmpty, frame.row?.hydrated == true { return nil }
+        pending.fetch = ReplyWatch.from(frame, anchorId: pending.anchorId)
+        log("around requested anchor=\(pending.anchorId) generation=\(frame.burstGeneration)")
         return pending.anchorId
     }
 
@@ -590,15 +618,20 @@ public final class ConversationScroll {
     /// frame, as there.
     @discardableResult
     public func requestLatest(_ state: ChatState, key: BufferKey) -> Bool {
+        requestLatest(Frame(state, key: key))
+    }
+
+    @discardableResult
+    public func requestLatest(_ frame: Frame) -> Bool {
         guard landsAtTail else { return false }
-        guard state.connection == .connected else {
+        guard frame.connection == .connected else {
             tailFetch = nil
             return false
         }
-        if let fetch = tailFetch, fetch.generation != state.burstGeneration { tailFetch = nil }
+        if let fetch = tailFetch, fetch.generation != frame.burstGeneration { tailFetch = nil }
         if tailFetch != nil { return false }
-        tailFetch = ReplyWatch.from(state, key: key)
-        log("latest requested generation=\(state.burstGeneration)")
+        tailFetch = ReplyWatch.from(frame)
+        log("latest requested generation=\(frame.burstGeneration)")
         return true
     }
 
@@ -660,7 +693,7 @@ public final class ConversationScroll {
         previousVisible = built.visible
 
         let follow = !landingPending && wasNearBottom && !wasDetached && !nowDetached
-        log("rows seq=\(built.seq) rows=\(built.rows.count) nearBottom=\(wasNearBottom) detached=\(wasDetached)->\(nowDetached) landing=\(landingPending) follow=\(follow) badge=\(newWhileAway)")
+        log("rows seq=\(built.seq) rows=\(built.rows.count) nearBottom=\(wasNearBottom) detached=\(self.wasDetached)->\(nowDetached) landing=\(self.landingPending) follow=\(follow) badge=\(self.newWhileAway)")
         wasDetached = nowDetached
         return RowsStep(follow: follow, optionsChanged: changed)
     }
