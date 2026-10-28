@@ -593,7 +593,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .sink { [weak self] _ in
                 guard let self, CompactDensity.avatarsOn(settings) else { return }
                 refreshAvatarSpec(viewModel.state)
-                tableView.reloadData()
+                holdingLine("avatar sets") { self.tableView.reloadData() }
             }
             .store(in: &cancellables)
     }
@@ -996,6 +996,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // A landing is pending — an initial open, a jump to an anchor (#42), or a re-attach
             // to the tail. Don't auto-scroll here; `landIfNeeded` does the placement once the
             // rows and a height exist.
+            trace("apply: reload under a pending landing")
             tableView.reloadData()
         } else if rowsStep.follow {
             tableView.reloadData()
@@ -1015,6 +1016,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // out-of-range offset until something touches it: a black buffer that snaps
             // into place when you poke it.
             let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
+            trace("apply: hold prepended=\(prepended) anchors=\(anchors.count)")
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
@@ -1200,6 +1202,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let index = scroll.jumpTargetRow(current) else { return finishConverge(jump, interrupted: false) }
         tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .middle, animated: false)
         convergePass += 1
+        trace("converge pass \(convergePass) row=\(index) offset=\(Int(tableView.contentOffset.y))")
         guard convergePass < Self.jumpConvergePasses else { return finishConverge(jump, interrupted: false) }
         DispatchQueue.main.async { [weak self] in self?.converge(jump) }
     }
@@ -1249,6 +1252,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// a jump scroll — so retry across a couple of runloops rather than silently skipping the
     /// glow (the bug where a jump landed with no pulse).
     private func flashRow(at path: IndexPath, retries: Int = 3) {
+        trace("flash row=\(path.row) cell=\(tableView.cellForRow(at: path) != nil) offset=\(Int(tableView.contentOffset.y))")
         guard let cell = tableView.cellForRow(at: path) else {
             guard retries > 0 else { return }
             DispatchQueue.main.async { [weak self] in self?.flashRow(at: path, retries: retries - 1) }
@@ -1607,10 +1611,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                 self.current?.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
             }
             .first
-        guard let (index, offset) = survivor else { return false }
+        guard let (index, offset) = survivor else {
+            trace("restore: no anchor survived of \(anchors.count)")
+            return false
+        }
+        let before = tableView.contentOffset.y
         tableView.contentOffset.y =
             tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - offset
         clampToContent()
+        trace("restore: row=\(index) moved=\(Int(tableView.contentOffset.y - before))")
         return true
     }
 
@@ -3193,7 +3202,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             remeasureQueued = false
-            UIView.performWithoutAnimation { self.tableView.performBatchUpdates(nil) }
+            // A chip row above the reader growing a line moves their line down by it — the
+            // lurch `apply` holds against, by another door.
+            holdingLine("remeasure") { self.tableView.performBatchUpdates(nil) }
         }
     }
 
@@ -3599,14 +3610,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // ⚠ Anywhere else: the same growth happens ABOVE them, and offset-preservation moves the
         // line they are reading down the screen by exactly that much. That is the lurch #42
         // removed from `apply`, arriving by another door — so the same anchors answer it.
+        holdingLine("previews \(affected.count)") { tableView.reloadRows(at: affected, with: .none) }
+    }
+
+    /// Run a change that can move row heights, keeping the reader where they were. Two ways to
+    /// stay put, and which applies is the reader's position: at the tail, growth below the fold
+    /// would push them up off the newest line, so follow it down as a live append does;
+    /// anywhere else the same growth happens ABOVE them and offset-preservation moves the line
+    /// they're reading down the screen by exactly that much — the lurch #42 removed from
+    /// `apply`, so the same anchors answer it.
+    private func holdingLine(_ what: @autoclosure () -> String, _ change: () -> Void) {
         let wasNearBottom = isNearBottom
         let anchors = wasNearBottom ? [] : visibleAnchors()
+        var restored = false
         UIView.performWithoutAnimation {
-            tableView.reloadRows(at: affected, with: .none)
+            change()
             tableView.layoutIfNeeded()
-            if !wasNearBottom { restorePosition(anchoredTo: anchors) }
+            if !wasNearBottom { restored = restorePosition(anchoredTo: anchors) }
         }
         if wasNearBottom { scrollToBottom() }
+        trace("\(what()): nearBottom=\(wasNearBottom) anchors=\(anchors.count) restored=\(restored)")
     }
 
     /// Whether the row at `index` shows any of `urls` — the test that decides whether a batch of
