@@ -512,6 +512,18 @@ struct ConversationScrollTests {
         #expect(d.scroll.requestAround(d.last, key: channel) == 60)
     }
 
+    @Test("a jump before the buffer has a row waits for the row, then fetches")
+    func jumpBeforeRowWaits() {
+        let d = Drive(self)
+        // No row at all yet (a DM awaiting its row): a reply couldn't be seen to land, so no fetch.
+        d.frame(state(noBuffer: true))
+        d.scroll.jumpTo(4)
+        #expect(d.scroll.requestAround(d.last, key: channel) == nil)
+        #expect(isWait(d.land()))
+        // The row arrives: the fetch goes out on this frame.
+        #expect(d.frame(state(row(hydrated: false))).loadAround == 4)
+    }
+
     @Test("a jump into a buffer the server says is empty lets go without a fetch")
     func jumpIntoEmptyLetsGo() {
         let d = Drive(self)

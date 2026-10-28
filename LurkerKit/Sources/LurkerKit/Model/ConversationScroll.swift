@@ -605,7 +605,12 @@ public final class ConversationScroll {
         let held = frame.held ?? []
         // A row the `/clear` marker hides is held but not drawn — `onRows`' reveal resolves that.
         if held.contains(where: { $0.id == pending.anchorId }) { return nil }
-        if held.isEmpty, frame.row?.hydrated == true { return nil }
+        // Not before the buffer has a row: a reply is recognised on the row (its reply count), so
+        // one sent now could never be seen to land, and the jump would wait forever. The row
+        // arrives with the burst or the screen leaves (`handleBufferDisappeared`); the next
+        // frame asks.
+        guard let row = frame.row else { return nil }
+        if held.isEmpty, row.hydrated { return nil }
         pending.fetch = ReplyWatch.from(frame, anchorId: pending.anchorId)
         log("around requested anchor=\(pending.anchorId) generation=\(frame.burstGeneration)")
         return pending.anchorId
