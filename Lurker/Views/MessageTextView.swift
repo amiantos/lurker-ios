@@ -22,6 +22,13 @@ import UIKit
 /// a few lines of TextKit 2, and unlike the alternatives there's no gesture in it to fight over.
 /// It's also checkable at a point rather than only by pressing the screen — see `url(at:)`.
 ///
+/// **TextKit 1, on purpose.** The list's table is flipped to anchor at the bottom
+/// (`ChatViewController`), and a TextKit 2 text view inside a flipped scroll view lays out and
+/// draws only the slice of its text it believes is visible, judged from the enclosing scroll
+/// view's visible rect — which the flip mirrors. On the device that read as the body text sliding
+/// around as the row moved and vanishing outright. TextKit 1 lays the whole body out, as it did
+/// for every chat client that inverted a list before TextKit 2 existed.
+///
 /// Links are marked with `.messageLink` rather than `.link`, and styled into the attributed string
 /// by `MessageRenderer` — UIKit restyles `.link` ranges with one view-wide dictionary, which can't
 /// express a link that takes the color of the text around it. See the note where they're marked.
@@ -34,6 +41,18 @@ final class MessageTextView: UITextView {
     /// A spoiler run was tapped, identified by its ordinal within the message. Toggling is the
     /// owner's business: the revealed set outlives this view, which is recycled with its cell.
     var onToggleSpoiler: ((Int) -> Void)?
+
+    /// A TextKit 1 stack of its own — see the type's note. `widthTracksTextView` is what makes a
+    /// non-scrolling text view size to its text under Auto Layout.
+    convenience init() {
+        let storage = NSTextStorage()
+        let layout = NSLayoutManager()
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: CGSize(width: 0, height: .greatestFiniteMagnitude))
+        container.widthTracksTextView = true
+        layout.addTextContainer(container)
+        self.init(frame: .zero, textContainer: container)
+    }
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -78,34 +97,18 @@ final class MessageTextView: UITextView {
     /// merely nearest to one, or the empty space beside a short line would "hit" its last character
     /// — and the character there must carry the attribute.
     private func attribute(_ key: NSAttributedString.Key, at point: CGPoint) -> Any? {
-        guard let layoutManager = textLayoutManager,
-              let contentManager = layoutManager.textContentManager,
-              let text = attributedText, text.length > 0
-        else { return nil }
-
+        guard let text = attributedText, text.length > 0 else { return nil }
+        let layoutManager = layoutManager
         // Into the text container's space: the container is inset within the view.
         let target = CGPoint(x: point.x - textContainerInset.left, y: point.y - textContainerInset.top)
-        guard let fragment = layoutManager.textLayoutFragment(for: target) else { return nil }
-
-        let inFragment = CGPoint(
-            x: target.x - fragment.layoutFragmentFrame.minX,
-            y: target.y - fragment.layoutFragmentFrame.minY
-        )
-        let fragmentStart = contentManager.offset(
-            from: contentManager.documentRange.location, to: fragment.rangeInElement.location
-        )
-        // Each line's `typographicBounds` is positioned within the fragment (y = 0, 20, 40 for a
-        // three-line paragraph), so the point picks its line directly. `characterIndex(for:)` is
-        // relative to the *fragment*, not the line — a line fragment's `attributedString` is the
-        // whole paragraph, not its own slice — so no per-line offset is added. Verified by probe:
-        // adding one put every line after the first out of bounds and silently killed their links.
-        for line in fragment.textLineFragments where line.typographicBounds.contains(inFragment) {
-            let bounds = line.typographicBounds
-            let inLine = CGPoint(x: inFragment.x - bounds.minX, y: inFragment.y - bounds.minY)
-            let index = fragmentStart + line.characterIndex(for: inLine)
-            guard index >= 0, index < text.length else { return nil }
-            return text.attribute(key, at: index, effectiveRange: nil)
-        }
-        return nil
+        let glyph = layoutManager.glyphIndex(for: target, in: textContainer, fractionOfDistanceThroughGlyph: nil)
+        // `glyphIndex(for:)` answers the NEAREST glyph; the used rect of its line is what says
+        // whether the point is inside laid-out text at all, rather than beside a short line.
+        guard glyph < layoutManager.numberOfGlyphs,
+              layoutManager.lineFragmentUsedRect(forGlyphAt: glyph, effectiveRange: nil).contains(target)
+        else { return nil }
+        let index = layoutManager.characterIndexForGlyph(at: glyph)
+        guard index < text.length else { return nil }
+        return text.attribute(key, at: index, effectiveRange: nil)
     }
 }
