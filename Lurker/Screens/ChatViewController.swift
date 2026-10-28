@@ -1189,7 +1189,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if converging === jump { converging = nil }
         switch scroll.finishJump(jump, current: current, interrupted: interrupted) {
         case .flash(let row):
-            flashRow(at: tableIndex(for: row))
+            flashRow(rows[row].anchorId.map(FlashTarget.message) ?? .row(row))
         case .atTail:
             landIfNeeded()
         case .release:
@@ -1222,11 +1222,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// `cellForRow` is nil for a row that hasn't rendered yet, which is exactly the frame after
     /// a jump scroll — so retry across a couple of runloops rather than silently skipping the
     /// glow (the bug where a jump landed with no pulse).
-    private func flashRow(at path: IndexPath, retries: Int = 3) {
-        trace("flash row=\(path.row) cell=\(tableView.cellForRow(at: path) != nil) offset=\(Int(tableView.contentOffset.y))")
+    /// What a flash is aimed at: a message (re-resolved to its row on every try, since a live
+    /// line arriving between tries shifts every table index in the flipped table), or a row
+    /// that carries no id.
+    private enum FlashTarget {
+        case message(Int)
+        case row(Int)
+    }
+
+    private func flashRow(_ target: FlashTarget, retries: Int = 3) {
+        let row: Int?
+        switch target {
+        case .message(let id): row = current?.rowIndex(containing: id)
+        case .row(let index): row = rows.indices.contains(index) ? index : nil
+        }
+        guard let row else { return }
+        let path = tableIndex(for: row)
+        trace("flash row=\(row) cell=\(tableView.cellForRow(at: path) != nil) offset=\(Int(tableView.contentOffset.y))")
         guard let cell = tableView.cellForRow(at: path) else {
             guard retries > 0 else { return }
-            DispatchQueue.main.async { [weak self] in self?.flashRow(at: path, retries: retries - 1) }
+            DispatchQueue.main.async { [weak self] in self?.flashRow(target, retries: retries - 1) }
             return
         }
         cell.contentView.backgroundColor = Palette.highlightBubble
@@ -1566,9 +1581,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             guard rows.indices.contains(row), let id = rows[row].anchorId else { continue }
             let frame = tableView.rectForRow(at: indexPath)
             // Rows behind the composer or the bar aren't being read and make poor anchors —
-            // the first one still showing is the line the reader is on.
+            // the first one still showing is the line the reader is on. Its VISUAL top is the
+            // frame's far edge; anchoring the near one would let a row that grows (a preview
+            // landing) push its first line up behind the bar.
             guard frame.maxY > coveredEdge, frame.minY < barEdge else { continue }
-            anchors.append((id, frame.minY - tableView.contentOffset.y))
+            anchors.append((id, frame.maxY - tableView.contentOffset.y))
         }
         return anchors
     }
@@ -1592,7 +1609,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return false
         }
         let before = tableView.contentOffset.y
-        tableView.contentOffset.y = tableView.rectForRow(at: tableIndex(for: index)).minY - offset
+        tableView.contentOffset.y = tableView.rectForRow(at: tableIndex(for: index)).maxY - offset
         clampToContent()
         trace("restore: row=\(index) moved=\(Int(tableView.contentOffset.y - before))")
         return true
