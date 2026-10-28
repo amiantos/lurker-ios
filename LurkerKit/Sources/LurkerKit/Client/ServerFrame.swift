@@ -77,6 +77,9 @@ enum ServerFrame: Equatable, Sendable {
     /// Every history reply carries `speakers` (see the `backlog` note for why it's optional
     /// anyway). This is the *primary* way the map loads: a fresh connect ships shells, so a
     /// buffer's first real speaker list arrives with the `latest` fetch its first open makes.
+    /// `anchorMissing`: an `around` reply whose anchor the server no longer has (pruned since it
+    /// was quoted). The server answers it with an empty slice and no history either side, which
+    /// is not a description of the buffer — the store leaves what it holds alone.
     case history(
         networkId: Int?,
         target: String,
@@ -84,7 +87,8 @@ enum ServerFrame: Equatable, Sendable {
         mode: HistoryMode,
         hasMoreOlder: Bool,
         hasMoreNewer: Bool,
-        speakers: [Speaker]?
+        speakers: [Speaker]?,
+        anchorMissing: Bool = false
     )
 
     /// WS `buffer-cleared`: the `/clear` marker moved (#121). Sent to the device that asked

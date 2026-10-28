@@ -44,22 +44,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// count it badges: messages that landed while the reader was up in history. Reset the
     /// moment they're back at the bottom, however they got there.
     private let jumpButton = JumpToLatestButton()
-    private var newWhileDetached = 0
     /// The floating "unread messages ↑" banner under the nav bar (#45), shown when this buffer
     /// opened with unreads sitting above the reader. Tapping it lands on the unread divider —
     /// scrolling to it if it's loaded, else jumping an `around` slice centered on the read
     /// boundary — and reading forward from there after-pages down to live.
     private let unreadBanner = UnreadBanner()
-    /// Whether the buffer was detached (`hasMoreNewer`) as of the *previous* `apply`. Kept so
-    /// after-paging appends (and the re-attach that flips detached→attached in one apply) never
-    /// inflate the jump-to-latest badge — that count is live traffic only, and a detached buffer
-    /// holds live out, so any growth there is history the reader deliberately pulled (#45).
-    private var wasDetached = false
-    /// The rule set the last `apply` rendered against, so this one can tell a genuine append
-    /// from rows appearing or vanishing because the rules themselves moved. Identity is the
-    /// whole comparison — see `IgnoreSet`. Nil until the first apply, which is correct: there
-    /// is no previous render to have counted against.
-    private var lastIgnores: IgnoreSet?
+    /// The position machine: every decision about where the list is and where it's going —
+    /// the read boundary, the banner, the follow, the jumps, the paging. This screen measures
+    /// the table for it (`LayoutFacts`) and performs what it asks; it decides nothing itself.
+    /// Ported back from lurker-android with its tests (`ConversationScrollTests`).
+    private let scroll: ConversationScroll
+    /// The build on screen — what `rows` and `messages` were cut from, and what the machine's
+    /// decisions are judged against.
+    private var current: ConversationBuild?
+    /// The frame counter the machine stamps builds with (`ReplyWatch.landedIn`).
+    private var frameSeq = 0
+    /// The last frame `apply` processed, reduced to what the machine reads of one — what a
+    /// jump's request is asked against, never a fresh read of the store: the reply is
+    /// recognised against the frame after it. Slim, so a resting screen pins no `ChatState`.
+    private var lastFrame: ConversationScroll.Frame?
+    /// The jump whose convergence this screen is running, if any.
+    private var converging: ConversationScroll.Jump?
+    private var convergePass = 0
     /// The completion pill strip and the context currently driving it (nil = nothing under
     /// the caret). The composer reports what *kind* of completion is live; this screen owns
     /// the candidates, because they come from state the bar never sees — the command table,
@@ -75,66 +81,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var rows: [MessageRow] = [] // messages + dividers; what the table renders
     /// Who the store says is composing here, as of the last apply or tick (#61).
     private var typists: [String] = []
-    /// Whether the server has older history left for this buffer, as of the last apply.
-    ///
-    /// Starts true so an unhydrated buffer doesn't claim to have reached its beginning in the
-    /// moment before its first page lands — "no more history" has to be something the server
-    /// told us, not the absence of an answer. Same default the parser applies for the same
-    /// reason (`FrameParser.swift:220`).
-    private var hasMoreOlder = true
-    /// The `/clear` marker's mirror of the store (#121) — the boundary and its instant, kept
-    /// beside `hasMoreOlder` because they are read together by `rebuildRows`.
-    private var clearedBeforeId = 0
-    private var clearedAt: Date?
-    /// Whether this screen is deliberately showing what the `/clear` marker hides — a jump
-    /// landed on a row below the boundary (#121).
-    ///
-    /// ⚠⚠ Screen state, not store state, and not `hasMoreNewer`. Both of those were tried:
-    ///
-    ///  - `hasMoreNewer` drives paging, so claiming it on a buffer that holds the tail fires
-    ///    the near-bottom `loadNewer`, whose empty reply re-hides everything a frame later;
-    ///  - a flag on `Buffer` outlives the reading of it — nothing in the store is a natural
-    ///    place to retire it, so one jump peeled the buffer open for good and reopening it
-    ///    never restored the clear.
-    ///
-    /// Here it has exactly the right lifetime for free: `BufferNavigation` builds a fresh
-    /// screen per open (and rebuilds on a jump), so leaving and coming back is cleared again —
-    /// which is what the web does, and what the marker being SERVER state means.
-    private var showsClearedHistory = false
-    /// Whether this buffer is detached — showing an `around` slice below the live tail (#42) —
-    /// as of the last apply. Snapshotted rather than read live for the same reason as
-    /// `settings` below: the typing ticker rebuilds rows with no `state` in hand.
-    ///
-    /// `isDetached` is the same fact read from the store on demand, for the paging and pill
-    /// logic that runs outside a rebuild.
-    private var hasMoreNewer = false
-    /// Whether the loaded slice is this buffer's real history yet, as of the last apply — the
-    /// backlog has landed, rather than the screen showing the few live events that outran it.
-    ///
-    /// Read by the `dividerSeen` latch, which is a judgement about what the reader has *seen* and
-    /// so can only be made against a slice that's actually the buffer. See `updateFloatingPills`.
-    ///
-    /// Not a bare `hydrated`: the off-demand kinds (`:server:`, the system buffer) are created
-    /// *by* their connect backlog and never hydrate on their own, so `hydrated` can stay false
-    /// for their whole life and a `hydrated`-keyed gate would hold the latch open forever — which
-    /// is the banner-returns-all-session bug `dividerSeen` exists to prevent. Same rule, same
-    /// reason, same place as the empty/loading placeholder: `BufferPlaceholder.historyLanded`.
-    private var historyLanded = false
     /// The settings in force as of the last apply.
     ///
     /// Snapshotted in `apply` rather than read live inside `buildRows`, so every path that
     /// builds rows agrees on which state it's rendering. The sink is `.receive(on: .main)`, so
     /// `apply`'s argument is an instant behind `viewModel.state`; a live read would let one frame
     /// mix old messages with new consolidation rules, and would disagree with the dedupe
-    /// predicate about which snapshot is authoritative. It also gives a `rebuildRows()` outside
-    /// `apply` — which has no `state` to thread through — the same answer.
+    /// predicate about which snapshot is authoritative.
     private var settings = Settings()
-    /// Your own away state for this buffer's network, as of the last apply (#68) — nil for a
-    /// buffer that doesn't take presence markers.
-    ///
-    /// Snapshotted like `settings` above, and for the same reason: the typing ticker rebuilds
-    /// rows with no `state` in hand, and both paths have to agree on what they're rendering.
-    private var awayState: AwayState?
     /// Whether the connect burst has finished, as of the last apply — snapshotted like
     /// everything else this screen renders from, so the placeholder can't read it a frame
     /// ahead of the buffer it is describing.
@@ -145,11 +99,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     ///
     /// Snapshotted like `settings` and `awayState` above, and for the same reason.
     private var speakers = SpeakerMap()
-    /// Our own nick on this buffer's network, as of the last apply. Nil for the system buffer,
-    /// which has no network to have one on. Read by the `.smart` tier, which never hides your
-    /// own churn — and `isSelf` doesn't cover it, since the server stamps that on messages you
-    /// sent rather than on the JOIN it saw you make.
-    private var ownNick: String?
     /// Re-reads `typists` while anybody is typing.
     ///
     /// Needed because a typing entry's lease expires by the *clock*, not by a frame: the last
@@ -180,14 +129,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// coloring set changes, since compiling the match regex is the costly part.
     private var nickHighlighter = NickHighlighter(nicks: [])
     private var highlighterNicks: [String] = []
-    /// The read boundary, latched the first time the server tells us where it is and held
-    /// fixed for the visit — the divider must not jump as we mark messages read live.
-    ///
-    /// Latched on first sight rather than read in `viewDidLoad`, because this screen is
-    /// now built at launch, before the socket exists: read state hasn't arrived yet, and
-    /// snapshotting it then would pin the boundary to 0 and suppress the divider for the
-    /// whole session. `nil` means "not told yet", which is not the same as "nothing read".
-    private var dividerAfterId: Int?
     /// The snapshot burst during which this screen's one hydrate was sent, or nil if
     /// it hasn't asked (or its request has been voided). See `hydrateIfNeeded`.
     ///
@@ -205,81 +146,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// reduce wipes the slice because the survivor's history interleaved server-side. The
     /// row never goes absent there, so the absence re-arm can't catch it.
     private var sawHydrated = false
-    /// Cleared once the buffer has been parked at its newest message.
-    ///
-    /// Opening a buffer has to land at the bottom, and neither obvious place to do it works
-    /// alone. `viewDidLoad` is too early — the table has no height yet, and `scrollToRow` on
-    /// a table with no height silently does nothing, which is exactly what happens for an
-    /// already-hydrated buffer whose messages are in `state` before the screen exists: it
-    /// asks once, is ignored, and nothing changes afterwards to ask again. And the first
-    /// `apply` is not enough either, because the backlog can just as easily arrive *after*
-    /// the first layout pass. So both paths ask and this makes it happen exactly once.
-    /// Re-arming it (a jump to latest, a re-attach) starts a fresh landing, so its pass count
-    /// goes with it — here rather than at each assignment, which is one more thing a new landing
-    /// path would have to remember.
-    private var needsInitialScroll = true {
-        didSet { if needsInitialScroll { landingPasses = 0 } }
-    }
 
-    /// How many times the landing has re-scrolled while the geometry settled — see
-    /// `landInitialIfNeeded`. Zeroed by `needsInitialScroll`'s `didSet` above, so a re-armed
-    /// landing (a jump to latest, a re-attach) gets its passes back.
+    /// How many times the tail landing has re-scrolled while the geometry settled — see
+    /// `landIfNeeded`. Zeroed wherever a new landing can begin (a jump, a re-attach, a drag),
+    /// so a re-armed landing gets its passes back.
     private var landingPasses = 0
     /// The bound on that. Two or three is the real number — the pass that brings the safe area,
     /// the one that brings the composer's reservation, and one to confirm — so this is slack,
     /// not a target.
     private static let maxLandingPasses = 8
 
-    /// The message to open *at* rather than the bottom (#42) — a tapped highlight (later a
-    /// notification, a search hit). The initial landing scrolls to it instead of the tail, and
-    /// if it isn't already held the screen fetches an `around` slice centered on it first.
-    /// Consumed once the landing scrolls to it, so it's a one-shot like `needsInitialScroll`.
-    private var pendingJumpId: Int?
-    /// The one message id the ignore filter must not drop.
-    ///
-    /// A jump target is exempt for as long as this screen lives. You reach one by naming a
-    /// specific message — a bookmark, a search hit, a notification tap — and the rules can
-    /// have changed since (the feeds don't subscribe to live state, so an ignored line stays
-    /// tappable there). Filtering it out would land the reader on a message that isn't drawn:
-    /// the landing resolves its anchor against the RENDERED rows, so it would never resolve,
-    /// `pendingJumpId` would never clear, and `hydrateIfNeeded`'s `guard pendingJumpId == nil`
-    /// would keep the buffer from hydrating for the life of the screen.
-    ///
-    /// Set alongside every `pendingJumpId` assignment rather than by an observer on it — a
-    /// `didSet` would not fire for the one in `init`, which is the notification-tap path.
-    /// Outlives the landing that consumes `pendingJumpId`, so the row doesn't vanish from
-    /// under the reader the instant they arrive on it.
-    private var jumpExemptId: Int?
-    /// The snapshot burst during which the `around` slice for `pendingJumpId` was requested,
-    /// or nil if it hasn't been asked for. Same shape, and the same reasoning, as
-    /// `hydrateRequestedAtGeneration`: a request written to a socket that is silently replaced
-    /// is lost with `connection` never dipping, so a bool cleared only on disconnect would
-    /// leave a jump waiting forever for a slice that cannot arrive.
-    private var aroundRequestedAtGeneration: Int?
-    /// Set once the requested `around` slice has landed, so the initial scroll can give up on
-    /// a missing anchor (`anchorMissing`) and fall back to the bottom instead of waiting forever.
-    private var aroundSliceArrived = false
-    /// The message ids held when the `around` fetch was sent. The response *replaces* the slice,
-    /// so the response has arrived once these are gone (or the anchor appears) — distinguishing
-    /// it from the pre-existing connect backlog (unchanged) or a live append (keeps them), either
-    /// of which used to be mistaken for the slice and make the jump give up early.
-    private var aroundBaselineIds: Set<Int> = []
-    /// Whether the buffer was already hydrated when the `around` fetch was sent. A history reply
-    /// always flips a buffer hydrated, so a not-yet-hydrated buffer becoming hydrated is itself
-    /// proof the response landed — which is how an empty `anchorMissing` reply (nothing to
-    /// replace, no anchor to appear) is still recognized instead of hanging on the spinner.
-    private var aroundWasHydrated = false
-    /// True while the jump is converging on its anchor across runloops (see `convergeJump`), so
-    /// a second `landInitialIfNeeded` (from an intervening apply or layout) doesn't start a
-    /// competing chain.
-    private var jumpConverging = false
-    private var jumpConvergePass = 0
-    /// Whether this jump should pulse the first UNREAD row (just below the divider) instead of
-    /// its anchor. A jump-to-unread (#45) anchors on the last-read message — which sits *above*
-    /// the marker — so flashing the anchor would highlight the wrong side of the seam; the
-    /// reader's eye wants the first new line. Off for every other jump (a highlight/notification
-    /// tap flashes the message it landed on). Consumed and cleared by `finishJump`.
-    private var jumpFlashesFirstUnread = false
     /// How many runloops to re-scroll before settling. The first scroll usually lands the anchor
     /// already; a couple of extra passes correct the rare case where estimated off-screen heights
     /// left it slightly off.
@@ -288,9 +164,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     init(viewModel: ChatViewModel, buffer: Buffer, jumpTo: Int? = nil) {
         self.viewModel = viewModel
         self.buffer = buffer
-        self.pendingJumpId = jumpTo
-        self.jumpExemptId = jumpTo
+        self.scroll = ConversationScroll(kind: buffer.kind)
         super.init(nibName: nil, bundle: nil)
+        scroll.trace = { [weak self] line in
+            guard let self, ScrollTrace.shared.isEnabled else { return }
+            ScrollTrace.shared.note(traceSource, line())
+        }
+        if let jumpTo { scroll.jumpTo(jumpTo) }
     }
 
     @available(*, unavailable)
@@ -340,7 +220,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // reloaded yet — deciding the unread banner against that mismatch reads visibility for
         // one row set with the indices of another.
         connectionBanner.onVisibilityChange = { [weak self] in
-            DispatchQueue.main.async { self?.updateFloatingPills() }
+            DispatchQueue.main.async { self?.applyLayout() }
         }
         view.addSubview(connectionBanner)
 
@@ -502,7 +382,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
             // Up at the top, where it's pointing — the connection banner's slot, which the two
-            // take turns in (see `updateFloatingPills`). Down at the bottom, up at the top: each
+            // take turns in (see `applyLayout`). Down at the bottom, up at the top: each
             // control sits on the edge it takes you to, and neither covers the newest message.
             unreadBanner.centerXAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerXAnchor),
             unreadBanner.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
@@ -656,7 +536,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The prompt and the away strip (#135). Their own subscription for the title's reason —
         // they move the composer and nothing else, and an op or a `/away` shouldn't cost a full
         // `apply` — and for one of their own: ⚠⚠ the strip changes the composer's height, whose
-        // handler scrolls to the last row. Inside `apply` that ran between `rebuildRows()` and
+        // handler scrolls to the last row. Inside `apply` that ran between `buildRows` and
         // the reload, with a fresh away/back divider in `rows` the table didn't have yet, and
         // scrolled to a row past its end.
         //
@@ -713,7 +593,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             .sink { [weak self] _ in
                 guard let self, CompactDensity.avatarsOn(settings) else { return }
                 refreshAvatarSpec(viewModel.state)
-                tableView.reloadData()
+                holdingLine("avatar sets") { self.tableView.reloadData() }
             }
             .store(in: &cancellables)
     }
@@ -724,7 +604,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Gated on the read boundary being latched, for the reason spelled out in `apply`:
         // marking read is what destroys the record of where the reader left off, so it can't
         // run before that record has been taken. The next `apply` picks it up.
-        if dividerAfterId != nil { viewModel.markRead(buffer.key) }
+        if scroll.marksRead { viewModel.markRead(buffer.key) }
         // …and it's now the buffer you're reading — see `recordVisit`.
         if !isResting { recordVisit() }
         // An error that landed before we had a window — or while a sheet was covering us —
@@ -906,7 +786,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
             init(_ state: ChatState, buffer: Buffer) {
                 prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
-                nick = ChatViewController.ownNick(for: state, buffer: buffer)
+                nick = ConversationBuild.ownNick(for: state, key: buffer.key)
                 members = buffer.kind == .channel ? state.members[buffer.key.id] : nil
                 dccSession = buffer.kind == .dcc ? state.dccChatSession(buffer.key) : nil
                 // ⚠ Not `awayState(for:)`, which leaves out the server log on purpose: that's
@@ -1069,167 +949,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         networks = state.networks
         refreshHighlighter(state)
         hydrateIfNeeded(state)
-        requestAroundIfNeeded(state)
-        // Latch the read boundary the first time the server tells us where it is, and
-        // never again — marking messages read live must not move the divider under us.
-        //
-        // Gated on `readStateKnown`, because a buffer ROW existing is not the server telling us
-        // anything about its read state, and neither is its HISTORY arriving. Three paths
-        // materialize a row carrying nothing but the struct's defaults — the connect `snapshot`
-        // (a row per joined channel, shipped *before* the per-buffer backlogs), a live event for
-        // an unseen target, and a `history` reply, which flips `hydrated` while `parseHistory`
-        // reads no read fields at all. Under all of them `lastReadId` is 0, which is
-        // indistinguishable by value from "read nothing". Latching there pinned this screen's
-        // divider at 0 for its whole life, and `MessageRows` draws none for a zero boundary, so
-        // the buffer opened with no divider and no unread banner however many unreads it had:
-        // every launch that restores straight into a buffer (#49), and anything opened during
-        // the connect burst. Only `backlog` and `read-state` carry the pointer, and
-        // `readStateKnown` is set by exactly those two.
-        //
-        // ⚠ `hydrated` is NOT a stand-in for this, which is what the first version of this fix
-        // got wrong: `hydrateIfNeeded` asks for `history mode:latest`, and that reply sets
-        // `hydrated` without carrying a pointer — so on a cold launch the gate could open with
-        // `lastReadId` still 0, and the now-ungated `markRead` below would then push the
-        // server's pointer to the newest message and destroy the real boundary before the
-        // `backlog` frame carrying it ever landed. Same bug, different door.
-        //
-        // Safe against our own mark-read from both ends: this runs before the `markRead` below,
-        // the frame that sets `readStateKnown` carries the pre-open `lastReadId` in the same
-        // state, and that `markRead` waits for this to have happened at all.
-        if dividerAfterId == nil, let known = state.buffers[buffer.key.id], known.readStateKnown {
-            dividerAfterId = known.lastReadId
-        }
-        // Filter by what this *kind* of buffer renders. The system buffer's content is
-        // entirely `type: "system"`, which isn't speech — a blanket `isSpeech` filter
-        // (right for channels) left it permanently empty.
-        // The render-time ignore filter (lurker #301) sits on top of the kind/renderable one:
-        // hidden lines drop out, and a NOHIGHLIGHT-covered line loses its mention wash. At
-        // render rather than on the way into the store, which is what makes a rule retroactive
-        // both ways — one made in a browser hides backlog the server had already sent, and
-        // removing it brings those lines straight back with no refetch.
-        // Relay re-attribution (#277) sits on top of both, and last: it rewrites the author and
-        // body of lines from a marked bridge bot, and it has to see what the ignore filter left
-        // rather than the other way round. Order matters in the other direction too — the rules
-        // above match the bot's real nick and its full envelope, which is what keeps an ignore on
-        // the bot working and lets a highlight fire on a word inside a relayed message.
-        // Replies (iOS #184) read last of all: a reply's quote and its stripped address are judged
-        // against the line as it now displays, a relayed one included, and the quote screens the
-        // CURRENT ignore rules, which the server only applied as they stood when it arrived.
-        let updated = Replies.presenting(
-            state.relayBots.reattributing(
-                state.ignores.visible(
-                    (state.messages[buffer.key.id] ?? [])
-                        .filter { buffer.kind.renders($0.type) && $0.isRenderable },
-                    networkId: buffer.networkId,
-                    target: buffer.target,
-                    keeping: jumpExemptId
-                ),
-                networkId: buffer.networkId
-            ),
-            networkId: buffer.networkId,
-            target: buffer.target,
-            ignores: state.ignores,
-            relayBots: state.relayBots,
-            ownNick: buffer.networkId.flatMap { state.networks[$0]?.nick }
-        )
+        frameSeq += 1
+        let frame = ConversationScroll.Frame(state, key: buffer.key)
+        lastFrame = frame
+        // Every frame, in order: the machine watches for the replies it's waiting on, asks for
+        // the fetches a jump or a re-attach needs, and latches the read boundary — before the
+        // mark below, so the value latched is the server's and never our own mark
+        // (`ConversationScroll.onFrame`).
+        let step = scroll.onFrame(frame, seq: frameSeq)
+        if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
+        if step.loadLatest { viewModel.loadLatest(buffer.key) }
+
         let oldFirstId = messages.first?.id
-        let newFirstId = updated.first?.id
         let wasNearBottom = isNearBottom
         let oldContentHeight = tableView.contentSize.height
-        let nowDetached = state.buffers[buffer.key.id]?.hasMoreNewer == true
-        // Whether this screen should follow whatever just landed down to the newest row.
-        //
-        // Being at the bottom isn't enough on its own: at the bottom of a DETACHED slice, what
-        // lands is a newer-history page the reader pulled by scrolling into it (#45), and
-        // following it down re-triggers the near-bottom `loadNewer` that fetched it — which
-        // pages again, scrolls again, and walks the buffer to its end at reading speed with the
-        // reader pinned to the bottom the whole way, never seeing a line of what they asked for.
-        // A page appends BELOW where they are; leaving them where they are is what lets them
-        // read forward through it. Same distinction the badge below already draws, for the same
-        // reason, and `wasDetached` covers the re-attach apply the same way (the final `after`
-        // page both appends and clears the flag; a jump-to-latest re-attach is a `needsInitial-
-        // Scroll` landing, which is decided before any of this).
-        let followsTail = wasNearBottom && !wasDetached && !nowDetached
         // Remember the line at the top of the viewport and exactly where it sits, *before*
         // the rows change under us. If this turns out to be a history prepend, we put that
         // same line back in the same place — which pins scroll position precisely, where the
         // old "shift by the content-height delta" could only approximate it (off-screen rows
         // self-size from an estimate, and consolidation can reshape the run at the boundary).
-        let anchors = followsTail ? [] : visibleAnchors()
-
-        // What the jump pill badges: live messages that landed below while the reader was up
-        // in history. Appends only — the first id moving means the reader pulled older pages,
-        // and a pure state change (connection, read counts, names) moves no count at all.
-        //
-        // Excluded when the buffer is (or just was) detached: a detached buffer holds live
-        // traffic out of the log, so anything appended there is a newer-history page the reader
-        // pulled by scrolling down (#45), not a surprise from below. `wasDetached` covers the
-        // re-attach apply too, where the final `after` page both appends and clears the flag.
-        // Sat out entirely on the frame the rules changed: an `/unignore` restores rows
-        // *throughout* the loaded window, which is a count increase that nothing arrived to
-        // cause. Counting it announced "12 new" for a conversation that hadn't moved, and
-        // then sampled the wrong twelve rows to classify.
-        let rulesChanged = lastIgnores !== state.ignores
-        lastIgnores = state.ignores
-        if !wasNearBottom, !wasDetached, !nowDetached, !rulesChanged, newFirstId == oldFirstId {
-            // Counted by id rather than by how much longer the array got. The two agree for a
-            // plain append and disagree for everything else — a restored row lands in the
-            // middle, and `suffix(delta)` would then measure the tail, which is neither the
-            // rows that appeared nor the same number of them.
-            //
-            // Ephemerals (id 0) are excluded: a `/e2e` status line or a local command echo is
-            // not something the reader is missing below.
-            let previousTail = messages.last(where: { $0.id != 0 })?.id ?? 0
-            let appended = updated.filter { $0.id > previousTail }
-            // Count what the reader will actually SEE arrive — the same tier the list itself
-            // applies, so the two can't disagree. At the `none` tier (#666) a netsplit rejoin
-            // appends dozens of rows that build to nothing, and counting them raw advertises
-            // "40 new" on a pill that jumps to a bottom looking exactly like the top; `smart`
-            // (#63) drops the same rejoin for everyone who wasn't in the conversation. The
-            // badge is still approximate under consolidation — a run of 40 folds to one
-            // summary line — but that overcounts things that exist, which is a different kind
-            // of wrong from counting things that don't.
-            newWhileDetached += EventFilter.visible(
-                appended,
-                settings: state.settings,
-                speakers: state.speakers[buffer.key.id] ?? SpeakerMap(),
-                ownNick: Self.ownNick(for: state, buffer: buffer)
-            ).count
-        }
-
-        messages = updated
-        settings = state.settings
+        // Captured against the rows the table is still showing, so before the build below.
+        let landing = scroll.landingPending
+        let anchors = landing ? [] : visibleAnchors()
+        let rowsStep = buildRows(from: state, wasNearBottom: wasNearBottom)
+        let newFirstId = current?.visible.first?.id
+        settings = current?.settings ?? Settings()
+        speakers = current?.speakers ?? SpeakerMap()
         refreshAvatarSpec(state)
-        speakers = state.speakers[buffer.key.id] ?? SpeakerMap()
-        ownNick = Self.ownNick(for: state, buffer: buffer)
-        awayState = Self.awayState(for: state, buffer: buffer)
-        // Covered by the `old.buffers[key] == new.buffers[key]` arm of the dedupe predicate,
-        // so a buffer whose only change is exhausting its history still reaches us.
-        hasMoreOlder = state.buffers[buffer.key.id]?.hasMoreOlder ?? true
-        hasMoreNewer = nowDetached
-        // Same arm covers the `/clear` marker (#121) — which is what makes a clear issued on
-        // the WEB redraw this screen, rather than waiting for the next unrelated frame.
-        let previousCleared = clearedBeforeId
-        clearedBeforeId = state.buffers[buffer.key.id]?.clearedBeforeId ?? 0
-        clearedAt = state.buffers[buffer.key.id]?.clearedAt
-        // ⚠⚠ A NEW clear retires the reveal. Without this, clearing a buffer you had peeled
-        // back to land a jump does nothing you can see — the marker moves and the filter stays
-        // suppressed — so `/clear` looks broken until the buffer is closed and reopened. True
-        // of a clear issued here and of one issued on another device.
-        if clearedBeforeId > 0, clearedBeforeId != previousCleared { showsClearedHistory = false }
-        // Below the mirrors, and with no rebuild of its own: `rebuildRows()` is a few lines
-        // down and reads what this may have just changed. Run at the top of `apply` it built
-        // rows from the PREVIOUS pass's messages — on a freshly opened jump screen, from none.
-        revealIfJumpTargetHidden(state)
         rosterSettled = state.rosterSettled
-        historyLanded = BufferPlaceholder.historyLanded(
-            hydrated: state.buffers[buffer.key.id]?.hydrated == true,
-            hydratesOnDemand: buffer.kind.hydratesOnDemand,
-            bufferExists: state.buffers[buffer.key.id] != nil,
-            rosterSettled: state.rosterSettled
-        )
         modePrefixes = Self.modePrefixes(for: state, buffer: buffer)
-        rebuildRows()
         updateTitle(state)
         // A strip left open across new traffic re-ranks live: whoever just spoke is now
         // the most recent speaker, and a leaver stops being offered.
@@ -1238,52 +986,29 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Connection trouble spelled out (#19) — the loud counterpart to the subtitle —
         // and, behind an empty list, whether we're still loading or genuinely have nothing.
         connectionBanner.update(ConnectionBannerState.of(reachable: state.reachable, connection: state.connection))
-        // New traffic arrived while we're on screen → keep it marked read.
-        //
-        // Never before the boundary above is latched. `markRead` pushes the server's pointer to
-        // the newest loaded message, and that pointer is the *only* record of where the reader
-        // left off — mark first and the value we latch afterwards is our own mark, which drops
-        // the divider below everything they hadn't read and silently reports the lot as read.
-        // Reachable on a cold launch straight into a buffer (#49): live traffic can land in a
-        // buffer before the backlog that would have said where the boundary was. The wait is
-        // short and self-clearing — the frame that answers the hydrate latches the boundary
-        // above, and this fires on that same pass.
-        // Offline the kit sends nothing and records nothing (sweep L23); coming back online is a
-        // state change, so this runs again then.
-        if view.window != nil, dividerAfterId != nil { viewModel.markRead(buffer.key) }
+        // New traffic arrived while we're on screen → keep it marked read. Never before the
+        // boundary is latched (`ConversationScroll.marksRead`). Offline the kit sends nothing
+        // and records nothing (sweep L23); coming back online is a state change, so this runs
+        // again then.
+        if view.window != nil, scroll.marksRead { viewModel.markRead(buffer.key) }
 
-        // Following the tail decides everything here (see `followsTail`): preserving your
-        // position only means anything if you have one to preserve. Parked at the live bottom,
-        // the bottom is it — follow the traffic. Anywhere else — up in history, or reading
-        // forward through a detached slice — whatever changed (older pages prepended, newer
-        // pages appended, live traffic appended, a run re-consolidated), the line being read
-        // goes back exactly where it was: a bare reload re-estimates off-screen row heights and
-        // shoves the viewport around, and that shove — on *appends*, not just prepends — is what
-        // made the list lurch mid-read.
-        // The around response has landed once the messages we held at request time are gone
-        // (it replaces the slice) or the anchor itself shows up — NOT merely because the buffer
-        // has *some* messages (a pre-existing connect backlog would trip that and make the jump
-        // give up before its real slice arrives). A live append keeps the baseline, so it
-        // doesn't count either.
-        if aroundRequestedAtGeneration != nil, !aroundSliceArrived {
-            let currentIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
-            let replaced = !aroundBaselineIds.isEmpty && !aroundBaselineIds.isSubset(of: currentIds)
-            let anchorPresent = pendingJumpId.map { currentIds.contains($0) } ?? false
-            // A fresh (unhydrated) buffer flipping hydrated is the reply landing even when it's
-            // empty (anchorMissing) — otherwise that case never resolves and hangs the spinner.
-            let becameHydrated = !aroundWasHydrated && state.buffers[buffer.key.id]?.hydrated == true
-            if replaced || anchorPresent || becameHydrated { aroundSliceArrived = true }
-        }
-
-        if pendingJumpId != nil || needsInitialScroll {
+        if landing {
             // A landing is pending — an initial open, a jump to an anchor (#42), or a re-attach
-            // to the tail. Don't auto-scroll here; `landInitialIfNeeded` does the placement once
-            // the rows and a height exist.
+            // to the tail. Don't auto-scroll here; `landIfNeeded` does the placement once the
+            // rows and a height exist.
+            trace("apply: reload under a pending landing")
             tableView.reloadData()
-        } else if followsTail {
+        } else if rowsStep.follow {
             tableView.reloadData()
             scrollToBottom()
         } else {
+            // Anywhere but the live bottom — up in history, or reading forward through a
+            // detached slice — whatever changed (older pages prepended, newer pages appended,
+            // live traffic appended, a run re-consolidated), the line being read goes back
+            // exactly where it was: a bare reload re-estimates off-screen row heights and
+            // shoves the viewport around, and that shove — on *appends*, not just prepends —
+            // is what made the list lurch mid-read.
+            //
             // The height-delta fallback is for prepends alone. The first id also gets
             // smaller on hydration, when a backlog replaces the live events that outran it
             // (your own echo, usually) — shifting by a whole history's height there throws
@@ -1291,6 +1016,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // out-of-range offset until something touches it: a black buffer that snaps
             // into place when you poke it.
             let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
+            trace("apply: hold prepended=\(prepended) anchors=\(anchors.count)")
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
@@ -1316,7 +1042,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Keyed off the BUILT rows, not the raw messages — `hasMessages` means "any
         // renderable line is already on screen", and since the `none` event tier (#666)
         // those two can disagree. A quiet channel whose only stored rows are joins and mode
-        // changes has messages but builds to nothing; reading `updated` there reports
+        // changes has messages but builds to nothing; reading the raw list there reports
         // content, suppresses the placeholder, and leaves the reader on a completely blank
         // screen with no empty-state and no spinner.
         //
@@ -1331,11 +1057,52 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         )
         // After the landing, not before: the first apply reaches here with the offset
         // still at the top, and the pill would flash in for the frame before
-        // `landInitialIfNeeded` parks the buffer at its newest message.
-        landInitialIfNeeded()
-        updateFloatingPills()
-        wasDetached = nowDetached
+        // `landIfNeeded` parks the buffer at its newest message.
+        landIfNeeded()
+        applyLayout()
     }
+
+    /// Build the rows for `state` under the machine's options and hand them to it, until it
+    /// is happy with what they were built under — the `/clear` reveal (or its retirement)
+    /// changes the options from inside `onRows`, and rows built before that are stale. Twice
+    /// at most: the reveal flips once. Installs the build as what's on screen.
+    @discardableResult
+    private func buildRows(from state: ChatState, wasNearBottom: Bool) -> ConversationScroll.RowsStep {
+        var built = ConversationBuild.make(
+            state: state, key: buffer.key, kind: buffer.kind, options: scroll.options, seq: frameSeq
+        )
+        var step = scroll.onRows(built, wasNearBottom: wasNearBottom)
+        if step.optionsChanged {
+            built = ConversationBuild.make(
+                state: state, key: buffer.key, kind: buffer.kind, options: scroll.options, seq: frameSeq
+            )
+            step = scroll.onRows(built, wasNearBottom: wasNearBottom)
+        }
+        current = built
+        messages = built.visible
+        rows = built.rows
+        return step
+    }
+
+    /// Rebuild from the last frame under the machine's CURRENT options — for the steps that
+    /// change them outside a frame (a jump's exemption, jump-to-latest putting a `/clear`
+    /// back). A landing judges its build by its options, so one made under old ones would
+    /// only ever make it wait for the next unrelated frame.
+    private func rebuildRowsIfOptionsChanged() {
+        guard current?.options != scroll.options else { return }
+        // The reader's line stays put across the reload, as it does in `apply`: a jump that
+        // can't land yet (its slice in flight, or no socket to ask over) must not shove the
+        // viewport in the meantime.
+        let anchors = visibleAnchors()
+        buildRows(from: viewModel.state, wasNearBottom: isNearBottom)
+        UIView.performWithoutAnimation {
+            tableView.reloadData()
+            tableView.layoutIfNeeded()
+            restorePosition(anchoredTo: anchors)
+            clampToContent()
+        }
+    }
+
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
@@ -1347,9 +1114,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // when the finger reaches the *bar*, the way Messages' does, not only once it
         // touches the keyboard itself. Recomputed here because the bar grows with its text.
         view.keyboardLayoutGuide.keyboardDismissPadding = composer.bounds.height + Self.keyboardGap
-        // The other half of the initial scroll: this is where an already-hydrated buffer
-        // finally gets a height to scroll within.
-        landInitialIfNeeded()
+        // The other half of the landing: this is where an already-hydrated buffer finally gets
+        // a height to scroll within.
+        landIfNeeded()
         // And the other half of the top-up, for the same reason: "does the content fill the
         // viewport" is unanswerable until there is a viewport, and a buffer whose first apply
         // beat layout would otherwise sit thinned-out and unscrollable with nothing scheduled
@@ -1359,142 +1126,124 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         topUpIfUnscrollable()
     }
 
-    /// The landing. Needs both rows to scroll to and a viewport to scroll within, which arrive
-    /// in either order. Lands at the bottom normally, or — for a jump (#42) — on the target
-    /// message.
+    /// The landing. Asks the machine what's pending against the build on screen and performs
+    /// it: a tail landing over as many passes as the geometry needs, or a jump's convergence.
+    /// Needs a viewport to scroll within, which can arrive after the rows do — so both
+    /// `apply` and `viewDidLayoutSubviews` ask.
     ///
     /// ⚠⚠ A HEIGHT IS NOT A VIEWPORT. The table gets its `bounds` from the first layout pass,
     /// which for a pushed screen happens before it is in a window — so the safe area is zero and
     /// `updateBottomInset` has not run, and `scrollToRow(.bottom)` there parks the tail at the
     /// bottom of a viewport ~200pt taller than the real one. It measures as a perfect landing
-    /// (`distanceFromBottom == 0`) and then the real insets arrive underneath it: the top
-    /// adjustment shifts the offset up by its own height, the composer's reservation takes the
-    /// rest, and the reader opens the buffer parked a couple of hundred points above the newest
-    /// message with nothing scheduled to notice. `apply`'s follow-the-tail path can't repair it
-    /// either — that far out, `isNearBottom` is false, so it preserves the wrong position instead.
-    ///
-    /// The window guard alone isn't enough, which is why this no longer lands ONCE. The insets
-    /// keep moving for a pass or two after that (the composer is only measured once it has been
-    /// laid out), and the rows themselves are self-sizing, so the content grows as the tall ones
-    /// are realized. So the landing holds until a *fresh* pass finds the table already at the
-    /// bottom — the only evidence that the geometry it was computed against has stopped moving.
-    private func landInitialIfNeeded() {
-        guard needsInitialScroll, view.window != nil, tableView.bounds.height > 0 else { return }
-        if pendingJumpId != nil {
-            beginJumpLanding()
+    /// (`distanceFromBottom == 0`) and then the real insets arrive underneath it: the reader
+    /// opens the buffer parked a couple of hundred points above the newest message with nothing
+    /// scheduled to notice. The window guard alone isn't enough: the insets keep moving for a
+    /// pass or two after that, and the rows are self-sizing, so the content grows as the tall
+    /// ones are realized. So a tail landing holds until a *fresh* pass finds the table already
+    /// at the bottom — the only evidence that the geometry it was computed against has stopped
+    /// moving — and only then tells the machine it's parked (`landedAtTail`).
+    private func landIfNeeded() {
+        guard let current, view.window != nil, tableView.bounds.height > 0 else { return }
+        switch scroll.landing(current) {
+        case .idle, .wait:
             return
-        }
-        guard !rows.isEmpty else { return }
-        // ⚠ Laid out BEFORE anything is measured, for the reason `apply` forces a pass of its
-        // own: `viewDidLayoutSubviews` runs ahead of the table's own layout, where `contentSize`
-        // still describes the previous pass's bounds and rows. Releasing against that reading is
-        // the same class of bug as landing against the pre-window insets — a short buffer whose
-        // estimated content doesn't fill the viewport would satisfy the test below and spend the
-        // landing without ever having scrolled.
-        tableView.layoutIfNeeded()
-        // Already there — a previous pass's landing survived this one's geometry, so it was
-        // computed against the real thing and the screen is parked. Only ever a release, never a
-        // reason to skip the first scroll: a buffer too short to scroll reads as at-the-bottom
-        // from the start, and it still has to be asked, because `scrollToBottom`'s own layout is
-        // what makes the reading below real.
-        if landingPasses > 0, distanceFromBottom <= 0.5 {
-            needsInitialScroll = false
-            return
-        }
-        scrollToBottom()
-        landingPasses += 1
-        // Bounded, for the same reason the jump's convergence is: a screen whose content somehow
-        // never settles must stop stealing the scroll rather than fight the reader forever.
-        if landingPasses >= Self.maxLandingPasses { needsInitialScroll = false }
-    }
-
-    /// The row a converging jump scrolls to and flashes: the first unread (just below the
-    /// divider) for a jump-to-unread (#45), else the anchor's own row. Re-resolved every pass by
-    /// `convergeJump`, so a row rebuild between runloops can't strand the scroll on a stale index.
-    /// Nil until the target both exists and can be trusted — which is what keeps a landing
-    /// waiting: the anchor's row isn't loaded yet, or, for the unread jump, the `around` slice is
-    /// still in flight so the divider is pinned to the top of the stale latest window (every
-    /// loaded row unread) rather than the real seam.
-    private func jumpTargetRow(anchor: Int) -> Int? {
-        if jumpFlashesFirstUnread {
-            if aroundRequestedAtGeneration != nil, !aroundSliceArrived { return nil }
-            return firstUnreadRow
-        }
-        return rowIndex(containing: anchor)
-    }
-
-    /// Start converging on the jump target, once. Waits (returns, leaving the jump pending) if
-    /// the target row isn't available yet — unless the `around` slice already came back without
-    /// it (`anchorMissing`, or no unread in the slice), in which case it gives up and lands at
-    /// the bottom.
-    private func beginJumpLanding() {
-        guard let anchor = pendingJumpId, !jumpConverging else { return }
-        guard jumpTargetRow(anchor: anchor) != nil else {
-            if aroundSliceArrived {
-                // The response landed without a target. Release the jump so the screen isn't
-                // stuck "landing" forever — land at the bottom if there's anything to land on,
-                // otherwise just let go (an empty buffer shows its empty state, and a later
-                // message follows the near-bottom path).
-                resetJumpState()
-                needsInitialScroll = false
-                if !rows.isEmpty { scrollToBottom() }
+        case .converge(let jump):
+            converging = jump
+            convergePass = 0
+            converge(jump)
+        case .atTail:
+            // ⚠ Laid out BEFORE anything is measured: `viewDidLayoutSubviews` runs ahead of the
+            // table's own layout, where `contentSize` still describes the previous pass's bounds
+            // and rows. Releasing against that reading is the same class of bug as landing
+            // against the pre-window insets — a short buffer whose estimated content doesn't
+            // fill the viewport would satisfy the test below and spend the landing without ever
+            // having scrolled.
+            tableView.layoutIfNeeded()
+            // Already there — a previous pass's landing survived this one's geometry, so it was
+            // computed against the real thing and the screen is parked. Only ever a release,
+            // never a reason to skip the first scroll: a buffer too short to scroll reads as
+            // at-the-bottom from the start, and it still has to be asked, because
+            // `scrollToBottom`'s own layout is what makes the reading below real.
+            if landingPasses > 0, distanceFromBottom <= 0.5 {
+                trace("tail landed after \(landingPasses) passes")
+                settleTailLanding()
+                return
             }
-            return // else: still waiting for the around response.
+            scrollToBottom()
+            landingPasses += 1
+            trace("tail pass \(landingPasses) distance=\(Int(distanceFromBottom))")
+            // Bounded, for the same reason the jump's convergence is: a screen whose content
+            // somehow never settles must stop stealing the scroll rather than fight the reader.
+            if landingPasses >= Self.maxLandingPasses { settleTailLanding() }
         }
-        jumpConverging = true
-        jumpConvergePass = 0
-        convergeJump(anchor: anchor)
     }
 
-    /// Scroll the anchor to the middle of the viewport (clamped near an edge — a recent anchor
-    /// with little below it lands lower than centre, as centred as it can be), re-checking over
-    /// a couple of runloops.
+    /// The tail landing is over: tell the machine, and ask it about the layout it was holding
+    /// off on — paging a short buffer whose top is in reach, and the pills — rather than waiting
+    /// for the next tick, which a reader who never scrolls never makes.
+    private func settleTailLanding() {
+        landingPasses = 0
+        scroll.landedAtTail()
+        applyLayout()
+    }
+
+    /// Scroll the jump's target to the middle of the viewport (clamped near an edge — a recent
+    /// target with little below it lands lower than centre, as centred as it can be),
+    /// re-checking over a couple of runloops.
     ///
-    /// Two things make the naive version wrong, and this fixes both: (1) it re-resolves the row
-    /// by message *id* every pass rather than caching an index, so a row rebuild between passes
-    /// (a live message, a read-state update) can't slide the scroll onto the wrong message; and
-    /// (2) the jump stays *pending* until the last pass, so an intervening `apply` reloads
-    /// without stealing the scroll to the bottom. Off-screen rows self-size from an estimate, so
-    /// a lone scroll can land approximately — a couple of passes correct as real heights render —
-    /// then it flashes and releases the jump.
-    private func convergeJump(anchor: Int) {
-        guard let index = jumpTargetRow(anchor: anchor) else { return finishJump(flashing: nil) }
+    /// It re-resolves the row by message *id* every pass rather than caching an index, so a
+    /// row rebuild between passes (a live message, a read-state update) can't slide the scroll
+    /// onto the wrong message; and the jump stays *pending* in the machine until the last pass,
+    /// so an intervening `apply` reloads without stealing the scroll to the bottom. Off-screen
+    /// rows self-size from an estimate, so a lone scroll can land approximately — a couple of
+    /// passes correct as real heights render — then it flashes and releases the jump.
+    private func converge(_ jump: ConversationScroll.Jump) {
+        guard scroll.isCurrent(jump), let current else { return } // superseded / torn down
+        guard let index = scroll.jumpTargetRow(current) else { return finishConverge(jump, interrupted: false) }
         tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .middle, animated: false)
-        jumpConvergePass += 1
-        guard jumpConvergePass < Self.jumpConvergePasses else { return finishJump(flashing: anchor) }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.pendingJumpId == anchor else { return } // superseded / torn down
-            self.convergeJump(anchor: anchor)
-        }
+        convergePass += 1
+        trace("converge pass \(convergePass) row=\(index) offset=\(Int(tableView.contentOffset.y))")
+        guard convergePass < Self.jumpConvergePasses else { return finishConverge(jump, interrupted: false) }
+        DispatchQueue.main.async { [weak self] in self?.converge(jump) }
     }
 
-    /// Release the jump and pulse the landed-on row — the same row `convergeJump` targeted (the
-    /// first unread for a jump-to-unread, else the anchor), resolved once through `jumpTargetRow`
-    /// before the state is cleared. A vanished target just lands at the bottom.
-    private func finishJump(flashing anchor: Int?) {
-        let target = anchor.flatMap { jumpTargetRow(anchor: $0) }
-        resetJumpState()
-        needsInitialScroll = false
-        guard let target else {
-            if !rows.isEmpty { scrollToBottom() }
-            return
+    /// Release the jump and pulse the landed-on row — the same row `converge` targeted (the
+    /// first unread for a jump-to-unread, else the anchor), resolved once more through the
+    /// machine before its state is cleared. A vanished target lands at the bottom; a drag mid-
+    /// convergence leaves the reader where they are.
+    private func finishConverge(_ jump: ConversationScroll.Jump, interrupted: Bool) {
+        guard let current else { return }
+        if converging === jump { converging = nil }
+        switch scroll.finishJump(jump, current: current, interrupted: interrupted) {
+        case .flash(let row):
+            flashRow(at: IndexPath(row: row, section: 0))
+        case .atTail:
+            landingPasses = 0
+            landIfNeeded()
+        case .release:
+            break
         }
-        flashRow(at: IndexPath(row: target, section: 0))
+        // The banner and the pill answer to the jump having released — the divider the jump
+        // landed beside is seen now, or the reader is up in history on purpose.
+        applyLayout()
     }
 
-    /// Clear all one-shot jump state. Both jump entry points call this before arming their own
-    /// `pendingJumpId`/`jumpFlashesFirstUnread`, and the landing paths call it to release the
-    /// jump — so a newly added jump field (as `jumpFlashesFirstUnread` was for #45) can't be left
-    /// stranded set from a prior jump.
-    private func resetJumpState() {
-        pendingJumpId = nil
-        aroundRequestedAtGeneration = nil
-        aroundSliceArrived = false
-        aroundBaselineIds = []
-        jumpConverging = false
-        jumpConvergePass = 0
-        jumpFlashesFirstUnread = false
+    /// A jump the machine just took: rows under its exemption, its fetch (if the message isn't
+    /// held) and its landing (if it is). Asked of the last frame the screen processed, never a
+    /// fresh read of the store: the reply is recognised against the frame after it.
+    private func startJump() {
+        landingPasses = 0
+        rebuildRowsIfOptionsChanged()
+        if let frame = lastFrame, let anchor = scroll.requestAround(frame) {
+            viewModel.loadAround(buffer.key, anchorId: anchor)
+        }
+        landIfNeeded()
+        // Down now rather than when the target lands: the `around` fetch can take a moment and
+        // the tap has to be acknowledged. The pending jump is what keeps the banner down until
+        // the jump releases.
+        applyLayout()
     }
+
 
     /// A warm pulse behind the row, fading out — the "here it is" after a jump. The wash reuses
     /// the highlight color and fades to clear (these cells never carry a fill).
@@ -1503,6 +1252,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// a jump scroll — so retry across a couple of runloops rather than silently skipping the
     /// glow (the bug where a jump landed with no pulse).
     private func flashRow(at path: IndexPath, retries: Int = 3) {
+        trace("flash row=\(path.row) cell=\(tableView.cellForRow(at: path) != nil) offset=\(Int(tableView.contentOffset.y))")
         guard let cell = tableView.cellForRow(at: path) else {
             guard retries > 0 else { return }
             DispatchQueue.main.async { [weak self] in self?.flashRow(at: path, retries: retries - 1) }
@@ -1548,10 +1298,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func hydrateIfNeeded(_ state: ChatState) {
         guard buffer.kind.hydratesOnDemand else { return }
         // A pending jump hydrates via an `around` slice centered on the target (see
-        // `requestAroundIfNeeded`), not the latest backlog — asking for both would
+        // `ConversationScroll.requestAround`), not the latest backlog — asking for both would
         // double-fetch and the latest slice would fight the jump. Once the around slice lands
         // the buffer reads hydrated, so this stays a no-op afterwards.
-        guard pendingJumpId == nil else { return }
+        guard !scroll.jumpPending else { return }
         guard state.connection == .connected else {
             // A reconnect resyncs buffers as shells, so ask again on the next one. Kept as
             // a fast path only — it fires when a drop is actually reported, which it isn't
@@ -1624,72 +1374,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         viewModel.hydrate(known.key)
     }
 
-    /// Fetch the `around` slice a jump needs (#42): a history window centered on `pendingJumpId`,
-    /// so the anchor and its context land even when it's older than any backlog. Skipped when
-    /// the message is already held — the landing scrolls straight to it — and re-armed on
-    /// reconnect like `hydrateIfNeeded`. Only channel/DM buffers hydrate on demand; a
-    /// `:server:`/system jump has nothing to fetch and the landing places against what's loaded.
-    private func requestAroundIfNeeded(_ state: ChatState) {
-        guard let anchor = pendingJumpId, buffer.kind.hydratesOnDemand else { return }
-        guard state.connection == .connected else {
-            aroundRequestedAtGeneration = nil
-            return
-        }
-        // A new burst voids a request made during the previous one — see
-        // `hydrateIfNeeded` for why `connection` alone can't be trusted to notice.
-        if let asked = aroundRequestedAtGeneration, asked != state.burstGeneration {
-            aroundRequestedAtGeneration = nil
-        }
-        guard aroundRequestedAtGeneration == nil else { return }
-        // Already held? No fetch — land against what's loaded. A row the `/clear` marker is
-        // hiding is held but unrenderable; `revealIfJumpTargetHidden` is what resolves that,
-        // for this case and for the fetched one alike.
-        if (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor }) { return }
-        aroundRequestedAtGeneration = state.burstGeneration
-        aroundBaselineIds = Set((state.messages[buffer.key.id] ?? []).map(\.id))
-        aroundWasHydrated = state.buffers[buffer.key.id]?.hydrated == true
-        viewModel.loadAround(buffer.key, anchorId: anchor)
-    }
-
-    /// A pending jump onto a row the `/clear` marker is hiding: detach, so it can render (#121).
-    ///
-    /// A message at or below the boundary sits in `messages` and is filtered out of `rows`, so
-    /// a jump to one lands on a row that will never exist — `beginJumpLanding` finds nothing,
-    /// and with no request in flight to explain it `pendingJumpId` is never cleared, which also
-    /// disables hydrate, the initial landing and the top-up for the life of the screen.
-    /// Showing it suppresses the filter, which is the whole of what the row needs. Same
-    /// resolution as the web (`useJumpToMessage.ts`, `hiddenByClear` → `detachForJump`).
-    ///
-    /// ⚠⚠ Its own step, run on EVERY apply while a jump is pending, because the anchor becomes
-    /// held-and-hidden at two different moments: it was already loaded when the jump was asked
-    /// for, or it arrived in the `around` slice we fetched for it. Handling only the first is
-    /// what left a tapped bookmark landing on a blank screen — the common path is the fetched
-    /// one, since a jump from elsewhere in the app usually opens an unhydrated buffer.
-    ///
-    /// ⚠⚠ And fetching is not itself a fix: `hasMoreNewer` comes from the SERVER's answer, so a
-    /// slice that reaches the live tail — a small buffer, or one cleared moments ago — comes
-    /// back `hasMoreNewer: false` and leaves the anchor hidden. Nor is setting `hasMoreNewer`
-    /// here: on a buffer holding the tail that makes the near-bottom `loadNewer` fire at once,
-    /// and its empty reply re-hides everything a frame later.
-    ///
-    /// ⚠ Gated on the anchor being HELD, so the reveal waits for the thing it is revealing.
-    ///
-    /// ⚠⚠ NOT gated on the buffer being attached, though only a detached buffer's filter is
-    /// already suppressed. The common jump path fetches an `around` slice and detaches, so the
-    /// rows render on `hasMoreNewer` alone — and then reading forward pages to the tail, the
-    /// re-attach clears that flag, and every row at or below the boundary vanishes at once
-    /// underneath the reader, with the scroll anchors it would have restored among them.
-    /// Arming here as well means the reveal survives the re-attach, and `jumpToLatest` stays
-    /// the one thing that puts the marker back.
-    private func revealIfJumpTargetHidden(_ state: ChatState) {
-        guard let anchor = pendingJumpId,
-              let known = state.buffers[buffer.key.id],
-              !showsClearedHistory,
-              known.clearedBeforeId > 0, anchor <= known.clearedBeforeId,
-              (state.messages[buffer.key.id] ?? []).contains(where: { $0.id == anchor })
-        else { return }
-        showsClearedHistory = true
-    }
 
     /// The placeholder currently installed, so a fresh `apply` on every live message
     /// doesn't rebuild the same `StateView` and reassign `backgroundView` unchanged.
@@ -1729,16 +1413,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// has told us most recently, not against the frame that happened to trigger a redraw.
     @discardableResult
     private func topUpIfUnscrollable() -> Bool {
-        guard pendingJumpId == nil, !canScroll else { return false }
-        let state = viewModel.state
-        guard let known = state.buffers[buffer.key.id], known.hydrated, known.hasMoreOlder else {
-            return false
-        }
-        guard !(state.messages[buffer.key.id] ?? []).isEmpty else { return false }
+        guard !canScroll, let current,
+              scroll.wantsTopUp(current, online: ConversationScroll.mayWrite(viewModel.state))
+        else { return false }
         // Report what `loadOlder` actually did, not what we asked it to. It refuses to page
         // past a `/clear` boundary (#121), and claiming a page was on its way would pin
         // "Loading messages…" over a buffer where nothing is coming.
-        return viewModel.loadOlder(buffer.key, showingClearedHistory: showsClearedHistory)
+        return viewModel.loadOlder(buffer.key, showingClearedHistory: scroll.options.showsClearedHistory)
     }
 
     /// Whether the table has more content than viewport to show it in — i.e. whether a scroll,
@@ -1885,57 +1566,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Our own nick on this buffer's network, or nil where there isn't one — the system buffer
     /// belongs to no network. Held on `Network`, so it follows a `/nick` without this screen
     /// having to watch for the event.
-    private static func ownNick(for state: ChatState, buffer: Buffer) -> String? {
-        buffer.networkId.flatMap { state.networks[$0]?.nick }
-    }
-
-    /// Your own away state as it applies to *this* buffer (#68), or nil where it doesn't.
-    ///
-    /// Away is per network (lurker#994): one network can be away while another isn't, so this
-    /// reads this buffer's own network and says nothing about the rest.
-    ///
-    /// Conversations only. The `:server:` log and the system buffer are narration about the
-    /// connection rather than a conversation you were absent from, so a marker there would be
-    /// noise in the one place noise is already densest — the same call the web makes.
-    private static func awayState(for state: ChatState, buffer: Buffer) -> AwayState? {
-        switch buffer.kind {
-        case .channel, .dm, .dcc:
-            return buffer.networkId.flatMap { state.networks[$0]?.away }
-        case .server, .system:
-            return nil
-        }
-    }
-
-    /// Rebuild `rows` from the current `messages`, and re-cache the divider index.
-    ///
-    /// Two callers with different triggers — a state apply and returning to the tail — so the
-    /// bookkeeping that has to stay in step with `rows` lives here rather than being repeated
-    /// (and eventually forgotten) at each one.
-    ///
-    /// The row stream itself is built in `LurkerKit` (`MessageRows`): it's the
-    /// layout-independent half of the list, so it belongs where a second message-list style
-    /// can reach it — and where it can be tested, which a view controller's private method
-    /// can't be.
-    private func rebuildRows() {
-        rows = MessageRows.build(
-            messages: messages,
-            dividerAfterId: dividerAfterId,
-            hasMoreOlder: hasMoreOlder,
-            hasMoreNewer: hasMoreNewer,
-            clearedBeforeId: clearedBeforeId,
-            clearedAt: clearedAt,
-            showsClearedHistory: showsClearedHistory,
-            // The typing line lives in the composer's status row now.
-            typists: [],
-            settings: settings,
-            speakers: speakers,
-            ownNick: ownNick,
-            away: awayState
-        )
-        // Cached so `dividerRow`/`firstUnreadRow` stay O(1) on the scroll-tick and
-        // jump-converge hot paths — `rows` only changes here.
-        dividerRow = rows.firstIndex { if case .unreadDivider = $0 { return true }; return false }
-    }
 
     // MARK: - Scroll anchoring across a history prepend
 
@@ -1978,22 +1608,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The first captured line that still has a row — see `visibleAnchors`.
         let survivor = anchors.lazy
             .compactMap { anchor in
-                self.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
+                self.current?.rowIndex(containing: anchor.id).map { ($0, anchor.offset) }
             }
             .first
-        guard let (index, offset) = survivor else { return false }
+        guard let (index, offset) = survivor else {
+            trace("restore: no anchor survived of \(anchors.count)")
+            return false
+        }
+        let before = tableView.contentOffset.y
         tableView.contentOffset.y =
             tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - offset
         clampToContent()
+        trace("restore: row=\(index) moved=\(Int(tableView.contentOffset.y - before))")
         return true
     }
 
     /// The row that now represents message `id` — its own row, or the summary whose span
     /// covers it after a history page merged it into a consolidated run.
-    private func rowIndex(containing id: Int) -> Int? {
-        rows.firstIndex { $0.represents(id) }
-    }
-
     /// How far the newest message sits below the viewport bottom (0 when parked at the tail).
     ///
     /// The bottom inset is part of the answer, not noise to be left out. `updateBottomInset`
@@ -2013,24 +1644,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
-    /// The reader has taken hold of the list, so the screen's OWN opening landing is spent.
-    ///
-    /// It holds across several layout passes now (see `landInitialIfNeeded`), and a buffer whose
-    /// rows arrive late can still be waiting for one when a finger arrives first. Without this,
-    /// the next pass — a keyboard, a rotation, a composer growing a line — would answer a
-    /// deliberate scroll by pulling the reader back to the bottom.
-    ///
-    /// ⚠⚠ Only that landing, never one that was ASKED for. A jump (#42/#45) and a re-attach
-    /// (`jumpToLatest`, and the re-attach `send` makes for you) both re-arm `needsInitialScroll`
-    /// and then wait on a fetch, and both are the reader's own request — so a drag while the
-    /// slice is in flight must not quietly drop it. Clearing it there would be worse than a
-    /// missed scroll: `beginJumpLanding` is only reachable through that flag, so `pendingJumpId`
-    /// would never clear, and it gates `hydrateIfNeeded`, `apply`'s branch and the unread banner
-    /// for the rest of the screen's life. `isDetached` is the re-attach's tell — the flag is only
-    /// set on a detached buffer there, and by the time the slice lands it has cleared.
+    /// The reader has taken hold of the list. The machine decides what that releases
+    /// (`ConversationScroll.onUserDrag`): the screen's own opening landing, which holds across
+    /// several layout passes (`landIfNeeded`) and would otherwise answer a deliberate scroll by
+    /// pulling the reader back to the bottom on the next pass — and a converging jump, whose
+    /// chain is finished here, interrupted. Never a jump or a re-attach still waiting on its
+    /// fetch: those are the reader's own request, and a pending jump is the only way its state
+    /// clears.
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        guard pendingJumpId == nil, !isDetached else { return }
-        needsInitialScroll = false
+        landingPasses = 0
+        if scroll.onUserDrag(), let jump = converging {
+            finishConverge(jump, interrupted: true)
+        }
     }
 
     /// A drag that ends without a fling settles here; one with a fling settles in
@@ -2045,20 +1670,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        // Back at the bottom — however you got there — means caught up: the badge counts
-        // "new since you scrolled away", and you're not away anymore.
-        if isNearBottom { newWhileDetached = 0 }
-        updateFloatingPills()
-        guard !messages.isEmpty else { return }
-        // Near the top → pull older history. The view model guards `hasMoreOlder` and an
-        // in-flight page, so firing this on every scroll tick is safe.
-        if scrollView.contentOffset.y < 300 {
-            viewModel.loadOlder(buffer.key, showingClearedHistory: showsClearedHistory)
-        }
-        // Near the bottom of a detached slice → pull NEWER history, walking the reader forward
-        // toward live (#45). The mirror of the loadOlder prefetch; the view model guards
-        // `hasMoreNewer` and an in-flight page. Reaching the tail re-attaches and resumes live.
-        if isDetached, distanceFromBottom < 300 { viewModel.loadNewer(buffer.key) }
+        applyLayout()
     }
 
     /// The settle after `jumpToLatest`'s animated scroll: rows are self-sizing, so the
@@ -2069,50 +1681,45 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         scrollToBottom()
     }
 
-    /// Update the two floating controls: the jump-to-latest pill in the bottom-trailing corner
-    /// and the unread banner under the nav bar. Independent — each is offered whenever its own
-    /// condition holds, and "unread above, live traffic below" shows both, one on each edge.
-    /// Decided here in one place because both are derived, so it runs on every apply and scroll
-    /// tick.
-    private func updateFloatingPills() {
-        // Jump-to-latest: up in history, or parked on a detached slice below the live tail (#42)
-        // — shown even at the bottom *of that slice*, where near-bottom is true.
-        let showLatest = (isDetached || !isNearBottom) && !rows.isEmpty
-        jumpButton.setVisible(showLatest, animated: true)
-        jumpButton.setNewCount(newWhileDetached)
-        // Reaching the divider spends the banner for good — checked before the show below, so a
-        // divider that's on screen the moment the buffer opens never raises it at all. Not while
-        // a jump is converging, though: the screen is passing through the buffer under its own
-        // steam then, not being read, and a divider swept across the viewport on the way to a
-        // search hit or a notification's message hasn't been seen by anyone. The pass after the
-        // jump releases latches it if it really did land on screen.
-        //
-        // ⚠ And not before the buffer's HISTORY HAS LANDED, because until then what's on screen
-        // isn't its history. Opening a buffer whose backlog hasn't arrived shows the handful of
-        // live events that outran it — all of them newer than the read boundary, so the divider
-        // pins to the top of that stub, and a four-row buffer is a hundred points tall inside a
-        // six-hundred-point viewport. The divider is "on screen" by arithmetic, nobody has seen
-        // anything, and the latch is spent by the time the real backlog replaces the slice a
-        // moment later — which then parks the reader at the tail, thousands of points below their
-        // first unread, with no banner.
-        //
-        // That's what made it hit-or-miss rather than simply broken: it needs the row to still be
-        // a shell at the instant you open it. A buffer already filled this session stays filled
-        // (`applyBacklog` never un-hydrates, and a reconnect's `snapshot` reuses the row), so what
-        // this catches is a cold launch and anything opened during the connect burst, ahead of its
-        // own backlog.
-        if pendingJumpId == nil, historyLanded, isDividerVisible { dividerSeen = true }
-        // The unread banner (#45): a first-unread row exists, it's above the reader, and they
-        // haven't been to it yet. A non-nil `firstUnreadRow` already implies rows exist and a
-        // divider is built. It yields the slot whenever the connection banner wants it — the wire
-        // being down is the more urgent thing to say, and the unreads will still be there
-        // afterwards — and stays down for the length of a jump: `jumpToFirstUnread` hides it to
-        // acknowledge the tap, and the scrolls that converge on the anchor run straight back
-        // through here, which would otherwise flap it back on until the divider landed.
-        let showUnread = firstUnreadRow != nil && !dividerSeen && isDividerAboveViewport
-            && pendingJumpId == nil && !connectionBanner.isVisible
-        unreadBanner.setVisible(showUnread, animated: true)
+    /// What the table's geometry says, in the machine's terms. Read from the LAYOUT MODEL
+    /// (`rectForRow`, `contentOffset`, `contentSize`) rather than from realized cells, because
+    /// the two disagree at exactly the moment that matters: a scroll delegate fires
+    /// synchronously from inside the offset change, *before* the table re-lays out, so the
+    /// visible cells there still describe the previous offset (see `dividerFrame`).
+    private var layoutFacts: LayoutFacts {
+        LayoutFacts(
+            nearBottom: isNearBottom,
+            pagesOlder: tableView.contentOffset.y < 300,
+            pagesNewer: distanceFromBottom < 300,
+            dividerVisible: isDividerVisible,
+            dividerAbove: isDividerAboveViewport
+        )
     }
+
+    /// A measured layout, handed to the machine: the two floating controls (the jump-to-latest
+    /// pill in the bottom-trailing corner and the unread banner under the nav bar) and the
+    /// paging it wants. Runs on every apply and every scroll tick — and after a jump releases,
+    /// a keyboard parks the list, or the connection banner takes or yields the banner's slot.
+    private func applyLayout() {
+        guard let current else { return }
+        let facts = layoutFacts
+        let step = scroll.onLayout(
+            facts, current: current, detached: isDetached,
+            connectionBannerShown: connectionBanner.isVisible,
+            online: ConversationScroll.mayWrite(viewModel.state)
+        )
+        trace(facts, step)
+        jumpButton.setVisible(step.pills.showsLatest, animated: true)
+        jumpButton.setNewCount(step.pills.newCount)
+        unreadBanner.setVisible(step.pills.showsUnread, animated: true)
+        // The view model guards both against re-entry and against there being nothing more,
+        // so asking on every tick is safe.
+        if step.loadOlder {
+            viewModel.loadOlder(buffer.key, showingClearedHistory: scroll.options.showsClearedHistory)
+        }
+        if step.loadNewer { viewModel.loadNewer(buffer.key) }
+    }
+
 
     /// The buffer is showing an `around` slice below the live tail (#42): live events are held
     /// back, and the jump-to-latest pill re-attaches rather than just scrolling.
@@ -2194,56 +1801,43 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         viewModel.setTyping(buffer.key, signal: signal)
     }
 
-    /// Ride back down animated — it's a distance covered, not a teleport — then let
-    /// `scrollViewDidEndScrollingAnimation` correct for the estimated heights. When detached,
-    /// there's no tail on screen to ride to: re-attach by fetching the latest slice (#42) and
-    /// land at its bottom once it arrives.
+    /// The pill's tap, and a send's from a detached slice. Ride back down animated — it's a
+    /// distance covered, not a teleport — then let `scrollViewDidEndScrollingAnimation`
+    /// correct for the estimated heights. When detached, there's no tail on screen to ride to:
+    /// re-attach by fetching the latest slice (#42) and land at its bottom once it arrives.
+    /// Both branches can put a `/clear` back (#121), which is a rebuild.
     private func jumpToLatest() {
-        guard !rows.isEmpty else { return }
-        newWhileDetached = 0
-        if isDetached {
-            // Re-arm the one-shot landing (dropping any stale jump state, including a converge
-            // that would otherwise leave `jumpConverging` stuck) so `landInitialIfNeeded` parks
-            // us at the tail when the replacement slice lands.
-            resetJumpState()
-            needsInitialScroll = true
-            viewModel.loadLatest(buffer.key)
-        } else {
-            // Returning to the tail also puts a `/clear` back (#121) — the web re-applies it on
-            // this same affordance. The reveal was on loan to land one jump; the marker is the
-            // state the reader actually chose, and this is them saying they're done looking
-            // past it. Rebuild before reading `rows` below: re-applying the filter is exactly
-            // what changes how many there are.
-            if showsClearedHistory {
-                showsClearedHistory = false
-                rebuildRows()
-                tableView.reloadData()
+        landingPasses = 0
+        let choice = scroll.jumpToLatest(hasRows: !rows.isEmpty, detached: isDetached)
+        rebuildRowsIfOptionsChanged()
+        switch choice {
+        case .nothing:
+            return
+        case .reattach:
+            // A converging chain belongs to the jump this cancelled; its next pass sees so.
+            if let frame = lastFrame, scroll.requestLatest(frame) {
+                viewModel.loadLatest(buffer.key)
             }
+        case .scrollDown:
             guard !rows.isEmpty else { return }
             tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
         }
+        applyLayout()
     }
+
 
     // MARK: - Jump to first unread (#45)
 
-    /// The row the unread divider sits at, cached whenever `rows` is rebuilt (see `apply`).
-    /// Read on every scroll tick and jump-converge pass, so it's cached rather than re-scanned:
-    /// on a large-unread channel `rows` runs to thousands of entries and the divider can be near
-    /// the bottom of them.
-    private var dividerRow: Int?
+    /// The row the unread divider sits at, cached once per build (`ConversationBuild`): read on
+    /// every scroll tick, and on a large-unread channel `rows` runs to thousands of entries.
+    private var dividerRow: Int? { current?.dividerRow }
 
-    /// The first unread row — the one just below the divider, when both it and a row past it
-    /// exist. The single definition of "where the unreads begin", used by the pill's visibility,
-    /// the jump target, and the post-jump flash.
-    private var firstUnreadRow: Int? {
-        dividerRow.flatMap { rows.indices.contains($0 + 1) ? $0 + 1 : nil }
-    }
 
     /// Where the divider sits in content coordinates, or nil if there's nothing to place.
     ///
     /// Read from the table's LAYOUT MODEL (`rectForRow`) rather than from its realized cells
     /// (`indexPathsForVisibleRows`), because the two disagree at exactly the moment that
-    /// matters. `updateFloatingPills` runs from `scrollViewDidScroll`, and a scroll delegate
+    /// matters. `applyLayout` runs from `scrollViewDidScroll`, and a scroll delegate
     /// fires synchronously from inside the offset change, *before* the table re-lays out — so
     /// the visible cells there are still the ones from the previous offset. The landing scroll
     /// (`scrollToBottom`, from a top-pinned table) is the worst case: the offset is already at
@@ -2295,51 +1889,17 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         return frame.maxY <= visibleContentRect.minY
     }
 
-    /// Latched once the divider has been on screen *in this buffer's real history*: the reader
-    /// has seen where they left off, so the banner is spent for this screen's lifetime.
-    ///
-    /// Needed because the divider itself never clears — read forward past it and it's simply
-    /// above you again, which without this would put the banner back up (and keep it up for the
-    /// rest of the session) after its unreads had all been read.
-    ///
-    /// One-way and un-recoverable, which is what makes latching it against a pre-hydration stub
-    /// so costly — see the gate in `updateFloatingPills`.
-    private var dividerSeen = false
-
-    /// Jump to the first unread message, always via the #42 jump — never a raw scroll. On a
-    /// channel with a large unread count the first unread is thousands of churny, self-sizing
-    /// rows above the tail (or not loaded at all), and a single `scrollToRow` against estimated
-    /// heights there simply doesn't land. Anchoring the jump on the last-read message handles
-    /// both cases uniformly: when it's off the loaded slice, `requestAroundIfNeeded` fetches a
-    /// detached `around` slice centered on it; when it's already held, `convergeJump` walks to
-    /// it over several passes, re-resolving the row by id each runloop to correct for the
-    /// height/consolidation drift that breaks a one-shot scroll. Either way the divider (and the
-    /// unreads below it) land on screen, with after-paging carrying the reader forward to live.
+    /// The banner's tap: jump to the first unread message, always via the #42 jump — never a
+    /// raw scroll. On a channel with a large unread count the first unread is thousands of
+    /// churny, self-sizing rows above the tail (or not loaded at all), and a single
+    /// `scrollToRow` against estimated heights there simply doesn't land. The machine anchors
+    /// the fetch on the read boundary and the landing on the first unread rendered row
+    /// (`ConversationScroll.jumpToFirstUnread`).
     private func jumpToFirstUnread() {
-        guard let boundary = dividerAfterId, boundary > 0 else { return }
-        // The FETCH anchors on the read boundary (last-read id), not the first unread: on a
-        // large-unread channel every loaded row is newer than the boundary, so the first unread
-        // *is* the oldest loaded row — anchoring the fetch there would find it already held and
-        // never page back to the real seam (the web's #216). Centering the `around` slice on the
-        // boundary is what pulls the seam into view.
-        //
-        // The SCROLL/flash target is decoupled from this anchor (see `jumpTargetRow`): it's the
-        // first unread *rendered* row (below the divider), because the boundary id can be an
-        // `.other` frame this buffer never renders (`lastReadId` is `max()` over *all* stored
-        // ids), which `rowIndex` could never resolve — so scrolling to the boundary itself could
-        // wedge the landing forever. `jumpFlashesFirstUnread` switches both onto the divider row.
-        resetJumpState()
-        needsInitialScroll = true
-        pendingJumpId = boundary
-        jumpExemptId = boundary
-        jumpFlashesFirstUnread = true
-        // Down now rather than when the divider lands: the `around` fetch can take a moment and
-        // the tap has to be acknowledged. `pendingJumpId` (set just above) is what *keeps* it
-        // down until the jump releases — see `updateFloatingPills`.
-        unreadBanner.setVisible(false, animated: true)
-        requestAroundIfNeeded(viewModel.state)
-        landInitialIfNeeded()
+        guard scroll.jumpToFirstUnread() else { return }
+        startJump()
     }
+
 
     /// A failed send (`send-result` ok:false) or a server `error` frame lands in
     /// `state.error`; surface it rather than losing it silently. Comprehensive error /
@@ -2391,7 +1951,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if isDetached {
             // A detached slice holds live traffic out of the log, so the line just sent isn't
             // loaded and no amount of scrolling will reach it — and `apply` excludes detached
-            // buffers from `newWhileDetached`, so the pill wouldn't count it either. Left alone
+            // buffers from the pill's badge, so it wouldn't count it either. Left alone
             // this reads as a failed send. Re-attach instead, which is what the browser does
             // (`sendScroll.ts`) and what the setting's own shared description promises: sending
             // from a jumped-to point returns you to the live conversation either way. The
@@ -2501,6 +2061,37 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         sheet.sheetPresentationController?.detents = [.medium(), .large()]
         present(sheet, animated: true)
     }
+
+    // MARK: - Diagnostics trace (#137)
+
+    /// A line of the machine's trace, stamped with this buffer. Free when the trace is off:
+    /// `ScrollTrace` drops it before it's built.
+    private func trace(_ line: @autoclosure () -> String) {
+        guard ScrollTrace.shared.isEnabled else { return }
+        ScrollTrace.shared.note(traceSource, line())
+    }
+
+    /// What this buffer is called in the trace: an ordinal the trace hands out, never the key —
+    /// a key names the channel or the DM peer, and the file is for handing to someone else.
+    private var traceSource: String { ScrollTrace.shared.label(for: buffer.key.id) }
+
+    /// The geometry a layout pass was judged on and what came of it — deduped on its body, so
+    /// a scroll's hundred ticks that change nothing write nothing.
+    private func trace(_ facts: LayoutFacts, _ step: ConversationScroll.LayoutStep) {
+        guard ScrollTrace.shared.isEnabled else { return }
+        // No raw distance in here: it moves on every tick, and a key that moves every tick
+        // dedupes nothing. The facts carry the thresholds it matters against.
+        let body = "layout near=\(facts.nearBottom) divVisible=\(facts.dividerVisible) divAbove=\(facts.dividerAbove)"
+            + " older=\(facts.pagesOlder) newer=\(facts.pagesNewer)"
+            + " divRow=\(dividerRow.map(String.init) ?? "-") rows=\(rows.count) table=\(tableView.numberOfRows(inSection: 0))"
+            + " seen=\(scroll.dividerSeen) landing=\(scroll.landingPending) jump=\(scroll.jumpPending)"
+            + " -> latest=\(step.pills.showsLatest) unread=\(step.pills.showsUnread) badge=\(step.pills.newCount)"
+        guard body != lastTraceBody else { return }
+        lastTraceBody = body
+        ScrollTrace.shared.note(traceSource, body + " distance=\(Int(distanceFromBottom))")
+    }
+
+    private var lastTraceBody = ""
 
     // MARK: - Attachments (#14)
 
@@ -3417,8 +3008,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The keyboard's arrival just parked the conversation at the bottom, so the jump
         // pill goes with it — stated here rather than left to the scroll's delegate tick,
         // which doesn't fire when the offset was already close enough to need no change.
-        newWhileDetached = 0
-        updateFloatingPills()
+        applyLayout()
     }
 
     /// Whether this screen should leave the reader where they are rather than carrying them to
@@ -3612,7 +3202,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             remeasureQueued = false
-            UIView.performWithoutAnimation { self.tableView.performBatchUpdates(nil) }
+            // A chip row above the reader growing a line moves their line down by it — the
+            // lurch `apply` holds against, by another door.
+            holdingLine("remeasure") { self.tableView.performBatchUpdates(nil) }
         }
     }
 
@@ -3737,12 +3329,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Jump to a reply's quoted line, in this buffer — a tap on the quote. Through the same jump
     /// a highlight takes (#42): straight there when it's loaded, an `around` slice when it isn't.
     private func jumpToMessage(_ id: Int) {
-        resetJumpState()
-        needsInitialScroll = true
-        pendingJumpId = id
-        jumpExemptId = id
-        requestAroundIfNeeded(viewModel.state)
-        landInitialIfNeeded()
+        scroll.jumpTo(id)
+        startJump()
     }
 
     /// The reaction sheet for a line (iOS #183): who reacted with what, and a way to add yours.
@@ -4022,14 +3610,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // ⚠ Anywhere else: the same growth happens ABOVE them, and offset-preservation moves the
         // line they are reading down the screen by exactly that much. That is the lurch #42
         // removed from `apply`, arriving by another door — so the same anchors answer it.
+        holdingLine("previews \(affected.count)") { tableView.reloadRows(at: affected, with: .none) }
+    }
+
+    /// Run a change that can move row heights, keeping the reader where they were. Two ways to
+    /// stay put, and which applies is the reader's position: at the tail, growth below the fold
+    /// would push them up off the newest line, so follow it down as a live append does;
+    /// anywhere else the same growth happens ABOVE them and offset-preservation moves the line
+    /// they're reading down the screen by exactly that much — the lurch #42 removed from
+    /// `apply`, so the same anchors answer it.
+    private func holdingLine(_ what: @autoclosure () -> String, _ change: () -> Void) {
         let wasNearBottom = isNearBottom
         let anchors = wasNearBottom ? [] : visibleAnchors()
+        var restored = false
         UIView.performWithoutAnimation {
-            tableView.reloadRows(at: affected, with: .none)
+            change()
             tableView.layoutIfNeeded()
-            if !wasNearBottom { restorePosition(anchoredTo: anchors) }
+            if !wasNearBottom { restored = restorePosition(anchoredTo: anchors) }
         }
         if wasNearBottom { scrollToBottom() }
+        trace("\(what()): nearBottom=\(wasNearBottom) anchors=\(anchors.count) restored=\(restored)")
     }
 
     /// Whether the row at `index` shows any of `urls` — the test that decides whether a batch of

@@ -287,9 +287,21 @@ final class SettingsViewController: UITableViewController {
         case device
         case account
         case about
+        /// The message list's trace (lurker-ios#137): hidden until the version row is tapped
+        /// five times, and shown whenever the trace is on, so a tester can find the switch
+        /// again to turn it off or share what it caught.
+        case diagnostics
+    }
+
+    private enum DiagnosticsRow: Int, CaseIterable {
+        case trace
+        case share
     }
 
     private var sections: [Section] = []
+    /// Taps on the version row so far — five reveal the diagnostics section.
+    private var aboutTaps = 0
+    private var showsDiagnostics = ScrollTrace.shared.isEnabled
     /// The most recent failed write, shown under the offending row: the server explains itself
     /// ("must be one of…", "out of range") and that wording is more use than a generic alert,
     /// which would also cover the control the user is trying to fix.
@@ -396,15 +408,16 @@ final class SettingsViewController: UITableViewController {
         // this screen that still works on a server too old (or too unreachable) to describe
         // itself.
         let push: [Section] = viewModel.pushRoute.flatMap { $0.delivers ? nil : [.pushUnavailable($0)] } ?? []
+        let diagnostics: [Section] = showsDiagnostics ? [.diagnostics] : []
         sections = rows.isEmpty
-            ? [.networks, .unavailable] + push + [.device, .account, .about]
+            ? [.networks, .unavailable] + push + [.device, .account, .about] + diagnostics
             : [.networks, .chat(rows)]
                 + (eventRows.isEmpty ? [] : [.events(eventRows)])
                 + (smartFilterRows.isEmpty ? [] : [.smartFilter(smartFilterRows)])
                 + (appearanceRows.isEmpty ? [] : [.appearance(appearanceRows)])
                 // The push notice is the Notifications section's footer when there is one.
                 + (notificationRows.isEmpty ? push : [.notifications(notificationRows)])
-                + [.device, .account, .about]
+                + [.device, .account, .about] + diagnostics
         tableView.reloadData()
     }
 
@@ -418,6 +431,7 @@ final class SettingsViewController: UITableViewController {
             rows.count
         case .notifications(let rows): rows.count
         case .device: DeviceSetting.allCases.count
+        case .diagnostics: DiagnosticsRow.allCases.count
         case .networks, .unavailable, .pushUnavailable, .account, .about: 1
         }
     }
@@ -431,6 +445,7 @@ final class SettingsViewController: UITableViewController {
         case .appearance: "Appearance"
         case .notifications, .pushUnavailable: "Notifications"
         case .device: "This Device"
+        case .diagnostics: "Diagnostics"
         case .account, .about: nil
         }
     }
@@ -458,6 +473,11 @@ final class SettingsViewController: UITableViewController {
             Applies to this device only — not shared with your other Lurker clients.
             """
         case .smartFilter: "Used when Event filter is set to Smart."
+        case .diagnostics: """
+            Records how the message list decides where to scroll and when to show the unread \
+            banner, on this device only: positions and decisions, never what the messages say. \
+            Turn it on when asked to, reproduce the problem, then share the trace.
+            """
         case .notifications:
             if let route = viewModel.pushRoute, !route.delivers {
                 "Shown in the app while it's open. " + Self.pushUnavailableText(route)
@@ -531,6 +551,25 @@ final class SettingsViewController: UITableViewController {
         case .about:
             content.text = "Lurker"
             content.secondaryText = Self.versionString
+        case .diagnostics:
+            switch DiagnosticsRow(rawValue: indexPath.row) {
+            case .trace?:
+                content.text = "Scroll trace"
+                let toggle = UISwitch()
+                toggle.isOn = ScrollTrace.shared.isEnabled
+                toggle.addAction(UIAction { [weak self, weak toggle] _ in
+                    guard let self, let toggle else { return }
+                    ScrollTrace.shared.setEnabled(toggle.isOn)
+                    rebuild()
+                }, for: .valueChanged)
+                cell.accessoryView = toggle
+            case .share?:
+                content.text = "Share trace…"
+                content.textProperties.color = ScrollTrace.shared.isEmpty ? .tertiaryLabel : .tintColor
+                cell.selectionStyle = ScrollTrace.shared.isEmpty ? .none : .default
+            case nil:
+                break
+            }
         }
 
         cell.contentConfiguration = content
@@ -824,9 +863,35 @@ final class SettingsViewController: UITableViewController {
             )
         case .account:
             confirmSignOut()
+        case .about:
+            aboutTaps += 1
+            if aboutTaps >= 5, !showsDiagnostics {
+                showsDiagnostics = true
+                rebuild()
+            }
+        case .diagnostics:
+            guard DiagnosticsRow(rawValue: indexPath.row) == .share, !ScrollTrace.shared.isEmpty else { return }
+            shareTrace(from: tableView.cellForRow(at: indexPath))
         default:
             break
         }
+    }
+
+    /// The trace as a text file on the share sheet — Messages, Mail, Files, whatever the tester
+    /// has. A file rather than a string, so it arrives as an attachment and not a wall of text.
+    private func shareTrace(from source: UIView?) {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("lurker-scroll-trace.txt")
+        do {
+            try ScrollTrace.shared.export().write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            return
+        }
+        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let popover = sheet.popoverPresentationController {
+            popover.sourceView = source ?? tableView
+            popover.sourceRect = source?.bounds ?? .zero
+        }
+        present(sheet, animated: true)
     }
 
     /// Sign-out asks first. It's one tap from a settings list, it ends the session on the

@@ -78,6 +78,20 @@ public struct Buffer: Equatable, Sendable {
     /// `snapshot` (on connect), a `channel-topic` ephemeral (RPL_TOPIC on join, silent),
     /// and a `topic` event (someone changed it, which also prints a line).
     public var topic: String?
+    /// How many slice-replacing `history` replies (`around`, `latest`) the store has spliced
+    /// into this buffer — the kit saying "a reply landed", which nothing else said. Pages
+    /// (`before`, `after`) don't count: nothing waits on one by count, and one already in
+    /// flight when a jump starts would otherwise be taken for the jump's reply.
+    ///
+    /// The screen's jump and re-attach machinery (`ReplyWatch`) has to tell a reply from a
+    /// live append to know its request was answered, and the message list alone can't say: a
+    /// reply that holds every id already held (a small, fully loaded buffer whose anchor was
+    /// pruned) replaces nothing, and a live line appends to a reply and a backlog alike.
+    /// Counting here is exact where every inference from the list was a guess. Bumped only by
+    /// `applyHistory`: a backlog is the burst's, not an answer to anything the screen asked,
+    /// and the burst's own generation voids those requests. Carried across a backlog and a
+    /// rename, like the paging state — a reset would hide the next reply behind a lower count.
+    public var historyRevision: Int
 
     public init(
         networkId: Int?,
@@ -94,9 +108,11 @@ public struct Buffer: Equatable, Sendable {
         clearedBeforeId: Int = 0,
         clearedAt: Date? = nil,
         topic: String? = nil,
-        bufferId: Int? = nil
+        bufferId: Int? = nil,
+        historyRevision: Int = 0
     ) {
         self.bufferId = bufferId
+        self.historyRevision = historyRevision
         self.networkId = networkId
         self.target = target
         self.kind = kind
@@ -177,7 +193,8 @@ public struct Buffer: Equatable, Sendable {
             clearedBeforeId: clearedBeforeId,
             clearedAt: clearedAt,
             topic: topic,
-            bufferId: bufferId
+            bufferId: bufferId,
+            historyRevision: historyRevision
         )
     }
 

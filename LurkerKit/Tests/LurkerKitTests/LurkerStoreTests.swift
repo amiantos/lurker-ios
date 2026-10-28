@@ -133,6 +133,66 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["z"])
     }
 
+    /// `Buffer.historyRevision` is the kit saying "a reply landed" — what `ReplyWatch` matches a
+    /// jump's or a re-attach's request against. Only the slice-replacing modes count: a page
+    /// already in flight when a jump starts must not answer the jump. A backlog (the burst's,
+    /// not an answer to anything) carries the count rather than resetting it, or the next reply
+    /// would hide behind a lower number.
+    func testSliceReplacingHistoryRepliesAdvanceTheRevisionAndABacklogCarriesIt() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 0)
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(3, "c"), msg(4, "d")],
+            mode: .before, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 0, "a page is not a reply anyone counts")
+        // A reply that changes nothing in the list still counts — that is the whole point.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(3, "c"), msg(4, "d"), msg(5, "e"), msg(6, "f")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 1)
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(7, "g")],
+            mode: .after, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 1, "nor is a newer page")
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(5, "e"), msg(6, "f"), msg(7, "g")],
+            mode: .latest, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 2)
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(8, "h")))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 2, "a live line is not a reply")
+        store.apply(channelBuffer(hydrated: true, messages: [msg(8, "h")]))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 2, "a backlog carries the count")
+    }
+
+    /// A pruned anchor's reply says nothing about the buffer; it used to wipe one.
+    func testAnchorMissingAroundReplyLeavesTheBufferAloneAndCountsAsAReply() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [],
+            mode: .around, hasMoreOlder: false, hasMoreNewer: false, speakers: nil, anchorMissing: true
+        ))
+        let buffer = store.state.buffers[chanKey]!
+        XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["e", "f"])
+        XCTAssertTrue(buffer.hasMoreOlder, "the reply's 'no history' is about the anchor, not the buffer")
+        XCTAssertFalse(buffer.hasMoreNewer)
+        XCTAssertEqual(buffer.historyRevision, 1)
+        // A shell stays a shell, so the hydrate still asks for the latest slice afterwards.
+        let shell = LurkerStore()
+        shell.apply(channelBuffer(hydrated: false, messages: []))
+        shell.apply(.history(
+            networkId: 1, target: "#lurker", events: [],
+            mode: .around, hasMoreOlder: false, hasMoreNewer: false, speakers: nil, anchorMissing: true
+        ))
+        XCTAssertFalse(shell.state.buffers[chanKey]!.hydrated)
+        XCTAssertEqual(shell.state.buffers[chanKey]!.historyRevision, 1)
+    }
+
     func testHistoryBeforePrependsOlderAndDedupes() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))
