@@ -48,7 +48,7 @@ final class MessageTextView: UITextView {
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
         storage.addLayoutManager(layout)
-        let container = NSTextContainer(size: CGSize(width: 0, height: .greatestFiniteMagnitude))
+        let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         container.widthTracksTextView = true
         layout.addTextContainer(container)
         self.init(frame: .zero, textContainer: container)
