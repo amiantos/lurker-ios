@@ -1015,22 +1015,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // shoves the viewport around, and that shove — on *appends*, not just prepends —
             // is what made the list lurch mid-read.
             //
-            // In the flipped table it is APPENDS that shove — newer rows land at the content's
-            // start, under the offset — while an older page lands at the far end and moves
-            // nothing. So the height-delta fallback is for appends and shrinks: content grew
-            // between the reader and the start, or rows were filtered away. Not for a prepend,
-            // where the offset is already correct; and never by a whole history's height on a
-            // hydration that replaces the stub (the anchors answer that, or the clamp does).
-            let appended = oldLastId != nil && newLastId != nil && newLastId! > oldLastId!
-            trace("apply: hold appended=\(appended) anchors=\(anchors.count)")
+            // In the flipped table it is the START that shoves — newer rows land under the
+            // offset, and rows vanishing at the newest end pull it the other way — while an
+            // older page lands at the far end and moves nothing. So the height-delta fallback
+            // is for a start that changed: the newest held id moved, either way. Not for a
+            // prepend or a far-end shrink, where the offset is already correct.
+            let startChanged = oldLastId != newLastId
+            trace("apply: hold startChanged=\(startChanged) anchors=\(anchors.count)")
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
                 // The reader's line back exactly (`restorePosition`), or approximated when none
                 // of the captured anchors survived.
-                if !restorePosition(anchoredTo: anchors),
-                    appended || tableView.contentSize.height < oldContentHeight
-                {
+                if !restorePosition(anchoredTo: anchors), startChanged {
                     tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
                 }
                 clampToContent()
@@ -1247,10 +1244,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// to land back in range itself.
     private func clampToContent() {
         let insets = tableView.adjustedContentInset
-        let maxY = max(-insets.top, tableView.contentSize.height + insets.bottom - tableView.bounds.height)
-        if tableView.contentOffset.y > maxY {
-            tableView.contentOffset.y = maxY
-        }
+        let minY = -insets.top
+        let maxY = max(minY, tableView.contentSize.height + insets.bottom - tableView.bounds.height)
+        // Both ends: in the flipped table the start is where arithmetic overshoots when rows
+        // vanish at the newest end, and an offset past it is a blank band under the composer.
+        tableView.contentOffset.y = min(max(tableView.contentOffset.y, minY), maxY)
     }
 
     /// Ask for history once the socket is up.
@@ -1560,15 +1558,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // In the flipped table the content's start is the screen's bottom: this edge is where
         // the composer covers the rows, and the line being read is the one with the LARGEST y.
         let coveredEdge = tableView.contentOffset.y + tableView.adjustedContentInset.top
+        let barEdge = tableView.contentOffset.y + tableView.bounds.height - tableView.adjustedContentInset.bottom
         guard let visible = tableView.indexPathsForVisibleRows?.sorted(by: >) else { return [] }
         var anchors: [(id: Int, offset: CGFloat)] = []
         for indexPath in visible {
             let row = logicalRow(for: indexPath)
             guard rows.indices.contains(row), let id = rows[row].anchorId else { continue }
             let frame = tableView.rectForRow(at: indexPath)
-            // Rows behind the composer aren't being read and make poor anchors — the first one
-            // still showing is the line the reader is on.
-            guard frame.maxY > coveredEdge else { continue }
+            // Rows behind the composer or the bar aren't being read and make poor anchors —
+            // the first one still showing is the line the reader is on.
+            guard frame.maxY > coveredEdge, frame.minY < barEdge else { continue }
             anchors.append((id, frame.minY - tableView.contentOffset.y))
         }
         return anchors
@@ -1623,9 +1622,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     // MARK: - UITableViewDelegate (pagination + the jump pill)
 
     /// The reader has taken hold of the list. The machine decides what that releases
-    /// (`ConversationScroll.onUserDrag`): the screen's own opening landing, which holds across
-    /// several layout passes (`landIfNeeded`) and would otherwise answer a deliberate scroll by
-    /// pulling the reader back to the bottom on the next pass — and a converging jump, whose
+    /// (`ConversationScroll.onUserDrag`): the screen's own opening landing, when it's still
+    /// waiting for rows to park, and a converging jump, whose
     /// chain is finished here, interrupted. Never a jump or a re-attach still waiting on its
     /// fetch: those are the reader's own request, and a pending jump is the only way its state
     /// clears.
@@ -1826,8 +1824,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Nil while the table's row count hasn't caught up with `rows` (an apply rebuilds them
     /// before the reload), where `rectForRow` would answer for a row set we're not asking about.
     private var dividerFrame: CGRect? {
+        // Only once the table's row set is the one `rows` describes (an apply rebuilds them
+        // before the reload): the mapped index is meaningless against a different count.
         guard let row = dividerRow, tableView.bounds.height > 0,
-              row < tableView.numberOfRows(inSection: 0)
+              rows.count == tableView.numberOfRows(inSection: 0)
         else { return nil }
         let frame = tableView.rectForRow(at: tableIndex(for: row))
         guard !frame.isEmpty else { return nil }
@@ -1902,15 +1902,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         top.present(alert, animated: true)
     }
 
-    /// Park the newest message at the bottom.
-    ///
-    /// Scrolled twice, on purpose. Rows are self-sizing, so the first pass positions using
-    /// *estimated* heights for the rows it hasn't laid out and stops short of the real
-    /// bottom — the "opens a scroll above the newest message" symptom. Laying out and asking
-    /// again lets the second pass use the heights the first one just made real.
-    ///
-    /// The height guard matters as much: `scrollToRow` against a table that has no bounds
-    /// yet does nothing at all, quietly.
+    /// Park the newest message at the bottom: the flipped table's start, exact whatever the
+    /// row heights turn out to be. (The top-anchored table had to scroll twice against
+    /// estimated heights and still opened a scroll above the newest message.)
     private func scrollToBottom() {
         tableView.setContentOffset(CGPoint(x: 0, y: -tableView.adjustedContentInset.top), animated: false)
     }
@@ -3020,24 +3014,15 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         clampToContent()
     }
 
-    /// Reserve room at the bottom of the conversation for the floating composer (and the
-    /// keyboard, when it's up), so the newest message scrolls to just above the composer
-    /// rather than behind it. This is the bottom counterpart to the automatic top inset the
-    /// nav bar gets — without it the table would run its content under the composer with no
-    /// way to see the last line.
-    ///
-    /// Measured from the composer's actual top rather than computed from its height, because
-    /// the keyboard moves the composer and shrinks the safe area, and a frame reads both at
-    /// once. The `- safeAreaInsets.bottom` cancels the safe-area inset the table's automatic
-    /// adjustment has already added, so the reservation isn't double-counted — get that
-    /// wrong and the last line sits half-under the composer.
     /// The table's insets, by hand (`contentInsetAdjustmentBehavior` is off): the composer's
     /// reservation — and the keyboard's, which the composer rides — at the content's START,
     /// which is the flipped table's top and the screen's bottom; the navigation bar's at the
     /// far end. A reader parked at the tail stays parked: a scroll view doesn't move its offset
     /// for a manual inset change, so the start is re-pinned when it was the position before.
     private func updateInsets() {
-        let atTail = distanceFromBottom <= 0.5
+        // Never under a finger: the interactive keyboard dismiss lays out on every frame of the
+        // drag, and pinning the offset inside it would cancel the rubber band each time.
+        let atTail = distanceFromBottom <= 0.5 && !tableView.isTracking && !tableView.isDragging
         let reserved = max(0, view.bounds.maxY - composer.frame.minY)
         let bar = view.safeAreaInsets.top
         if tableView.contentInset.top != reserved || tableView.contentInset.bottom != bar {
