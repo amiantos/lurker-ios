@@ -1016,6 +1016,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let anchors = landing ? [] : visibleAnchors()
         let rowsStep = buildRows(from: state, wasNearBottom: wasNearBottom)
         let newLastId = current?.visible.last(where: { $0.id != 0 })?.id
+        // The density keys and the avatar column reshape every row (lurker#1186, lurker#1203).
+        if settings != current?.settings { measuredHeights.removeAll() }
         settings = current?.settings ?? Settings()
         speakers = current?.speakers ?? SpeakerMap()
         refreshAvatarSpec(state)
@@ -2975,7 +2977,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the case that produces no rebuild, since the typing predicate compares nick lists and a
     /// list that hasn't changed doesn't reload.
     private func observeAppearanceInvalidation() {
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitPreferredContentSizeCategory.self]) { (self: Self, _) in
+            // Every height is different under a new type size; the colours alone wouldn't be.
+            self.measuredHeights.removeAll()
             self.holdingLine("appearance") { self.tableView.reloadData() }
         }
     }
@@ -3406,6 +3410,50 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         rows.count
     }
+
+    // MARK: - Measured heights survive a reload
+
+    /// The height each row was last displayed at, by the row's identity. `reloadData` throws the
+    /// table's own measurements away and re-estimates every row it isn't showing — and the
+    /// reader's line is restored by summing the rects of the rows between the content's start
+    /// and it, so an estimate there is a shove by exactly its error. The trace showed it: one
+    /// live line appended, `restore … moved=-140`, the viewport jumping a hundred and forty
+    /// points under a reader who had just landed on their first unread. Handing the table what
+    /// it measured makes those sums exact for every row that has ever been on screen.
+    private var measuredHeights: [String: CGFloat] = [:]
+
+    /// A row's identity for the cache: its message, or which marker it is. A row that renders
+    /// differently later (a preview landing) is re-measured when it's next displayed.
+    private func heightKey(_ row: MessageRow) -> String {
+        if let id = row.anchorId { return "m\(id)" }
+        switch row {
+        case .unreadDivider: return "unread"
+        case .dateDivider(let day): return "d\(day.timeIntervalSince1970)"
+        case .startOfHistory: return "start"
+        case .clearedDivider: return "cleared"
+        case .awayDivider: return "away"
+        case .backDivider: return "back"
+        case .typing: return "typing"
+        case .bubble, .line, .consolidated: return "e\(rows.firstIndex(of: row) ?? -1)"
+        }
+    }
+
+    func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
+        let row = logicalRow(for: indexPath)
+        guard rows.indices.contains(row) else { return }
+        measuredHeights[heightKey(rows[row])] = cell.bounds.height
+    }
+
+    func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
+        let row = logicalRow(for: indexPath)
+        guard rows.indices.contains(row), let height = measuredHeights[heightKey(rows[row])] else {
+            return Self.unmeasuredRowEstimate
+        }
+        return height
+    }
+
+    /// A compact line and its gap, roughly — only ever for a row that has never been on screen.
+    private static let unmeasuredRowEstimate: CGFloat = 44
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let row = logicalRow(for: indexPath)
