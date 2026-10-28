@@ -44,6 +44,43 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// count it badges: messages that landed while the reader was up in history. Reset the
     /// moment they're back at the bottom, however they got there.
     private let jumpButton = JumpToLatestButton()
+    /// A spinner at the far end of the list — the oldest loaded line's side — while an older
+    /// page or the buffer's first backlog is in the air. A window the event filters thin to a
+    /// few lines parks those lines at the bottom with nothing above them until the top-up
+    /// lands; this says that the nothing is on its way, rather than that the buffer begins here.
+    private lazy var olderSpinner: UIView = {
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 44))
+        let spinner = UIActivityIndicatorView(style: .medium)
+        spinner.translatesAutoresizingMaskIntoConstraints = false
+        spinner.startAnimating()
+        container.addSubview(spinner)
+        NSLayoutConstraint.activate([
+            spinner.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        container.transform = Self.flip
+        return container
+    }()
+
+    private var showsOlderSpinner = false {
+        didSet {
+            guard showsOlderSpinner != oldValue else { return }
+            tableView.tableFooterView = showsOlderSpinner ? olderSpinner : nil
+        }
+    }
+
+    /// Whether anything older is on its way: an older page the kit has in flight, or the first
+    /// backlog of a buffer that hydrates on demand (its live stub is on screen while it waits).
+    private func refreshOlderSpinner() {
+        guard let current, !rows.isEmpty, let buffer = current.buffer else {
+            showsOlderSpinner = false
+            return
+        }
+        let paging = buffer.hasMoreOlder && viewModel.isLoadingOlder(self.buffer.key)
+        let hydrating = self.buffer.kind.hydratesOnDemand && !buffer.hydrated
+            && viewModel.state.connection == .connected
+        showsOlderSpinner = paging || hydrating
+    }
     /// The floating "unread messages ↑" banner under the nav bar (#45), shown when this buffer
     /// opened with unreads sitting above the reader. Tapping it lands on the unread divider —
     /// scrolling to it if it's loaded, else jumping an `around` slice centered on the read
@@ -1059,6 +1096,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // `landIfNeeded` parks the buffer at its newest message.
         landIfNeeded()
         applyLayout()
+        refreshOlderSpinner()
     }
 
     /// Build the rows for `state` under the machine's options and hand them to it, until it
@@ -1709,6 +1747,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             viewModel.loadOlder(buffer.key, showingClearedHistory: scroll.options.showsClearedHistory)
         }
         if step.loadNewer { viewModel.loadNewer(buffer.key) }
+        refreshOlderSpinner()
     }
 
 

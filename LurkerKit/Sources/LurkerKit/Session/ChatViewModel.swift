@@ -1507,6 +1507,10 @@ public final class ChatViewModel {
     /// "did I just send one" flashed "No messages yet" over a buffer whose page was in the air:
     /// any second apply before the reply landed — a filtered live message, a read-state frame —
     /// re-asked, got false, and resolved the placeholder to empty.
+    /// Whether an older page for `key` is in the air — what a screen shows a spinner for at
+    /// the far end of a list the filters thinned (lurker-ios#246 follow-up).
+    public func isLoadingOlder(_ key: BufferKey) -> Bool { loadingOlder.contains(key.id) }
+
     @discardableResult
     public func loadOlder(_ key: BufferKey, showingClearedHistory: Bool = false) -> Bool {
         if loadingOlder.contains(key.id) { return true }
