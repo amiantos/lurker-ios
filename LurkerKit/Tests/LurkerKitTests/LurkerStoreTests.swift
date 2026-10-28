@@ -133,6 +133,31 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(store.state.messages[chanKey]!.map(\.text), ["z"])
     }
 
+    /// `Buffer.historyRevision` is the kit saying "a reply landed" — what `ReplyWatch` matches a
+    /// jump's or a re-attach's request against. Every mode counts; a backlog (the burst's, not an
+    /// answer to anything) carries the count rather than resetting it, or the next reply would
+    /// hide behind a lower number.
+    func testEveryHistoryReplyAdvancesTheRevisionAndABacklogCarriesIt() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 0)
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(3, "c"), msg(4, "d")],
+            mode: .before, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 1)
+        // A reply that changes nothing in the list still counts — that is the whole point.
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [msg(3, "c"), msg(4, "d"), msg(5, "e"), msg(6, "f")],
+            mode: .around, hasMoreOlder: true, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 2)
+        store.apply(.live(networkId: 1, target: "#lurker", message: msg(7, "g")))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 2, "a live line is not a reply")
+        store.apply(channelBuffer(hydrated: true, messages: [msg(7, "g")]))
+        XCTAssertEqual(store.state.buffers[chanKey]!.historyRevision, 2, "a backlog carries the count")
+    }
+
     func testHistoryBeforePrependsOlderAndDedupes() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: [msg(5, "e"), msg(6, "f")]))

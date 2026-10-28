@@ -1899,6 +1899,8 @@ final class LurkerStore {
         // …and never un-know the read state, for the same reason: a frame that omits
         // `lastReadId` hasn't retracted one we were already told.
         buffer.readStateKnown = frameBuffer.readStateKnown || prior?.readStateKnown == true
+        // The reply count is the screen's bookkeeping, not the frame's to reset.
+        buffer.historyRevision = prior?.historyRevision ?? 0
         // Which also means keeping the VALUES a pointer-less frame would otherwise overwrite
         // with its defaults. `frameBuffer` replaces `prior` wholesale, and all three of these
         // parse to 0 when absent — so a frame that says nothing about read state would
@@ -2249,6 +2251,8 @@ final class LurkerStore {
         }
         if var buffer = next.buffers[key] {
             buffer.hydrated = true
+            // Every reply, every mode: the screen matches replies to its requests in order.
+            buffer.historyRevision &+= 1
             if mode != .after { buffer.hasMoreOlder = hasMoreOlder } // `after` pages newer
             // Detach state (#42): an `around` slice may sit below the tail → detached; `latest`
             // is the tail → re-attached; `after` carries whether newer remains. `before` pages
