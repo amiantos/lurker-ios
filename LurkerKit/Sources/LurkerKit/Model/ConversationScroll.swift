@@ -302,9 +302,8 @@ public struct LayoutFacts: Equatable, Sendable {
 /// lurker-android's `ConversationScroll`, ported back with its tests. Every rule here is a bug
 /// that shipped on iOS and was traced on a device; the comments say which. What stays in the
 /// controller is UIKit's mechanics: measuring the layout into `LayoutFacts`, performing a
-/// landing (`UITableView` lands at the tail over several passes, so `.atTail` here stays
-/// pending until the screen reports `landedAtTail()`), converging on a row, and holding the
-/// reader's line across a reload.
+/// landing (`.atTail` stays pending until the screen reports `landedAtTail()`), converging on
+/// a row, and holding the reader's line across a reload.
 public final class ConversationScroll {
     private let kind: BufferKind
 
@@ -382,11 +381,10 @@ public final class ConversationScroll {
     private var tailFetch: ReplyWatch?
 
     /// A landing at the tail the TABLE still has to perform — the opening landing, a re-attach
-    /// whose slice has arrived, a jump that gave up. True from birth: a `UITableView` opens at
-    /// the top and parks the tail only once it has rows and a real viewport, over a pass or
-    /// two, so unlike lurker-android's reverse list this is a state the screen reports the end
-    /// of (`landedAtTail`). While it holds, nothing follows, nothing pages and the screen's own
-    /// reloads don't scroll — the landing places.
+    /// whose slice has arrived, a jump that gave up. True from birth: the screen parks the tail
+    /// once it has rows and says so (`landedAtTail`), a state lurker-android's reverse list has
+    /// no need of. While it holds, nothing follows, nothing pages and the screen's own reloads
+    /// don't scroll — the landing places.
     private var tailPending = true
 
     /// Fetches still in the air whose requester is gone — a jump superseded by another, or

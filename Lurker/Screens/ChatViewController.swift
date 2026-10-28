@@ -147,15 +147,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// row never goes absent there, so the absence re-arm can't catch it.
     private var sawHydrated = false
 
-    /// How many times the tail landing has re-scrolled while the geometry settled — see
-    /// `landIfNeeded`. Zeroed wherever a new landing can begin (a jump, a re-attach, a drag),
-    /// so a re-armed landing gets its passes back.
-    private var landingPasses = 0
-    /// The bound on that. Two or three is the real number — the pass that brings the safe area,
-    /// the one that brings the composer's reservation, and one to confirm — so this is slack,
-    /// not a target.
-    private static let maxLandingPasses = 8
-
     /// How many runloops to re-scroll before settling. The first scroll usually lands the anchor
     /// already; a couple of extra passes correct the rare case where estimated off-screen heights
     /// left it slightly off.
@@ -208,6 +199,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // follows the keyboard through the interactive part of the gesture — the old
         // notification-driven constant only ever heard about the endpoints.
         tableView.keyboardDismissMode = .interactive
+        // Bottom-anchored: the table is flipped, each cell flipped back (`cellForRowAt`), and
+        // row 0 is the NEWEST message. Offset zero is the tail, so opening at the bottom and
+        // following live traffic cost nothing — no landing passes against estimated heights, no
+        // insets arriving under a parked offset. The price is that every table coordinate reads
+        // upside down: "top" of the content is the visual bottom. Everything that measures the
+        // table goes through `distanceFromBottom`, `visibleContentRect` and `tableIndex(for:)`.
+        //
+        // Insets by hand, because the automatic ones would be applied to the table's own top
+        // and bottom, which are the screen's bottom and top (`updateInsets`).
+        tableView.transform = Self.flip
+        tableView.contentInsetAdjustmentBehavior = .never
+        // A status-bar tap would scroll to the newest line, which reads as a bug, not a feature.
+        tableView.scrollsToTop = false
+        placeholderView.transform = Self.flip
         tableView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(tableView)
 
@@ -280,9 +285,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // has the system draw the same soft Liquid Glass fade under it, sized to the
         // composer's actual shape — and every buffer has a composer now, so every buffer
         // gets the fade.
+        // The composer sits at the screen's bottom, which is the flipped table's own TOP edge.
         let bottomEdge = UIScrollEdgeElementContainerInteraction()
         bottomEdge.scrollView = tableView
-        bottomEdge.edge = .bottom
+        bottomEdge.edge = .top
         composer.addInteraction(bottomEdge)
 
         jumpButton.onTap = { [weak self] in self?.jumpToLatest() }
@@ -341,8 +347,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         NSLayoutConstraint.activate([
             // Full height, under everything. The conversation scrolls beneath the glass
             // navigation bar at the top and the floating composer at the bottom, and off into
-            // both safe areas — `updateBottomInset` reserves the composer's height as inset
-            // so the newest message still clears it.
+            // both safe areas — `updateInsets` reserves the composer's height and the bar's
+            // as insets so the newest message still clears the one and the oldest the other.
             tableView.topAnchor.constraint(equalTo: view.topAnchor),
             tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -960,7 +966,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
         if step.loadLatest { viewModel.loadLatest(buffer.key) }
 
-        let oldFirstId = messages.first?.id
+        let oldLastId = messages.last(where: { $0.id != 0 })?.id
         let wasNearBottom = isNearBottom
         let oldContentHeight = tableView.contentSize.height
         // Remember the line at the top of the viewport and exactly where it sits, *before*
@@ -972,7 +978,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let landing = scroll.landingPending
         let anchors = landing ? [] : visibleAnchors()
         let rowsStep = buildRows(from: state, wasNearBottom: wasNearBottom)
-        let newFirstId = current?.visible.first?.id
+        let newLastId = current?.visible.last(where: { $0.id != 0 })?.id
         settings = current?.settings ?? Settings()
         speakers = current?.speakers ?? SpeakerMap()
         refreshAvatarSpec(state)
@@ -1009,26 +1015,22 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // shoves the viewport around, and that shove — on *appends*, not just prepends —
             // is what made the list lurch mid-read.
             //
-            // The height-delta fallback is for prepends alone. The first id also gets
-            // smaller on hydration, when a backlog replaces the live events that outran it
-            // (your own echo, usually) — shifting by a whole history's height there throws
-            // the offset clean past the end of the content, and a scroll view holds an
-            // out-of-range offset until something touches it: a black buffer that snaps
-            // into place when you poke it.
-            let prepended = oldFirstId != nil && newFirstId != nil && newFirstId! < oldFirstId!
-            trace("apply: hold prepended=\(prepended) anchors=\(anchors.count)")
+            // In the flipped table it is APPENDS that shove — newer rows land at the content's
+            // start, under the offset — while an older page lands at the far end and moves
+            // nothing. So the height-delta fallback is for appends and shrinks: content grew
+            // between the reader and the start, or rows were filtered away. Not for a prepend,
+            // where the offset is already correct; and never by a whole history's height on a
+            // hydration that replaces the stub (the anchors answer that, or the clamp does).
+            let appended = oldLastId != nil && newLastId != nil && newLastId! > oldLastId!
+            trace("apply: hold appended=\(appended) anchors=\(anchors.count)")
             UIView.performWithoutAnimation {
                 tableView.reloadData()
                 tableView.layoutIfNeeded()
                 // The reader's line back exactly (`restorePosition`), or approximated when none
                 // of the captured anchors survived.
                 if !restorePosition(anchoredTo: anchors),
-                    prepended || tableView.contentSize.height < oldContentHeight
+                    appended || tableView.contentSize.height < oldContentHeight
                 {
-                    // Fall back to the height delta — which is the right approximation in both
-                    // directions: content grew above us (a prepend) or shrank (rows filtered
-                    // away). Not applied when the content merely grew *below* the viewport,
-                    // where the offset is already correct.
                     tableView.contentOffset.y += tableView.contentSize.height - oldContentHeight
                 }
                 clampToContent()
@@ -1109,7 +1111,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // The composer's height is only real after layout, so its reservation is set here —
         // every pass, which also catches rotation and Dynamic Type. Setting a scroll view's
         // contentInset doesn't invalidate this view's layout, so there's no feedback loop.
-        updateBottomInset()
+        updateInsets()
         // Extend the interactive-dismiss zone up past the composer: the drag should engage
         // when the finger reaches the *bar*, the way Messages' does, not only once it
         // touches the keyboard itself. Recomputed here because the bar grows with its text.
@@ -1127,21 +1129,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     /// The landing. Asks the machine what's pending against the build on screen and performs
-    /// it: a tail landing over as many passes as the geometry needs, or a jump's convergence.
-    /// Needs a viewport to scroll within, which can arrive after the rows do — so both
-    /// `apply` and `viewDidLayoutSubviews` ask.
+    /// it: parking the tail, or a jump's convergence. A jump needs a viewport to scroll within,
+    /// which can arrive after the rows do — so both `apply` and `viewDidLayoutSubviews` ask.
     ///
-    /// ⚠⚠ A HEIGHT IS NOT A VIEWPORT. The table gets its `bounds` from the first layout pass,
-    /// which for a pushed screen happens before it is in a window — so the safe area is zero and
-    /// `updateBottomInset` has not run, and `scrollToRow(.bottom)` there parks the tail at the
-    /// bottom of a viewport ~200pt taller than the real one. It measures as a perfect landing
-    /// (`distanceFromBottom == 0`) and then the real insets arrive underneath it: the reader
-    /// opens the buffer parked a couple of hundred points above the newest message with nothing
-    /// scheduled to notice. The window guard alone isn't enough: the insets keep moving for a
-    /// pass or two after that, and the rows are self-sizing, so the content grows as the tall
-    /// ones are realized. So a tail landing holds until a *fresh* pass finds the table already
-    /// at the bottom — the only evidence that the geometry it was computed against has stopped
-    /// moving — and only then tells the machine it's parked (`landedAtTail`).
+    /// The tail landing used to be the hard part: a top-anchored table parks its last row
+    /// against estimated heights and pre-window insets, and held the landing open over several
+    /// passes until a fresh one found it still parked. The flipped table's tail is offset zero,
+    /// so it lands in one pass and only the insets have to keep it there (`updateInsets`).
     private func landIfNeeded() {
         guard let current, view.window != nil, tableView.bounds.height > 0 else { return }
         switch scroll.landing(current) {
@@ -1152,29 +1146,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             convergePass = 0
             converge(jump)
         case .atTail:
-            // ⚠ Laid out BEFORE anything is measured: `viewDidLayoutSubviews` runs ahead of the
-            // table's own layout, where `contentSize` still describes the previous pass's bounds
-            // and rows. Releasing against that reading is the same class of bug as landing
-            // against the pre-window insets — a short buffer whose estimated content doesn't
-            // fill the viewport would satisfy the test below and spend the landing without ever
-            // having scrolled.
-            tableView.layoutIfNeeded()
-            // Already there — a previous pass's landing survived this one's geometry, so it was
-            // computed against the real thing and the screen is parked. Only ever a release,
-            // never a reason to skip the first scroll: a buffer too short to scroll reads as
-            // at-the-bottom from the start, and it still has to be asked, because
-            // `scrollToBottom`'s own layout is what makes the reading below real.
-            if landingPasses > 0, distanceFromBottom <= 0.5 {
-                trace("tail landed after \(landingPasses) passes")
-                settleTailLanding()
-                return
-            }
+            // Exact in one pass: the flipped table's offset zero IS the newest row's bottom edge,
+            // whatever the row heights turn out to be. The insets that arrive later keep it
+            // there (`updateInsets`).
             scrollToBottom()
-            landingPasses += 1
-            trace("tail pass \(landingPasses) distance=\(Int(distanceFromBottom))")
-            // Bounded, for the same reason the jump's convergence is: a screen whose content
-            // somehow never settles must stop stealing the scroll rather than fight the reader.
-            if landingPasses >= Self.maxLandingPasses { settleTailLanding() }
+            trace("tail landed")
+            settleTailLanding()
         }
     }
 
@@ -1182,7 +1159,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// off on — paging a short buffer whose top is in reach, and the pills — rather than waiting
     /// for the next tick, which a reader who never scrolls never makes.
     private func settleTailLanding() {
-        landingPasses = 0
         scroll.landedAtTail()
         applyLayout()
     }
@@ -1200,7 +1176,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func converge(_ jump: ConversationScroll.Jump) {
         guard scroll.isCurrent(jump), let current else { return } // superseded / torn down
         guard let index = scroll.jumpTargetRow(current) else { return finishConverge(jump, interrupted: false) }
-        tableView.scrollToRow(at: IndexPath(row: index, section: 0), at: .middle, animated: false)
+        tableView.scrollToRow(at: tableIndex(for: index), at: .middle, animated: false)
         convergePass += 1
         trace("converge pass \(convergePass) row=\(index) offset=\(Int(tableView.contentOffset.y))")
         guard convergePass < Self.jumpConvergePasses else { return finishConverge(jump, interrupted: false) }
@@ -1216,9 +1192,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if converging === jump { converging = nil }
         switch scroll.finishJump(jump, current: current, interrupted: interrupted) {
         case .flash(let row):
-            flashRow(at: IndexPath(row: row, section: 0))
+            flashRow(at: tableIndex(for: row))
         case .atTail:
-            landingPasses = 0
             landIfNeeded()
         case .release:
             break
@@ -1232,7 +1207,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// held) and its landing (if it is). Asked of the last frame the screen processed, never a
     /// fresh read of the store: the reply is recognised against the frame after it.
     private func startJump() {
-        landingPasses = 0
         rebuildRowsIfOptionsChanged()
         if let frame = lastFrame, let anchor = scroll.requestAround(frame) {
             viewModel.loadAround(buffer.key, anchorId: anchor)
@@ -1583,15 +1557,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// different part of the conversation. Restoring against the first row that survived
     /// keeps them where they were, and the second-choice row is usually inches from the first.
     private func visibleAnchors() -> [(id: Int, offset: CGFloat)] {
-        let viewportTop = tableView.contentOffset.y + tableView.adjustedContentInset.top
-        guard let visible = tableView.indexPathsForVisibleRows?.sorted() else { return [] }
+        // In the flipped table the content's start is the screen's bottom: this edge is where
+        // the composer covers the rows, and the line being read is the one with the LARGEST y.
+        let coveredEdge = tableView.contentOffset.y + tableView.adjustedContentInset.top
+        guard let visible = tableView.indexPathsForVisibleRows?.sorted(by: >) else { return [] }
         var anchors: [(id: Int, offset: CGFloat)] = []
         for indexPath in visible {
-            guard rows.indices.contains(indexPath.row), let id = rows[indexPath.row].anchorId else { continue }
+            let row = logicalRow(for: indexPath)
+            guard rows.indices.contains(row), let id = rows[row].anchorId else { continue }
             let frame = tableView.rectForRow(at: indexPath)
-            // Rows above the viewport top aren't being read and make poor anchors — the first
-            // one still showing is the line the reader is on.
-            guard frame.maxY > viewportTop else { continue }
+            // Rows behind the composer aren't being read and make poor anchors — the first one
+            // still showing is the line the reader is on.
+            guard frame.maxY > coveredEdge else { continue }
             anchors.append((id, frame.minY - tableView.contentOffset.y))
         }
         return anchors
@@ -1616,25 +1593,26 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             return false
         }
         let before = tableView.contentOffset.y
-        tableView.contentOffset.y =
-            tableView.rectForRow(at: IndexPath(row: index, section: 0)).minY - offset
+        tableView.contentOffset.y = tableView.rectForRow(at: tableIndex(for: index)).minY - offset
         clampToContent()
         trace("restore: row=\(index) moved=\(Int(tableView.contentOffset.y - before))")
         return true
     }
 
-    /// The row that now represents message `id` — its own row, or the summary whose span
-    /// covers it after a history page merged it into a consolidated run.
-    /// How far the newest message sits below the viewport bottom (0 when parked at the tail).
-    ///
-    /// The bottom inset is part of the answer, not noise to be left out. `updateBottomInset`
-    /// reserves the composer — and, with the keyboard up, the keyboard as well — so the offset
-    /// at the tail is `inset` past `contentSize - bounds`, and omitting it made this report
-    /// `-inset` where the doc line above promises 0. Harmless at rest, where the reservation is
-    /// one composer, but with a keyboard on screen it is 400pt of slack: "near the bottom"
-    /// quietly meant "within 80 + inset", so a reader a third of a screen up in history still
-    /// counted as parked at the tail. Same maximum `clampToContent` computes.
+    /// How far the newest message sits below the viewport's bottom edge (0 when parked at the
+    /// tail). In the flipped table that's the offset past the content's start, inset included:
+    /// `updateInsets` reserves the composer — and, with the keyboard up, the keyboard as well —
+    /// at the start, so the tail is `-inset.top`, and leaving the inset out would make this
+    /// report `inset` where the doc line promises 0. With a keyboard on screen that is 400pt of
+    /// slack: "near the bottom" would quietly mean "within 80 + inset", and a reader a third of
+    /// a screen up in history would still count as parked at the tail.
     private var distanceFromBottom: CGFloat {
+        tableView.contentOffset.y + tableView.adjustedContentInset.top
+    }
+
+    /// How far the oldest loaded row sits above the viewport's top edge — the flipped table's
+    /// far end, where the next older page would land.
+    private var distanceFromTop: CGFloat {
         tableView.contentSize.height + tableView.adjustedContentInset.bottom
             - tableView.contentOffset.y - tableView.bounds.height
     }
@@ -1652,7 +1630,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// fetch: those are the reader's own request, and a pending jump is the only way its state
     /// clears.
     func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
-        landingPasses = 0
         if scroll.onUserDrag(), let jump = converging {
             finishConverge(jump, interrupted: true)
         }
@@ -1673,10 +1650,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         applyLayout()
     }
 
-    /// The settle after `jumpToLatest`'s animated scroll: rows are self-sizing, so the
-    /// animated pass positions with estimated heights and can stop short of the real
-    /// bottom — the same reason `scrollToBottom` scrolls twice. Finish the job with it.
-    /// Unconditional, because that jump is the only animated scroll this screen makes.
+    /// The settle after `jumpToLatest`'s animated scroll. The target is exact now (offset zero),
+    /// so this only pins it against an inset that moved during the ride. Unconditional, because
+    /// that jump is the only animated scroll this screen makes.
     func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
         scrollToBottom()
     }
@@ -1689,7 +1665,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var layoutFacts: LayoutFacts {
         LayoutFacts(
             nearBottom: isNearBottom,
-            pagesOlder: tableView.contentOffset.y < 300,
+            pagesOlder: distanceFromTop < 300,
             pagesNewer: distanceFromBottom < 300,
             dividerVisible: isDividerVisible,
             dividerAbove: isDividerAboveViewport
@@ -1807,7 +1783,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// re-attach by fetching the latest slice (#42) and land at its bottom once it arrives.
     /// Both branches can put a `/clear` back (#121), which is a rebuild.
     private func jumpToLatest() {
-        landingPasses = 0
         let choice = scroll.jumpToLatest(hasRows: !rows.isEmpty, detached: isDetached)
         rebuildRowsIfOptionsChanged()
         switch choice {
@@ -1820,7 +1795,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             }
         case .scrollDown:
             guard !rows.isEmpty else { return }
-            tableView.scrollToRow(at: IndexPath(row: rows.count - 1, section: 0), at: .bottom, animated: true)
+            tableView.setContentOffset(CGPoint(x: 0, y: -tableView.adjustedContentInset.top), animated: true)
         }
         applyLayout()
     }
@@ -1854,15 +1829,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard let row = dividerRow, tableView.bounds.height > 0,
               row < tableView.numberOfRows(inSection: 0)
         else { return nil }
-        let frame = tableView.rectForRow(at: IndexPath(row: row, section: 0))
+        let frame = tableView.rectForRow(at: tableIndex(for: row))
         guard !frame.isEmpty else { return nil }
         // The label and its padding, without the group gap the marker carries either side
         // (lurker#1238): at a wide gap, the empty space under "New messages" peeking in at the
-        // top edge isn't the reader having reached it.
+        // top edge isn't the reader having reached it. The gap ABOVE the marker is at the
+        // frame's far end in the flipped table.
         let gaps = MessageListMarker.gaps(
             MessageRenderer.CompactSpacing(CompactDensity(settings: settings), traits: traitCollection)
         )
-        return frame.inset(by: UIEdgeInsets(top: gaps.above, left: 0, bottom: gaps.below, right: 0))
+        return frame.inset(by: UIEdgeInsets(top: gaps.below, left: 0, bottom: gaps.above, right: 0))
     }
 
     /// The content the reader can actually see — the table runs under the nav bar and the
@@ -1886,7 +1862,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// *below* the viewport — and a banner promising unread above would then scroll you down.
     private var isDividerAboveViewport: Bool {
         guard let frame = dividerFrame else { return false }
-        return frame.maxY <= visibleContentRect.minY
+        // Visually above is older, which the flipped table lays out past the viewport's far end.
+        return frame.minY >= visibleContentRect.maxY
     }
 
     /// The banner's tap: jump to the first unread message, always via the #42 jump — never a
@@ -1935,12 +1912,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The height guard matters as much: `scrollToRow` against a table that has no bounds
     /// yet does nothing at all, quietly.
     private func scrollToBottom() {
-        guard !rows.isEmpty, tableView.bounds.height > 0 else { return }
-        let last = IndexPath(row: rows.count - 1, section: 0)
-        tableView.layoutIfNeeded()
-        tableView.scrollToRow(at: last, at: .bottom, animated: false)
-        tableView.layoutIfNeeded()
-        tableView.scrollToRow(at: last, at: .bottom, animated: false)
+        tableView.setContentOffset(CGPoint(x: 0, y: -tableView.adjustedContentInset.top), animated: false)
     }
 
     private func send(_ text: String) {
@@ -2935,7 +2907,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         dateLabelObservers = [Notification.Name.NSCalendarDayChanged, NSLocale.currentLocaleDidChangeNotification]
             .map { name in
                 NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                    self?.tableView.reloadData()
+                    guard let self else { return }
+                    holdingLine("day labels") { self.tableView.reloadData() }
                 }
             }
     }
@@ -2953,7 +2926,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// list that hasn't changed doesn't reload.
     private func observeAppearanceInvalidation() {
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (self: Self, _) in
-            self.tableView.reloadData()
+            self.holdingLine("appearance") { self.tableView.reloadData() }
         }
     }
 
@@ -2991,7 +2964,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the same answer is wanted there.
         let keepsPosition = keepsPositionWhileReading
         // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
-        // runs `viewDidLayoutSubviews` → `updateBottomInset` against that fresh frame. So
+        // runs `viewDidLayoutSubviews` → `updateInsets` against that fresh frame. So
         // the inset isn't recomputed here — doing it before layout would read the old frame.
         view.layoutIfNeeded()
         // Everything below is for the keyboard's ARRIVAL. This notification also fires at
@@ -3040,7 +3013,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     @objc private func keyboardWillHide() {
         keyboardOverlap = 0
         composerBottom.constant = 0
-        view.layoutIfNeeded() // re-runs updateBottomInset via viewDidLayoutSubviews
+        view.layoutIfNeeded() // re-runs updateInsets via viewDidLayoutSubviews
         // The composer's reservation just shrank. At the bottom that can strand the offset
         // past the new maximum — held there indefinitely, per `clampToContent` — while
         // mid-history it's a no-op. Never a scroll: position survives the dismissal.
@@ -3058,10 +3031,20 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// once. The `- safeAreaInsets.bottom` cancels the safe-area inset the table's automatic
     /// adjustment has already added, so the reservation isn't double-counted — get that
     /// wrong and the last line sits half-under the composer.
-    private func updateBottomInset() {
-        let reserved = max(0, view.bounds.maxY - composer.frame.minY - view.safeAreaInsets.bottom)
-        tableView.contentInset.bottom = reserved
-        tableView.verticalScrollIndicatorInsets.bottom = reserved
+    /// The table's insets, by hand (`contentInsetAdjustmentBehavior` is off): the composer's
+    /// reservation — and the keyboard's, which the composer rides — at the content's START,
+    /// which is the flipped table's top and the screen's bottom; the navigation bar's at the
+    /// far end. A reader parked at the tail stays parked: a scroll view doesn't move its offset
+    /// for a manual inset change, so the start is re-pinned when it was the position before.
+    private func updateInsets() {
+        let atTail = distanceFromBottom <= 0.5
+        let reserved = max(0, view.bounds.maxY - composer.frame.minY)
+        let bar = view.safeAreaInsets.top
+        if tableView.contentInset.top != reserved || tableView.contentInset.bottom != bar {
+            tableView.contentInset = UIEdgeInsets(top: reserved, left: 0, bottom: bar, right: 0)
+            tableView.verticalScrollIndicatorInsets = tableView.contentInset
+            if atTail { scrollToBottom() }
+        }
     }
 
     // MARK: - Per-message actions (#60)
@@ -3083,8 +3066,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard presentedViewController == nil, navigationController?.presentedViewController == nil
         else { return }
         let point = recognizer.location(in: tableView)
-        guard let indexPath = tableView.indexPathForRow(at: point), rows.indices.contains(indexPath.row)
-        else { return }
+        guard let indexPath = tableView.indexPathForRow(at: point) else { return }
+        let row = logicalRow(for: indexPath)
+        guard rows.indices.contains(row) else { return }
 
         // A press that lands on a URL is about the URL — the line around it isn't what the finger
         // was on. Asked of the cell, which is the only thing that knows where its body sits.
@@ -3094,7 +3078,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // a URL in one of those is still a URL you can act on. Gating this on a message first made
         // long press do nothing at all there, while a plain tap opened the link.
         let cell = tableView.cellForRow(at: indexPath) as? MessageBodyHosting
-        let message = rows[indexPath.row].message
+        let message = rows[row].message
         // A press on a reaction chip is about the reactions: show who gave what, which is the
         // one thing a tap on a chip can't (it toggles yours).
         if let cell, let message, cell.reactionChip(at: recognizer.location(in: cell)) {
@@ -3383,7 +3367,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        listRenderer.cell(for: rows[indexPath.row], at: indexPath.row, in: tableView, context: listContext)
+        let row = logicalRow(for: indexPath)
+        let cell = listRenderer.cell(for: rows[row], at: row, in: tableView, context: listContext)
+        // Flipped back inside the flipped table, so its content reads the right way up. Every
+        // dequeue, since a reused cell keeps whatever transform it last had.
+        cell.transform = Self.flip
+        return cell
+    }
+
+    /// The vertical flip that makes the table bottom-anchored. Applied to the table, and undone
+    /// on each cell and on the placeholder behind them.
+    private static let flip = CGAffineTransform(scaleX: 1, y: -1)
+
+    /// The table's row for a row of `rows`, and back: the table serves the newest first.
+    private func tableIndex(for row: Int) -> IndexPath {
+        IndexPath(row: rows.count - 1 - row, section: 0)
+    }
+
+    private func logicalRow(for indexPath: IndexPath) -> Int {
+        rows.count - 1 - indexPath.row
     }
 
     /// What the renderer needs from this screen to draw a row.
@@ -3490,7 +3492,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // live buffer is what keeps the tap from shifting the content under the reader's thumb.
         // The height can't change: hidden and revealed are the same glyphs, only recoloured.
         guard let index = rows.firstIndex(where: { $0.message?.id == message.id }) else { return }
-        tableView.reconfigureRows(at: [IndexPath(row: index, section: 0)])
+        tableView.reconfigureRows(at: [tableIndex(for: index)])
 
     }
 
@@ -3598,7 +3600,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let moved = movedPreviewUrls
         movedPreviewUrls = []
         guard !moved.isEmpty else { return }
-        let affected = visible.filter { mentionsAny(of: moved, at: $0.row) }
+        let affected = visible.filter { mentionsAny(of: moved, at: logicalRow(for: $0)) }
         guard !affected.isEmpty else { return }
 
         // Two ways to stay where you are, and which one applies is the reader's position.
