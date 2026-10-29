@@ -317,16 +317,23 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         uploadStatus.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(uploadStatus)
 
-        // The bottom counterpart of the fade the nav bar's scroll-edge effect gives the
-        // top: declaring the composer as an element container over the table's bottom edge
-        // has the system draw the same soft Liquid Glass fade under it, sized to the
-        // composer's actual shape — and every buffer has a composer now, so every buffer
-        // gets the fade.
-        // The composer sits at the screen's bottom, which is the flipped table's own TOP edge.
-        let bottomEdge = UIScrollEdgeElementContainerInteraction()
-        bottomEdge.scrollView = tableView
-        bottomEdge.edge = .top
-        composer.addInteraction(bottomEdge)
+        // No system scroll-edge effects on the flipped table. UIKit binds the bar at the
+        // screen's top to a scroll view's TOP edge effect, but this table's top edge is the
+        // screen's bottom, and the effect view it adds is a subview of the table, so it flips
+        // with it: the plate it drew covered every visible row, a grey blur over the whole
+        // conversation. Measured with the real screen in the simulator: on iOS 26.0 on iPhone
+        // and iPad alike, and on iPadOS 27 whenever the conversation sits beside the buffer
+        // list, where the automatic style resolves to the hard one (hiding the sidebar made it
+        // go away, which is what the report described). Nothing is lost at the screen's top:
+        // the bar is glass pills over the rows, and the rows ran crisp under the status bar
+        // before and after. The composer's element-container interaction on that same edge
+        // (a soft fade under it) rode the same geometry and was not the cause — removing it
+        // alone left the plate — so it's gone with the effect rather than left declaring an
+        // edge that isn't there. The bottom edge is hidden too, so a future driver of it (a
+        // toolbar, another split layout) can't bring the plate back from the other end; if a
+        // fade under either bar is wanted, it has to be drawn in the table's own coordinates.
+        tableView.topEdgeEffect.isHidden = true
+        tableView.bottomEdgeEffect.isHidden = true
 
         jumpButton.onTap = { [weak self] in self?.jumpToLatest() }
         jumpButton.translatesAutoresizingMaskIntoConstraints = false
