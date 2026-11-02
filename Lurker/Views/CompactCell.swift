@@ -718,7 +718,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
     private func makeSwipeArrow() -> UIImageView {
         let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
-        let arrow = UIImageView(image: UIImage(systemName: "arrowshape.turn.up.left", withConfiguration: config))
+        // `backward`, not `left`: it mirrors with the layout direction, and in a right-to-left
+        // layout the strip opens on the left and the reply points right.
+        let arrow = UIImageView(image: UIImage(systemName: "arrowshape.turn.up.backward", withConfiguration: config))
         arrow.contentMode = .center
         arrow.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
         arrow.alpha = 0
@@ -733,7 +735,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         contentView.layer.removeAllAnimations()
         fill.layer.removeAllAnimations()
         // A row swiped as its cell was recycled (a reload under the finger) must not hand the
-        // next line a content view sitting sideways.
+        // next line a content view sitting sideways — nor one springing home, arrow fading: the
+        // spring is dropped first, or `settleSwipe` would see a model already home and leave it.
+        beginSwipe()
         settleSwipe(animated: false)
         // The closure captures the message it was built for. Left in place, a tap on a recycled
         // cell whose row didn't set one would toggle a spoiler on whatever message used it last.

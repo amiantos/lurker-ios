@@ -56,8 +56,9 @@ final class SwipeToReplyRecognizer: UIPanGestureRecognizer {
     }
 
     /// Whether a move of (`dx`, `dy`) is a swipe toward the trailing edge: toward it at all, and
-    /// steeper than two-to-three against its vertical drift. The delegate asks the same of the
-    /// translation when the pan begins, so the direction is checked twice and the angle once.
+    /// steeper than two-to-three against its vertical drift. Asked here at the slop, and again by
+    /// the delegate of the whole translation when the pan begins — so a drag that curved toward
+    /// vertical between the two is refused there, not begun.
     static func isSwipe(dx: CGFloat, dy: CGFloat, sign: CGFloat) -> Bool {
         let toward = dx * sign
         return toward > 0 && toward >= abs(dy) * 1.5
