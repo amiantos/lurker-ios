@@ -190,6 +190,43 @@ final class MessageActionsTests: XCTestCase {
         XCTAssertEqual(build(msg(text: "")).map(\.key), [.reply, .bookmark, .profile])
     }
 
+    /// The swipe on a row (lurker#1248) asks `replyAction` alone, so it has to agree with the
+    /// menu on every line: a swipe that replied where the menu wouldn't, or sat still where it
+    /// would, is the drift this guards against.
+    func testReplyActionIsTheMenusReplyRow() {
+        let support = TagSupport(canAddReaction: true, canRemoveReaction: true, canReply: true)
+        let channel = MessageActionScope(networkId: 1, isBookmarked: false, target: "#a", support: support)
+        let dm = MessageActionScope(networkId: 1, isBookmarked: false, target: "alice", support: support)
+        let dmNoTag = MessageActionScope(networkId: 1, isBookmarked: false, target: "alice")
+        let stamped = Message(id: 1, type: .message, nick: "alice", text: "hi", msgid: "m1")
+        let stampedSelf = Message(id: 1, type: .message, nick: "alice", text: "hi", isSelf: true, msgid: "m1")
+        let lines: [(Message, MessageActionScope)] = [
+            (msg(), scope()),
+            (msg(type: .notice), scope()),
+            (msg(type: .action), scope()),
+            (msg(type: .join), scope()),
+            (msg(nick: nil), scope()),
+            (msg(isSelf: true), scope()),
+            (msg(isSelf: true), channel),
+            (stampedSelf, channel),
+            (stamped, dm),
+            (stamped, dmNoTag),
+            (stampedSelf, dm),
+            (stampedSelf, dmNoTag),
+        ]
+        var offered = 0
+        for (message, scope) in lines {
+            let menu = MessageActions.build(for: message, scope: scope).first { $0.key == .reply }
+            XCTAssertEqual(MessageActions.replyAction(for: message, scope: scope), menu, "\(message.type) in \(scope.target)")
+            XCTAssertEqual(
+                MessageActions.replyAction(for: message, target: scope.target, canReply: scope.support.canReply), menu,
+                "the narrow form, \(message.type) in \(scope.target)"
+            )
+            if menu != nil { offered += 1 }
+        }
+        XCTAssertTrue(offered > 0 && offered < lines.count, "the fixture should cover both answers (\(offered) of \(lines.count))")
+    }
+
     // MARK: - Running
 
     func testReplyHandsBackTheNick() {

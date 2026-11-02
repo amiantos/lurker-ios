@@ -166,6 +166,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// quarters of a line below its last word.
     private var fillBottom: NSLayoutConstraint!
 
+    /// The reply arrow behind a row being swiped (lurker#1248), made on the first swipe — most
+    /// cells are never swiped. Under `contentView`, in the room the content slides out of.
+    private var swipeArrow: UIImageView?
+
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         selectionStyle = .none
@@ -670,11 +674,67 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             targetSize, withHorizontalFittingPriority: horizontal, verticalFittingPriority: vertical)
     }
 
+    // MARK: - Swipe to reply (lurker#1248)
+
+    /// A swipe taking hold: whatever spring is still carrying the content home from the last one
+    /// is dropped, or the next moves would land on top of it and the row would lag the finger
+    /// until it finished.
+    func beginSwipe() {
+        contentView.layer.removeAllAnimations()
+        swipeArrow?.layer.removeAllAnimations()
+    }
+
+    /// Slide the content `offset` points sideways (the sign is the layout direction's, resolved by
+    /// the recognizer) and show the reply arrow in the room it leaves, `progress` of the way to a
+    /// reply: faint and small at first, full and accented once a release would reply — the same
+    /// moment the haptic marks, so the eye and the thumb get the news together.
+    func showSwipe(offset: CGFloat, progress: CGFloat) {
+        contentView.transform = CGAffineTransform(translationX: offset, y: 0)
+        let arrow = swipeArrow ?? makeSwipeArrow()
+        let reach = min(max(progress, 0), 1)
+        // Centred in the vacated strip, which is `|offset|` wide, on whichever side it opened.
+        let strip = abs(offset)
+        let centerX = offset < 0 ? bounds.width - strip / 2 : strip / 2
+        arrow.center = CGPoint(x: centerX, y: bounds.midY)
+        arrow.alpha = reach
+        let scale = 0.7 + 0.3 * reach
+        arrow.transform = CGAffineTransform(scaleX: scale, y: scale)
+        arrow.tintColor = reach >= 1 ? Palette.accent : Palette.fgMuted
+    }
+
+    /// The content back home and the arrow gone — sprung when a finger let go, at once on reuse.
+    func settleSwipe(animated: Bool) {
+        guard contentView.transform != .identity || (swipeArrow?.alpha ?? 0) != 0 else { return }
+        let home = { [self] in
+            contentView.transform = .identity
+            swipeArrow?.alpha = 0
+        }
+        guard animated else { home(); return }
+        UIView.animate(
+            withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.5,
+            options: [.allowUserInteraction, .beginFromCurrentState], animations: home
+        )
+    }
+
+    private func makeSwipeArrow() -> UIImageView {
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+        let arrow = UIImageView(image: UIImage(systemName: "arrowshape.turn.up.left", withConfiguration: config))
+        arrow.contentMode = .center
+        arrow.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
+        arrow.alpha = 0
+        insertSubview(arrow, belowSubview: contentView)
+        swipeArrow = arrow
+        return arrow
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         // An in-flight jump flash (#42) would otherwise pulse on an unrelated line.
         contentView.layer.removeAllAnimations()
         fill.layer.removeAllAnimations()
+        // A row swiped as its cell was recycled (a reload under the finger) must not hand the
+        // next line a content view sitting sideways.
+        settleSwipe(animated: false)
         // The closure captures the message it was built for. Left in place, a tap on a recycled
         // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
         onToggleSpoiler = nil

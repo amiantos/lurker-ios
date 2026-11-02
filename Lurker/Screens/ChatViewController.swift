@@ -2624,12 +2624,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// and this is pushed on top, so that edge belongs to the system's interactive pop —
     /// which goes to the same place, and is the gesture people already try.
     private func addEdgeSwipes() {
-        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) {
+        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) -> UIGestureRecognizer {
             let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
             swipe.edges = edge
             view.addGestureRecognizer(swipe)
+            return swipe
         }
-        edgeSwipe(.right, #selector(swipedFromRight))
+        let membersEdge = edgeSwipe(.right, #selector(swipedFromRight))
 
         // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
         // so it costs nothing per row and survives reuse — and so whatever draws a message next
@@ -2638,6 +2639,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.addGestureRecognizer(
             UILongPressGestureRecognizer(target: self, action: #selector(messageLongPressed))
         )
+
+        // Swipe a line toward the trailing edge to reply to it (lurker#1248) — Discord's and
+        // Telegram's gesture, on the table for the same reasons as the long press. Toward the
+        // trailing edge rather than the leading one because the leading edge is the navigation
+        // stack's interactive pop, which a drag that way would fight along the whole left side.
+        // The right edge's members swipe keeps its priority: an edge pan fails at once for a
+        // touch that didn't land on the edge, so a swipe starting anywhere else waits for nothing.
+        //
+        // The table's own pan waits for this one to fail. Without that the two race from the same
+        // touch, and a horizontal drag that the scroll happened to claim first scrolls nothing
+        // while the row stays put. The recognizer fails on the first move that isn't a swipe,
+        // so a scroll waits one touch-move at most — see `SwipeToReplyRecognizer`.
+        let swipe = SwipeToReplyRecognizer(target: self, action: #selector(messageSwiped))
+        swipe.sign = view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? 1 : -1
+        swipe.delegate = self
+        swipe.require(toFail: membersEdge)
+        tableView.panGestureRecognizer.require(toFail: swipe)
+        tableView.addGestureRecognizer(swipe)
     }
 
     @objc private func swipedFromRight(_ recognizer: UIScreenEdgePanGestureRecognizer) {
@@ -3244,6 +3263,67 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
+    // MARK: - Swipe to reply (lurker#1248)
+
+    /// The line a swipe took hold of, from `gestureRecognizerShouldBegin` to its end, and the
+    /// table row it was on then. The row is looked up again per move (`swipedCell`): a line
+    /// arriving mid-drag reloads the table and the table is newest-first, so the index the swipe
+    /// started on belongs to a newer line a moment later — one the Reply gate never looked at.
+    private var swipingRow: (message: Message, startedAt: IndexPath)?
+    /// Whether the drag is past `swipeReach` — the haptic fires on the way out, once per crossing.
+    private var swipeCrossed = false
+    private let swipeHaptic = UIImpactFeedbackGenerator(style: .medium)
+    /// How far the row travels before a release replies: about a thumb's width, Discord's reach.
+    /// Past it the row keeps following the finger at a third of the pace: it has already said yes.
+    private static let swipeReach: CGFloat = 64
+
+    /// The cell showing the swiped line right now, by the line's id where it has one (the same
+    /// re-resolution `flashRow` makes); an ephemeral line (id 0) can only be the row it started on.
+    private func swipedCell() -> CompactCell? {
+        guard let swiping = swipingRow else { return nil }
+        let path: IndexPath
+        if swiping.message.id != 0 {
+            guard let row = current?.rowIndex(containing: swiping.message.id) else { return nil }
+            path = tableIndex(for: row)
+        } else {
+            path = swiping.startedAt
+        }
+        return tableView.cellForRow(at: path) as? CompactCell
+    }
+
+    @objc private func messageSwiped(_ recognizer: SwipeToReplyRecognizer) {
+        guard let swiping = swipingRow else { return }
+        switch recognizer.state {
+        case .began:
+            swipeCrossed = false
+            swipeHaptic.prepare()
+            swipedCell()?.beginSwipe()
+        case .changed:
+            guard let cell = swipedCell() else { return }
+            let reach = Self.swipeReach
+            let travel = max(recognizer.translation(in: tableView).x * recognizer.sign, 0)
+            let offset = travel <= reach ? travel : reach + (travel - reach) / 3
+            let crossed = travel >= reach
+            if crossed != swipeCrossed {
+                swipeCrossed = crossed
+                if crossed { swipeHaptic.impactOccurred() }
+            }
+            cell.showSwipe(offset: offset * recognizer.sign, progress: travel / reach)
+        case .ended, .cancelled:
+            // (A failed pan never reaches its action; `gestureRecognizerShouldBegin` drops what
+            // a failed one left behind the next time it's asked.)
+            let cell = swipedCell()
+            swipingRow = nil
+            cell?.settleSwipe(animated: true)
+            // A release past the reach is the Reply the menu would have run — the same code, so
+            // the composer ends up exactly as a tap on "Reply to alice" leaves it. A cancel (a
+            // call, the app backgrounding) replies to nothing, however far the row had gone.
+            if recognizer.state == .ended, swipeCrossed { reply(to: swiping.message) }
+        default:
+            break
+        }
+    }
+
     // MARK: - Replies (iOS #184)
 
     /// The reply this buffer's composer is writing, shown above the field. The next plain line
@@ -3775,4 +3855,35 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         (message.originNetworkId ?? buffer.networkId).flatMap { networks[$0]?.name }
     }
 
+}
+
+extension ChatViewController: UIGestureRecognizerDelegate {
+    /// The swipe to reply begins only on a line the actions menu would offer Reply on — the kit's
+    /// one rule (`MessageActions.replyAction`), asked at the row the finger LANDED on. A line with
+    /// no Reply doesn't move: a row that slid out and sprang back having done nothing would read
+    /// as a gesture that missed, where a row that stays put reads as a row that has none.
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let swipe = gestureRecognizer as? SwipeToReplyRecognizer else { return true }
+        // Whatever a swipe that failed after this said yes (pre-empted by the members edge, say)
+        // left behind: its action never ran to clear it.
+        swipingRow = nil
+        // The direction again, on the pan's own translation: the recognizer read it at its slop,
+        // but a pan can begin on a move it never saw — see `SwipeToReplyRecognizer.slop`.
+        let translation = swipe.translation(in: tableView)
+        guard SwipeToReplyRecognizer.isSwipe(dx: translation.x, dy: translation.y, sign: swipe.sign) else { return false }
+        // A sheet already up (the nick list, buffer info) means this drag is through a dimmed
+        // screen, as for the long press.
+        guard presentedViewController == nil, navigationController?.presentedViewController == nil,
+              let point = swipe.startPoint, let indexPath = tableView.indexPathForRow(at: point)
+        else { return false }
+        let row = logicalRow(for: indexPath)
+        guard rows.indices.contains(row), let message = rows[row].message,
+              tableView.cellForRow(at: indexPath) is CompactCell
+        else { return false }
+        let canReply = viewModel.state.canReply(networkId: buffer.key.networkId)
+        guard MessageActions.replyAction(for: message, target: buffer.key.target, canReply: canReply) != nil
+        else { return false }
+        swipingRow = (message, indexPath)
+        return true
+    }
 }
