@@ -166,8 +166,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// quarters of a line below its last word.
     private var fillBottom: NSLayoutConstraint!
 
-    /// The reply arrow behind a row being swiped (lurker#1248), made on the first swipe — most
-    /// cells are never swiped. Under `contentView`, in the room the content slides out of.
+    /// Everything the row shows, in one view that a swipe to reply (lurker#1248) slides sideways.
+    ///
+    /// ⚠⚠ Not `contentView`, which looked like the obvious thing to translate. The cell lays its
+    /// content view out by setting its *frame*, on every layout pass, and a frame set on a
+    /// transformed view re-derives the centre so the frame comes out as asked — which puts the
+    /// content back where it was, every move. On the phone the row sat still under the finger
+    /// and lurched once on release, when the spring ran the transform home from a centre that
+    /// had already been moved to compensate. This view is placed by constraints, and the engine
+    /// sets centre and bounds rather than frame, so a translation on it survives any layout.
+    private let slide = UIView()
+    /// The reply arrow behind a row being swiped, made on the first swipe — most cells are never
+    /// swiped. Under `slide`, in the room the content slides out of.
     private var swipeArrow: UIImageView?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -290,17 +300,19 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         ])
         column.addArrangedSubview(reactionHolder)
         column.translatesAutoresizingMaskIntoConstraints = false
+        slide.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(slide)
         fill.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(fill)
+        slide.addSubview(fill)
         fill.addSubview(column)
         // Over the fill, as the web paints its `::before` hairline over a hovered row's ground.
         hairline.backgroundColor = Palette.border
         hairline.isHidden = true
         hairline.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(hairline)
+        slide.addSubview(hairline)
         avatarView.isHidden = true
         avatarView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(avatarView)
+        slide.addSubview(avatarView)
 
         fillBottom = fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         columnLeading = column.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
@@ -308,6 +320,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         avatarTop = avatarView.topAnchor.constraint(equalTo: contentView.topAnchor)
         hairlineLeading = hairline.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
         NSLayoutConstraint.activate([
+            slide.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            slide.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            slide.topAnchor.constraint(equalTo: contentView.topAnchor),
+            slide.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             // Full-bleed and flush to the cell, so two washed rows meet with no seam.
             fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             fill.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -680,7 +696,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// is dropped, or the next moves would land on top of it and the row would lag the finger
     /// until it finished.
     func beginSwipe() {
-        contentView.layer.removeAllAnimations()
+        slide.layer.removeAllAnimations()
         swipeArrow?.layer.removeAllAnimations()
     }
 
@@ -689,13 +705,18 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// reply: faint and small at first, full and accented once a release would reply — the same
     /// moment the haptic marks, so the eye and the thumb get the news together.
     func showSwipe(offset: CGFloat, progress: CGFloat) {
-        contentView.transform = CGAffineTransform(translationX: offset, y: 0)
+        slide.transform = CGAffineTransform(translationX: offset, y: 0)
         let arrow = swipeArrow ?? makeSwipeArrow()
         let reach = min(max(progress, 0), 1)
-        // Centred in the vacated strip, which is `|offset|` wide, on whichever side it opened.
+        // Centred in the vacated strip, which is `|offset|` wide, on whichever side it opened —
+        // measured from the safe edge, not the cell's: beside the iPhone Duo's side rail the cell
+        // runs 84pt under the rail, and an arrow centred on the cell's edge sat under its buttons.
         let strip = abs(offset)
-        let centerX = offset < 0 ? bounds.width - strip / 2 : strip / 2
-        arrow.center = CGPoint(x: centerX, y: bounds.midY)
+        let safe = contentView.safeAreaInsets
+        let centerX = offset < 0
+            ? contentView.bounds.width - safe.right - strip / 2
+            : safe.left + strip / 2
+        arrow.center = CGPoint(x: centerX, y: contentView.bounds.midY)
         arrow.alpha = reach
         let scale = 0.7 + 0.3 * reach
         arrow.transform = CGAffineTransform(scaleX: scale, y: scale)
@@ -704,9 +725,9 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
 
     /// The content back home and the arrow gone — sprung when a finger let go, at once on reuse.
     func settleSwipe(animated: Bool) {
-        guard contentView.transform != .identity || (swipeArrow?.alpha ?? 0) != 0 else { return }
+        guard slide.transform != .identity || (swipeArrow?.alpha ?? 0) != 0 else { return }
         let home = { [self] in
-            contentView.transform = .identity
+            slide.transform = .identity
             swipeArrow?.alpha = 0
         }
         guard animated else { home(); return }
@@ -724,7 +745,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         arrow.contentMode = .center
         arrow.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
         arrow.alpha = 0
-        insertSubview(arrow, belowSubview: contentView)
+        contentView.insertSubview(arrow, belowSubview: slide)
         swipeArrow = arrow
         return arrow
     }
@@ -735,7 +756,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         contentView.layer.removeAllAnimations()
         fill.layer.removeAllAnimations()
         // A row swiped as its cell was recycled (a reload under the finger) must not hand the
-        // next line a content view sitting sideways — nor one springing home, arrow fading: the
+        // next line its content sitting sideways — nor one springing home, arrow fading: the
         // spring is dropped first, or `settleSwipe` would see a model already home and leave it.
         beginSwipe()
         settleSwipe(animated: false)
