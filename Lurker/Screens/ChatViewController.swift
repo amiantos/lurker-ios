@@ -3034,11 +3034,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// the gap accordingly, and keeps the newest message above the arriving keyboard.
     @objc private func keyboardWillChange(_ note: Notification) {
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        // A Reply's hold is this keyboard's from its first notification, if that came soon enough.
-        if let hold = replyKeepsPlace, !hold.taken {
-            let soon = CACurrentMediaTime() - hold.since < Self.replyKeepsPlaceWindow
-            replyKeepsPlace = soon ? (hold.line, hold.since, true) : nil
-        }
         keyboardOverlap = max(0, view.bounds.maxY - frame.minY - view.safeAreaInsets.bottom)
         composerBottom.constant = keyboardOverlap > 0 ? -Self.keyboardGap : 0
         // Asked before the layout pass below, which changes the table's bottom inset and so
@@ -3058,11 +3053,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // yanks a reader who dragged the keyboard away mid-history back to the bottom.
         guard keyboardOverlap > 0 else { return clampToContent() }
         // A keyboard raised by a Reply keeps the reader's place: the line they pointed at is the
-        // context, and carrying them to the bottom loses it. Before the setting below, which
-        // leaves the content where it was on the SCREEN — and the keyboard would cover the line.
-        if let hold = replyKeepsPlace {
-            trace("keyboard: reply hold line=\(hold.line) distance=\(Int(distance))")
-            keepPlace(distance, showing: hold.line)
+        // context, and carrying them to the bottom loses it. The keeping itself is `updateInsets`'s,
+        // where the reservation actually grows — the composer rides the keyboard guide, which
+        // moves in its own layout pass — so there's nothing to do here but not carry them.
+        if let line = replyKeepsPlace {
+            trace("keyboard: reply hold line=\(line) distance=\(Int(distance))")
             applyLayout()
             return
         }
@@ -3106,23 +3101,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         NickCompletion.addressPunctuation(viewModel.state.settings)
     }
 
-    /// The keyboard arriving for a reply (lurker#1248) pushes the content up with it, Discord's
-    /// way: the lines stay where they were relative to the composer, so the line being replied
-    /// to stays on screen — and is scrolled back under the bar when it was high enough that the
-    /// push carried it off. `distance` is the reader's place as it was before the composer's
-    /// reservation grew; at the tail it's 0 and this is `scrollToBottom`.
-    private func keepPlace(_ distance: CGFloat, showing id: Int) {
+    /// Where the line with `id` sits in the table's content, or nil when no row shows it.
+    private func rowRect(of id: Int) -> CGRect? {
+        guard let row = current?.rowIndex(containing: id) else { return nil }
+        return tableView.rectForRow(at: tableIndex(for: row))
+    }
+
+    /// Whether any of `rect` is on screen between the composer's reservation and the bar's.
+    private func isOnScreen(_ rect: CGRect) -> Bool {
         let insets = tableView.adjustedContentInset
-        tableView.contentOffset.y = distance - insets.top
-        clampToContent()
-        guard let row = current?.rowIndex(containing: id) else { return }
-        // In the flipped table a row's far edge is its `maxY`, and the viewport's is the bar's.
-        let rect = tableView.rectForRow(at: tableIndex(for: row))
+        let nearEdge = tableView.contentOffset.y + insets.top
         let farEdge = tableView.contentOffset.y + tableView.bounds.height - insets.bottom
-        if rect.maxY > farEdge {
-            tableView.contentOffset.y += rect.maxY - farEdge
-            clampToContent()
-        }
+        return rect.maxY > nearEdge && rect.minY < farEdge
+    }
+
+    /// Scroll `rect` back under the bar when it sits past it — the least scroll that shows the
+    /// whole of it, and none when it's already in view. In the flipped table a row's far edge is
+    /// its `maxY`, and the viewport's is the bar's.
+    private func reveal(_ rect: CGRect) {
+        let farEdge = tableView.contentOffset.y + tableView.bounds.height - tableView.adjustedContentInset.bottom
+        guard rect.maxY > farEdge else { return }
+        tableView.contentOffset.y += rect.maxY - farEdge
+        clampToContent()
     }
 
     @objc private func keyboardWillHide() {
@@ -3147,6 +3147,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let still = !tableView.isTracking && !tableView.isDragging
         let distance = distanceFromBottom
         let atTail = distance <= 0.5 && still
+        // A live reply's line (lurker#1248), and whether it's in view as things stand — asked
+        // before the change, because that is what decides whether it should still be after.
+        let held = still ? replyKeepsPlace.flatMap(rowRect(of:)) : nil
+        let heldOnScreen = held.map(isOnScreen) ?? false
         let reserved = max(0, view.bounds.maxY - composer.frame.minY)
         let bar = view.safeAreaInsets.top
         if tableView.contentInset.top != reserved || tableView.contentInset.bottom != bar {
@@ -3154,13 +3158,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             tableView.verticalScrollIndicatorInsets = tableView.contentInset
             if atTail {
                 scrollToBottom()
-            } else if still, let hold = replyKeepsPlaceNow {
-                // A Reply's keyboard (or its strip, with the keyboard already up) grows the
-                // reservation HERE, not in the notification: the composer rides the keyboard
-                // guide, and the guide moves in its own layout pass. The place is kept where
-                // the reservation actually changes, or the rows would hold still on the screen
-                // and the keyboard would cover the line (lurker#1248).
-                keepPlace(distance, showing: hold.line)
+            } else if let held {
+                // While a reply is live the rows keep their place relative to the composer, the
+                // way Discord's list rides up with the keyboard: the reservation grows HERE, not
+                // in the keyboard notification (the composer rides the keyboard guide, which
+                // moves in its own layout pass), and left where they were on the screen the
+                // keyboard would cover the line. A line that was in view stays in view — pushed
+                // under the bar, it's brought back; one the reader had already scrolled past is
+                // left there, so a later keyboard change (the emoji keyboard, the predictive
+                // bar) never yanks them back to it.
+                tableView.contentOffset.y = distance - tableView.adjustedContentInset.top
+                clampToContent()
+                if heldOnScreen { reveal(held) }
             }
         }
     }
@@ -3201,7 +3210,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // one thing a tap on a chip can't (it toggles yours).
         if let cell, let message, cell.reactionChip(at: recognizer.location(in: cell)) {
             composer.resignFirstResponder()
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            haptic.impactOccurred()
             showReactions(for: message)
             return
         }
@@ -3228,7 +3237,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         // The press has no other visible effect at the moment it fires — the row doesn't lift the
         // way a peek did — so the tap is what confirms it registered, before the sheet animates in.
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        haptic.impactOccurred()
         sheet.onRun = { [weak self] key in
             guard let self else { return }
             if let url {
@@ -3327,7 +3336,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private var swipingRow: (message: Message, startedAt: IndexPath)?
     /// Whether the drag is past `swipeReach` — the haptic fires on the way out, once per crossing.
     private var swipeCrossed = false
-    private let swipeHaptic = UIImpactFeedbackGenerator(style: .medium)
+    /// The screen's one medium tap — the swipe's crossing, a long press, a chip press.
+    private let haptic = UIImpactFeedbackGenerator(style: .medium)
     /// How far the row travels before a release replies: about a thumb's width, Discord's reach.
     /// Past it the row keeps following the finger at a third of the pace: it has already said yes.
     private static let swipeReach: CGFloat = 64
@@ -3353,7 +3363,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         switch recognizer.state {
         case .began:
             swipeCrossed = false
-            swipeHaptic.prepare()
+            haptic.prepare()
             swipedCell()?.beginSwipe()
         case .changed:
             let reach = Self.swipeReach
@@ -3363,7 +3373,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             let crossed = travel >= reach
             if crossed != swipeCrossed {
                 swipeCrossed = crossed
-                if crossed { swipeHaptic.impactOccurred() }
+                if crossed { haptic.impactOccurred() }
             }
             guard let cell = swipedCell() else { return }
             let offset = travel <= reach ? travel : reach + (travel - reach) / 3
@@ -3392,26 +3402,19 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// or `/me` goes out as it. Lives with the composer whose draft it belongs to.
     ///
     /// Part of the draft (iOS #188), so it syncs and comes back with the text.
-    /// The line a Reply was started on, for the keyboard it raises — see `reply(to:)` and
-    /// `keyboardWillChange`. `taken` once a keyboard notification has claimed it, after which it
-    /// stands for the keyboard's whole session (`keyboardWillHide` clears it): the show posts
-    /// more than one frame change, and each would otherwise carry the reader down.
-    private var replyKeepsPlace: (line: Int, since: CFTimeInterval, taken: Bool)?
-    /// How long after a Reply a keyboard's first notification can still be its: a keyboard that
-    /// was already up posts none, and one raised by a tap a while later is an ordinary tap's.
-    private static let replyKeepsPlaceWindow: CFTimeInterval = 1
-
-    /// The hold as it stands: taken by a keyboard, or fresh enough that the reservation changing
-    /// now is the Reply's doing (the strip appearing under a keyboard that was already up).
-    private var replyKeepsPlaceNow: (line: Int, since: CFTimeInterval, taken: Bool)? {
-        guard let hold = replyKeepsPlace else { return nil }
-        guard hold.taken || CACurrentMediaTime() - hold.since < Self.replyKeepsPlaceWindow else { return nil }
-        return hold
-    }
+    /// The line a Reply was started on (lurker#1248), while the reply is live: the keyboard it
+    /// raises, and the strip, grow the composer's reservation, and `updateInsets` keeps the
+    /// reader's place across that instead of leaving the rows where they were on the screen —
+    /// so the line stays in view rather than going under the keyboard. The keyboard arriving
+    /// doesn't carry the reader down either (`keyboardWillChange`). Set by `reply(to:)`; ends
+    /// with the pending reply (cancelled or sent) or the keyboard, whichever goes first — a reply
+    /// that only addressed a nick has nothing pending, and its hold lasts the keyboard's session.
+    private var replyKeepsPlace: Int?
 
     private var pendingReply: PendingReply? {
         didSet {
             guard oldValue != pendingReply else { return }
+            if pendingReply == nil { replyKeepsPlace = nil }
             composer.showReply(pendingReply)
             saveDraft()
         }
@@ -3429,10 +3432,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// still goes in, which is all a reply there can be.
     private func reply(to message: Message) {
         guard let nick = message.nick, !nick.isEmpty else { return }
-        // The keyboard this raises keeps the reader's place (`keyboardWillChange`). Not cleared
-        // on the way out: the notification isn't reliably posted inside `becomeFirstResponder`,
-        // and a hold that ended with this call let the carry through. The window bounds it.
-        replyKeepsPlace = (message.id, CACurrentMediaTime(), false)
+        // Before anything grows the composer: the keyboard this raises, and the strip, keep the
+        // reader's place (`updateInsets`). Not cleared on the way out — the keyboard notification
+        // isn't reliably posted inside `becomeFirstResponder`, and a hold that ended with this
+        // call let the carry through. It ends with the reply.
+        replyKeepsPlace = message.id
         let target = buffer.key.target
         let unaddressed = message.isSelf || Replies.isPrivate(target)
         let started = Replies.replyable(message, target: target)
