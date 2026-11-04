@@ -273,7 +273,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // growing field cover what you were just reading.
         composer.onHeightChange = { [weak self] in
             guard let self else { return }
-            let wasNearBottom = isNearBottom
+            // Not while a reply holds the reader's place (lurker#1248): the address it put in
+            // the draft can wrap the field, and `updateInsets` keeps the place across that.
+            let wasNearBottom = isNearBottom && replyKeepsPlace == nil
             view.layoutIfNeeded()
             if wasNearBottom { scrollToBottom() }
         }
@@ -1705,6 +1707,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
     func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        decelerationEndedAt = CACurrentMediaTime()
         flushPendingPreviewReload()
     }
 
@@ -2085,7 +2088,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Medium first like its siblings: it's a glance about a person in the conversation behind
     /// it, so it leaves that conversation on screen.
     private func showProfile(networkId: Int, nick: String) {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        guard !isCovered else { return }
         let profile = UserProfileViewController(viewModel: viewModel, networkId: networkId, nick: nick)
         let sheet = UINavigationController(rootViewController: profile)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
@@ -2624,12 +2627,13 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// and this is pushed on top, so that edge belongs to the system's interactive pop —
     /// which goes to the same place, and is the gesture people already try.
     private func addEdgeSwipes() {
-        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) {
+        func edgeSwipe(_ edge: UIRectEdge, _ action: Selector) -> UIGestureRecognizer {
             let swipe = UIScreenEdgePanGestureRecognizer(target: self, action: action)
             swipe.edges = edge
             view.addGestureRecognizer(swipe)
+            return swipe
         }
-        edgeSwipe(.right, #selector(swipedFromRight))
+        let membersEdge = edgeSwipe(.right, #selector(swipedFromRight))
 
         // Long press anywhere on a row for its actions (#60). On the table rather than on a cell,
         // so it costs nothing per row and survives reuse — and so whatever draws a message next
@@ -2638,6 +2642,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         tableView.addGestureRecognizer(
             UILongPressGestureRecognizer(target: self, action: #selector(messageLongPressed))
         )
+
+        // Swipe a line toward the trailing edge to reply to it (lurker#1248) — Discord's and
+        // Telegram's gesture, on the table for the same reasons as the long press. Toward the
+        // trailing edge rather than the leading one because the leading edge is the navigation
+        // stack's interactive pop, which a drag that way would fight along the whole left side.
+        // The right edge's members swipe keeps its priority: an edge pan fails at once for a
+        // touch that didn't land on the edge, so a swipe starting anywhere else waits for nothing.
+        //
+        // The table's own pan waits for this one to fail. Without that the two race from the same
+        // touch, and a horizontal drag that the scroll happened to claim first scrolls nothing
+        // while the row stays put. The recognizer fails on the first move that isn't a swipe,
+        // so a scroll waits one touch-move at most — see `SwipeToReplyRecognizer`.
+        let swipe = SwipeToReplyRecognizer(target: self, action: #selector(messageSwiped))
+        swipe.sign = view.effectiveUserInterfaceLayoutDirection == .rightToLeft ? 1 : -1
+        swipe.delegate = self
+        swipe.onTouchDown = { [weak self] point in
+            guard let self else { return }
+            swipeTouchedAt = CACurrentMediaTime()
+            swipeTouched = nil
+            guard let indexPath = tableView.indexPathForRow(at: point) else { return }
+            let row = logicalRow(for: indexPath)
+            if rows.indices.contains(row) { swipeTouched = rows[row].message }
+        }
+        swipe.require(toFail: membersEdge)
+        tableView.panGestureRecognizer.require(toFail: swipe)
+        tableView.addGestureRecognizer(swipe)
     }
 
     @objc private func swipedFromRight(_ recognizer: UIScreenEdgePanGestureRecognizer) {
@@ -2650,7 +2680,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// Medium-height first, like the nick list — it's a glance about the conversation
     /// behind it, so it leaves that conversation on screen.
     private func showBufferInfo() {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        guard !isCovered else { return }
         let info = BufferInfoViewController(viewModel: viewModel, buffer: buffer)
         // Runs after this sheet has finished dismissing, so `showMemberList`'s guard sees a
         // clear screen.
@@ -2668,7 +2698,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// The nick list. Presented from `self`, unlike the buffer switcher: nothing here
     /// replaces this screen, so there's no VC about to be deallocated under the sheet.
     private func showMemberList() {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        guard !isCovered else { return }
         let members = MemberListViewController(viewModel: viewModel, buffer: buffer)
         let sheet = UINavigationController(rootViewController: members)
         sheet.sheetPresentationController?.prefersGrabberVisible = true
@@ -3024,6 +3054,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // with the keyboard already up (emoji keyboard, predictive bar) — same question, and
         // the same answer is wanted there.
         let keepsPosition = keepsPositionWhileReading
+        let distance = distanceFromBottom
         // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
         // runs `viewDidLayoutSubviews` → `updateInsets` against that fresh frame. So
         // the inset isn't recomputed here — doing it before layout would read the old frame.
@@ -3032,6 +3063,16 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the tail of a dismissal with the end frame off-screen — and scrolling there
         // yanks a reader who dragged the keyboard away mid-history back to the bottom.
         guard keyboardOverlap > 0 else { return clampToContent() }
+        // A keyboard raised by a Reply keeps the reader's place: the line they pointed at is the
+        // context, and carrying them to the bottom loses it. The keeping itself is `updateInsets`'s,
+        // where the reservation actually grows — the composer rides the keyboard guide, which
+        // moves in its own layout pass — so there's nothing to do here but not carry them.
+        if let line = replyKeepsPlace {
+            trace("keyboard: reply hold line=\(line) distance=\(Int(distance))")
+            applyLayout()
+            return
+        }
+        trace("keyboard: \(keepsPosition ? "stays" : "carried to bottom") distance=\(Int(distance))")
         // `chat.keep_position_on_send` (#628) is written as a rule about sending, but on a
         // phone this is where it's felt: raising the keyboard to reply is what takes a reader
         // out of the history they were reading, well before they've typed anything. A reader
@@ -3071,7 +3112,32 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         NickCompletion.addressPunctuation(viewModel.state.settings)
     }
 
+    /// Where the line with `id` sits in the table's content, or nil when no row shows it.
+    private func rowRect(of id: Int) -> CGRect? {
+        guard let row = current?.rowIndex(containing: id) else { return nil }
+        return tableView.rectForRow(at: tableIndex(for: row))
+    }
+
+    /// Whether any of `rect` is on screen between the composer's reservation and the bar's.
+    private func isOnScreen(_ rect: CGRect) -> Bool {
+        let insets = tableView.adjustedContentInset
+        let nearEdge = tableView.contentOffset.y + insets.top
+        let farEdge = tableView.contentOffset.y + tableView.bounds.height - insets.bottom
+        return rect.maxY > nearEdge && rect.minY < farEdge
+    }
+
+    /// Scroll `rect` back under the bar when it sits past it — the least scroll that shows the
+    /// whole of it, and none when it's already in view. In the flipped table a row's far edge is
+    /// its `maxY`, and the viewport's is the bar's.
+    private func reveal(_ rect: CGRect) {
+        let farEdge = tableView.contentOffset.y + tableView.bounds.height - tableView.adjustedContentInset.bottom
+        guard rect.maxY > farEdge else { return }
+        tableView.contentOffset.y += rect.maxY - farEdge
+        clampToContent()
+    }
+
     @objc private func keyboardWillHide() {
+        replyKeepsPlace = nil
         keyboardOverlap = 0
         composerBottom.constant = 0
         view.layoutIfNeeded() // re-runs updateInsets via viewDidLayoutSubviews
@@ -3089,13 +3155,36 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func updateInsets() {
         // Never under a finger: the interactive keyboard dismiss lays out on every frame of the
         // drag, and pinning the offset inside it would cancel the rubber band each time.
-        let atTail = distanceFromBottom <= 0.5 && !tableView.isTracking && !tableView.isDragging
+        let still = !tableView.isTracking && !tableView.isDragging
+        let distance = distanceFromBottom
+        let atTail = distance <= 0.5 && still
+        // A live reply's line (lurker#1248), and whether it's in view as things stand — asked
+        // before the change, because that is what decides whether it should still be after.
+        let held = still ? replyKeepsPlace.flatMap(rowRect(of:)) : nil
+        let heldOnScreen = held.map(isOnScreen) ?? false
         let reserved = max(0, view.bounds.maxY - composer.frame.minY)
         let bar = view.safeAreaInsets.top
         if tableView.contentInset.top != reserved || tableView.contentInset.bottom != bar {
             tableView.contentInset = UIEdgeInsets(top: reserved, left: 0, bottom: bar, right: 0)
             tableView.verticalScrollIndicatorInsets = tableView.contentInset
-            if atTail { scrollToBottom() }
+            if atTail {
+                scrollToBottom()
+                // At the tail too: a reply to an older line up near the bar, with the keyboard
+                // arriving, would otherwise push that line behind it.
+                if let held, heldOnScreen { reveal(held) }
+            } else if let held {
+                // While a reply is live the rows keep their place relative to the composer, the
+                // way Discord's list rides up with the keyboard: the reservation grows HERE, not
+                // in the keyboard notification (the composer rides the keyboard guide, which
+                // moves in its own layout pass), and left where they were on the screen the
+                // keyboard would cover the line. A line that was in view stays in view — pushed
+                // under the bar, it's brought back; one the reader had already scrolled past is
+                // left there, so a later keyboard change (the emoji keyboard, the predictive
+                // bar) never yanks them back to it.
+                tableView.contentOffset.y = distance - tableView.adjustedContentInset.top
+                clampToContent()
+                if heldOnScreen { reveal(held) }
+            }
         }
     }
 
@@ -3115,7 +3204,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         guard recognizer.state == .began else { return }
         // A sheet already up (the nick list, buffer info) means this press is somebody's
         // mis-tap through a dimmed screen, not a request for a second sheet.
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil
+        guard !isCovered
         else { return }
         let point = recognizer.location(in: tableView)
         guard let indexPath = tableView.indexPathForRow(at: point) else { return }
@@ -3135,7 +3224,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // one thing a tap on a chip can't (it toggles yours).
         if let cell, let message, cell.reactionChip(at: recognizer.location(in: cell)) {
             composer.resignFirstResponder()
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            haptic.impactOccurred()
             showReactions(for: message)
             return
         }
@@ -3162,7 +3251,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
         // The press has no other visible effect at the moment it fires — the row doesn't lift the
         // way a peek did — so the tap is what confirms it registered, before the sheet animates in.
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        haptic.impactOccurred()
         sheet.onRun = { [weak self] key in
             guard let self else { return }
             if let url {
@@ -3244,15 +3333,135 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         }
     }
 
+    /// Whether a sheet is up over this screen — ours, or one the navigation controller presented
+    /// (the nick list, buffer info, a message's actions). A press or a drag that lands then is
+    /// through a dimmed screen, not a request for a second sheet; and a second presentation while
+    /// one is up is a runtime complaint. One answer for every gate that asks.
+    private var isCovered: Bool {
+        presentedViewController != nil || navigationController?.presentedViewController != nil
+    }
+
+    // MARK: - Swipe to reply (lurker#1248)
+
+    /// The line a swipe took hold of, from `gestureRecognizerShouldBegin` to its end, and the
+    /// table row it was on then. The row is looked up again per move (`swipedCell`): a line
+    /// arriving mid-drag reloads the table and the table is newest-first, so the index the swipe
+    /// started on belongs to a newer line a moment later — one the Reply gate never looked at.
+    private var swipingRow: (message: Message, startedAt: IndexPath)?
+    /// The line under the finger when it landed, and whether the list was still moving — read
+    /// at the touch-down (`SwipeToReplyRecognizer.onTouchDown`), before any move: a line arriving
+    /// between the touch and the slop reloads the newest-first table, and the point the finger
+    /// landed on then names a neighbour. Nil for a touch on no line.
+    private var swipeTouched: Message?
+    private var swipeTouchedAt: CFTimeInterval = 0
+    /// When the list last came to rest from a fling. A touch that lands within a beat of it
+    /// — or stops it — is the reader catching the list, and never a swipe: the stop happens on
+    /// the touch-down, in whichever order UIKit tells the table's pan and this one.
+    private var decelerationEndedAt: CFTimeInterval = -1
+    /// Whether the drag is past `swipeReach` — the haptic fires on the way out, once per crossing.
+    private var swipeCrossed = false
+    /// What the swiped row is showing, for a cell that replaces it mid-drag (a reload under a
+    /// still finger recycles the cell; the replacement would sit home with no arrow).
+    private var swipeShown: (offset: CGFloat, progress: CGFloat)?
+    /// The screen's one medium tap — the swipe's crossing, a long press, a chip press.
+    private let haptic = UIImpactFeedbackGenerator(style: .medium)
+    /// How far the row travels before a release replies: about a thumb's width, Discord's reach.
+    /// Past it the row keeps following the finger at a third of the pace: it has already said yes.
+    private static let swipeReach: CGFloat = 64
+
+    /// The cell showing the swiped line right now, by the line's id (the same re-resolution
+    /// `flashRow` makes). The row it started on is tried first: nothing has reloaded in the common
+    /// case, and the scan is over every hydrated row.
+    private func swipedCell() -> CompactCell? {
+        guard let swiping = swipingRow else { return nil }
+        let started = logicalRow(for: swiping.startedAt)
+        let row: Int?
+        if rows.indices.contains(started), rows[started].message?.id == swiping.message.id {
+            row = started
+        } else {
+            row = current?.rowIndex(containing: swiping.message.id)
+        }
+        // The jump's resolver also answers with a consolidated run that SPANS the id — a line
+        // hidden mid-drag; its summary takes no Reply and must not slide.
+        guard let row, rows[row].message?.id == swiping.message.id else { return nil }
+        return tableView.cellForRow(at: tableIndex(for: row)) as? CompactCell
+    }
+
+    /// The swiped line's cell, for a swipe in progress — as a reload has just rebuilt it.
+    private func swipedCell(in cell: UITableViewCell, at row: Int) -> CompactCell? {
+        guard let swiping = swipingRow, rows.indices.contains(row),
+              rows[row].message?.id == swiping.message.id
+        else { return nil }
+        return cell as? CompactCell
+    }
+
+    /// The row and the arrow where the finger is, and the haptic on the way past the reach.
+    private func followSwipe(_ recognizer: SwipeToReplyRecognizer) {
+        let reach = Self.swipeReach
+        let travel = max(recognizer.translation(in: tableView).x * recognizer.sign, 0)
+        // The crossing is tracked whether or not the row is on screen to show it (a reload
+        // mid-drag can scroll it out), so a release decides on where the finger IS.
+        let crossed = travel >= reach
+        if crossed != swipeCrossed {
+            swipeCrossed = crossed
+            if crossed { haptic.impactOccurred() }
+        }
+        let offset = travel <= reach ? travel : reach + (travel - reach) / 3
+        swipeShown = (offset * recognizer.sign, travel / reach)
+        guard let cell = swipedCell(), let shown = swipeShown else { return }
+        cell.showSwipe(offset: shown.offset, progress: shown.progress)
+    }
+
+    @objc private func messageSwiped(_ recognizer: SwipeToReplyRecognizer) {
+        guard let swiping = swipingRow else { return }
+        switch recognizer.state {
+        case .began:
+            swipeCrossed = false
+            haptic.prepare()
+            swipedCell()?.beginSwipe()
+            // The move that began the pan is its first move — a fast flick's can already be past
+            // the reach, with the lift the next event.
+            followSwipe(recognizer)
+        case .changed:
+            followSwipe(recognizer)
+        case .ended, .cancelled:
+            // (A failed pan never reaches its action; `gestureRecognizerShouldBegin` drops what
+            // a failed one left behind the next time it's asked.)
+            let cell = swipedCell()
+            swipingRow = nil
+            swipeShown = nil
+            cell?.settleSwipe(animated: true)
+            // A release past the reach is the Reply the menu would have run — the same code, so
+            // the composer ends up exactly as a tap on "Reply to alice" leaves it. The reach is
+            // read off the final translation, not the last move: a drag that crossed and came
+            // back lifts under it. A cancel (a call, the app backgrounding) replies to nothing,
+            // however far the row had gone.
+            let travel = max(recognizer.translation(in: tableView).x * recognizer.sign, 0)
+            if recognizer.state == .ended, travel >= Self.swipeReach { reply(to: swiping.message) }
+        default:
+            break
+        }
+    }
+
     // MARK: - Replies (iOS #184)
 
     /// The reply this buffer's composer is writing, shown above the field. The next plain line
     /// or `/me` goes out as it. Lives with the composer whose draft it belongs to.
     ///
     /// Part of the draft (iOS #188), so it syncs and comes back with the text.
+    /// The line a Reply was started on (lurker#1248), while the reply is live: the keyboard it
+    /// raises, and the strip, grow the composer's reservation, and `updateInsets` keeps the
+    /// reader's place across that instead of leaving the rows where they were on the screen —
+    /// so the line stays in view rather than going under the keyboard. The keyboard arriving
+    /// doesn't carry the reader down either (`keyboardWillChange`). Set by `reply(to:)`; ends
+    /// with the pending reply (cancelled or sent) or the keyboard, whichever goes first — a reply
+    /// that only addressed a nick has nothing pending, and its hold lasts the keyboard's session.
+    private var replyKeepsPlace: Int?
+
     private var pendingReply: PendingReply? {
         didSet {
             guard oldValue != pendingReply else { return }
+            if pendingReply == nil { replyKeepsPlace = nil }
             composer.showReply(pendingReply)
             saveDraft()
         }
@@ -3282,6 +3491,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the next line would go out still addressed to them, or as a reply to their line while
         // addressed to someone else. (The web leaves `bob: alice: ` here; this doesn't.)
         if pendingReply != nil, !keepsAddress { cancelReply() }
+        // Before anything grows the composer — the strip, the keyboard this raises — and AFTER
+        // the old reply went, since its going ends a hold: this one keeps the reader's place
+        // (`updateInsets`). Not cleared on the way out — the keyboard notification isn't reliably
+        // posted inside `becomeFirstResponder`, and a hold that ended with this call let the
+        // carry through. It ends with the reply.
+        replyKeepsPlace = message.id
         if started { pendingReply = Replies.pending(for: message, addressed: keepsAddress) }
         if !unaddressed {
             let inserted = composer.address(nick, punctuation: addressPunctuation)
@@ -3371,7 +3586,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
 
     /// The reaction sheet for a line (iOS #183): who reacted with what, and a way to add yours.
     private func showReactions(for message: Message) {
-        guard presentedViewController == nil, navigationController?.presentedViewController == nil else { return }
+        guard !isCovered else { return }
         present(
             ReactionSheetViewController(
                 viewModel: viewModel, message: message,
@@ -3449,6 +3664,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let row = logicalRow(for: indexPath)
         guard rows.indices.contains(row) else { return }
         measuredHeights[heightKey(rows[row])] = cell.bounds.height
+        // A swipe still under the finger, on a cell a reload just rebuilt for its line.
+        if let shown = swipeShown, let swiped = swipedCell(in: cell, at: row) {
+            swiped.beginSwipe()
+            swiped.showSwipe(offset: shown.offset, progress: shown.progress)
+        }
     }
 
     func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
@@ -3775,4 +3995,40 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         (message.originNetworkId ?? buffer.networkId).flatMap { networks[$0]?.name }
     }
 
+}
+
+extension ChatViewController: UIGestureRecognizerDelegate {
+    /// The swipe to reply begins only on a line the actions menu would offer Reply on — the kit's
+    /// one rule (`MessageActions.replyAction`), asked at the row the finger LANDED on. A line with
+    /// no Reply doesn't move: a row that slid out and sprang back having done nothing would read
+    /// as a gesture that missed, where a row that stays put reads as a row that has none.
+    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let swipe = gestureRecognizer as? SwipeToReplyRecognizer else { return true }
+        // Whatever a swipe that failed after this said yes (pre-empted by the members edge, say)
+        // left behind: its action never ran to clear it.
+        swipingRow = nil
+        // The direction again, on the pan's own translation: the recognizer read it at its slop,
+        // but a pan can begin on a move it never saw — see `SwipeToReplyRecognizer.slop`.
+        let translation = swipe.translation(in: tableView)
+        guard SwipeToReplyRecognizer.isSwipe(dx: translation.x, dy: translation.y, sign: swipe.sign) else { return false }
+        // A sheet already up (the nick list, buffer info) means this drag is through a dimmed
+        // screen, as for the long press. A touch that caught a moving list (the rest came within
+        // a beat of it, or because of it) is the catch, whatever the finger did next.
+        guard !isCovered, decelerationEndedAt < swipeTouchedAt - 0.1 else { return false }
+        // The line the finger LANDED on, found again by id: a line arriving since reloaded the
+        // newest-first table, and the point names a neighbour now. A line with no id (ephemeral)
+        // couldn't be followed through a reload — and every line the menu's rule says yes to in a
+        // channel is a stored one, so nothing real is refused.
+        guard let touched = swipeTouched, touched.id != 0,
+              let row = current?.rowIndex(containing: touched.id),
+              rows.indices.contains(row), let message = rows[row].message, message.id == touched.id
+        else { return false }
+        let indexPath = tableIndex(for: row)
+        guard tableView.cellForRow(at: indexPath) is CompactCell else { return false }
+        let canReply = viewModel.state.canReply(networkId: buffer.key.networkId)
+        guard MessageActions.replyAction(for: message, target: buffer.key.target, canReply: canReply) != nil
+        else { return false }
+        swipingRow = (message, indexPath)
+        return true
+    }
 }

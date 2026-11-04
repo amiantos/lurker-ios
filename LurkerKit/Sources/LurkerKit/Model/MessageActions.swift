@@ -144,29 +144,7 @@ public enum MessageActions {
     public static func build(for message: Message, scope: MessageActionScope) -> [MessageAction] {
         var actions: [MessageAction] = []
 
-        // Reply stays speech-only: narration names its actor inside the sentence rather than
-        // speaking, and a line with no nick has nobody to answer.
-        //
-        // To someone else in a channel it always does something — at the least it addresses them,
-        // and the address is what a line without its reply tag still says. On your own line ("to
-        // clarify what I said above", lurker#997) or in a DM (lurker#1015) there's no address, so
-        // the reply TAG is all it is, and it's offered only where one would go out: a line the
-        // server stamped, on a network that carries a reply's tag right now (`canReply` — not
-        // `canAddReaction`: irc.so takes the reply tag without echo-message). The web's rule.
-        if message.type.isSpeech, let nick = message.nick, !nick.isEmpty {
-            let unaddressed = message.isSelf || Replies.isPrivate(scope.target)
-            if !unaddressed {
-                actions.append(
-                    MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
-                )
-            } else if scope.support.canReply, Replies.replyable(message, target: scope.target) {
-                actions.append(MessageAction(
-                    key: .reply,
-                    title: message.isSelf ? "Reply to yourself" : "Reply to \(nick)",
-                    symbol: "arrowshape.turn.up.left"
-                ))
-            }
-        }
+        if let reply = replyAction(for: message, scope: scope) { actions.append(reply) }
 
         // React (iOS #183): a reaction names the line's msgid, so it needs a line the server
         // stamped, in a conversation, not encrypted, on a network that takes a new one right now.
@@ -256,6 +234,41 @@ public enum MessageActions {
         }
 
         return actions
+    }
+
+    /// The Reply row for `message`, or nil where the line offers none — the one answer both ways
+    /// in share: the long-press menu (`build`) and the swipe on a row (lurker#1248). A swipe on a
+    /// line this says nil for doesn't move, so the two can't drift: whatever the menu would
+    /// offer, the swipe does.
+    ///
+    /// Reply stays speech-only: narration names its actor inside the sentence rather than
+    /// speaking, and a line with no nick has nobody to answer.
+    ///
+    /// To someone else in a channel it always does something — at the least it addresses them,
+    /// and the address is what a line without its reply tag still says. On your own line ("to
+    /// clarify what I said above", lurker#997) or in a DM (lurker#1015) there's no address, so
+    /// the reply TAG is all it is, and it's offered only where one would go out: a line the
+    /// server stamped, on a network that carries a reply's tag right now (`canReply` — not
+    /// `canAddReaction`: irc.so takes the reply tag without echo-message). The web's rule.
+    public static func replyAction(for message: Message, scope: MessageActionScope) -> MessageAction? {
+        replyAction(for: message, target: scope.target, canReply: scope.support.canReply)
+    }
+
+    /// `replyAction(for:scope:)` on the two things the rule reads — the buffer's target and whether
+    /// a reply's tag goes out on its network right now — so a caller with no menu to build (the
+    /// swipe) needn't invent the rest of a scope to ask.
+    public static func replyAction(for message: Message, target: String, canReply: Bool) -> MessageAction? {
+        guard message.type.isSpeech, let nick = message.nick, !nick.isEmpty else { return nil }
+        let unaddressed = message.isSelf || Replies.isPrivate(target)
+        if !unaddressed {
+            return MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
+        }
+        guard canReply, Replies.replyable(message, target: target) else { return nil }
+        return MessageAction(
+            key: .reply,
+            title: message.isSelf ? "Reply to yourself" : "Reply to \(nick)",
+            symbol: "arrowshape.turn.up.left"
+        )
     }
 
     /// The nick on a line that actually has an IRC presence, or nil when there is none.

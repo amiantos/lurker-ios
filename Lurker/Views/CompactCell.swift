@@ -166,6 +166,20 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// quarters of a line below its last word.
     private var fillBottom: NSLayoutConstraint!
 
+    /// Everything the row shows, in one view that a swipe to reply (lurker#1248) slides sideways.
+    ///
+    /// ⚠⚠ Not `contentView`, which looked like the obvious thing to translate. The cell lays its
+    /// content view out by setting its *frame*, on every layout pass, and a frame set on a
+    /// transformed view re-derives the centre so the frame comes out as asked — which puts the
+    /// content back where it was, every move. On the phone the row sat still under the finger
+    /// and lurched once on release, when the spring ran the transform home from a centre that
+    /// had already been moved to compensate. This view is placed by constraints, and the engine
+    /// sets centre and bounds rather than frame, so a translation on it survives any layout.
+    private let slide = UIView()
+    /// The reply arrow behind a row being swiped, made on the first swipe — most cells are never
+    /// swiped. Under `slide`, in the room the content slides out of.
+    private var swipeArrow: UIImageView?
+
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
         selectionStyle = .none
@@ -286,17 +300,19 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         ])
         column.addArrangedSubview(reactionHolder)
         column.translatesAutoresizingMaskIntoConstraints = false
+        slide.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(slide)
         fill.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(fill)
+        slide.addSubview(fill)
         fill.addSubview(column)
         // Over the fill, as the web paints its `::before` hairline over a hovered row's ground.
         hairline.backgroundColor = Palette.border
         hairline.isHidden = true
         hairline.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(hairline)
+        slide.addSubview(hairline)
         avatarView.isHidden = true
         avatarView.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(avatarView)
+        slide.addSubview(avatarView)
 
         fillBottom = fill.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
         columnLeading = column.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
@@ -304,6 +320,10 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         avatarTop = avatarView.topAnchor.constraint(equalTo: contentView.topAnchor)
         hairlineLeading = hairline.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor)
         NSLayoutConstraint.activate([
+            slide.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            slide.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            slide.topAnchor.constraint(equalTo: contentView.topAnchor),
+            slide.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
             // Full-bleed and flush to the cell, so two washed rows meet with no seam.
             fill.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             fill.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
@@ -670,11 +690,76 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
             targetSize, withHorizontalFittingPriority: horizontal, verticalFittingPriority: vertical)
     }
 
+    // MARK: - Swipe to reply (lurker#1248)
+
+    /// A swipe taking hold: whatever spring is still carrying the content home from the last one
+    /// is dropped, or the next moves would land on top of it and the row would lag the finger
+    /// until it finished.
+    func beginSwipe() {
+        slide.layer.removeAllAnimations()
+        swipeArrow?.layer.removeAllAnimations()
+    }
+
+    /// Slide the content `offset` points sideways (the sign is the layout direction's, resolved by
+    /// the recognizer) and show the reply arrow in the room it leaves, `progress` of the way to a
+    /// reply: faint and small at first, full and accented once a release would reply — the same
+    /// moment the haptic marks, so the eye and the thumb get the news together.
+    func showSwipe(offset: CGFloat, progress: CGFloat) {
+        slide.transform = CGAffineTransform(translationX: offset, y: 0)
+        let arrow = swipeArrow ?? makeSwipeArrow()
+        let reach = min(max(progress, 0), 1)
+        // Centred in the vacated strip, which is `|offset|` wide, on whichever side it opened —
+        // measured from the safe edge, not the cell's: beside the iPhone Duo's side rail the cell
+        // runs 84pt under the rail, and an arrow centred on the cell's edge sat under its buttons.
+        let strip = abs(offset)
+        let safe = contentView.safeAreaInsets
+        let centerX = offset < 0
+            ? contentView.bounds.width - safe.right - strip / 2
+            : safe.left + strip / 2
+        arrow.center = CGPoint(x: centerX, y: contentView.bounds.midY)
+        arrow.alpha = reach
+        let scale = 0.7 + 0.3 * reach
+        arrow.transform = CGAffineTransform(scaleX: scale, y: scale)
+        arrow.tintColor = reach >= 1 ? Palette.accent : Palette.fgMuted
+    }
+
+    /// The content back home and the arrow gone — sprung when a finger let go, at once on reuse.
+    func settleSwipe(animated: Bool) {
+        guard slide.transform != .identity || (swipeArrow?.alpha ?? 0) != 0 else { return }
+        let home = { [self] in
+            slide.transform = .identity
+            swipeArrow?.alpha = 0
+        }
+        guard animated else { home(); return }
+        UIView.animate(
+            withDuration: 0.4, delay: 0, usingSpringWithDamping: 0.8, initialSpringVelocity: 0.5,
+            options: [.allowUserInteraction, .beginFromCurrentState], animations: home
+        )
+    }
+
+    private func makeSwipeArrow() -> UIImageView {
+        let config = UIImage.SymbolConfiguration(pointSize: 20, weight: .medium)
+        // `backward`, not `left`: it mirrors with the layout direction, and in a right-to-left
+        // layout the strip opens on the left and the reply points right.
+        let arrow = UIImageView(image: UIImage(systemName: "arrowshape.turn.up.backward", withConfiguration: config))
+        arrow.contentMode = .center
+        arrow.bounds = CGRect(x: 0, y: 0, width: 32, height: 32)
+        arrow.alpha = 0
+        contentView.insertSubview(arrow, belowSubview: slide)
+        swipeArrow = arrow
+        return arrow
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         // An in-flight jump flash (#42) would otherwise pulse on an unrelated line.
         contentView.layer.removeAllAnimations()
         fill.layer.removeAllAnimations()
+        // A row swiped as its cell was recycled (a reload under the finger) must not hand the
+        // next line its content sitting sideways — nor one springing home, arrow fading: the
+        // spring is dropped first, or `settleSwipe` would see a model already home and leave it.
+        beginSwipe()
+        settleSwipe(animated: false)
         // The closure captures the message it was built for. Left in place, a tap on a recycled
         // cell whose row didn't set one would toggle a spoiler on whatever message used it last.
         onToggleSpoiler = nil
