@@ -3043,6 +3043,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // with the keyboard already up (emoji keyboard, predictive bar) — same question, and
         // the same answer is wanted there.
         let keepsPosition = keepsPositionWhileReading
+        let distance = distanceFromBottom
         // `layoutIfNeeded` moves the composer to its new position and, in the same pass,
         // runs `viewDidLayoutSubviews` → `updateInsets` against that fresh frame. So
         // the inset isn't recomputed here — doing it before layout would read the old frame.
@@ -3051,6 +3052,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // the tail of a dismissal with the end frame off-screen — and scrolling there
         // yanks a reader who dragged the keyboard away mid-history back to the bottom.
         guard keyboardOverlap > 0 else { return clampToContent() }
+        // A keyboard raised by a Reply keeps the reader's place: the line they pointed at is the
+        // context, and carrying them to the bottom loses it. Before the setting below, which
+        // leaves the content where it was on the SCREEN — and the keyboard would cover the line.
+        if let line = replyKeepsPlaceFor {
+            keepPlace(distance, showing: line)
+            applyLayout()
+            return
+        }
         // `chat.keep_position_on_send` (#628) is written as a rule about sending, but on a
         // phone this is where it's felt: raising the keyboard to reply is what takes a reader
         // out of the history they were reading, well before they've typed anything. A reader
@@ -3088,6 +3097,25 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// instead of by a neighbouring optimization's current shape.
     private var addressPunctuation: String {
         NickCompletion.addressPunctuation(viewModel.state.settings)
+    }
+
+    /// The keyboard arriving for a reply (lurker#1248) pushes the content up with it, Discord's
+    /// way: the lines stay where they were relative to the composer, so the line being replied
+    /// to stays on screen — and is scrolled back under the bar when it was high enough that the
+    /// push carried it off. `distance` is the reader's place as it was before the composer's
+    /// reservation grew; at the tail it's 0 and this is `scrollToBottom`.
+    private func keepPlace(_ distance: CGFloat, showing id: Int) {
+        let insets = tableView.adjustedContentInset
+        tableView.contentOffset.y = distance - insets.top
+        clampToContent()
+        guard let row = current?.rowIndex(containing: id) else { return }
+        // In the flipped table a row's far edge is its `maxY`, and the viewport's is the bar's.
+        let rect = tableView.rectForRow(at: tableIndex(for: row))
+        let farEdge = tableView.contentOffset.y + tableView.bounds.height - insets.bottom
+        if rect.maxY > farEdge {
+            tableView.contentOffset.y += rect.maxY - farEdge
+            clampToContent()
+        }
     }
 
     @objc private func keyboardWillHide() {
@@ -3345,6 +3373,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// or `/me` goes out as it. Lives with the composer whose draft it belongs to.
     ///
     /// Part of the draft (iOS #188), so it syncs and comes back with the text.
+    /// The line a Reply is being started on, for the keyboard notification it raises — see
+    /// `reply(to:)`.
+    private var replyKeepsPlaceFor: Int?
+
     private var pendingReply: PendingReply? {
         didSet {
             guard oldValue != pendingReply else { return }
@@ -3365,6 +3397,12 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// still goes in, which is all a reply there can be.
     private func reply(to message: Message) {
         guard let nick = message.nick, !nick.isEmpty else { return }
+        // The keyboard this raises keeps the reader's place (`keyboardWillChange`). One-shot, and
+        // cleared on the way out: the notification is posted inside `becomeFirstResponder`, and
+        // a keyboard already up posts none — left set, it would hold the next ordinary tap on
+        // the field to a place it should carry the reader out of.
+        replyKeepsPlaceFor = message.id
+        defer { replyKeepsPlaceFor = nil }
         let target = buffer.key.target
         let unaddressed = message.isSelf || Replies.isPrivate(target)
         let started = Replies.replyable(message, target: target)
