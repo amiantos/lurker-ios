@@ -450,6 +450,14 @@ final class MessageAttachmentsView: UIStackView {
         text.isLayoutMarginsRelativeArrangement = true
         text.directionalLayoutMargins = NSDirectionalEdgeInsets(
             top: 0, leading: 0, bottom: 0, trailing: 8)
+        // ⚠⚠ Same as the cell's own stacks (`CompactCell`): a margins-relative stack pads its
+        // margins out to the safe area it overlaps, and the list's table is flipped, so UIKit
+        // judges that overlap against the wrong edge. The cell's column and the attachments
+        // stack opted out when that made every row's spacing breathe near the screen's bottom;
+        // this stack is built per card and was left in, so a card's text grew a status bar's
+        // worth of top margin as it scrolled near the bottom, and lost it again — the words
+        // sliding inside a card that image-only previews, with no margins, never showed.
+        text.insetsLayoutMarginsFromSafeArea = false
 
         if let site = preview.siteName {
             let byline = preview.author.map { "\(site) · \($0)" } ?? site
