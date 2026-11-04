@@ -15,15 +15,20 @@ import UIKit
 /// Why a subclass rather than the delegate's `gestureRecognizerShouldBegin`: that question is
 /// asked when the pan would begin, by which time a vertical drag has already made the list wait
 /// one move longer than it should. Failing in `touchesMoved` frees the scroll on the same event.
-/// `startPoint` is kept for the delegate, which resolves the row from where the finger LANDED,
-/// not where it is by the time the pan begins.
+/// The owner is told where the finger LANDED at the touch-down itself (`onTouchDown`), and
+/// resolves the row from that, not from where the finger is by the time the pan begins.
 final class SwipeToReplyRecognizer: UIPanGestureRecognizer {
     /// Which way the content moves for a reply: −1 (left) in a left-to-right layout, +1 in a
     /// right-to-left one. The owner sets it from the list's layout direction.
     var sign: CGFloat = -1
 
     /// Where the touch landed, in the recognizer's view — nil between gestures.
-    private(set) var startPoint: CGPoint?
+    private var startPoint: CGPoint?
+
+    /// Told where a touch landed the moment it does, before any move: the owner reads the row
+    /// under it THEN, since a reload between the touch-down and the slop can put another row
+    /// under the same point — and reads whether the list was still moving.
+    var onTouchDown: ((CGPoint) -> Void)?
 
     /// How far the finger moves, in a straight line, before the direction is read. Under the
     /// ten points `UIPanGestureRecognizer` itself needs before it begins — strictly under, so the
@@ -39,7 +44,11 @@ final class SwipeToReplyRecognizer: UIPanGestureRecognizer {
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesBegan(touches, with: event)
-        if startPoint == nil, let touch = touches.first { startPoint = touch.location(in: view) }
+        if startPoint == nil, let touch = touches.first {
+            let point = touch.location(in: view)
+            startPoint = point
+            onTouchDown?(point)
+        }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
