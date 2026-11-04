@@ -3144,13 +3144,24 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private func updateInsets() {
         // Never under a finger: the interactive keyboard dismiss lays out on every frame of the
         // drag, and pinning the offset inside it would cancel the rubber band each time.
-        let atTail = distanceFromBottom <= 0.5 && !tableView.isTracking && !tableView.isDragging
+        let still = !tableView.isTracking && !tableView.isDragging
+        let distance = distanceFromBottom
+        let atTail = distance <= 0.5 && still
         let reserved = max(0, view.bounds.maxY - composer.frame.minY)
         let bar = view.safeAreaInsets.top
         if tableView.contentInset.top != reserved || tableView.contentInset.bottom != bar {
             tableView.contentInset = UIEdgeInsets(top: reserved, left: 0, bottom: bar, right: 0)
             tableView.verticalScrollIndicatorInsets = tableView.contentInset
-            if atTail { scrollToBottom() }
+            if atTail {
+                scrollToBottom()
+            } else if still, let hold = replyKeepsPlaceNow {
+                // A Reply's keyboard (or its strip, with the keyboard already up) grows the
+                // reservation HERE, not in the notification: the composer rides the keyboard
+                // guide, and the guide moves in its own layout pass. The place is kept where
+                // the reservation actually changes, or the rows would hold still on the screen
+                // and the keyboard would cover the line (lurker#1248).
+                keepPlace(distance, showing: hold.line)
+            }
         }
     }
 
@@ -3389,6 +3400,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// How long after a Reply a keyboard's first notification can still be its: a keyboard that
     /// was already up posts none, and one raised by a tap a while later is an ordinary tap's.
     private static let replyKeepsPlaceWindow: CFTimeInterval = 1
+
+    /// The hold as it stands: taken by a keyboard, or fresh enough that the reservation changing
+    /// now is the Reply's doing (the strip appearing under a keyboard that was already up).
+    private var replyKeepsPlaceNow: (line: Int, since: CFTimeInterval, taken: Bool)? {
+        guard let hold = replyKeepsPlace else { return nil }
+        guard hold.taken || CACurrentMediaTime() - hold.since < Self.replyKeepsPlaceWindow else { return nil }
+        return hold
+    }
 
     private var pendingReply: PendingReply? {
         didSet {
