@@ -112,7 +112,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
     /// configure and cleared in `prepareForReuse`, because it closes over that message.
     var onToggleSpoiler: ((Int) -> Void)?
 
-    private let column = UIStackView()
+    private let column = RowMarginsStackView()
     private let headerRow = UIStackView()
     private let nickLabel = UILabel()
     private let timeLabel = UILabel()
@@ -240,14 +240,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         messageText.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
 
         column.axis = .vertical
-        column.isLayoutMarginsRelativeArrangement = true
-        // ⚠⚠ The margins are the cell's rhythm and nothing else's. By default a view pads its
-        // layout margins out to the safe area it overlaps, and the list's table is flipped
-        // (`ChatViewController`), which leaves UIKit judging that overlap against the wrong
-        // edge: rows near the screen's bottom were handed a status-bar's worth of top margin
-        // that came and went as they scrolled, so the spacing breathed and bodies were pushed
-        // out of the height they were measured at.
-        column.insetsLayoutMarginsFromSafeArea = false
         attachments.isHidden = true
         attachments.onOpen = { url in UIApplication.shared.openExternal(url) }
         attachments.onOpenGallery = { [weak self] previews, at in
@@ -257,8 +249,6 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         // from its author (the paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
         // starts flush with the nick while the words above it don't, and the block loses the
         // single left edge that makes a run of messages read as one column.
-        attachments.isLayoutMarginsRelativeArrangement = true
-        attachments.insetsLayoutMarginsFromSafeArea = false
 
         // The column's side margins are the cell's own, not the table's — see
         // `useOwnSideMargins` for what the inherited ones do beside the iPhone Duo's side rail.
