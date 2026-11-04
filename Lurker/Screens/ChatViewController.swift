@@ -1152,8 +1152,18 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     }
 
 
+    /// Layout passes this turn of the run loop. A pass that invalidates its own view runs again
+    /// before the loop turns, so this counts a feedback loop — and nothing else: no event
+    /// lays this screen out more than a few times before the loop is back at the top.
+    private var layoutPassesThisTurn = 0
+    /// Passes in one turn that earn a line in the log, and then a stop: a loop never ends on
+    /// its own, and the watchdog's report of the hang names nothing of ours. `HangDiagnostics`.
+    private static let layoutPassesLogged = 50
+    private static let layoutPassesFatal = 400
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        countLayoutPass()
         // The composer's height is only real after layout, so its reservation is set here —
         // every pass, which also catches rotation and Dynamic Type. Setting a scroll view's
         // contentInset doesn't invalidate this view's layout, so there's no feedback loop.
@@ -1172,6 +1182,28 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // going away. Free when there's nothing to do: `loadOlder` no-ops without
         // `hasMoreOlder`, and once the content overflows this stops asking.
         topUpIfUnscrollable()
+    }
+
+    /// The reset is queued on the first pass of a turn and runs when the loop next turns —
+    /// which a feedback loop never lets happen, so the count climbs. The line it writes is
+    /// the geometry the loop is fighting over, which the crash report can't carry.
+    private func countLayoutPass() {
+        layoutPassesThisTurn += 1
+        if layoutPassesThisTurn == 1 {
+            DispatchQueue.main.async { [weak self] in self?.layoutPassesThisTurn = 0 }
+        }
+        guard layoutPassesThisTurn >= Self.layoutPassesLogged,
+              layoutPassesThisTurn % Self.layoutPassesLogged == 0
+        else { return }
+        let geometry = "passes=\(layoutPassesThisTurn) view=\(view.bounds.size) safe=\(view.safeAreaInsets)"
+            + " composer=\(composer.frame) keyboard=\(keyboardOverlap) inset=\(tableView.contentInset)"
+            + " offset=\(tableView.contentOffset.y) content=\(tableView.contentSize.height)"
+            + " rows=\(rows.count) window=\(view.window != nil) tracking=\(tableView.isTracking)"
+        NSLog("[hang] layout loop on the conversation: %@", geometry)
+        trace("layout loop \(geometry)")
+        if layoutPassesThisTurn >= Self.layoutPassesFatal {
+            fatalError("Layout feedback loop on ChatViewController: \(geometry)")
+        }
     }
 
     /// The landing. Asks the machine what's pending against the build on screen and performs
