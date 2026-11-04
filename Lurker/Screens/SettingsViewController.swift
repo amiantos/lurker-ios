@@ -296,6 +296,7 @@ final class SettingsViewController: UITableViewController {
     private enum DiagnosticsRow: Int, CaseIterable {
         case trace
         case share
+        case hangs
     }
 
     private var sections: [Section] = []
@@ -477,6 +478,10 @@ final class SettingsViewController: UITableViewController {
             Records how the message list decides where to scroll and when to show the unread \
             banner, on this device only: positions and decisions, never what the messages say. \
             Turn it on when asked to, reproduce the problem, then share the trace.
+
+            Hang diagnostics are always kept: a count of the app's views, taken every minute, \
+            and the system's own report of any freeze, delivered after the next launch. Never \
+            what the messages say. Share them after the app has frozen.
             """
         case .notifications:
             if let route = viewModel.pushRoute, !route.delivers {
@@ -567,6 +572,13 @@ final class SettingsViewController: UITableViewController {
                 content.text = "Share trace…"
                 content.textProperties.color = ScrollTrace.shared.isEmpty ? .tertiaryLabel : .tintColor
                 cell.selectionStyle = ScrollTrace.shared.isEmpty ? .none : .default
+            case .hangs?:
+                // The freeze instruments (`HangDiagnostics`): the view census and whatever
+                // MetricKit has delivered. Always running, so there's no switch.
+                let empty = HangDiagnostics.shared.files.isEmpty
+                content.text = "Share hang diagnostics…"
+                content.textProperties.color = empty ? .tertiaryLabel : .tintColor
+                cell.selectionStyle = empty ? .none : .default
             case nil:
                 break
             }
@@ -870,8 +882,14 @@ final class SettingsViewController: UITableViewController {
                 rebuild()
             }
         case .diagnostics:
-            guard DiagnosticsRow(rawValue: indexPath.row) == .share, !ScrollTrace.shared.isEmpty else { return }
-            shareTrace(from: tableView.cellForRow(at: indexPath))
+            switch DiagnosticsRow(rawValue: indexPath.row) {
+            case .share? where !ScrollTrace.shared.isEmpty:
+                shareTrace(from: tableView.cellForRow(at: indexPath))
+            case .hangs? where !HangDiagnostics.shared.files.isEmpty:
+                share(HangDiagnostics.shared.files, from: tableView.cellForRow(at: indexPath))
+            default:
+                break
+            }
         default:
             break
         }
@@ -886,7 +904,11 @@ final class SettingsViewController: UITableViewController {
         } catch {
             return
         }
-        let sheet = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        share([url], from: source)
+    }
+
+    private func share(_ files: [URL], from source: UIView?) {
+        let sheet = UIActivityViewController(activityItems: files, applicationActivities: nil)
         if let popover = sheet.popoverPresentationController {
             popover.sourceView = source ?? tableView
             popover.sourceRect = source?.bounds ?? .zero

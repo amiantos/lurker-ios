@@ -23,6 +23,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
+        // First, before any view exists to lay out: one of its probes is a default UIKit reads
+        // at its own convenience (`HangDiagnostics`).
+        HangDiagnostics.shared.install()
         // Must be set before launch finishes, per UNUserNotificationCenter — otherwise a
         // cold launch from a tap never calls back at all.
         UNUserNotificationCenter.current().delegate = self
