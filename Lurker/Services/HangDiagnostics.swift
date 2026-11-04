@@ -32,17 +32,21 @@ final class HangDiagnostics: NSObject {
     static let shared = HangDiagnostics()
 
     /// UIKit reads this default itself; the launch argument of the same name is just a way of
-    /// setting it. Registered for this process and persisted for the next, because the read
-    /// happens at UIKit's convenience and a value written after it would wait a launch anyway.
-    /// Written every launch: the registered value answers `object(forKey:)`, so there is no
-    /// telling a persisted one from it, and the write is the same either way.
+    /// setting it. Persisted rather than registered, because UIKit reads it at its own
+    /// convenience and a value that only exists once this runs could be read too late — the
+    /// persisted one is there from the next process's first instruction. ⚠ It outlives this
+    /// code: a build that retires the probe has to `removeObject(forKey:)`, or every install
+    /// keeps stopping at the threshold.
     private static let feedbackLoopKey = "UIViewLayoutFeedbackLoopDebuggingThreshold"
     private static let feedbackLoopThreshold = 100
 
     private static let censusInterval: TimeInterval = 60
-    /// Lines kept in the census file: enough to see a session's trend, never a growing file.
-    private static let censusLines = 240
+    /// Lines kept in the census file: a day at one a minute, so the session a freeze grows
+    /// over is still there from its start. Lines are short; this is a couple hundred KB at most.
+    private static let censusLines = 1440
     private static let keptDiagnostics = 30
+    /// Lines kept of the conversation's layout-loop log (`note`).
+    private static let noteLines = 400
 
     /// Where the files live. Application Support, not Documents, so nothing is offered to the
     /// Files app; the share sheet in Settings is the way out, as for the scroll trace.
@@ -54,16 +58,17 @@ final class HangDiagnostics: NSObject {
     private var censusTimer: Timer?
 
     func install() {
-        let defaults = UserDefaults.standard
-        defaults.register(defaults: [Self.feedbackLoopKey: Self.feedbackLoopThreshold])
-        defaults.set(Self.feedbackLoopThreshold, forKey: Self.feedbackLoopKey)
-        try? FileManager.default.createDirectory(at: Self.directory, withIntermediateDirectories: true)
+        UserDefaults.standard.set(Self.feedbackLoopThreshold, forKey: Self.feedbackLoopKey)
+        Self.prepareDirectory()
         MXMetricManager.shared.add(self)
         let timer = Timer(timeInterval: Self.censusInterval, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.takeCensus(reason: "tick") }
         }
         timer.tolerance = Self.censusInterval / 6
-        RunLoop.main.add(timer, forMode: .common)
+        // The default mode, not common: a tick that lands mid-drag would walk the tree and
+        // rewrite a file on the frame the finger is on. Tracking runs in its own mode, so the
+        // tick waits for the drag to end.
+        RunLoop.main.add(timer, forMode: .default)
         censusTimer = timer
         // The last word before a watchdog in the background, which is where two of three kills
         // happened: the app froze, the user gave up and went home.
@@ -74,6 +79,23 @@ final class HangDiagnostics: NSObject {
     }
 
     @objc private func didEnterBackground() { takeCensus(reason: "background") }
+
+    /// Diagnostics are about this device's session, not worth a backup and wrong on a restore
+    /// to another device, where they'd surface as that device's.
+    private static func prepareDirectory() {
+        var directory = directory
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? directory.setResourceValues(values)
+    }
+
+    /// A line from the conversation screen's own loop counter — the geometry a layout loop is
+    /// fighting over, which neither UIKit's stop nor the watchdog's report carries. Kept in
+    /// `layout.txt`, so it is in the share with everything else.
+    func note(_ line: String) {
+        append("\(ISO8601DateFormatter().string(from: Date())) \(line)", to: "layout.txt", keeping: Self.noteLines)
+    }
 
     /// Every file on hand, for the share sheet. Empty until something has been written.
     var files: [URL] {
@@ -107,7 +129,7 @@ final class HangDiagnostics: NSObject {
         let stamp = ISO8601DateFormatter().string(from: Date())
         let line = "\(stamp) \(reason) windows=\(windows.count) views=\(total) top: \(top)"
         if total > 1500 { NSLog("[hang] view census: %@", line) }
-        append(line, to: "views.txt")
+        append(line, to: "views.txt", keeping: Self.censusLines)
     }
 
     private func walk(_ view: UIView, ancestors: [String], total: inout Int, crowds: inout [Crowd]) {
@@ -124,12 +146,12 @@ final class HangDiagnostics: NSObject {
         }
     }
 
-    private func append(_ line: String, to name: String) {
+    private func append(_ line: String, to name: String, keeping cap: Int) {
         let url = Self.directory.appendingPathComponent(name)
         var lines = (try? String(contentsOf: url, encoding: .utf8))?
             .split(separator: "\n", omittingEmptySubsequences: true).map(String.init) ?? []
         lines.append(line)
-        if lines.count > Self.censusLines { lines.removeFirst(lines.count - Self.censusLines) }
+        if lines.count > cap { lines.removeFirst(lines.count - cap) }
         try? (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 }
@@ -137,12 +159,15 @@ final class HangDiagnostics: NSObject {
 // MARK: - MetricKit
 
 extension HangDiagnostics: MXMetricManagerSubscriber {
-    /// Hang and crash diagnostics, one JSON file each, named by when they arrived. Delivered on
-    /// whatever thread MetricKit likes, which is why this touches only the file system.
+    /// Hang and crash diagnostics, one JSON file each, named by when they arrived plus a nonce:
+    /// deliveries can come in bursts (a launch after days away) and the names must not collide.
+    /// Delivered on whatever thread MetricKit likes, which is why this touches only the file
+    /// system — and atomically, so a share mid-write never picks up half a file.
     nonisolated func didReceive(_ payloads: [MXDiagnosticPayload]) {
         let directory = Self.directory
         let stamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
+        let nonce = UUID().uuidString.prefix(8)
         for (index, payload) in payloads.enumerated() {
             let kinds = [
                 payload.hangDiagnostics?.isEmpty == false ? "hang" : nil,
@@ -151,8 +176,8 @@ extension HangDiagnostics: MXMetricManagerSubscriber {
                 payload.cpuExceptionDiagnostics?.isEmpty == false ? "cpu" : nil,
             ].compactMap { $0 }
             guard !kinds.isEmpty else { continue }
-            let name = "diagnostic-\(stamp)-\(index)-\(kinds.joined(separator: "+")).json"
-            try? payload.jsonRepresentation().write(to: directory.appendingPathComponent(name))
+            let name = "diagnostic-\(stamp)-\(nonce)-\(index)-\(kinds.joined(separator: "+")).json"
+            try? payload.jsonRepresentation().write(to: directory.appendingPathComponent(name), options: .atomic)
         }
         Self.prune(directory)
     }
