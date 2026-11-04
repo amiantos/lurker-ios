@@ -20,7 +20,7 @@ import UIKit
 ///
 /// The row still has to re-lay-out once, when the metadata lands and an attachment appears at
 /// all — that's `LinkPreviewStore.onUpdate`, which the chat screen turns into a reload.
-final class MessageAttachmentsView: UIStackView {
+final class MessageAttachmentsView: RowMarginsStackView {
 
     /// Full-width media. Tall enough to be worth showing, short enough that one screenshot
     /// doesn't evict the conversation from the screen.
@@ -95,8 +95,8 @@ final class MessageAttachmentsView: UIStackView {
         spacing = 6
         alignment = .fill
         // Margins are set by the cell, which knows the body's indent for the current Dynamic
-        // Type size — see CompactCell.showAttachments.
-        isLayoutMarginsRelativeArrangement = true
+        // Type size — see CompactCell.showAttachments. Laid out inside them, and the safe area
+        // kept out of them, by `RowMarginsStackView`.
     }
 
     @available(*, unavailable)
@@ -438,7 +438,10 @@ final class MessageAttachmentsView: UIStackView {
         row.spacing = 8
         row.alignment = stacksVertically ? .fill : .top
 
-        let text = UIStackView()
+        // A row's stack (`RowMarginsStackView`): the trailing inset below is its own, and the
+        // safe area stays out of it — this column is built per card, and the first version
+        // opted out by hand on the cell's stacks only, so a card's words slid as it scrolled.
+        let text = RowMarginsStackView()
         text.axis = .vertical
         // Line-to-line air. At 1 the byline, title and description read as one dense block —
         // three different things at three different weights, with nothing between them saying so.
@@ -447,17 +450,8 @@ final class MessageAttachmentsView: UIStackView {
         // insetting the row would pull the picture off the card's edge with it — the web keeps
         // the hero flush to both edges deliberately and narrows the CARD instead. So the words
         // get the margin and the picture keeps the full width.
-        text.isLayoutMarginsRelativeArrangement = true
         text.directionalLayoutMargins = NSDirectionalEdgeInsets(
             top: 0, leading: 0, bottom: 0, trailing: 8)
-        // ⚠⚠ Same as the cell's own stacks (`CompactCell`): a margins-relative stack pads its
-        // margins out to the safe area it overlaps, and the list's table is flipped, so UIKit
-        // judges that overlap against the wrong edge. The cell's column and the attachments
-        // stack opted out when that made every row's spacing breathe near the screen's bottom;
-        // this stack is built per card and was left in, so a card's text grew a status bar's
-        // worth of top margin as it scrolled near the bottom, and lost it again — the words
-        // sliding inside a card that image-only previews, with no margins, never showed.
-        text.insetsLayoutMarginsFromSafeArea = false
 
         if let site = preview.siteName {
             let byline = preview.author.map { "\(site) · \($0)" } ?? site
