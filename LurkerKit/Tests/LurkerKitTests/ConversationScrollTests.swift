@@ -70,14 +70,15 @@ struct ConversationScrollTests {
         ignores: IgnoreSet = .empty,
         settings: Settings = Settings(),
         reachable: Bool = true,
-        noBuffer: Bool = false
+        noBuffer: Bool = false,
+        settled: Bool = true
     ) -> ChatState {
         let key = key ?? channel
         var s = ChatState()
         s.connection = connection
         s.reachable = reachable
         s.snapshotSinceOpen = true
-        s.backlogComplete = true
+        s.backlogComplete = settled
         s.networks = [1: libera]
         if !noBuffer {
             let b = buffer ?? row(key)
@@ -240,9 +241,16 @@ struct ConversationScrollTests {
 
     @Test("a reconnect's backlog and a slice reply aren't live lines")
     func backlogAndSliceDontFollow() {
-        // Missed across a drop: a new burst brings 11…20, and they keep their divider.
+        // Missed across a drop: the snapshot is one frame (a new burst, the list untouched) and
+        // the backlog that appends 11…20 another, inside the burst. They keep their divider.
         let (scroll, pointer) = reading(lastReadId: 10)
-        _ = scroll.onFrame(state(pointer, msgs(1...20), burstGeneration: 2), key: channel, seq: 2)
+        _ = scroll.onFrame(state(pointer, msgs(1...10), burstGeneration: 2, settled: false), key: channel, seq: 2)
+        _ = scroll.onFrame(state(pointer, msgs(1...20), burstGeneration: 2, settled: false), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 10)
+        // Settled again, the divider those lines are under holds a live one off.
+        _ = scroll.onFrame(state(pointer, msgs(1...20), burstGeneration: 2), key: channel, seq: 4)
+        _ = scroll.onRows(build(scroll, state(pointer, msgs(1...20), burstGeneration: 2), seq: 4), wasNearBottom: true)
+        _ = scroll.onFrame(state(pointer, msgs(1...21), burstGeneration: 2), key: channel, seq: 5)
         #expect(scroll.options.dividerAfterId == 10)
         // A `latest` reply replacing the slice moves the revision instead.
         let (replaced, _) = reading(lastReadId: 10)
@@ -260,6 +268,66 @@ struct ConversationScrollTests {
         _ = scroll.onRows(build(scroll, state(early, msgs(8...9)), seq: 1), wasNearBottom: true)
         _ = scroll.onFrame(state(early, msgs(8...10)), key: channel, seq: 2)
         #expect(scroll.options.dividerAfterId == 5)
+    }
+
+    @Test("a detached slice's newer page is not a live line, and nor is the re-attach")
+    func detachedPagesDontFollow() {
+        let (scroll, pointer) = reading(lastReadId: 10)
+        // A jump into older history: an `around` slice below the tail, nothing past the boundary.
+        let slice = row(readStateKnown: true, lastReadId: 10, hasMoreNewer: true, historyRevision: 1)
+        _ = scroll.onFrame(state(slice, msgs(1...5)), key: channel, seq: 2)
+        _ = scroll.onRows(build(scroll, state(slice, msgs(1...5)), seq: 2), wasNearBottom: true)
+        // Reading forward pulls a newer page: an append, same revision — a page, not a line.
+        _ = scroll.onFrame(state(slice, msgs(1...8)), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 10)
+        // The last page re-attaches and splices in what landed while the reader was away.
+        let attached = row(readStateKnown: true, lastReadId: 10, historyRevision: 1)
+        _ = scroll.onFrame(state(attached, msgs(1...12)), key: channel, seq: 4)
+        #expect(scroll.options.dividerAfterId == 10)
+        // Those lines are the first unread, and a live one after them leaves the divider there.
+        _ = scroll.onRows(build(scroll, state(attached, msgs(1...12)), seq: 4), wasNearBottom: true)
+        _ = scroll.onFrame(state(attached, msgs(1...13)), key: channel, seq: 5)
+        #expect(scroll.options.dividerAfterId == 10)
+        #expect(build(scroll, state(attached, msgs(1...13)), seq: 5).firstUnreadRow != nil)
+    }
+
+    @Test("a word from a build that lags the frames is not taken for the lines it hasn't seen")
+    func laggingWordNotTaken() {
+        // Android builds asynchronously, and not at all while the screen is stopped: lines land
+        // under `reading: false`, and the first frame back can arrive before the build catches up.
+        let (scroll, pointer) = reading(lastReadId: 10)
+        _ = scroll.onFrame(state(pointer, msgs(1...12)), key: channel, seq: 2, reading: false)
+        _ = scroll.onFrame(state(pointer, msgs(1...13)), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 10)
+    }
+
+    @Test("a word built under another boundary is not taken")
+    func wordForAnotherBoundaryNotTaken() {
+        let scroll = opened()
+        // Hydrated by a `history` reply, so the list builds (and says "no divider") before the
+        // read state arrives and latches a real boundary with unread under it.
+        let before = row(hydrated: true, readStateKnown: false)
+        _ = scroll.onFrame(state(before, msgs(1...10)), key: channel, seq: 1)
+        _ = scroll.onRows(build(scroll, state(before, msgs(1...10)), seq: 1), wasNearBottom: true)
+        let pointer = row(readStateKnown: true, lastReadId: 5)
+        _ = scroll.onFrame(state(pointer, msgs(1...10)), key: channel, seq: 2)
+        _ = scroll.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 5)
+    }
+
+    @Test("without a word yet, a boundary at the tail follows and one with lines past it holds")
+    func fallbackWithoutAWord() {
+        // The web's older rule, for a line that lands before the first build is in.
+        let scroll = opened()
+        let caughtUp = row(readStateKnown: true, lastReadId: 10)
+        _ = scroll.onFrame(state(caughtUp, msgs(1...10)), key: channel, seq: 1)
+        _ = scroll.onFrame(state(caughtUp, msgs(1...11)), key: channel, seq: 2)
+        #expect(scroll.options.dividerAfterId == 11)
+        let behind = opened()
+        let pointer = row(readStateKnown: true, lastReadId: 5)
+        _ = behind.onFrame(state(pointer, msgs(1...10)), key: channel, seq: 1)
+        _ = behind.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 2)
+        #expect(behind.options.dividerAfterId == 5)
     }
 
     // MARK: - The unread banner and dividerSeen

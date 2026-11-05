@@ -334,12 +334,14 @@ public final class ConversationScroll {
     public struct Frame: Sendable {
         public let connection: SocketStatus
         public let burstGeneration: Int
+        public let rosterSettled: Bool
         public let row: Buffer?
         public let held: [Message]?
 
         public init(_ state: ChatState, key: BufferKey) {
             connection = state.connection
             burstGeneration = state.burstGeneration
+            rosterSettled = state.rosterSettled
             row = state.buffers[key.id]
             held = state.messages[key.id]
         }
@@ -408,27 +410,51 @@ public final class ConversationScroll {
 
     /// The held list's shape as of the previous frame, for telling a live line from everything
     /// else that makes the list longer (`onFrame`'s tail rule).
-    private struct Tail: Equatable {
+    private struct Tail {
         let generation: Int
         let revision: Int
+        /// The buffer's real history is loaded — `ConversationBuild.historyLanded`'s rule.
+        let landed: Bool
+        /// No burst in progress: a reconnect's snapshot and the backlog that follows it come
+        /// as separate frames, and the backlog appends to the list like live lines would.
+        let settled: Bool
+        /// A slice below the live tail, which holds live traffic out: what grows it is a page.
+        let detached: Bool
         /// The oldest and newest held ids, ephemerals (id 0) aside; nil and 0 for an empty list.
         let first: Int?
         let newest: Int
 
-        init(_ frame: Frame) {
+        init(_ frame: Frame, kind: BufferKind) {
             generation = frame.burstGeneration
             revision = frame.row?.historyRevision ?? 0
-            let ids = (frame.held ?? []).lazy.map(\.id).filter { $0 != 0 }
-            first = ids.min()
-            newest = ids.max() ?? 0
+            landed = BufferPlaceholder.historyLanded(
+                hydrated: frame.row?.hydrated == true, hydratesOnDemand: kind.hydratesOnDemand,
+                bufferExists: frame.row != nil, rosterSettled: frame.rosterSettled
+            )
+            settled = frame.rosterSettled
+            detached = frame.row?.hasMoreNewer == true
+            var first: Int?
+            var newest = 0
+            for message in frame.held ?? [] where message.id != 0 {
+                first = min(first ?? message.id, message.id)
+                newest = max(newest, message.id)
+            }
+            self.first = first
+            self.newest = newest
         }
     }
     private var lastTail: Tail?
 
-    /// The list's word on whether it is drawing the unread divider, as of the previous build:
-    /// nil before there is one, and while the history hasn't landed — a stub of live events
-    /// that outran the backlog hasn't the rows the boundary is for.
-    private var listDrawsDivider: Bool?
+    /// The list's word on whether it is drawing the unread divider, from the last build that had
+    /// the history: which boundary it was built under and how far its list reached, so a build
+    /// that lags the frames — Android's are asynchronous, and pause while the screen is stopped
+    /// — is known to answer a different question (`onFrame`).
+    private struct Word {
+        let boundary: Int?
+        let newest: Int
+        let drawn: Bool
+    }
+    private var word: Word?
 
     public init(kind: BufferKind) {
         self.kind = kind
@@ -565,15 +591,21 @@ public final class ConversationScroll {
     /// **A live line moves the boundary to the tail** while the reader is reading — the web's
     /// rule (lurker#1236; the apps' half is lurker#1235) — unless the list is drawing a
     /// divider, which the reader may not have reached yet. Whether one is drawn is the list's
-    /// answer, after its own filters (`listDrawsDivider`): a boundary with nothing visible under
-    /// it isn't one. Latched at the newest line and left there, the boundary would sit under an
-    /// ignored sender's line, a reply the thread panel holds or a join the event tier drops, and
-    /// the divider would land over the next line that IS visible, the reader's own included.
-    /// `reading` is the screen being seen, the same gate as its mark-read: a line that lands
-    /// while the screen is covered is unread, and the divider waits above it for the reader's
-    /// return. Only a live append counts: a page prepends, a slice reply moves the revision,
-    /// and a reconnect's backlog starts a new burst — the lines missed across a drop keep their
-    /// divider.
+    /// answer, after its own filters (`word`): a boundary with nothing visible under it isn't
+    /// one. Latched at the newest line and left there, the boundary would sit under an ignored
+    /// sender's line, a reply the thread panel holds or a join the event tier drops, and the
+    /// divider would land over the next line that IS visible, the reader's own included. With
+    /// no word that answers — none yet, one built under another boundary, or one that hasn't
+    /// seen the last frame's lines — the older rule stands: a boundary at or past everything
+    /// held was no boundary, and a real one is never dropped. `reading` is the screen being
+    /// seen, the same gate as its mark-read: a line that lands while the screen is covered is
+    /// unread, and the divider waits above it for the reader's return. Only a live append
+    /// counts: a page prepends, a slice reply moves the revision, a reconnect's backlog arrives
+    /// inside a burst (its snapshot is one frame and the appended lines another), a detached
+    /// slice holds live traffic out (what grows it is a page the reader pulled, and the
+    /// re-attach splices what was held out), and a stub before the history lands isn't the list
+    /// the boundary is for — so the lines missed across a drop, or while away in a slice, keep
+    /// their divider.
     public func onFrame(_ state: ChatState, key: BufferKey, seq: Int, reading: Bool = true) -> FrameStep {
         onFrame(Frame(state, key: key), seq: seq, reading: reading)
     }
@@ -610,14 +642,24 @@ public final class ConversationScroll {
         }
         // The tail rule, on a boundary latched BEFORE this frame: the frame that latches has no
         // previous shape to tell a live line by.
-        let tail = Tail(frame)
-        if reading, latched, frame.connection == .connected, listDrawsDivider == false,
-           let previous = lastTail, tail.generation == previous.generation,
-           tail.revision == previous.revision, tail.newest > previous.newest,
-           previous.first == nil || tail.first == previous.first {
-            options.dividerAfterId = tail.newest
-            changed = true
-            log("divider follows tail after=\(tail.newest) seq=\(seq)")
+        let tail = Tail(frame, kind: kind)
+        if reading, latched, frame.connection == .connected, let previous = lastTail,
+           previous.landed, previous.settled, tail.settled, !previous.detached, !tail.detached,
+           tail.generation == previous.generation, tail.revision == previous.revision,
+           tail.newest > previous.newest, previous.first == nil || tail.first == previous.first {
+            let boundary = options.dividerAfterId ?? 0
+            // The list's word counts only when it answers this question: built under this
+            // boundary, over a list that reached the previous frame's newest line.
+            var says: Bool?
+            if let word, word.boundary == options.dividerAfterId, word.newest >= previous.newest {
+                says = word.drawn
+            }
+            let noBoundary = says.map { !$0 } ?? (boundary >= previous.newest)
+            if noBoundary {
+                options.dividerAfterId = tail.newest
+                changed = true
+                log("divider follows tail after=\(tail.newest) word=\(says.map(String.init) ?? "none") seq=\(seq)")
+            }
         }
         lastTail = tail
         let latest = requestLatest(frame)
@@ -753,7 +795,13 @@ public final class ConversationScroll {
             ).count
         }
         previousVisible = built.visible
-        listDrawsDivider = built.historyLanded ? built.dividerRow != nil : nil
+        word = built.historyLanded
+            ? Word(
+                boundary: built.options.dividerAfterId,
+                newest: (built.held ?? []).lazy.map(\.id).max() ?? 0,
+                drawn: built.dividerRow != nil
+            )
+            : nil
 
         let follow = !landingPending && wasNearBottom && !wasDetached && !nowDetached
         log("rows seq=\(built.seq) rows=\(built.rows.count) nearBottom=\(wasNearBottom) detached=\(self.wasDetached)->\(nowDetached) landing=\(self.landingPending) follow=\(follow) badge=\(self.newWhileAway)")
