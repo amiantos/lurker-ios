@@ -411,6 +411,7 @@ public final class ConversationScroll {
     /// The held list's shape as of the previous frame, for telling a live line from everything
     /// else that makes the list longer (`onFrame`'s tail rule).
     private struct Tail {
+        let seq: Int
         let generation: Int
         let revision: Int
         /// The buffer's real history is loaded — `ConversationBuild.historyLanded`'s rule.
@@ -424,7 +425,8 @@ public final class ConversationScroll {
         let first: Int?
         let newest: Int
 
-        init(_ frame: Frame, kind: BufferKind) {
+        init(_ frame: Frame, seq: Int, kind: BufferKind) {
+            self.seq = seq
             generation = frame.burstGeneration
             revision = frame.row?.historyRevision ?? 0
             landed = BufferPlaceholder.historyLanded(
@@ -446,12 +448,13 @@ public final class ConversationScroll {
     private var lastTail: Tail?
 
     /// The list's word on whether it is drawing the unread divider, from the last build that had
-    /// the history: which boundary it was built under and how far its list reached, so a build
-    /// that lags the frames — Android's are asynchronous, and pause while the screen is stopped
-    /// — is known to answer a different question (`onFrame`).
+    /// the history: which boundary it was built under and which frame it was built from, so a
+    /// build that lags the frames is known to answer a different question (`onFrame`). The
+    /// screen builds every frame it processes, so the word for the previous frame is exact;
+    /// Android's builds are asynchronous and its machine compares the build's inputs instead.
     private struct Word {
         let boundary: Int?
-        let newest: Int
+        let seq: Int
         let drawn: Bool
     }
     private var word: Word?
@@ -642,16 +645,17 @@ public final class ConversationScroll {
         }
         // The tail rule, on a boundary latched BEFORE this frame: the frame that latches has no
         // previous shape to tell a live line by.
-        let tail = Tail(frame, kind: kind)
+        let tail = Tail(frame, seq: seq, kind: kind)
         if reading, latched, frame.connection == .connected, let previous = lastTail,
            previous.landed, previous.settled, tail.settled, !previous.detached, !tail.detached,
            tail.generation == previous.generation, tail.revision == previous.revision,
            tail.newest > previous.newest, previous.first == nil || tail.first == previous.first {
             let boundary = options.dividerAfterId ?? 0
             // The list's word counts only when it answers this question: built under this
-            // boundary, over a list that reached the previous frame's newest line.
+            // boundary, from the previous frame — a page that revealed unread lines or a rule
+            // change since then is a different list.
             var says: Bool?
-            if let word, word.boundary == options.dividerAfterId, word.newest >= previous.newest {
+            if let word, word.boundary == options.dividerAfterId, word.seq == previous.seq {
                 says = word.drawn
             }
             let noBoundary = says.map { !$0 } ?? (boundary >= previous.newest)
@@ -796,11 +800,7 @@ public final class ConversationScroll {
         }
         previousVisible = built.visible
         word = built.historyLanded
-            ? Word(
-                boundary: built.options.dividerAfterId,
-                newest: (built.held ?? []).lazy.map(\.id).max() ?? 0,
-                drawn: built.dividerRow != nil
-            )
+            ? Word(boundary: built.options.dividerAfterId, seq: built.seq, drawn: built.dividerRow != nil)
             : nil
 
         let follow = !landingPending && wasNearBottom && !wasDetached && !nowDetached

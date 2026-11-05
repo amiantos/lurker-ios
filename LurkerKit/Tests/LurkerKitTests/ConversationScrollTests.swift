@@ -301,6 +301,30 @@ struct ConversationScrollTests {
         #expect(scroll.options.dividerAfterId == 10)
     }
 
+    @Test("a word built before a page revealed unread lines, or before a rule change, is not taken")
+    func wordFromAnotherListNotTaken() {
+        // Boundary 5 with only an ignored sender's lines loaded past it: the list draws nothing.
+        let ignores = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 1, mask: "spammer")]])
+        let pointer = row(readStateKnown: true, lastReadId: 5)
+        let hidden = (8...10).map { msg($0, nick: "spammer") }
+        let scroll = opened()
+        _ = scroll.onFrame(state(pointer, hidden, ignores: ignores), key: channel, seq: 1)
+        _ = scroll.onRows(build(scroll, state(pointer, hidden, ignores: ignores), seq: 1), wasNearBottom: true)
+        // An older page prepends real unread under the boundary; the newest id doesn't move.
+        let revealed = msgs(6...7) + hidden
+        _ = scroll.onFrame(state(pointer, revealed, ignores: ignores), key: channel, seq: 2)
+        // A live line before that page's build: the word is about the old list.
+        _ = scroll.onFrame(state(pointer, revealed + [msg(11)], ignores: ignores), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 5)
+        // Likewise an unignore that reveals what was hidden.
+        let unignore = opened()
+        _ = unignore.onFrame(state(pointer, hidden, ignores: ignores), key: channel, seq: 1)
+        _ = unignore.onRows(build(unignore, state(pointer, hidden, ignores: ignores), seq: 1), wasNearBottom: true)
+        _ = unignore.onFrame(state(pointer, hidden), key: channel, seq: 2)
+        _ = unignore.onFrame(state(pointer, hidden + [msg(11)]), key: channel, seq: 3)
+        #expect(unignore.options.dividerAfterId == 5)
+    }
+
     @Test("a word built under another boundary is not taken")
     func wordForAnotherBoundaryNotTaken() {
         let scroll = opened()
