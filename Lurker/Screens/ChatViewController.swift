@@ -1007,9 +1007,14 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Every frame, in order: the machine watches for the replies it's waiting on, asks for
         // the fetches a jump or a re-attach needs, and latches the read boundary — before the
         // mark below, so the value latched is the server's and never our own mark
-        // (`ConversationScroll.onFrame`). `reading` is the mark's own gate: a live line moves
-        // the boundary to the tail only while the screen is being seen.
-        let step = scroll.onFrame(frame, seq: frameSeq, reading: view.window != nil)
+        // (`ConversationScroll.onFrame`). A live line moves the boundary to the tail only while
+        // the screen is being SEEN: the scene in the foreground and active, and no sheet over
+        // the conversation (`presentedViewController` answers for the ancestors too). Stricter
+        // than the mark below's `view.window != nil`, which stays true while the phone is locked
+        // with the socket alive: the pointer may move for those lines, the divider waits.
+        let reading = view.window?.windowScene?.activationState == .foregroundActive
+            && presentedViewController == nil
+        let step = scroll.onFrame(frame, seq: frameSeq, reading: reading)
         if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
         if step.loadLatest { viewModel.loadLatest(buffer.key) }
 
