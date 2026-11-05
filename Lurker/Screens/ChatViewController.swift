@@ -1007,8 +1007,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // Every frame, in order: the machine watches for the replies it's waiting on, asks for
         // the fetches a jump or a re-attach needs, and latches the read boundary — before the
         // mark below, so the value latched is the server's and never our own mark
-        // (`ConversationScroll.onFrame`).
-        let step = scroll.onFrame(frame, seq: frameSeq)
+        // (`ConversationScroll.onFrame`). `reading` is the mark's own gate: a live line moves
+        // the boundary to the tail only while the screen is being seen.
+        let step = scroll.onFrame(frame, seq: frameSeq, reading: view.window != nil)
         if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
         if step.loadLatest { viewModel.loadLatest(buffer.key) }
 
