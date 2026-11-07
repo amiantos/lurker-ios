@@ -1017,6 +1017,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         let step = scroll.onFrame(frame, seq: frameSeq, reading: reading)
         if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
         if step.loadLatest { viewModel.loadLatest(buffer.key) }
+        // A reply being written to a line that was just deleted (lurker#1013) can go nowhere now.
+        // The draft's words stay; only the reply link goes — the web's rule.
+        if let reply = pendingReply, state.redactions[reply.messageId] != nil { cancelReply() }
 
         let oldLastId = messages.last(where: { $0.id != 0 })?.id
         let wasNearBottom = isNearBottom
@@ -3275,7 +3278,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             networkId: buffer.key.networkId,
             isBookmarked: message.map { viewModel.isBookmarked($0.id) } ?? false,
             target: buffer.key.target,
-            support: viewModel.state.tagSupport(networkId: buffer.key.networkId)
+            support: viewModel.state.tagSupport(networkId: buffer.key.networkId),
+            moderating: viewModel.state.moderates(in: buffer.key)
         )
         let subject = url.map(MessageActionsViewController.Subject.link)
             ?? message.map { .message($0, scope: scope) }
@@ -3351,9 +3355,27 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     guard let self, let networkId = buffer.networkId else { return }
                     showProfile(networkId: networkId, nick: nick)
                 },
-                react: { [weak self] message in self?.showReactions(for: message) }
+                react: { [weak self] message in self?.showReactions(for: message) },
+                delete: { [weak self] message in self?.confirmDelete(of: message) }
             )
         )
+    }
+
+    /// Delete a line (lurker#1013): not undoable, so one confirm — the web's wording. Nothing
+    /// changes on screen here: the row blanks when the network's REDACT comes back as a
+    /// `message-redacted` frame, and a refusal lands in the buffer as an error line. A send that
+    /// found no socket says so, as a bookmark's does (sweep L53).
+    private func confirmDelete(of message: Message) {
+        let alert = UIAlertController(
+            title: "Delete this message?", message: "This can't be undone.", preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Delete", style: .destructive) { [weak self] _ in
+            guard let self else { return }
+            if viewModel.redact(messageId: message.id) { return }
+            showNotice("Not connected — message not deleted")
+        })
+        present(alert, animated: true)
     }
 
     /// Re-measure the visible rows' heights without reloading them — a chip row wrapped onto a

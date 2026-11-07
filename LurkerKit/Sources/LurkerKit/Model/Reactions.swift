@@ -131,10 +131,12 @@ public enum Reactions {
     /// whatever the network is doing right now. False for a notice, an encrypted line, a line
     /// with no msgid, or one outside a channel or DM — which is what says to the sheet whether
     /// to blame the line or the network, and to the row whether to offer an add chip at all.
+    /// False for a deleted line too (lurker#1013): nothing is left to react to.
     public static func lineTakes(_ message: Message, target: String) -> Bool {
         message.id != 0
             && !(message.msgid ?? "").isEmpty
             && !message.isE2E
+            && message.redaction == nil
             && (message.type == .message || message.type == .action)
             && isConversation(target)
     }
@@ -147,6 +149,7 @@ public enum Reactions {
             $0.id != 0 && !$0.isSelf && ($0.type == .message || $0.type == .action || $0.type == .notice)
         }) else { return .failure(CommandRefusal("nothing here to react to")) }
         if line.type == .notice { return .failure(CommandRefusal("can't react to a notice")) }
+        if line.redaction != nil { return .failure(CommandRefusal("can't react to a deleted message")) }
         if line.isE2E { return .failure(CommandRefusal("can't react to an encrypted line")) }
         if (line.msgid ?? "").isEmpty { return .failure(CommandRefusal("can't react to that line (no message id)")) }
         return .success(line)

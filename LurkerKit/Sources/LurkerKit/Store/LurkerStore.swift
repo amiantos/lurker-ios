@@ -141,6 +141,17 @@ public struct ChatState: Sendable {
     /// screen compares its own buffer's entry — one integer — so a reaction elsewhere doesn't
     /// redraw it, and the gate that runs on every frame stays cheap.
     public internal(set) var reactionsRevisions: [String: Int] = [:]
+    /// The lines we've seen that were deleted, by message id (lurker#1013). **Read through
+    /// `redaction(for:)`**, or draw after `Redactions.presenting`.
+    ///
+    /// Beside the rows for the reason `reactions` is, and fed the same two ways: each row that
+    /// arrives is authoritative for itself (its `redaction`, or none), and a live
+    /// `message-redacted` frame marks one. Network lines only, and only lines a buffer HOLDS — a
+    /// frame for a line nobody loaded is dropped, since the row brings its mark with it when it's
+    /// fetched — so `dropBuffer` can free a buffer's share. A change here bumps the buffer's
+    /// `reactionsRevisions` entry: the deletion takes the line's reactions down with it, and the
+    /// screen's redraw gate already watches that integer.
+    public var redactions: [Int: Redaction] = [:]
     /// Peer presence keyed `networkId → lowercased nick → state`. Mirrors the server's
     /// MONITOR-fed presence: seeded from each network snapshot's `peerPresence` blob and
     /// patched by live `peer-presence` events. Read through `presence(networkId:nick:)`,
@@ -407,7 +418,10 @@ public struct ChatState: Sendable {
         // buffers only — system-buffer ids are another sequence, and would free network lines'.
         // ⚠ Asked before the row goes, which is what says which kind this is.
         if buffers[key]?.networkId != nil {
-            for message in messages[key] ?? [] { reactions.removeValue(forKey: message.id) }
+            for message in messages[key] ?? [] {
+                reactions.removeValue(forKey: message.id)
+                redactions.removeValue(forKey: message.id)
+            }
         }
         reactionsRevisions[key] = nil
         buffers[key] = nil
@@ -740,6 +754,23 @@ public struct ChatState: Sendable {
     /// line with none, or one this session hasn't loaded.
     public func reactionsRevision(for key: BufferKey) -> Int { reactionsRevisions[key.id] ?? 0 }
 
+    /// Whether this line was deleted (lurker#1013), and by whom: the store's mark, which also
+    /// reflects a `message-redacted` since the row arrived, else the row's own. Nil otherwise.
+    /// Network lines only — a system-buffer row's id is another sequence (`redactions`).
+    public func redaction(for message: Message, networkId: Int?) -> Redaction? {
+        guard networkId != nil, message.id != 0 else { return message.redaction }
+        return redactions[message.id] ?? message.redaction
+    }
+
+    /// Whether you hold a prefix mode in this channel right now — op, halfop, voice, any of them
+    /// — which is who ergo lets delete other people's lines (lurker#1013, `Redactions.deletable`).
+    /// False for a DM, for a channel whose roster hasn't arrived, and where you're not listed.
+    public func moderates(in key: BufferKey) -> Bool {
+        guard ChannelName.isChannelTarget(key.target), let ownNick = key.networkId.flatMap({ networks[$0]?.nick })
+        else { return false }
+        return (members[key.id] ?? []).contains { !$0.modes.isEmpty && NickCompletion.sameNick($0.nick, ownNick) }
+    }
+
     public func reactionGroups(for messageId: Int) -> [ReactionGroup] {
         guard messageId != 0, let list = reactions[messageId], !list.isEmpty else { return [] }
         return Reactions.groups(list)
@@ -898,6 +929,47 @@ public struct ChatState: Sendable {
             if changed { reactionsRevisions[key, default: 0] &+= 1 }
             if asked.isEmpty { break }
         }
+    }
+
+    /// The deletions a `reactions-sync` named (lurker#1013), each applied as its frame would be.
+    mutating func applyRedactionsSync(_ found: [Int: Redaction]) {
+        guard !found.isEmpty else { return }
+        for (key, buffer) in buffers where buffer.networkId != nil {
+            for message in messages[key] ?? [] {
+                guard let redaction = found[message.id] else { continue }
+                applyRedaction(redaction, messageId: message.id, networkId: buffer.networkId!, target: buffer.target)
+            }
+        }
+    }
+
+    /// Reconcile `redactions` against a page of rows (lurker#1013) — `noteReactions`' contract:
+    /// each row says whether it was deleted, and silence about an id is not a restoration.
+    mutating func noteRedactions(in messages: [Message], networkId: Int?, key: String) {
+        guard networkId != nil else { return }
+        var changed = false
+        for message in messages where message.id != 0 {
+            if let redaction = message.redaction {
+                if redactions[message.id] != redaction {
+                    redactions[message.id] = redaction
+                    changed = true
+                }
+            } else if redactions.removeValue(forKey: message.id) != nil {
+                changed = true
+            }
+        }
+        if changed { reactionsRevisions[key, default: 0] &+= 1 }
+    }
+
+    /// A line was deleted while held (lurker#1013) — a `message-redacted` frame, or a
+    /// `reactions-sync` naming it. Its reactions came down with it on the server, so they do
+    /// here. Only for a line its buffer holds (see `redactions`); a deletion is for good, so
+    /// nothing here is ever taken back.
+    mutating func applyRedaction(_ redaction: Redaction, messageId: Int, networkId: Int, target: String) {
+        let key = BufferKey(networkId: networkId, target: target).id
+        guard messages[key]?.contains(where: { $0.id == messageId }) == true else { return }
+        redactions[messageId] = redaction
+        reactions[messageId] = nil
+        reactionsRevisions[key, default: 0] &+= 1
     }
 
     /// Mark ids saved wholesale, for a source that carries no per-row flag because every row
@@ -1335,9 +1407,16 @@ final class LurkerStore {
             var next = state
             next.applyReaction(change)
             return next
-        case .reactionsSync(let messageIds, let found):
+        case .reactionsSync(let messageIds, let found, let deleted):
             var next = state
             next.applyReactionsSync(messageIds: messageIds, found: found)
+            next.applyRedactionsSync(deleted)
+            return next
+        case .messageRedacted(let frame):
+            var next = state
+            next.applyRedaction(
+                frame.redaction, messageId: frame.messageId, networkId: frame.networkId, target: frame.target
+            )
             return next
         case .reactSupport(let networkId, let support):
             // Never materializes a network: it describes one the snapshot already named.
@@ -1866,6 +1945,7 @@ final class LurkerStore {
         var next = state
         next.noteBookmarks(in: messages, networkId: frameBuffer.networkId)
         next.noteReactions(in: messages, networkId: frameBuffer.networkId, key: frameBuffer.key.id)
+        next.noteRedactions(in: messages, networkId: frameBuffer.networkId, key: frameBuffer.key.id)
         let key = frameBuffer.key.id
         next.seedSpeakers(speakers, forKey: key)
         // The server named this buffer, so it survives the burst's closing prune. Recorded
@@ -2239,6 +2319,7 @@ final class LurkerStore {
         }
         next.noteBookmarks(in: events, networkId: networkId)
         next.noteReactions(in: events, networkId: networkId, key: key)
+        next.noteRedactions(in: events, networkId: networkId, key: key)
         next.seedSpeakers(speakers, forKey: key)
         let existing = next.messages[key] ?? []
         let wasDetached = next.buffers[key]?.hasMoreNewer == true

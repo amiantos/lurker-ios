@@ -901,6 +901,15 @@ public final class ChatViewModel {
         canWrite && client.setBookmark(messageId: messageId, saved: saved)
     }
 
+    /// Ask the network to delete a stored line (lurker#1013): ours, or anyone's where we hold
+    /// channel status — the network decides. Nothing changes here: the deletion arrives as a
+    /// `message-redacted` frame, a refusal as an error line in the buffer. False when there was
+    /// no socket to carry it.
+    @discardableResult
+    public func redact(messageId: Int) -> Bool {
+        canWrite && client.redact(messageId: messageId)
+    }
+
     /// Whether a write the user made can reach the server now (`ChatState.socketWritable`). Asked
     /// before every user write that reports its fate (sweep L02…L53), because the send's own answer
     /// can't see two windows:

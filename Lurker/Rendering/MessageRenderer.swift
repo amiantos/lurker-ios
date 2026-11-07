@@ -436,6 +436,16 @@ enum MessageRenderer {
         let base = compactFont(compatibleWith: traits)
         let narrationIndent = compactIndent(compatibleWith: traits)
 
+        // A deleted line (lurker#1013) keeps its row, author and time; the placeholder stands
+        // where its words were — muted and italic, so it reads as a mark rather than as something
+        // the author said. `body` would draw nothing: the text is gone.
+        let placeholder = message.redaction.map { redaction in
+            NSAttributedString(
+                string: redaction.label(authorNick: message.nick),
+                attributes: [.font: base.italic, .foregroundColor: Palette.fgMuted]
+            )
+        }
+
         // A line that names its own actor keeps doing so: it has no header to be named by.
         if message.type == .action {
             let color = nickColor(message)
@@ -447,7 +457,7 @@ enum MessageRenderer {
                 string: "* \(actor ?? message.nick ?? "*") ", attributes: [.font: base, .foregroundColor: color]
             ))
             line.append(
-                body(
+                placeholder ?? body(
                     message, base: base, fallback: color, highlighter: highlighter,
                     revealed: revealed, hiddenUrls: hiddenUrls))
             appendCompactTime(trailingTime, to: line, traits: traits)
@@ -469,7 +479,7 @@ enum MessageRenderer {
             // `body` stamps an explicit foreground on every run (see the note there), so a colour
             // set on the label never reaches a single character of message text. This fallback IS
             // the log's primary text colour.
-            attributedString: body(
+            attributedString: placeholder ?? body(
                 message, base: base, fallback: Palette.fg,
                 highlighter: highlighter, revealed: revealed, hiddenUrls: hiddenUrls
             )

@@ -216,9 +216,15 @@ enum ServerFrame: Equatable, Sendable {
     /// reaction up here (iOS #183). Patches a line we may not hold; never reopens a buffer.
     case reaction(ReactionChange)
 
+    /// WS `message-redacted` (lurker#1013): the line was deleted, by its author or an op. Its
+    /// text is gone and its reactions came down with it. Patches a line we may hold; never
+    /// reopens a buffer.
+    case messageRedacted(MessageRedacted)
+
     /// WS `reactions-sync`: the answer to `sync-reactions`. Every id in `messageIds` is
-    /// authoritative — one absent from `reactions` has none standing now.
-    case reactionsSync(messageIds: [Int], reactions: [Int: [MessageReaction]])
+    /// authoritative — one absent from `reactions` has none standing now. `redactions` names the
+    /// lines among them deleted meanwhile (§5.3), each applied as a `message-redacted` would be.
+    case reactionsSync(messageIds: [Int], reactions: [Int: [MessageReaction]], redactions: [Int: Redaction] = [:])
 
     /// Live `react-support` (§7.2): which tags can go out on this network changed — the burst
     /// ended (CLIENTTAGDENY rides a 005 after the snapshot), or a later 005 moved it.

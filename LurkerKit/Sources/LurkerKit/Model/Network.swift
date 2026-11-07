@@ -136,15 +136,22 @@ public struct TagSupport: Equatable, Sendable {
     /// A line sent with `replyTo` carries its reply tag. Where it can't, it still goes out, as a
     /// plain line.
     public var canReply: Bool
+    /// A `redact` verb can go out: the network negotiated `draft/message-redaction` (lurker#1013).
+    /// Says nothing about WHICH lines it will let this user delete — see `Redactions.deletable`.
+    /// ⚠ No legacy fallback: a server that predates it never says, and absent reads as false.
+    public var canRedact: Bool
 
-    public init(canAddReaction: Bool, canRemoveReaction: Bool, canReply: Bool) {
+    public init(canAddReaction: Bool, canRemoveReaction: Bool, canReply: Bool, canRedact: Bool = false) {
         self.canAddReaction = canAddReaction
         self.canRemoveReaction = canRemoveReaction
         self.canReply = canReply
+        self.canRedact = canRedact
     }
 
     /// Nothing goes out: before the burst ends, and on a link that's down.
-    public static let nothing = TagSupport(canAddReaction: false, canRemoveReaction: false, canReply: false)
+    public static let nothing = TagSupport(
+        canAddReaction: false, canRemoveReaction: false, canReply: false, canRedact: false
+    )
 }
 
 /// Mirrors the server's per-network `state` string.

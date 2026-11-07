@@ -465,8 +465,13 @@ class HistoryFeedViewController: UITableViewController {
         // its buffer (#277) — and before replies are presented, which judge the line as it reads.
         // A reaction row is the reactor's, never relayed.
         let state = viewModel.state
+        // A deleted line (lurker#1013) shows its placeholder here too — by the row's own mark, or
+        // the store's for one deleted while this feed was open.
         let line = item.reaction == nil
-            ? state.relayBots.reattributing([item.message], networkId: item.networkId).first ?? item.message
+            ? Redactions.presenting(
+                state.relayBots.reattributing([item.message], networkId: item.networkId),
+                redactions: state.redactions
+            ).first ?? item.message
             : item.message
         let name = line.type.isBubble
             ? MessageRenderer.caption(line, networkName: section.networkName)
@@ -485,7 +490,8 @@ class HistoryFeedViewController: UITableViewController {
             ? Replies.presenting(
                 [line], networkId: item.networkId, target: item.target,
                 ignores: state.ignores, relayBots: state.relayBots,
-                ownNick: item.networkId.flatMap { state.networks[$0]?.nick }
+                ownNick: item.networkId.flatMap { state.networks[$0]?.nick },
+                redactions: state.redactions
             ).first ?? line
             : line
         // Display names (lurker#1203) on the row's own network: the plain form inside the

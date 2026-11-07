@@ -777,6 +777,14 @@ final class LurkerClient {
             surfacesFailure: true)
     }
 
+    /// Ask the network to delete a stored line (`draft/message-redaction`, lurker#1013). Nothing is
+    /// echoed to this call: the network's own REDACT comes back as a `message-redacted` frame, a
+    /// refusal as an `error` line in that buffer — so, like a reaction, never rendered optimistically.
+    @discardableResult
+    func redact(messageId: Int) -> Bool {
+        send(["type": "redact", "messageId": messageId], surfacesFailure: true)
+    }
+
     /// Ask what reactions stand now on lines we already hold — after a resume, when changes made
     /// while we were away reached no socket of ours. Answered to this socket as `reactions-sync`.
     @discardableResult

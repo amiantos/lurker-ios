@@ -56,14 +56,18 @@ extension MessageRenderer {
         if let source = quote.relaySource, !source.isEmpty {
             line.append(NSAttributedString(string: "[\(source)] ", attributes: plain))
         }
-        line.append(NSAttributedString(string: Replies.excerpt(quote.text), attributes: plain))
+        // The quote of a deleted line (lurker#1013) says so where its words were — deleted, not
+        // unavailable: the row is still there to jump to.
+        let excerpt = quote.redacted ? Redactions.placeholder : Replies.excerpt(quote.text)
+        line.append(NSAttributedString(string: excerpt, attributes: plain))
         return line
     }
 
     /// What VoiceOver says for the quote.
     static func spokenReplyQuote(_ quote: ReplyQuote?, names: NameLookup? = nil) -> String {
         guard let quote else { return "In reply to a message that's unavailable" }
-        return "In reply to \(quotedName(quote, names: names)): \(Replies.excerpt(quote.text))"
+        let excerpt = quote.redacted ? Redactions.placeholder : Replies.excerpt(quote.text)
+        return "In reply to \(quotedName(quote, names: names)): \(excerpt)"
     }
 
     /// The quoted nick as the quote prints it: its shown name (lurker#1203), a relayed speaker's own

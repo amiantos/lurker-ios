@@ -148,22 +148,29 @@ public struct ConversationBuild: Sendable {
         let ownNick = ownNick(for: state, key: key)
         let awayState = awayState(for: state, key: key, kind: kind)
         let speakers = state.speakers[key.id] ?? SpeakerMap()
+        // Deletions (lurker#1013) after re-attribution, as the web orders it: a bridged line keeps
+        // the speaker its envelope named, and the placeholder stands where their words were. Before
+        // replies, whose quotes are judged against the line as it now reads.
         let visible = Replies.presenting(
-            state.relayBots.reattributing(
-                state.ignores.visible(
-                    (held ?? []).filter { kind.renders($0.type) && $0.isRenderable },
-                    networkId: key.networkId,
-                    target: key.target,
-                    keeping: options.keeping,
-                    now: now
+            Redactions.presenting(
+                state.relayBots.reattributing(
+                    state.ignores.visible(
+                        (held ?? []).filter { kind.renders($0.type) && $0.isRenderable },
+                        networkId: key.networkId,
+                        target: key.target,
+                        keeping: options.keeping,
+                        now: now
+                    ),
+                    networkId: key.networkId
                 ),
-                networkId: key.networkId
+                redactions: key.networkId == nil ? [:] : state.redactions
             ),
             networkId: key.networkId,
             target: key.target,
             ignores: state.ignores,
             relayBots: state.relayBots,
             ownNick: ownNick,
+            redactions: key.networkId == nil ? [:] : state.redactions,
             now: now
         )
         let rows = MessageRows.build(

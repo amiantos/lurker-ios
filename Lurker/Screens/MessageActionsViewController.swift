@@ -132,7 +132,9 @@ final class MessageActionsViewController: UITableViewController {
             // Reply and Copy target alice, and the only thing here with an IRC presence is the bot.
             let speaker = (message.nick?.isEmpty == false) ? message.nick! : "Message"
             title.text = message.relayBot.map { "\(speaker) via \($0)" } ?? speaker
-            detail.text = message.text.map { IRCFormatting.strip($0) }
+            // A deleted line (lurker#1013) is identified by its placeholder, as it is in the list.
+            detail.text = message.redaction.map { $0.label(authorNick: message.nick) }
+                ?? message.text.map { IRCFormatting.strip($0) }
         case .link(let url):
             // Host as the title: "which site is this" is the question a link menu has to answer
             // first, and it stays legible where a long URL truncates to nothing useful.

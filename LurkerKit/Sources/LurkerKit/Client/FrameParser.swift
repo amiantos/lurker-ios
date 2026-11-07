@@ -99,6 +99,23 @@ enum FrameParser {
                 remove: obj.bool("remove"),
                 toSelf: obj.bool("toSelf")
             ))
+        case "message-redacted":
+            // The deletion of a stored line (lurker#1013), its own frame like `reaction`: no
+            // decoration, no unread bump, never reopens a buffer. One that can't name its line
+            // or its network addresses nothing. `by` can be empty on a malformed frame; the
+            // placeholder then names nobody rather than the frame being dropped — the deletion
+            // itself is the fact that matters.
+            let messageId = obj.int("messageId")
+            guard messageId != 0, let networkId = obj.intOrNull("networkId") else { return .ignored }
+            return .messageRedacted(MessageRedacted(
+                networkId: networkId,
+                target: obj.string("target"),
+                messageId: messageId,
+                by: obj.string("by"),
+                reason: obj.stringOrNull("reason"),
+                isSelf: obj.bool("self"),
+                time: obj.stringOrNull("time")
+            ))
         case "reactions-sync":
             // ⚠ Only ids the frame NAMES are authoritative, so a frame without a readable list
             // says nothing — not "every line has none".
@@ -109,7 +126,13 @@ enum FrameParser {
                 let parsed = parseReactions(list)
                 if !parsed.isEmpty { reactions[id] = parsed }
             }
-            return .reactionsSync(messageIds: ids, reactions: reactions)
+            // The lines among them deleted while this socket was away (lurker#1013).
+            var redactions: [Int: Redaction] = [:]
+            for (key, value) in (obj["redactions"] as? [String: Any]) ?? [:] {
+                guard let id = Int(key), let redaction = parseRedaction(value) else { continue }
+                redactions[id] = redaction
+            }
+            return .reactionsSync(messageIds: ids, reactions: reactions, redactions: redactions)
         case "upload-progress":
             // Same trust posture as its siblings. A frame with no token can't be matched to
             // the upload it describes, and an unrecognized phase is a server saying something
@@ -491,7 +514,10 @@ enum FrameParser {
         return TagSupport(
             canAddReaction: obj.bool("canAddReaction", legacy),
             canRemoveReaction: obj.bool("canRemoveReaction", legacy),
-            canReply: obj.bool("canReply", legacy)
+            canReply: obj.bool("canReply", legacy),
+            // ⚠ Not `legacy`: deletion is newer than the split, and a server that predates it
+            // can't take a `redact` — absent IS false here (§5.1, lurker#1013).
+            canRedact: obj.bool("canRedact")
         )
     }
 
@@ -1272,8 +1298,17 @@ enum FrameParser {
             notify: event.bool("notify"),
             dm: event.bool("dm"),
             notifyAlways: event.bool("notifyAlways"),
-            selfKicked: event.bool("selfKicked")
+            selfKicked: event.bool("selfKicked"),
+            // Absent on every line that wasn't deleted (lurker#1013); `text` is null beside it.
+            redaction: parseRedaction(event["redaction"])
         )
+    }
+
+    /// A row's `redaction`, or a `reactions-sync` entry: `{ by, reason?, time }` (§5.3). An object
+    /// is the whole statement — a deletion with no `by` still happened, and shows as one.
+    static func parseRedaction(_ raw: Any?) -> Redaction? {
+        guard let obj = raw as? [String: Any] else { return nil }
+        return Redaction(by: obj.string("by"), reason: obj.stringOrNull("reason"), time: obj.stringOrNull("time"))
     }
 
     /// A row's `replyTo`: `{ msgid, parent }`, `parent` null when the server found no line. With
@@ -1320,7 +1355,10 @@ enum FrameParser {
             type: EventType.from(parent.stringOrNull("type")),
             text: parent.string("text"),
             userhost: parent.stringOrNull("userhost"),
-            isSelf: parent.bool("self")
+            isSelf: parent.bool("self"),
+            // The answered line was deleted (lurker#1013): `text` is empty beside it, and the
+            // quote reads as deleted, not as unavailable — the row is still there to jump to.
+            redacted: parent.bool("redacted")
         )
     }
 
