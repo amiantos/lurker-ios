@@ -660,6 +660,7 @@ public final class ChatViewModel {
     public func fetchHighlights(before: Int? = nil) async -> HighlightsPage? {
         let page = await client.fetchHighlights(before: before)
         store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
+        store.noteRedactions(from: (page?.items ?? []).map(\.message))
         return page
     }
 
@@ -839,6 +840,7 @@ public final class ChatViewModel {
         // page of `bookmark-updated` frames would wake every screen 50 times over to say one
         // thing.
         store.noteBookmarked(ids: (page?.items ?? []).map(\.message.id))
+        store.noteRedactions(from: (page?.items ?? []).map(\.message))
         return page
     }
 
@@ -876,6 +878,7 @@ public final class ChatViewModel {
         // the only place a saved line the user has never opened can become known — same
         // reasoning as `fetchBookmarks`, and the same single mutation rather than one per row.
         store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
+        store.noteRedactions(from: (page?.items ?? []).map(\.message))
         return page
     }
 
@@ -2353,8 +2356,12 @@ public final class ChatViewModel {
         let ignores = store.state.ignores
         let urls = store.state.buffers.values.flatMap { buffer in
             PreviewSelection.urls(
-                in: store.state.messages[buffer.key.id] ?? [], networkId: buffer.networkId,
-                target: buffer.target, ignores: ignores,
+                // As shown (lurker#1013): a deleted line's URL isn't on screen and isn't asked for.
+                in: Redactions.presenting(
+                    store.state.messages[buffer.key.id] ?? [],
+                    redactions: buffer.networkId == nil ? [:] : store.state.redactions
+                ),
+                networkId: buffer.networkId, target: buffer.target, ignores: ignores,
                 inlineMedia: wantMedia, linkPreviews: wantPages
             )
         }

@@ -571,6 +571,11 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
                     // again. Compared as this buffer's revision: one integer, and a reaction in
                     // another buffer doesn't redraw this one.
                     && old.reactionsRevision(for: bufferKey) == new.reactionsRevision(for: bufferKey)
+                    // A deletion (lurker#1013) bumps that revision for the buffer holding the
+                    // line — but a reply here can quote a parent this slice doesn't hold, and a
+                    // reply being written can answer one. The map only changes when a line is
+                    // deleted, so comparing it is cheap.
+                    && old.redactions == new.redactions
                     // Whether the chips can be tapped moves with the network's state (compared
                     // above) and its `react-support`, which `networks` covers too.
             }
@@ -3337,6 +3342,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// device landing between the long press and the tap would invert the action, so a row
     /// reading "Save Message" sends an unsave. The user acted on what was on screen.
     private func runMessageAction(_ key: MessageActionKey, on message: Message, scope: MessageActionScope) {
+        // The line as it stands NOW, not as the sheet was built: deleted under the sheet
+        // (lurker#1013), it has no words to copy, answer or react to, and `run`'s own gate then
+        // refuses those — while Save/Remove Bookmark still does what the row said.
+        let message = Redactions.presenting([message], redactions: viewModel.state.redactions).first ?? message
         MessageActions.run(
             key, on: message, scope: scope,
             context: MessageActionContext(

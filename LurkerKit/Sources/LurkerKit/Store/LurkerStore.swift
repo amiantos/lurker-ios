@@ -149,11 +149,11 @@ public struct ChatState: Sendable {
     /// A deletion is for good, so a mark is never taken back — not by a stale page that read the
     /// line before its REDACT landed (the web's overlay would; this one keeps the stronger rule).
     /// Unlike `reactions`, a frame for a line no buffer holds is kept: the feeds (bookmarks,
-    /// activity, search) show lines outside any buffer and draw from here too. Bounded by how
-    /// many lines get deleted, which is few; `dropBuffer` frees a closed buffer's share (its rows
-    /// bring their marks back when fetched). A change to a held line bumps its buffer's
-    /// `reactionsRevisions` entry: the deletion takes the line's reactions down with it, and the
-    /// screen's redraw gate already watches that integer.
+    /// activity, search) show lines outside any buffer and draw from here too, and `dropBuffer`
+    /// leaves them be for the same reason. Bounded by how many lines get deleted, which is few.
+    /// A change to a held line bumps its buffer's `reactionsRevisions` entry: the deletion takes
+    /// the line's reactions down with it, and the screen's redraw gate already watches that
+    /// integer — and compares this map too, for a quote whose parent isn't held.
     public var redactions: [Int: Redaction] = [:]
     /// Peer presence keyed `networkId → lowercased nick → state`. Mirrors the server's
     /// MONITOR-fed presence: seeded from each network snapshot's `peerPresence` blob and
@@ -420,11 +420,10 @@ public struct ChatState: Sendable {
         // The reactions on its lines go with them: a reopen's rows carry their own again. Network
         // buffers only — system-buffer ids are another sequence, and would free network lines'.
         // ⚠ Asked before the row goes, which is what says which kind this is.
+        // ⚠ Not the marks in `redactions`: a feed open on one of these lines still draws from them,
+        // and the map is bounded by deletions, not by what's loaded.
         if buffers[key]?.networkId != nil {
-            for message in messages[key] ?? [] {
-                reactions.removeValue(forKey: message.id)
-                redactions.removeValue(forKey: message.id)
-            }
+            for message in messages[key] ?? [] { reactions.removeValue(forKey: message.id) }
         }
         reactionsRevisions[key] = nil
         buffers[key] = nil
@@ -776,6 +775,9 @@ public struct ChatState: Sendable {
 
     public func reactionGroups(for messageId: Int) -> [ReactionGroup] {
         guard messageId != 0, let list = reactions[messageId], !list.isEmpty else { return [] }
+        // A deleted line's reactions came down with it (lurker#1013): none are drawn even if a
+        // page read before the REDACT landed put them back in the map.
+        guard redactions[messageId] == nil else { return [] }
         return Reactions.groups(list)
     }
 
@@ -1177,6 +1179,17 @@ final class LurkerStore {
         guard !ids.isEmpty else { return }
         var next = subject.value
         next.noteBookmarked(ids: ids)
+        subject.value = next
+    }
+
+    /// Record the deletions a fetched feed page carries (lurker#1013), in ONE mutation — like
+    /// `noteBookmarked(ids:)`. A bookmark or a search hit read after its line was deleted is how a
+    /// deletion missed while away reaches every other copy of the line this session shows.
+    func noteRedactions(from rows: [Message]) {
+        let marks = rows.filter { $0.id != 0 && $0.redaction != nil }
+        guard !marks.isEmpty else { return }
+        var next = subject.value
+        for row in marks { next.redactions[row.id] = row.redaction }
         subject.value = next
     }
 

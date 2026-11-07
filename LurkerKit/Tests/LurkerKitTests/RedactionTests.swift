@@ -186,13 +186,36 @@ final class RedactionTests: XCTestCase {
         XCTAssertEqual(Redactions.presenting([line(1, text: nil, redaction: mark)], redactions: [:]).first?.text, nil)
     }
 
-    func testClosingABufferFreesItsMarks() {
+    /// A bookmark or a search hit can still be showing the line after its buffer closes.
+    func testClosingABufferKeepsItsMarks() {
         let store = LurkerStore()
         store.apply(backlog([line(1)]))
         store.apply(redacted(1))
-        XCTAssertFalse(store.state.redactions.isEmpty)
         store.apply(.bufferClosed(networkId: 1, target: "#lurker"))
-        XCTAssertTrue(store.state.redactions.isEmpty)
+        XCTAssertEqual(store.state.redactions[1], mark)
+    }
+
+    /// A page read before the REDACT landed can put the line's reactions back in the map; none
+    /// are drawn for a line known to be deleted.
+    func testAStalePageNeverRestoresADeletedLinesChips() {
+        let store = LurkerStore()
+        let thumbs = MessageReaction(nick: "bob", value: "👍", isSelf: false)
+        store.apply(backlog([line(1, reactions: [thumbs])]))
+        store.apply(redacted(1))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [line(1, reactions: [thumbs])], mode: .around,
+            hasMoreOlder: false, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertTrue(store.state.reactionGroups(for: 1).isEmpty)
+    }
+
+    /// The feeds read rows over REST; a deleted one they carry marks the line everywhere.
+    func testAFeedRowSeedsTheMark() {
+        let store = LurkerStore()
+        store.apply(backlog([line(1)]))
+        store.noteRedactions(from: [line(1, text: nil, redaction: mark), line(2)])
+        XCTAssertEqual(store.state.redaction(for: line(1), networkId: 1), mark)
+        XCTAssertNil(store.state.redactions[2])
     }
 
     func testSystemRowsNeverTouchTheMap() {
@@ -232,6 +255,22 @@ final class RedactionTests: XCTestCase {
         let quote = shown(reply, redactions: [1: mark])
         XCTAssertEqual(quote?.redacted, true)
         XCTAssertEqual(quote?.text, "", "the words don't leak through the quote")
+    }
+
+    /// A bridged line deleted while on screen still quotes the person inside its envelope, as its
+    /// own row does.
+    func testADeletedRelayedParentKeepsItsSpeaker() {
+        let parent = ReplyParent(id: 1, nick: "bridge", type: .message, text: "<alice> secret")
+        let reply = line(2, nick: "bob", text: "alice: why", replyTo: ReplyContext(msgid: "m", parent: parent))
+        let quote = Replies.shown(
+            reply.replyTo!, line: reply, networkId: 1, target: "#lurker",
+            ignores: IgnoreSet(global: [], byNetwork: [:]), relayBots: RelayBotSet(byNetwork: [1: [RelayBot(nick: "bridge")]]),
+            ownNick: "me", redactions: [1: mark]
+        ).quote
+        XCTAssertEqual(quote?.nick, "alice")
+        XCTAssertEqual(quote?.relayBot, "bridge")
+        XCTAssertEqual(quote?.redacted, true)
+        XCTAssertEqual(quote?.text, "")
     }
 
     // MARK: - Actions

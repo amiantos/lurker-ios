@@ -177,8 +177,10 @@ public enum Replies {
                 userhost: parent.userhost, isSelf: parent.isSelf, redacted: true
             )
         }
-        // A deleted parent has no envelope left to unwrap: it quotes whoever the server stored.
-        let unwrapped = parent.redacted ? asLine : relayBots.reattributing([asLine], networkId: networkId).first ?? asLine
+        // Unwrapped from the words the server sent, BEFORE they go: a bridged line deleted while
+        // this reply was on screen still quotes the person inside its envelope, as its own row
+        // does. A parent that arrived deleted has no envelope left and quotes whoever was stored.
+        let unwrapped = relayBots.reattributing([asLine], networkId: networkId).first ?? asLine
         let relayed = unwrapped.relayBot != nil
         var quote = ReplyQuote(
             id: parent.id,
