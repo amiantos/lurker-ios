@@ -70,14 +70,15 @@ struct ConversationScrollTests {
         ignores: IgnoreSet = .empty,
         settings: Settings = Settings(),
         reachable: Bool = true,
-        noBuffer: Bool = false
+        noBuffer: Bool = false,
+        settled: Bool = true
     ) -> ChatState {
         let key = key ?? channel
         var s = ChatState()
         s.connection = connection
         s.reachable = reachable
         s.snapshotSinceOpen = true
-        s.backlogComplete = true
+        s.backlogComplete = settled
         s.networks = [1: libera]
         if !noBuffer {
             let b = buffer ?? row(key)
@@ -181,6 +182,176 @@ struct ConversationScrollTests {
         // Our mark comes back as a `read-state` at 10; the divider doesn't move.
         _ = scroll.onFrame(state(row(readStateKnown: true, lastReadId: 10), msgs(1...10)), key: channel, seq: 2)
         #expect(scroll.options.dividerAfterId == 5)
+    }
+
+    // MARK: - A live line and the boundary (lurker#1235)
+
+    /// A latched machine over 1…10 with the pointer at `lastReadId`, its rows built once, so the
+    /// list has given its word on the divider.
+    private func reading(lastReadId: Int, ignores: IgnoreSet = .empty) -> (ConversationScroll, Buffer) {
+        let scroll = opened()
+        let pointer = row(readStateKnown: true, lastReadId: lastReadId)
+        let s = state(pointer, msgs(1...10), ignores: ignores)
+        _ = scroll.onFrame(s, key: channel, seq: 1)
+        _ = scroll.onRows(build(scroll, s, seq: 1), wasNearBottom: true)
+        return (scroll, pointer)
+    }
+
+    @Test("a live line while reading takes the boundary to the tail when the list draws no divider")
+    func liveLineFollowsTail() {
+        let (scroll, pointer) = reading(lastReadId: 10)
+        let step = scroll.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 2)
+        #expect(step.optionsChanged)
+        #expect(scroll.options.dividerAfterId == 11)
+        #expect(build(scroll, state(pointer, msgs(1...11)), seq: 2).dividerRow == nil)
+    }
+
+    @Test("a boundary the list draws stays put under live lines")
+    func drawnBoundaryStays() {
+        let (scroll, pointer) = reading(lastReadId: 5)
+        let step = scroll.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 2)
+        #expect(!step.optionsChanged)
+        #expect(scroll.options.dividerAfterId == 5)
+    }
+
+    @Test("an ignored line past the boundary doesn't hold the divider for the reader's own line")
+    func hiddenLineHoldsNoDivider() {
+        // The issue's repro: caught up, then a line from someone ignored. It never counts and the
+        // list draws nothing under it, so the reader's own line next must not get the divider.
+        let ignores = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 1, mask: "spammer")]])
+        let (scroll, pointer) = reading(lastReadId: 10, ignores: ignores)
+        var lines = msgs(1...10) + [msg(11, nick: "spammer")]
+        _ = scroll.onFrame(state(pointer, lines, ignores: ignores), key: channel, seq: 2)
+        _ = scroll.onRows(build(scroll, state(pointer, lines, ignores: ignores), seq: 2), wasNearBottom: true)
+        #expect(scroll.options.dividerAfterId == 11)
+        lines.append(msg(12, nick: "me"))
+        _ = scroll.onFrame(state(pointer, lines, ignores: ignores), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 12)
+        #expect(build(scroll, state(pointer, lines, ignores: ignores), seq: 3).dividerRow == nil)
+    }
+
+    @Test("the boundary doesn't follow while the screen isn't being read")
+    func notWhileCovered() {
+        let (scroll, pointer) = reading(lastReadId: 10)
+        _ = scroll.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 2, reading: false)
+        #expect(scroll.options.dividerAfterId == 10)
+        // Back in front, the line that landed meanwhile is the first unread.
+        #expect(build(scroll, state(pointer, msgs(1...11)), seq: 2).firstUnreadRow != nil)
+    }
+
+    @Test("a reconnect's backlog and a slice reply aren't live lines")
+    func backlogAndSliceDontFollow() {
+        // Missed across a drop: the snapshot is one frame (a new burst, the list untouched) and
+        // the backlog that appends 11…20 another, inside the burst. They keep their divider.
+        let (scroll, pointer) = reading(lastReadId: 10)
+        _ = scroll.onFrame(state(pointer, msgs(1...10), burstGeneration: 2, settled: false), key: channel, seq: 2)
+        _ = scroll.onFrame(state(pointer, msgs(1...20), burstGeneration: 2, settled: false), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 10)
+        // Settled again, the divider those lines are under holds a live one off.
+        _ = scroll.onFrame(state(pointer, msgs(1...20), burstGeneration: 2), key: channel, seq: 4)
+        _ = scroll.onRows(build(scroll, state(pointer, msgs(1...20), burstGeneration: 2), seq: 4), wasNearBottom: true)
+        _ = scroll.onFrame(state(pointer, msgs(1...21), burstGeneration: 2), key: channel, seq: 5)
+        #expect(scroll.options.dividerAfterId == 10)
+        // A `latest` reply replacing the slice moves the revision instead.
+        let (replaced, _) = reading(lastReadId: 10)
+        let reply = row(readStateKnown: true, lastReadId: 10, historyRevision: 1)
+        _ = replaced.onFrame(state(reply, msgs(1...20)), key: channel, seq: 2)
+        #expect(replaced.options.dividerAfterId == 10)
+    }
+
+    @Test("a stub of live events before the history lands has no word on the divider")
+    func noFollowBeforeHistory() {
+        let scroll = opened()
+        // Read state ahead of the backlog: latched at 5 over the few live events that outran it.
+        let early = row(hydrated: false, readStateKnown: true, lastReadId: 5)
+        _ = scroll.onFrame(state(early, msgs(8...9)), key: channel, seq: 1)
+        _ = scroll.onRows(build(scroll, state(early, msgs(8...9)), seq: 1), wasNearBottom: true)
+        _ = scroll.onFrame(state(early, msgs(8...10)), key: channel, seq: 2)
+        #expect(scroll.options.dividerAfterId == 5)
+    }
+
+    @Test("a detached slice's newer page is not a live line, and nor is the re-attach")
+    func detachedPagesDontFollow() {
+        let (scroll, pointer) = reading(lastReadId: 10)
+        // A jump into older history: an `around` slice below the tail, nothing past the boundary.
+        let slice = row(readStateKnown: true, lastReadId: 10, hasMoreNewer: true, historyRevision: 1)
+        _ = scroll.onFrame(state(slice, msgs(1...5)), key: channel, seq: 2)
+        _ = scroll.onRows(build(scroll, state(slice, msgs(1...5)), seq: 2), wasNearBottom: true)
+        // Reading forward pulls a newer page: an append, same revision — a page, not a line.
+        _ = scroll.onFrame(state(slice, msgs(1...8)), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 10)
+        // The last page re-attaches and splices in what landed while the reader was away.
+        let attached = row(readStateKnown: true, lastReadId: 10, historyRevision: 1)
+        _ = scroll.onFrame(state(attached, msgs(1...12)), key: channel, seq: 4)
+        #expect(scroll.options.dividerAfterId == 10)
+        // Those lines are the first unread, and a live one after them leaves the divider there.
+        _ = scroll.onRows(build(scroll, state(attached, msgs(1...12)), seq: 4), wasNearBottom: true)
+        _ = scroll.onFrame(state(attached, msgs(1...13)), key: channel, seq: 5)
+        #expect(scroll.options.dividerAfterId == 10)
+        #expect(build(scroll, state(attached, msgs(1...13)), seq: 5).firstUnreadRow != nil)
+    }
+
+    @Test("a word from a build that lags the frames is not taken for the lines it hasn't seen")
+    func laggingWordNotTaken() {
+        // Android builds asynchronously, and not at all while the screen is stopped: lines land
+        // under `reading: false`, and the first frame back can arrive before the build catches up.
+        let (scroll, pointer) = reading(lastReadId: 10)
+        _ = scroll.onFrame(state(pointer, msgs(1...12)), key: channel, seq: 2, reading: false)
+        _ = scroll.onFrame(state(pointer, msgs(1...13)), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 10)
+    }
+
+    @Test("a word built before a page revealed unread lines, or before a rule change, is not taken")
+    func wordFromAnotherListNotTaken() {
+        // Boundary 5 with only an ignored sender's lines loaded past it: the list draws nothing.
+        let ignores = IgnoreSet(byNetwork: [1: [IgnoreRule(id: 1, mask: "spammer")]])
+        let pointer = row(readStateKnown: true, lastReadId: 5)
+        let hidden = (8...10).map { msg($0, nick: "spammer") }
+        let scroll = opened()
+        _ = scroll.onFrame(state(pointer, hidden, ignores: ignores), key: channel, seq: 1)
+        _ = scroll.onRows(build(scroll, state(pointer, hidden, ignores: ignores), seq: 1), wasNearBottom: true)
+        // An older page prepends real unread under the boundary; the newest id doesn't move.
+        let revealed = msgs(6...7) + hidden
+        _ = scroll.onFrame(state(pointer, revealed, ignores: ignores), key: channel, seq: 2)
+        // A live line before that page's build: the word is about the old list.
+        _ = scroll.onFrame(state(pointer, revealed + [msg(11)], ignores: ignores), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 5)
+        // Likewise an unignore that reveals what was hidden.
+        let unignore = opened()
+        _ = unignore.onFrame(state(pointer, hidden, ignores: ignores), key: channel, seq: 1)
+        _ = unignore.onRows(build(unignore, state(pointer, hidden, ignores: ignores), seq: 1), wasNearBottom: true)
+        _ = unignore.onFrame(state(pointer, hidden), key: channel, seq: 2)
+        _ = unignore.onFrame(state(pointer, hidden + [msg(11)]), key: channel, seq: 3)
+        #expect(unignore.options.dividerAfterId == 5)
+    }
+
+    @Test("a word built under another boundary is not taken")
+    func wordForAnotherBoundaryNotTaken() {
+        let scroll = opened()
+        // Hydrated by a `history` reply, so the list builds (and says "no divider") before the
+        // read state arrives and latches a real boundary with unread under it.
+        let before = row(hydrated: true, readStateKnown: false)
+        _ = scroll.onFrame(state(before, msgs(1...10)), key: channel, seq: 1)
+        _ = scroll.onRows(build(scroll, state(before, msgs(1...10)), seq: 1), wasNearBottom: true)
+        let pointer = row(readStateKnown: true, lastReadId: 5)
+        _ = scroll.onFrame(state(pointer, msgs(1...10)), key: channel, seq: 2)
+        _ = scroll.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 3)
+        #expect(scroll.options.dividerAfterId == 5)
+    }
+
+    @Test("without a word yet, a boundary at the tail follows and one with lines past it holds")
+    func fallbackWithoutAWord() {
+        // The web's older rule, for a line that lands before the first build is in.
+        let scroll = opened()
+        let caughtUp = row(readStateKnown: true, lastReadId: 10)
+        _ = scroll.onFrame(state(caughtUp, msgs(1...10)), key: channel, seq: 1)
+        _ = scroll.onFrame(state(caughtUp, msgs(1...11)), key: channel, seq: 2)
+        #expect(scroll.options.dividerAfterId == 11)
+        let behind = opened()
+        let pointer = row(readStateKnown: true, lastReadId: 5)
+        _ = behind.onFrame(state(pointer, msgs(1...10)), key: channel, seq: 1)
+        _ = behind.onFrame(state(pointer, msgs(1...11)), key: channel, seq: 2)
+        #expect(behind.options.dividerAfterId == 5)
     }
 
     // MARK: - The unread banner and dividerSeen
