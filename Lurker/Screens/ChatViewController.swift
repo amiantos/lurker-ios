@@ -1018,8 +1018,9 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         if let anchor = step.loadAround { viewModel.loadAround(buffer.key, anchorId: anchor) }
         if step.loadLatest { viewModel.loadLatest(buffer.key) }
         // A reply being written to a line that was just deleted (lurker#1013) can go nowhere now.
-        // The draft's words stay; only the reply link goes — the web's rule.
-        if let reply = pendingReply, state.redactions[reply.messageId] != nil { cancelReply() }
+        // The draft's words stay, the `alice: ` Reply put there included; only the reply link goes
+        // — the web's rule. Not `cancelReply()`, which is the ✕ and takes the address back out.
+        if let reply = pendingReply, state.redactions[reply.messageId] != nil { pendingReply = nil }
 
         let oldLastId = messages.last(where: { $0.id != 0 })?.id
         let wasNearBottom = isNearBottom

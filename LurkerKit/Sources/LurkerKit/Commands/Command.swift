@@ -132,6 +132,9 @@ public enum CommandEffect: Equatable, Sendable {
     /// The parser has already checked the value; which line it lands on is the executor's
     /// question, since only the store knows what was said last.
     case react(value: String)
+    /// Delete your most recent line in the issuing buffer, with an optional reason — `/delete`
+    /// (lurker#1013). Which line that is, and whether the network takes it, is the executor's.
+    case delete(reason: String?)
     /// A local, ephemeral info line printed into the issuing buffer: `/commands` output, a
     /// usage hint, or a "not in the app yet" note. Never touches the network.
     case info(String)
@@ -335,6 +338,8 @@ public enum CommandRegistry {
                     args: [ArgSpec("target", .nick), ArgSpec("message", .text, rest: true)]),
         CommandSpec(["react"], .messaging, "React to the last line someone else said",
                     args: [ArgSpec("emoji or text", .text, rest: true)]),
+        CommandSpec(["delete"], .messaging, "Delete your most recent line",
+                    args: [ArgSpec("reason", .text, optional: true, rest: true)]),
         CommandSpec(["slap"], .messaging, "Slap someone with a large trout",
                     args: [ArgSpec("nick", .nick)]),
         CommandSpec(["shrug"], .messaging, "Say ¯\\_(ツ)_/¯, after your own text if any",

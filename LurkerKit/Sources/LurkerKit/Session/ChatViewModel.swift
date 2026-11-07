@@ -906,9 +906,18 @@ public final class ChatViewModel {
     /// `message-redacted` frame, a refusal as an error line in the buffer. False when there was
     /// no socket to carry it.
     @discardableResult
-    public func redact(messageId: Int) -> Bool {
-        canWrite && client.redact(messageId: messageId)
+    public func redact(messageId: Int, reason: String? = nil) -> Bool {
+        canWrite && sendRedact(messageId, reason)
     }
+
+    /// Every deletion's way onto the socket — through `redactSeam` when a test has set one.
+    private func sendRedact(_ messageId: Int, _ reason: String?) -> Bool {
+        if let redactSeam { return redactSeam(messageId, reason) }
+        return client.redact(messageId: messageId, reason: reason)
+    }
+
+    /// Test seam: stands in for the socket a `redact` verb goes out on — message id, reason.
+    var redactSeam: ((Int, String?) -> Bool)?
 
     /// Whether a write the user made can reach the server now (`ChatState.socketWritable`). Asked
     /// before every user write that reports its fate (sweep L02…L53), because the send's own answer
@@ -1378,6 +1387,8 @@ public final class ChatViewModel {
                 lifecycle(.reconnect, in: key)
             case .react(let value):
                 react(value, in: key)
+            case .delete(let reason):
+                delete(reason: reason, in: key)
             case .info(let text):
                 store.appendLocal(key, text: text)
             }
@@ -1401,7 +1412,7 @@ public final class ChatViewModel {
             store.appendLocal(key, text: "jump back to the latest messages to react with /react")
             return
         }
-        switch Reactions.commandTarget(in: state.messages[key.id] ?? []) {
+        switch Reactions.commandTarget(in: heldAsShown(key, state: state)) {
         case .failure(let refusal):
             store.appendLocal(key, text: refusal.text)
         case .success(let line):
@@ -1413,6 +1424,37 @@ public final class ChatViewModel {
                 store.appendLocal(key, text: "not connected — the reaction wasn't sent")
             }
         }
+    }
+
+    /// `/delete [reason]` (lurker#1013): your most recent line here, no confirm — typing the
+    /// command is the ask. Nothing prints on success: the row blanks when the network's REDACT
+    /// comes back, and a refusal lands here as an error line. The web's `runDelete`.
+    private func delete(reason: String?, in key: BufferKey) {
+        let state = store.state
+        guard state.tagSupport(networkId: key.networkId).canRedact, Reactions.isConversation(key.target) else {
+            store.appendLocal(key, text: "this network can't delete messages")
+            return
+        }
+        // As for `/react`: on a jump's slice the newest line held isn't your newest.
+        if state.buffers[key.id]?.hasMoreNewer == true {
+            store.appendLocal(key, text: "jump back to the latest messages to delete with /delete")
+            return
+        }
+        switch Redactions.commandTarget(in: heldAsShown(key, state: state)) {
+        case .failure(let refusal):
+            store.appendLocal(key, text: refusal.text)
+        case .success(let line):
+            if !sendRedact(line.id, reason) {
+                store.appendLocal(key, text: "not connected — the message wasn't deleted")
+            }
+        }
+    }
+
+    /// The buffer's held rows as the screen shows them where it matters to a command: a line
+    /// deleted while held reads as deleted (`Redactions.presenting`), so `/react` and `/delete`
+    /// never land on one. The stored rows carry no mark of their own — see `ChatState.redactions`.
+    private func heldAsShown(_ key: BufferKey, state: ChatState) -> [Message] {
+        Redactions.presenting(state.messages[key.id] ?? [], redactions: key.networkId == nil ? [:] : state.redactions)
     }
 
     /// Run one of the REST connection verbs on `key`'s network and print its refusal, if any,

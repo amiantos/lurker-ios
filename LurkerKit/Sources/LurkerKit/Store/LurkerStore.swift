@@ -144,11 +144,14 @@ public struct ChatState: Sendable {
     /// The lines we've seen that were deleted, by message id (lurker#1013). **Read through
     /// `redaction(for:)`**, or draw after `Redactions.presenting`.
     ///
-    /// Beside the rows for the reason `reactions` is, and fed the same two ways: each row that
-    /// arrives is authoritative for itself (its `redaction`, or none), and a live
-    /// `message-redacted` frame marks one. Network lines only, and only lines a buffer HOLDS — a
-    /// frame for a line nobody loaded is dropped, since the row brings its mark with it when it's
-    /// fetched — so `dropBuffer` can free a buffer's share. A change here bumps the buffer's
+    /// Beside the rows for the reason `reactions` is, and fed the same two ways: a row that arrives
+    /// deleted marks itself, and a live `message-redacted` frame marks one. Network lines only.
+    /// A deletion is for good, so a mark is never taken back — not by a stale page that read the
+    /// line before its REDACT landed (the web's overlay would; this one keeps the stronger rule).
+    /// Unlike `reactions`, a frame for a line no buffer holds is kept: the feeds (bookmarks,
+    /// activity, search) show lines outside any buffer and draw from here too. Bounded by how
+    /// many lines get deleted, which is few; `dropBuffer` frees a closed buffer's share (its rows
+    /// bring their marks back when fetched). A change to a held line bumps its buffer's
     /// `reactionsRevisions` entry: the deletion takes the line's reactions down with it, and the
     /// screen's redraw gate already watches that integer.
     public var redactions: [Int: Redaction] = [:]
@@ -931,45 +934,46 @@ public struct ChatState: Sendable {
         }
     }
 
-    /// The deletions a `reactions-sync` named (lurker#1013), each applied as its frame would be.
+    /// The deletions a `reactions-sync` named (lurker#1013), applied as their frames would be —
+    /// in one pass: the marks and the dropped reactions first, then one revision bump per buffer
+    /// that holds any of the lines.
     mutating func applyRedactionsSync(_ found: [Int: Redaction]) {
         guard !found.isEmpty else { return }
+        for (id, redaction) in found where id != 0 {
+            redactions[id] = redaction
+            reactions[id] = nil
+        }
         for (key, buffer) in buffers where buffer.networkId != nil {
-            for message in messages[key] ?? [] {
-                guard let redaction = found[message.id] else { continue }
-                applyRedaction(redaction, messageId: message.id, networkId: buffer.networkId!, target: buffer.target)
+            if messages[key]?.contains(where: { found[$0.id] != nil }) == true {
+                reactionsRevisions[key, default: 0] &+= 1
             }
         }
     }
 
-    /// Reconcile `redactions` against a page of rows (lurker#1013) — `noteReactions`' contract:
-    /// each row says whether it was deleted, and silence about an id is not a restoration.
+    /// Seed `redactions` from a page of rows (lurker#1013): a row that arrived deleted marks
+    /// itself. Additive only — a row WITHOUT a mark says nothing, since a page read before a
+    /// REDACT landed can arrive after the frame that applied it (see `redactions`).
     mutating func noteRedactions(in messages: [Message], networkId: Int?, key: String) {
         guard networkId != nil else { return }
         var changed = false
         for message in messages where message.id != 0 {
-            if let redaction = message.redaction {
-                if redactions[message.id] != redaction {
-                    redactions[message.id] = redaction
-                    changed = true
-                }
-            } else if redactions.removeValue(forKey: message.id) != nil {
-                changed = true
-            }
+            guard let redaction = message.redaction, redactions[message.id] != redaction else { continue }
+            redactions[message.id] = redaction
+            changed = true
         }
         if changed { reactionsRevisions[key, default: 0] &+= 1 }
     }
 
-    /// A line was deleted while held (lurker#1013) — a `message-redacted` frame, or a
-    /// `reactions-sync` naming it. Its reactions came down with it on the server, so they do
-    /// here. Only for a line its buffer holds (see `redactions`); a deletion is for good, so
-    /// nothing here is ever taken back.
+    /// A line was deleted (lurker#1013) — a `message-redacted` frame. Its reactions came down with
+    /// it on the server, so they do here. Marked whether or not a buffer holds the line (see
+    /// `redactions`); the buffer that does is told to redraw.
     mutating func applyRedaction(_ redaction: Redaction, messageId: Int, networkId: Int, target: String) {
-        let key = BufferKey(networkId: networkId, target: target).id
-        guard messages[key]?.contains(where: { $0.id == messageId }) == true else { return }
         redactions[messageId] = redaction
         reactions[messageId] = nil
-        reactionsRevisions[key, default: 0] &+= 1
+        let key = BufferKey(networkId: networkId, target: target).id
+        if messages[key]?.contains(where: { $0.id == messageId }) == true {
+            reactionsRevisions[key, default: 0] &+= 1
+        }
     }
 
     /// Mark ids saved wholesale, for a source that carries no per-row flag because every row

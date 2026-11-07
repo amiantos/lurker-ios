@@ -33,28 +33,23 @@ public struct Redaction: Equatable, Sendable {
     }
 }
 
-/// A live `message-redacted` frame (§7.1): the line `messageId` was deleted. Patch the row where
-/// it's held; never a reason to reopen a closed buffer.
+/// A live `message-redacted` frame (§7.1): the line `messageId` was deleted. Mark it wherever it's
+/// shown; never a reason to reopen a closed buffer. The frame's `self` isn't carried: nothing here
+/// reads it — the mark names the deleter, and `isSelf` on the row says whose line it was.
 public struct MessageRedacted: Equatable, Sendable {
     public let networkId: Int
     public let target: String
     public let messageId: Int
     public let by: String
     public let reason: String?
-    /// It was your line.
-    public let isSelf: Bool
     public let time: String?
 
-    public init(
-        networkId: Int, target: String, messageId: Int, by: String, reason: String? = nil,
-        isSelf: Bool = false, time: String? = nil
-    ) {
+    public init(networkId: Int, target: String, messageId: Int, by: String, reason: String? = nil, time: String? = nil) {
         self.networkId = networkId
         self.target = target
         self.messageId = messageId
         self.by = by
         self.reason = reason
-        self.isSelf = isSelf
         self.time = time
     }
 
@@ -74,14 +69,22 @@ public enum Redactions {
     ///
     /// After relay re-attribution, as the web orders it: a bridged line keeps the speaker its
     /// envelope named, and the placeholder stands where their words were.
+    ///
+    /// Returns the SAME array when nothing in it is deleted — the common case for every buffer but
+    /// the one a deletion happened in — so a pipeline built on list identity stays cheap.
     public static func presenting(_ messages: [Message], redactions: [Int: Redaction]) -> [Message] {
-        guard !redactions.isEmpty || messages.contains(where: { $0.redaction != nil }) else { return messages }
+        guard messages.contains(where: { mark(for: $0, in: redactions) != nil }) else { return messages }
         return messages.map { line in
-            guard let redaction = line.id != 0 ? redactions[line.id] ?? line.redaction : line.redaction else {
-                return line
-            }
-            return line.deleted(redaction)
+            guard let redaction = mark(for: line, in: redactions) else { return line }
+            // Already shown as deleted (a row that arrived that way): nothing to take off it.
+            return line.redaction == redaction && line.text == nil ? line : line.deleted(redaction)
         }
+    }
+
+    /// The line's mark: the store's, else the row's own. An ephemeral line (`id == 0`) has no row
+    /// in the store to be marked by.
+    private static func mark(for line: Message, in redactions: [Int: Redaction]) -> Redaction? {
+        (line.id != 0 ? redactions[line.id] : nil) ?? line.redaction
     }
 
     /// Whether Delete is offered on this line (lurker#1013): a line a REDACT could name — a msgid,
@@ -101,5 +104,17 @@ public enum Redactions {
         else { return false }
         if message.isSelf { return true }
         return moderating && ChannelName.isChannelTarget(target)
+    }
+
+    /// What `/delete` lands on: your most recent line here that's still standing — and when it
+    /// can't be deleted, why not. The web's `runDelete`. `messages` as the screen shows them
+    /// (after `presenting`), so a line deleted while held isn't picked again.
+    public static func commandTarget(in messages: [Message]) -> Result<Message, Reactions.CommandRefusal> {
+        guard let own = messages.last(where: { $0.id != 0 && $0.isSelf && $0.type.isSpeech && $0.redaction == nil })
+        else { return .failure(Reactions.CommandRefusal("nothing of yours here to delete")) }
+        if (own.msgid ?? "").isEmpty {
+            return .failure(Reactions.CommandRefusal("can't delete that line (no message id)"))
+        }
+        return .success(own)
     }
 }

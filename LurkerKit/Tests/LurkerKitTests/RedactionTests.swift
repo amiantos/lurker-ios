@@ -32,7 +32,7 @@ final class RedactionTests: XCTestCase {
 
     private func redacted(_ id: Int, by: String = "alice", reason: String? = nil, target: String = "#lurker") -> ServerFrame {
         .messageRedacted(MessageRedacted(
-            networkId: 1, target: target, messageId: id, by: by, reason: reason, isSelf: false, time: "2026-11-05T00:00:00Z"
+            networkId: 1, target: target, messageId: id, by: by, reason: reason, time: "2026-11-05T00:00:00Z"
         ))
     }
 
@@ -54,8 +54,7 @@ final class RedactionTests: XCTestCase {
             ##"{"kind":"message-redacted","networkId":1,"bufferId":9,"target":"#lurker","messageId":42,"by":"bob","reason":"oops","self":true,"time":"2026-11-05T00:00:00Z"}"##
         )
         XCTAssertEqual(frame, .messageRedacted(MessageRedacted(
-            networkId: 1, target: "#lurker", messageId: 42, by: "bob", reason: "oops", isSelf: true,
-            time: "2026-11-05T00:00:00Z"
+            networkId: 1, target: "#lurker", messageId: 42, by: "bob", reason: "oops", time: "2026-11-05T00:00:00Z"
         )))
         XCTAssertEqual(FrameParser.parseWs(##"{"kind":"message-redacted","networkId":1,"by":"bob"}"##), .ignored)
         XCTAssertEqual(FrameParser.parseWs(##"{"kind":"message-redacted","messageId":4,"by":"bob"}"##), .ignored)
@@ -141,21 +140,50 @@ final class RedactionTests: XCTestCase {
         XCTAssertEqual(store.state.messages[key.id]?[0].text, "hi", "the stored row is never patched")
     }
 
-    func testAFrameForALineNobodyHoldsIsDropped() {
+    /// The feeds show lines outside any buffer, so a mark for one is kept — but only a buffer that
+    /// holds the line is told to redraw.
+    func testAFrameForALineNobodyHoldsIsKeptWithoutARedraw() {
         let store = LurkerStore()
         store.apply(backlog([line(1)]))
+        let before = store.state.reactionsRevision(for: key)
         store.apply(redacted(7))
-        XCTAssertTrue(store.state.redactions.isEmpty, "the row brings its mark with it when it's fetched")
+        XCTAssertEqual(store.state.redactions[7], mark, "a bookmark or a search hit can show it")
+        XCTAssertEqual(store.state.reactionsRevision(for: key), before, "nothing on this screen changed")
         store.apply(redacted(1, target: "#other"))
-        XCTAssertTrue(store.state.redactions.isEmpty, "and a buffer that doesn't hold it says nothing about it")
+        XCTAssertEqual(store.state.redactions[1], mark)
+        XCTAssertEqual(store.state.reactionsRevision(for: key), before, "the frame named another buffer")
+    }
+
+    /// A page read before the REDACT landed can arrive after the frame that applied it.
+    func testAStalePageNeverUndeletesALine() {
+        let store = LurkerStore()
+        store.apply(backlog([line(1)]))
+        store.apply(redacted(1))
+        store.apply(.history(
+            networkId: 1, target: "#lurker", events: [line(1)], mode: .around,
+            hasMoreOlder: false, hasMoreNewer: false, speakers: nil
+        ))
+        XCTAssertEqual(store.state.redaction(for: line(1), networkId: 1), mark, "a deletion is for good")
     }
 
     func testTheSyncAnswerDeletesWhatItNames() {
         let store = LurkerStore()
         store.apply(backlog([line(1), line(2)]))
-        store.apply(.reactionsSync(messageIds: [1, 2], reactions: [:], redactions: [2: mark]))
+        let before = store.state.reactionsRevision(for: key)
+        store.apply(.reactionsSync(messageIds: [1, 2], reactions: [1: [MessageReaction(nick: "bob", value: "👍", isSelf: false)]], redactions: [2: mark]))
         XCTAssertNil(store.state.redaction(for: line(1), networkId: 1))
         XCTAssertEqual(store.state.redaction(for: line(2), networkId: 1), mark)
+        XCTAssertTrue(store.state.reactionGroups(for: 2).isEmpty)
+        XCTAssertEqual(store.state.reactionGroups(for: 1).count, 1, "its neighbour keeps its chips")
+        XCTAssertNotEqual(store.state.reactionsRevision(for: key), before)
+    }
+
+    func testPresentingReturnsTheSameListWhenNothingInItIsDeleted() {
+        let lines = [line(1), line(2)]
+        let shown = Redactions.presenting(lines, redactions: [9: mark])
+        XCTAssertTrue(shown.withUnsafeBufferPointer { a in lines.withUnsafeBufferPointer { b in a.baseAddress == b.baseAddress } }
+            || shown == lines)
+        XCTAssertEqual(Redactions.presenting([line(1, text: nil, redaction: mark)], redactions: [:]).first?.text, nil)
     }
 
     func testClosingABufferFreesItsMarks() {
@@ -279,5 +307,75 @@ final class RedactionTests: XCTestCase {
     func testReactCommandRefusesADeletedLine() {
         let result = Reactions.commandTarget(in: [line(1), line(2).deleted(mark)])
         XCTAssertEqual(result, .failure(Reactions.CommandRefusal("can't react to a deleted message")))
+    }
+
+    // MARK: - Through the view model
+
+    private func model() -> ChatViewModel {
+        let model = ChatViewModel(
+            sessions: SessionStore(service: "chat.lurker.tests.redaction"),
+            settingsCache: SettingsCache(defaults: UserDefaults(suiteName: "chat.lurker.tests.redaction")!)
+        )
+        model.handle(.socketOpen)
+        model.handle(.snapshot(
+            [NetworkSnapshot(id: 1, state: .connected, nick: "me",
+                             channels: [ChannelSnapshot(name: "#lurker", topic: nil, members: [])],
+                             tagSupport: TagSupport(canAddReaction: true, canRemoveReaction: true, canReply: true, canRedact: true))],
+            globalIgnores: [], uploadLimits: .unstated
+        ))
+        return model
+    }
+
+    private func lastLocal(_ model: ChatViewModel) -> String? {
+        model.state.messages[key.id]?.last(where: { $0.id == 0 })?.text
+    }
+
+    /// The stored rows carry no mark, so the command has to look at the lines as shown.
+    func testReactCommandSkipsALineDeletedWhileHeld() {
+        let model = model()
+        var sent: [String] = []
+        model.reactSeam = { id, value, _ in sent.append("\(id) \(value)"); return true }
+        model.handle(backlog([line(1, nick: "bob"), line(2, nick: "bob")]))
+        model.handle(redacted(2, by: "bob"))
+        model.send(key, text: "/react 👍")
+        XCTAssertEqual(sent, [])
+        XCTAssertEqual(lastLocal(model), "can't react to a deleted message")
+    }
+
+    func testDeleteCommandTakesYourNewestStandingLineWithItsReason() {
+        let model = model()
+        var sent: [String] = []
+        model.redactSeam = { id, reason in sent.append("\(id) \(reason ?? "-")"); return true }
+        model.handle(backlog([line(1, isSelf: true), line(2, nick: "bob"), line(3, isSelf: true)]))
+        model.send(key, text: "/delete")
+        model.send(key, text: "/delete  typo  ")
+        XCTAssertEqual(sent, ["3 -", "3 typo"])
+        // Deleted while held: the next /delete reaches past it.
+        model.handle(redacted(3, by: "me"))
+        model.send(key, text: "/delete")
+        XCTAssertEqual(sent.last, "1 -")
+        XCTAssertNil(lastLocal(model), "nothing prints on success")
+    }
+
+    func testDeleteCommandSaysWhyWhenItCant() {
+        let model = model()
+        model.redactSeam = { _, _ in XCTFail("nothing should go out"); return true }
+        model.handle(backlog([line(1, nick: "bob")]))
+        model.send(key, text: "/delete")
+        XCTAssertEqual(lastLocal(model), "nothing of yours here to delete")
+        model.handle(backlog([line(1, nick: "bob"), line(2, isSelf: true, msgid: nil)]))
+        model.send(key, text: "/delete")
+        XCTAssertEqual(lastLocal(model), "can't delete that line (no message id)")
+        model.handle(.reactSupport(networkId: 1, support: .all))
+        model.send(key, text: "/delete")
+        XCTAssertEqual(lastLocal(model), "this network can't delete messages")
+    }
+
+    func testDeleteParsesItsOptionalReason() {
+        guard case .command(let bare) = CommandParser.parse("/delete", networkId: 1, target: "#lurker"),
+              case .command(let reasoned) = CommandParser.parse("/delete  oops ", networkId: 1, target: "#lurker")
+        else { return XCTFail("a command") }
+        XCTAssertEqual(bare, [.delete(reason: nil)])
+        XCTAssertEqual(reasoned, [.delete(reason: "oops")])
     }
 }

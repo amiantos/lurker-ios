@@ -213,6 +213,11 @@ public enum CommandParser {
                 return [.info("a reaction can be at most \(Reactions.maxGraphemes) characters")]
             }
             return [.react(value: value)]
+        case "delete":
+            // The web's `/delete [reason]`: your most recent line here, no confirm — typing the
+            // command is the ask; the sheet's Delete confirms because a tap is not.
+            let reason = argLine.trimmingCharacters(in: .whitespaces)
+            return [.delete(reason: reason.isEmpty ? nil : reason)]
         case "slap":
             guard let who = rest.first else { return [.info("usage: /slap <nick>")] }
             return [.action(target: target, text: "slaps \(who) around a bit with a large trout")]
