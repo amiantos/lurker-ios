@@ -21,7 +21,8 @@ final class LurkerClient {
     private let mediaSession: URLSession
     private var baseURL = ""
     private var token: String?
-    private var socket: URLSessionWebSocketTask?
+    /// Readable so a test can see the task's configuration (#257); only this type opens one.
+    private(set) var socket: URLSessionWebSocketTask?
     /// The socket has ended, and the reconnect hasn't replaced it yet. ⚠⚠ The task is kept —
     /// `dropSocket` and the `task === socket` guards still need it — but nothing can be written to
     /// it, so `send` answers false. Without this, every write made while "Reconnecting…" showed
