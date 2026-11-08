@@ -152,11 +152,16 @@ class HistoryFeedViewController: UITableViewController {
         // feed is open (a profile edit, the setting) would show on the rows scrolled in since and
         // not on the ones already drawn (lurker#1203). Redraw the lot: the pages themselves don't
         // move, only what the heads and quotes print. Identity test on the set — see `UserMetadataSet`.
+        // A deletion (lurker#1013) is the other live change a drawn row has to follow: its words
+        // become the placeholder, and a reaction row quoting it goes (`standing`). The map only
+        // changes when a line is deleted, so comparing it is cheap.
         viewModel.statePublisher
-            .removeDuplicates { $0.userMetadata === $1.userMetadata && $0.settings == $1.settings }
+            .removeDuplicates {
+                $0.userMetadata === $1.userMetadata && $0.settings == $1.settings && $0.redactions == $1.redactions
+            }
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.tableView.reloadData() }
+            .sink { [weak self] _ in self?.rowsChanged() }
             .store(in: &cancellables)
         // The same backdrop the message list uses, since a row is supposed to read as a slice of
         // one — on the system background it read as a different surface quoting the conversation.
@@ -347,6 +352,18 @@ class HistoryFeedViewController: UITableViewController {
         }
     }
 
+    /// The rows that still stand: a reaction to a line since deleted (lurker#1013) goes — the
+    /// server took the reactions down with the line, and the web drops those feed items the same
+    /// way. A deleted line's own row (a mention, a bookmark, a hit) stays and shows the
+    /// placeholder. Judged at every rebuild, unlike the ignore rules: the deletion arrives as a
+    /// frame, and the subscription rebuilds on it.
+    private func standing(_ items: [HighlightItem]) -> [HighlightItem] {
+        let state = viewModel.state
+        return items.filter { item in
+            item.reaction == nil || state.redaction(for: item.message, networkId: item.networkId) == nil
+        }
+    }
+
     /// Drop one row from the feed, rebuilding the grouped view around it.
     ///
     /// Addressed by **message id, not index path**. A swipe action fires against the index path
@@ -373,7 +390,7 @@ class HistoryFeedViewController: UITableViewController {
     /// LurkerKit); this maps each group to its rendered header — the roster-resolved network
     /// name, the target, and the formatted day.
     private func rebuildSections() {
-        let groups = HighlightGrouping.group(items, now: Date())
+        let groups = HighlightGrouping.group(standing(items), now: Date())
         sections = groups.map { group in
             let item = group.items[0]
             let resolvedNetworkName = networkName(for: item)
@@ -465,8 +482,15 @@ class HistoryFeedViewController: UITableViewController {
         // its buffer (#277) — and before replies are presented, which judge the line as it reads.
         // A reaction row is the reactor's, never relayed.
         let state = viewModel.state
+        // A deleted line (lurker#1013) shows its placeholder here too — by the row's own mark, or
+        // the store's for one deleted while this feed was open (the subscription above redraws).
+        // Never for a system-buffer item, whose id is another sequence.
+        let redactions = item.networkId == nil ? [:] : state.redactions
         let line = item.reaction == nil
-            ? state.relayBots.reattributing([item.message], networkId: item.networkId).first ?? item.message
+            ? Redactions.presenting(
+                state.relayBots.reattributing([item.message], networkId: item.networkId),
+                redactions: redactions
+            ).first ?? item.message
             : item.message
         let name = line.type.isBubble
             ? MessageRenderer.caption(line, networkName: section.networkName)
@@ -485,7 +509,8 @@ class HistoryFeedViewController: UITableViewController {
             ? Replies.presenting(
                 [line], networkId: item.networkId, target: item.target,
                 ignores: state.ignores, relayBots: state.relayBots,
-                ownNick: item.networkId.flatMap { state.networks[$0]?.nick }
+                ownNick: item.networkId.flatMap { state.networks[$0]?.nick },
+                redactions: redactions
             ).first ?? line
             : line
         // Display names (lurker#1203) on the row's own network: the plain form inside the

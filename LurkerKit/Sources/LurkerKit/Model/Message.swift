@@ -108,6 +108,14 @@ public struct Message: Equatable, Sendable {
     public let notifyAlways: Bool
     /// A kick of us — only the server knows the nick we wore when it landed.
     public let selfKicked: Bool
+    /// The line was deleted (lurker#1013): the server NULLed its text and this says who and when.
+    /// On the wire for a row read back deleted; set by `deleted(_:)` for one deleted while held.
+    ///
+    /// **Don't render from the wire field alone — ask `ChatState.redaction(for:)`**, or draw the
+    /// line after `Redactions.presenting`, which folds the store's answer in. Like `reactions`,
+    /// the row's field is the seed and the store's side map is what also reflects a
+    /// `message-redacted` frame since. `var` for `deleted(_:)`, and writable from this file alone.
+    public private(set) var redaction: Redaction?
     /// The reply's quote as it should SHOW — set by `showingReply`, the one producer, from
     /// `Replies.shown`: nil on a reply means "original message unavailable" (gone, never held, or
     /// from someone ignored since). Meaningless on a line that isn't a reply.
@@ -157,7 +165,8 @@ public struct Message: Equatable, Sendable {
         notify: Bool = false,
         dm: Bool = false,
         notifyAlways: Bool = false,
-        selfKicked: Bool = false
+        selfKicked: Bool = false,
+        redaction: Redaction? = nil
     ) {
         self.id = id
         self.type = type
@@ -188,6 +197,22 @@ public struct Message: Equatable, Sendable {
         self.dm = dm
         self.notifyAlways = notifyAlways
         self.selfKicked = selfKicked
+        self.redaction = redaction
+    }
+
+    /// This line as deleted (lurker#1013): its words gone, the mark in their place. A display
+    /// transform like `relayed`, applied by `Redactions.presenting` — the stored row keeps whatever
+    /// text it arrived with, and the store's side map says which lines show this way.
+    ///
+    /// `unstrippedText` goes too, so `copyText` has nothing to offer: a deleted line is copied
+    /// by nobody. Everything else is carried over — `id`, author, time — because the row stays
+    /// where it was, and a bookmark, a jump and a mark-read all still address it.
+    public func deleted(_ redaction: Redaction) -> Message {
+        var copy = self
+        copy.redaction = redaction
+        copy.text = nil
+        copy.unstrippedText = nil
+        return copy
     }
 
     /// This line with its highlight taken off — what a `NOHIGHLIGHT` ignore rule leaves behind
@@ -283,7 +308,10 @@ public struct Message: Equatable, Sendable {
     /// `.other` (it consumes none of them yet) and, left in, each renders as an empty line. The web client either folds them into state or filters them; this is how
     /// the client keeps them off screen without modeling every one.
     public var isRenderable: Bool {
-        switch type {
+        // A deleted line (lurker#1013) has no text by design and still has a row to show: its
+        // author, its time, and the placeholder where its words were.
+        if redaction != nil { return true }
+        return switch type {
         // Built from the actor nick; a reason/topic is optional.
         case .join, .part, .quit, .topic: hasNick
         // Both ends of the rename are needed to say "alice is now bob".

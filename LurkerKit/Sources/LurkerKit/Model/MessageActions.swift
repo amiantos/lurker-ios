@@ -11,6 +11,9 @@ public enum MessageActionKey: String, Sendable {
     case react
     case copy
     case bookmark
+    /// Ask the network to delete the line (lurker#1013): yours, or anyone's where you hold a
+    /// prefix mode. One confirm; the row blanks when the network's REDACT comes back.
+    case delete
     /// Open the profile of the person the line is *from* (#12) — which on a re-attributed
     /// relay line is the bridge, not the speaker. See `profileSubject`.
     case profile
@@ -36,12 +39,19 @@ public struct MessageActionScope: Equatable, Sendable {
     public let target: String
     /// `ChatState.tagSupport(networkId:)` at the press: which tags the network takes right now.
     public let support: TagSupport
+    /// `ChatState.moderates(in:)` at the press: whether you hold a prefix mode in this channel,
+    /// which is what offers Delete on other people's lines (lurker#1013). False in a DM.
+    public let moderating: Bool
 
-    public init(networkId: Int?, isBookmarked: Bool, target: String = "", support: TagSupport = .nothing) {
+    public init(
+        networkId: Int?, isBookmarked: Bool, target: String = "", support: TagSupport = .nothing,
+        moderating: Bool = false
+    ) {
         self.networkId = networkId
         self.isBookmarked = isBookmarked
         self.target = target
         self.support = support
+        self.moderating = moderating
     }
 }
 
@@ -80,19 +90,24 @@ public struct MessageActionContext {
     public let showProfile: (String) -> Void
     /// Open the reaction sheet for this line.
     public let react: (Message) -> Void
+    /// Delete this line (lurker#1013): the screen confirms — it can't be undone — then sends the
+    /// `redact` and waits for the network's frame. Only called for a line `build` offered Delete on.
+    public let delete: (Message) -> Void
 
     public init(
         reply: @escaping (Message) -> Void,
         copy: @escaping (String) -> Void,
         setBookmark: @escaping (Int, Bool) -> Void,
         showProfile: @escaping (String) -> Void,
-        react: @escaping (Message) -> Void = { _ in }
+        react: @escaping (Message) -> Void = { _ in },
+        delete: @escaping (Message) -> Void = { _ in }
     ) {
         self.reply = reply
         self.copy = copy
         self.setBookmark = setBookmark
         self.showProfile = showProfile
         self.react = react
+        self.delete = delete
     }
 }
 
@@ -197,6 +212,14 @@ public enum MessageActions {
             )
         }
 
+        // Delete (lurker#1013): a REDACT to the network, which answers with the deletion or a
+        // refusal. Last among the line's own actions, before the one that addresses its author —
+        // where the web puts it. `Redactions.deletable` says on whose lines: yours, or anyone's
+        // where you hold a prefix mode, on a network that negotiated the cap.
+        if Redactions.deletable(message, target: scope.target, support: scope.support, moderating: scope.moderating) {
+            actions.append(MessageAction(key: .delete, title: "Delete Message", symbol: "trash"))
+        }
+
         // Profile — whois, their note, and the way to DM them.
         //
         // ⚠⚠ The subject is `profileSubject`, NOT `message.nick`. On a relay-re-attributed
@@ -258,7 +281,11 @@ public enum MessageActions {
     /// a reply's tag goes out on its network right now — so a caller with no menu to build (the
     /// swipe) needn't invent the rest of a scope to ask.
     public static func replyAction(for message: Message, target: String, canReply: Bool) -> MessageAction? {
-        guard message.type.isSpeech, let nick = message.nick, !nick.isEmpty else { return nil }
+        // No reply to a deleted line (lurker#1013): addressing its author with nothing to answer
+        // is the one thing Reply would still do.
+        guard message.type.isSpeech, message.redaction == nil, let nick = message.nick, !nick.isEmpty else {
+            return nil
+        }
         let unaddressed = message.isSelf || Replies.isPrivate(target)
         if !unaddressed {
             return MessageAction(key: .reply, title: "Reply to \(nick)", symbol: "arrowshape.turn.up.left")
@@ -315,7 +342,7 @@ public enum MessageActions {
         case .openLink: context.open(url)
         case .copyLink: context.copy(url)
         case .shareLink: context.share(url)
-        case .reply, .react, .copy, .bookmark, .profile: break
+        case .reply, .react, .copy, .bookmark, .delete, .profile: break
         }
     }
 
@@ -353,6 +380,9 @@ public enum MessageActions {
             // offered. Re-reading the store here instead would invert the button under the
             // user: the row says "Save Message" and an unsave goes out.
             context.setBookmark(message.id, !scope.isBookmarked)
+        case .delete:
+            // The screen confirms and sends; nothing is rendered until the network answers.
+            context.delete(message)
         case .profile:
             // `build` already refused a line with no IRC subject, and this re-derives from the
             // same function rather than restating its rule — the drift `run`'s own gate exists

@@ -15,14 +15,21 @@ public struct ReplyParent: Equatable, Sendable {
     public let userhost: String?
     /// One of your own lines.
     public let isSelf: Bool
+    /// The answered line was deleted (lurker#1013): `text` is empty, and the quote says so rather
+    /// than "unavailable" — the row is still there to jump to.
+    public let redacted: Bool
 
-    public init(id: Int, nick: String, type: EventType, text: String, userhost: String? = nil, isSelf: Bool = false) {
+    public init(
+        id: Int, nick: String, type: EventType, text: String, userhost: String? = nil, isSelf: Bool = false,
+        redacted: Bool = false
+    ) {
         self.id = id
         self.nick = nick
         self.type = type
         self.text = text
         self.userhost = userhost
         self.isSelf = isSelf
+        self.redacted = redacted
     }
 }
 
@@ -50,6 +57,9 @@ public struct ReplyQuote: Equatable, Sendable {
     public let isSelf: Bool
     public let relayBot: String?
     public let relaySource: String?
+    /// The quoted line was deleted (lurker#1013): `text` is empty and the quote reads
+    /// `Redactions.placeholder` in its place. Still jumps.
+    public var redacted = false
 }
 
 /// The reply a composer is writing (the web's `PendingReply`): the line it answers, and whether
@@ -139,6 +149,9 @@ public enum Replies {
     /// - The text loses the `alice: ` it opens with when the quote names her — or the bot, which a
     ///   client that knows nothing of relay marks addresses instead. Only on a `message`, and only
     ///   when there's a quote: with none, that address is the only sign of who it's to.
+    /// - The quote of a deleted line (lurker#1013) reads as deleted, not as unavailable — by the
+    ///   parent's own flag, or by `redactions` (`ChatState.redactions`) when the answered line was
+    ///   deleted while this reply was on screen and its quote still copied the words.
     public static func shown(
         _ context: ReplyContext,
         line: Message,
@@ -147,9 +160,10 @@ public enum Replies {
         ignores: IgnoreSet,
         relayBots: RelayBotSet,
         ownNick: String?,
+        redactions: [Int: Redaction] = [:],
         now: Date = Date()
     ) -> (quote: ReplyQuote?, text: String?) {
-        guard let parent = context.parent else { return (nil, line.text) }
+        guard var parent = context.parent else { return (nil, line.text) }
         let asLine = Message(
             id: parent.id, type: parent.type, nick: parent.nick, text: parent.text,
             isSelf: parent.isSelf, userhost: parent.userhost
@@ -157,19 +171,29 @@ public enum Replies {
         if !parent.isSelf, ignores.isMessageHidden(networkId: networkId, message: asLine, target: target, now: now) {
             return (nil, line.text)
         }
+        if !parent.redacted, redactions[parent.id] != nil {
+            parent = ReplyParent(
+                id: parent.id, nick: parent.nick, type: parent.type, text: "",
+                userhost: parent.userhost, isSelf: parent.isSelf, redacted: true
+            )
+        }
+        // Unwrapped from the words the server sent, BEFORE they go: a bridged line deleted while
+        // this reply was on screen still quotes the person inside its envelope, as its own row
+        // does. A parent that arrived deleted has no envelope left and quotes whoever was stored.
         let unwrapped = relayBots.reattributing([asLine], networkId: networkId).first ?? asLine
         let relayed = unwrapped.relayBot != nil
-        let quote = ReplyQuote(
+        var quote = ReplyQuote(
             id: parent.id,
             nick: unwrapped.nick ?? parent.nick,
             type: parent.type,
-            text: unwrapped.text ?? parent.text,
+            text: parent.redacted ? "" : unwrapped.text ?? parent.text,
             isSelf: relayed
                 ? (ownNick.map { NickCompletion.sameNick($0, unwrapped.nick ?? "") } ?? false)
                 : parent.isSelf,
             relayBot: unwrapped.relayBot,
             relaySource: unwrapped.relaySource
         )
+        quote.redacted = parent.redacted
         guard line.type == .message, let text = line.text else { return (quote, line.text) }
         var stripped = stripAddress(text, nick: quote.nick)
         if stripped == text, let bot = quote.relayBot { stripped = stripAddress(text, nick: bot) }
@@ -181,14 +205,15 @@ public enum Replies {
     /// that came through a bridge is judged as the line it reads as.
     public static func presenting(
         _ messages: [Message], networkId: Int?, target: String,
-        ignores: IgnoreSet, relayBots: RelayBotSet, ownNick: String?, now: Date = Date()
+        ignores: IgnoreSet, relayBots: RelayBotSet, ownNick: String?,
+        redactions: [Int: Redaction] = [:], now: Date = Date()
     ) -> [Message] {
         guard messages.contains(where: { $0.replyTo != nil }) else { return messages }
         return messages.map { line in
             guard let context = line.replyTo else { return line }
             let result = shown(
                 context, line: line, networkId: networkId, target: target,
-                ignores: ignores, relayBots: relayBots, ownNick: ownNick, now: now
+                ignores: ignores, relayBots: relayBots, ownNick: ownNick, redactions: redactions, now: now
             )
             return line.showingReply(quote: result.quote, text: result.text)
         }

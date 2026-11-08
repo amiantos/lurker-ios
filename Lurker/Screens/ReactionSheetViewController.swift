@@ -201,6 +201,12 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     }
 
     private func render(_ state: ChatState) {
+        // The line was deleted under the sheet (lurker#1013): nothing it offers can go anywhere
+        // now, so it goes — the web closes its picker the same way.
+        if state.redaction(for: message, networkId: networkId) != nil {
+            dismiss(animated: true)
+            return
+        }
         // Resolved once: adding is what the picks and the field are for, and a value of ours is a
         // take-back, which the network may refuse where it takes a new one (`works`).
         let support = state.tagSupport(networkId: networkId)
