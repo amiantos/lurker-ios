@@ -21,7 +21,8 @@ final class LurkerClient {
     private let mediaSession: URLSession
     private var baseURL = ""
     private var token: String?
-    private var socket: URLSessionWebSocketTask?
+    /// Readable so a test can see the task's configuration (#257); only this type opens one.
+    private(set) var socket: URLSessionWebSocketTask?
     /// The socket has ended, and the reconnect hasn't replaced it yet. ⚠⚠ The task is kept —
     /// `dropSocket` and the `task === socket` guards still need it — but nothing can be written to
     /// it, so `send` answers false. Without this, every write made while "Reconnecting…" showed
@@ -580,6 +581,15 @@ final class LurkerClient {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: request)
+        // ⚠⚠ The default is 1 MiB, and the protocol has no frame-size contract: the connect
+        // `snapshot` is ONE message carrying every live channel's member list, and an account
+        // on ~20 networks and ~100 channels pushed it past that (#257). Over the cap, the first
+        // `receive` fails with "Message too long" before any frame lands — so `socketOpen`
+        // never fires, the store stays on "Connecting…" rather than "Reconnecting…", and every
+        // retry asks for the identical snapshot. Browsers impose no limit and the web was fine
+        // on the same account. No cap here either; the server is the user's own.
+        // lurker#1292 shrinks the frame itself.
+        task.maximumMessageSize = Int.max
         socket = task
         socketEnded = false
         socketGeneration &+= 1
