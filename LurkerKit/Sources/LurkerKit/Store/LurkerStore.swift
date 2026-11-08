@@ -1040,6 +1040,19 @@ public struct ChatState: Sendable {
     /// You are always listed. A hostmask rule can legitimately cover your own nick (a shared
     /// bouncer host, a wildcard on the network you're on), and disappearing yourself from your
     /// own nicklist is never what such a rule meant.
+    /// Whether a channel's member list is still on its way (lurker#1292): the store holds none,
+    /// and we are in the channel on a network that is up or coming back — so one is coming,
+    /// with the buffer's hydration or the resume. A parted channel or a network that is
+    /// `disconnected` has no list coming; a nil there is "nobody", not "not yet". The one rule
+    /// for every screen that says "loading" (the member sheet, the info sheet's count).
+    /// `joined` overrides the stored row's — for a buffer this screen synthesized.
+    public func membersAwaited(in key: BufferKey, joined: Bool? = nil) -> Bool {
+        guard members[key.id] == nil else { return false }
+        guard joined ?? buffers[key.id]?.joined ?? false else { return false }
+        guard let networkId = key.networkId, let network = networks[networkId] else { return false }
+        return network.state != .disconnected
+    }
+
     public func visibleMembers(in key: BufferKey) -> [Member] {
         let members = self.members[key.id] ?? []
         guard !ignores.isEmpty(for: key.networkId) else { return members }
@@ -2176,14 +2189,18 @@ final class LurkerStore {
     /// case-insensitively throughout: servers echo inconsistent casing, and `toLowerCase`
     /// matching is house style (see `BufferKey`).
     ///
-    /// A join can seed a list from nil — our own join precedes the `names` broadcast, so
-    /// the list briefly holds just us until the full roster lands. Removals against nil
-    /// stay nil: a quit fans out to DM buffers too, which have no list to edit.
+    /// Nothing seeds a list from nil (lurker#1292): nil is "the list hasn't arrived", and the
+    /// `names` behind our own join brings the whole roster. Removals against nil stay nil
+    /// too: a quit fans out to DM buffers too, which have no list to edit.
     private static func foldMembership(_ members: [Member]?, _ message: Message) -> [Member]? {
         switch message.type {
         case .join:
             guard let nick = message.nick, !nick.isEmpty else { return members }
-            let list = members ?? []
+            // No list, no seeding (lurker#1292): `nil` is "the list hasn't arrived", and a join
+            // folded into nothing would make a one-person room that reads as held — and that a
+            // pending `names` would then defer to. Our own join is no exception: the 366 that
+            // follows brings the whole list, ourselves included.
+            guard let list = members else { return nil }
             // Already present (e.g. the list arrived via `names` before our fold ran):
             // keep the existing entry and whatever modes/away it carries.
             guard !list.contains(where: { $0.nick.lowercased() == nick.lowercased() })
@@ -2253,12 +2270,19 @@ final class LurkerStore {
     }
 
     /// The member list to hold once the server sends `incoming` — which is the list, unless it is
-    /// `pending` (`membersPending`, §9.1, lurker#863): then the server hasn't heard the channel's
-    /// NAMES since it last attached, and `incoming` is only us plus whoever has joined since.
-    /// Taking it would read as everyone leaving, so a list already held stands; with none held,
-    /// something beats nothing. The definitive `names` follows within seconds.
-    private static func membersAfter(_ held: [Member]?, _ incoming: [Member], pending: Bool) -> [Member] {
-        if pending, let held, !held.isEmpty { return held }
+    /// `pending` (`membersPending`, §9.1): the frame is not the list. Every connect-snapshot
+    /// channel says so (lurker#1292: the snapshot carries no members, and the list arrives as a
+    /// `names` with the buffer's first hydration), and so does a `names` while the server hasn't
+    /// heard the channel's NAMES since it last attached (lurker#863), when `incoming` is only us
+    /// plus whoever has joined since. Taking either would read as everyone leaving, so a list
+    /// already held stands; with none held, something beats nothing — but an EMPTY pending list
+    /// over nothing stays nothing: `nil` is what the member sheet reads as "loading", and `[]`
+    /// would show "No members yet." for the round trip until the real list lands.
+    private static func membersAfter(_ held: [Member]?, _ incoming: [Member], pending: Bool) -> [Member]? {
+        if pending {
+            if let held, !held.isEmpty { return held }
+            if incoming.isEmpty { return held }
+        }
         return incoming
     }
 

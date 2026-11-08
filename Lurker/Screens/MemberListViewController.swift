@@ -26,6 +26,9 @@ final class MemberListViewController: UITableViewController {
     /// Everyone in the channel, ranked. The table draws `visible`, which is this filtered by
     /// the search field.
     private var members: [Member] = []
+    /// Whether the channel's list is still on its way (lurker#1292): the store holds none, and
+    /// we are in the channel on a connected network, so one is coming.
+    private var awaitingList = false
     /// The network's PREFIX — its symbols and ranks (lurker-ios#191); nil before ISUPPORT.
     private var prefix: [PrefixMode]?
     /// Lowercased nick → what the row prints (lurker#1203).
@@ -73,6 +76,11 @@ final class MemberListViewController: UITableViewController {
             .removeDuplicates { old, new in
                 old.members[key] == new.members[key] && old.ignores === new.ignores
                     && networkId.flatMap { old.networks[$0]?.modeSpec?.prefix } == networkId.flatMap { new.networks[$0]?.modeSpec?.prefix }
+                    // Whether a list is still coming (lurker#1292) reads the row's `joined` and
+                    // the network's state: a kick or a drop with the list still nil would
+                    // otherwise leave "Loading members…" promising what no longer comes.
+                    && old.buffers[key]?.joined == new.buffers[key]?.joined
+                    && networkId.flatMap { old.networks[$0]?.state } == networkId.flatMap { new.networks[$0]?.state }
                     // The names the rows print (lurker#1203): a profile change, or the setting
                     // that shows them, arrives with no join alongside it.
                     && old.userMetadata === new.userMetadata
@@ -86,6 +94,11 @@ final class MemberListViewController: UITableViewController {
 
     private func apply(_ state: ChatState) {
         prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
+        // Loading only while there is a list to wait for (`membersAwaited`): a parted channel
+        // or a down network has no list coming, and says so with the ordinary empty text.
+        awaitingList = state.membersAwaited(
+            in: buffer.key, joined: state.buffers[buffer.key.id]?.joined ?? buffer.joined
+        )
         members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key), prefix: prefix)
         // What each row prints (lurker#1203): the display name, else the nick. Keyed, sorted and
         // coloured on the nick still — the name is only what's written.
@@ -147,8 +160,8 @@ final class MemberListViewController: UITableViewController {
     /// from the user: a DM has nobody to list and never will, while a channel with no
     /// members means we haven't been told yet.
     ///
-    /// Built once — the text depends only on this screen's buffer, and `apply` runs on
-    /// every state change that reaches us.
+    /// Built once; its text is re-read on every `refilter`, since which reason applies moves
+    /// with the state (`awaitingList`) as well as with the query.
     private lazy var emptyLabel: UILabel = {
         let label = UILabel()
         label.text = emptyText(searching: false)
@@ -160,10 +173,13 @@ final class MemberListViewController: UITableViewController {
 
     /// A filter that matched nothing is a different fact from a channel with nobody in it, and
     /// the two need different things from the reader — one is "type less", the other is "wait".
+    /// So is a channel whose list hasn't arrived: the connect snapshot carries no members, and
+    /// the list comes with the buffer's first hydration (lurker#1292), so until the store holds
+    /// one at all the room isn't empty, it's unread.
     private func emptyText(searching: Bool) -> String {
         if searching { return "No members match." }
         switch buffer.kind {
-        case .channel: return "No members yet."
+        case .channel: return awaitingList ? "Loading members…" : "No members yet."
         case .dm: return "Direct messages have no member list."
         case .dcc: return "A DCC chat has no member list."
         case .server, .system: return "This buffer has no member list."

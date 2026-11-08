@@ -105,6 +105,67 @@ final class ProtocolSweepTests: XCTestCase {
         XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "carol"])
     }
 
+    /// The connect snapshot carries no channel's members (lurker#1292): every channel is
+    /// `members: []` + `membersPending`, and the list arrives as a `names` with the buffer's
+    /// first hydration. Until then the store holds nothing for the channel — not an empty list,
+    /// which the member sheet would read as a room with nobody in it.
+    func testAnEmptyPendingListOverNothingStaysNothing() {
+        let store = LurkerStore()
+        store.apply(snapshot([], pending: true))
+        XCTAssertNil(store.state.members[channel.id], "snapshot")
+
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [], pending: true))
+        XCTAssertNil(store.state.members[channel.id], "pending names")
+
+        // Something still beats nothing: a pending list WITH members is taken.
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me")], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me"])
+
+        // And the hydration's list is the list, even when it is empty.
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: []))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), [])
+    }
+
+    /// The common reconnect: every snapshot channel is `members: [] + membersPending` now, and a
+    /// list already held must stand — reading the empty frame as the list would be everyone leaving.
+    func testAnEmptyPendingListNeverReplacesAHeldOne() {
+        let store = LurkerStore()
+        store.apply(snapshot([Member(nick: "me"), Member(nick: "alice")]))
+        store.apply(snapshot([], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "alice"])
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "alice"])
+    }
+
+    /// "Loading members…" is a promise, made only where a list is coming: nothing held, joined,
+    /// and the network not disconnected. A reconnecting network still counts — the resume brings it.
+    func testMembersAwaitedOnlyWhereAListIsComing() {
+        let store = LurkerStore()
+        store.apply(snapshot([], pending: true))
+        XCTAssertTrue(store.state.membersAwaited(in: channel))
+        XCTAssertFalse(store.state.membersAwaited(in: channel, joined: false), "parted")
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me")]))
+        XCTAssertFalse(store.state.membersAwaited(in: channel), "held")
+    }
+
+    /// A join folded into no list stays no list: seeding `[bob]` would read as a held room of one,
+    /// and a pending `names` after it would defer to that. The 366 brings everyone, ourselves too.
+    func testAJoinOverNoListDoesNotSeedOne() {
+        let store = LurkerStore()
+        store.apply(snapshot([], pending: true))
+        let join = Message(id: 7, type: .join, nick: "bob", text: nil, isSelf: false, date: Date())
+        store.apply(.live(networkId: 1, target: "#lurker", message: join))
+        XCTAssertNil(store.state.members[channel.id], "join over nothing")
+
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me")], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me"], "pending names is taken over nothing")
+
+        // Over a held list the fold still adds (a fresh id: the first join is already a row).
+        let again = Message(id: 8, type: .join, nick: "bob", text: nil, isSelf: false, date: Date())
+        store.apply(.live(networkId: 1, target: "#lurker", message: again))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "bob"])
+    }
+
     /// With nothing held, a provisional list beats none.
     func testAPendingListIsTakenWhenNoneIsHeld() {
         let store = LurkerStore()

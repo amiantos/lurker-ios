@@ -646,14 +646,17 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertEqual(member.host, "example.org")
     }
 
-    /// Our own join precedes the `names` broadcast, so a join must be able to seed a
-    /// list from nothing — the roster lands a moment later and replaces it.
-    func testAJoinSeedsAListWhereNoneExistsYet() {
+    /// A join over no list seeds nothing (lurker#1292): `nil` means the list hasn't arrived,
+    /// and a one-person list would read as the room — and a pending `names` would then defer
+    /// to it. Our own join is no exception: the 366 right behind it brings everyone, us too.
+    func testAJoinOverNoListSeedsNothing() {
         let store = LurkerStore()
         store.apply(channelBuffer(hydrated: true, messages: []))
         store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 10, type: .join, nick: "me", text: nil, isSelf: true)))
 
-        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["me"])
+        XCTAssertNil(store.state.members[chanKey])
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me"), Member(nick: "alice")]))
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["me", "alice"])
     }
 
     /// A quit fans out to every shared buffer, including DMs — which have no member

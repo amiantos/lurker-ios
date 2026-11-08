@@ -110,7 +110,7 @@ final class BufferInfoViewController: UITableViewController {
         case channelSettings(modes: String)
         /// One of the channel's list modes — bans, exceptions, invite exceptions, quiets.
         case modeList(letter: String, name: String)
-        case members(Int)
+        case members(Int?)
         case whois
         /// Search pre-scoped to this buffer; the payload is the `in:`/`on:` prefix to seed the
         /// query field with.
@@ -174,7 +174,10 @@ final class BufferInfoViewController: UITableViewController {
         // Visible members, not every member: this count sits one tap from the nicklist, and
         // the two disagreeing about how many people are in the channel reads as a bug in
         // whichever the reader looks at second.
-        let memberCount = state.visibleMembers(in: buffer.key).count
+        // Blank while the list is still coming (lurker#1292) — the same rule the member sheet
+        // reads "Loading members…" by, so the two never disagree; a parted channel counts 0.
+        let memberCount = state.membersAwaited(in: buffer.key, joined: live.joined)
+            ? nil : state.visibleMembers(in: buffer.key).count
 
         // The `on:` half needs the network's *name*, which only the roster has. Nil for a
         // buffer with no meaningful scope, and the row simply isn't offered then.
@@ -342,7 +345,7 @@ final class BufferInfoViewController: UITableViewController {
         case .members(let count):
             var content = UIListContentConfiguration.valueCell()
             content.text = "Members"
-            content.secondaryText = String(count)
+            content.secondaryText = count.map(String.init)
             content.image = UIImage(systemName: "person.2")
             cell.contentConfiguration = content
             cell.accessoryType = .disclosureIndicator
