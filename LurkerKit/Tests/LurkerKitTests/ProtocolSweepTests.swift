@@ -126,6 +126,28 @@ final class ProtocolSweepTests: XCTestCase {
         XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), [])
     }
 
+    /// The common reconnect: every snapshot channel is `members: [] + membersPending` now, and a
+    /// list already held must stand — reading the empty frame as the list would be everyone leaving.
+    func testAnEmptyPendingListNeverReplacesAHeldOne() {
+        let store = LurkerStore()
+        store.apply(snapshot([Member(nick: "me"), Member(nick: "alice")]))
+        store.apply(snapshot([], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "alice"])
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "alice"])
+    }
+
+    /// "Loading members…" is a promise, made only where a list is coming: nothing held, joined,
+    /// and the network not disconnected. A reconnecting network still counts — the resume brings it.
+    func testMembersAwaitedOnlyWhereAListIsComing() {
+        let store = LurkerStore()
+        store.apply(snapshot([], pending: true))
+        XCTAssertTrue(store.state.membersAwaited(in: channel))
+        XCTAssertFalse(store.state.membersAwaited(in: channel, joined: false), "parted")
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me")]))
+        XCTAssertFalse(store.state.membersAwaited(in: channel), "held")
+    }
+
     /// A join folded into no list stays no list: seeding `[bob]` would read as a held room of one,
     /// and a pending `names` after it would defer to that. The 366 brings everyone, ourselves too.
     func testAJoinOverNoListDoesNotSeedOne() {

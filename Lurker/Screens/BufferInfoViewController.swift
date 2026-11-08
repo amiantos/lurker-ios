@@ -174,8 +174,10 @@ final class BufferInfoViewController: UITableViewController {
         // Visible members, not every member: this count sits one tap from the nicklist, and
         // the two disagreeing about how many people are in the channel reads as a bug in
         // whichever the reader looks at second.
-        // Nil until the list has arrived (lurker#1292): a count of nothing is not "0 members".
-        let memberCount = state.members[key] == nil ? nil : state.visibleMembers(in: buffer.key).count
+        // Blank while the list is still coming (lurker#1292) — the same rule the member sheet
+        // reads "Loading members…" by, so the two never disagree; a parted channel counts 0.
+        let memberCount = state.membersAwaited(in: buffer.key, joined: live.joined)
+            ? nil : state.visibleMembers(in: buffer.key).count
 
         // The `on:` half needs the network's *name*, which only the roster has. Nil for a
         // buffer with no meaningful scope, and the row simply isn't offered then.

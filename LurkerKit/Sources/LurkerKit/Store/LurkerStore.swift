@@ -1040,6 +1040,19 @@ public struct ChatState: Sendable {
     /// You are always listed. A hostmask rule can legitimately cover your own nick (a shared
     /// bouncer host, a wildcard on the network you're on), and disappearing yourself from your
     /// own nicklist is never what such a rule meant.
+    /// Whether a channel's member list is still on its way (lurker#1292): the store holds none,
+    /// and we are in the channel on a network that is up or coming back — so one is coming,
+    /// with the buffer's hydration or the resume. A parted channel or a network that is
+    /// `disconnected` has no list coming; a nil there is "nobody", not "not yet". The one rule
+    /// for every screen that says "loading" (the member sheet, the info sheet's count).
+    /// `joined` overrides the stored row's — for a buffer this screen synthesized.
+    public func membersAwaited(in key: BufferKey, joined: Bool? = nil) -> Bool {
+        guard members[key.id] == nil else { return false }
+        guard joined ?? buffers[key.id]?.joined ?? false else { return false }
+        guard let networkId = key.networkId, let network = networks[networkId] else { return false }
+        return network.state != .disconnected
+    }
+
     public func visibleMembers(in key: BufferKey) -> [Member] {
         let members = self.members[key.id] ?? []
         guard !ignores.isEmpty(for: key.networkId) else { return members }
@@ -2176,9 +2189,9 @@ final class LurkerStore {
     /// case-insensitively throughout: servers echo inconsistent casing, and `toLowerCase`
     /// matching is house style (see `BufferKey`).
     ///
-    /// A join can seed a list from nil — our own join precedes the `names` broadcast, so
-    /// the list briefly holds just us until the full roster lands. Removals against nil
-    /// stay nil: a quit fans out to DM buffers too, which have no list to edit.
+    /// Nothing seeds a list from nil (lurker#1292): nil is "the list hasn't arrived", and the
+    /// `names` behind our own join brings the whole roster. Removals against nil stay nil
+    /// too: a quit fans out to DM buffers too, which have no list to edit.
     private static func foldMembership(_ members: [Member]?, _ message: Message) -> [Member]? {
         switch message.type {
         case .join:

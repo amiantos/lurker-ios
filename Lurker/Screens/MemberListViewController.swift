@@ -76,6 +76,11 @@ final class MemberListViewController: UITableViewController {
             .removeDuplicates { old, new in
                 old.members[key] == new.members[key] && old.ignores === new.ignores
                     && networkId.flatMap { old.networks[$0]?.modeSpec?.prefix } == networkId.flatMap { new.networks[$0]?.modeSpec?.prefix }
+                    // Whether a list is still coming (lurker#1292) reads the row's `joined` and
+                    // the network's state: a kick or a drop with the list still nil would
+                    // otherwise leave "Loading members…" promising what no longer comes.
+                    && old.buffers[key]?.joined == new.buffers[key]?.joined
+                    && networkId.flatMap { old.networks[$0]?.state } == networkId.flatMap { new.networks[$0]?.state }
                     // The names the rows print (lurker#1203): a profile change, or the setting
                     // that shows them, arrives with no join alongside it.
                     && old.userMetadata === new.userMetadata
@@ -89,12 +94,11 @@ final class MemberListViewController: UITableViewController {
 
     private func apply(_ state: ChatState) {
         prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
-        // Loading only while there is a list to wait for: nothing held, and we are in the
-        // channel on a network that is up. A parted channel or a down network has no list
-        // coming, and says so with the ordinary empty text.
-        let joined = state.buffers[buffer.key.id]?.joined ?? buffer.joined
-        let connected = buffer.networkId.map { state.networks[$0]?.state == .connected } ?? false
-        awaitingList = state.members[buffer.key.id] == nil && joined && connected
+        // Loading only while there is a list to wait for (`membersAwaited`): a parted channel
+        // or a down network has no list coming, and says so with the ordinary empty text.
+        awaitingList = state.membersAwaited(
+            in: buffer.key, joined: state.buffers[buffer.key.id]?.joined ?? buffer.joined
+        )
         members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key), prefix: prefix)
         // What each row prints (lurker#1203): the display name, else the nick. Keyed, sorted and
         // coloured on the nick still — the name is only what's written.
