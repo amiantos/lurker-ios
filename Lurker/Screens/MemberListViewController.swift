@@ -26,8 +26,9 @@ final class MemberListViewController: UITableViewController {
     /// Everyone in the channel, ranked. The table draws `visible`, which is this filtered by
     /// the search field.
     private var members: [Member] = []
-    /// Whether the store holds this channel's list at all (lurker#1292) — `nil` is "not yet".
-    private var held = false
+    /// Whether the channel's list is still on its way (lurker#1292): the store holds none, and
+    /// we are in the channel on a connected network, so one is coming.
+    private var awaitingList = false
     /// The network's PREFIX — its symbols and ranks (lurker-ios#191); nil before ISUPPORT.
     private var prefix: [PrefixMode]?
     /// Lowercased nick → what the row prints (lurker#1203).
@@ -88,7 +89,12 @@ final class MemberListViewController: UITableViewController {
 
     private func apply(_ state: ChatState) {
         prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
-        held = state.members[buffer.key.id] != nil
+        // Loading only while there is a list to wait for: nothing held, and we are in the
+        // channel on a network that is up. A parted channel or a down network has no list
+        // coming, and says so with the ordinary empty text.
+        let joined = state.buffers[buffer.key.id]?.joined ?? buffer.joined
+        let connected = buffer.networkId.map { state.networks[$0]?.state == .connected } ?? false
+        awaitingList = state.members[buffer.key.id] == nil && joined && connected
         members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key), prefix: prefix)
         // What each row prints (lurker#1203): the display name, else the nick. Keyed, sorted and
         // coloured on the nick still — the name is only what's written.
@@ -150,8 +156,8 @@ final class MemberListViewController: UITableViewController {
     /// from the user: a DM has nobody to list and never will, while a channel with no
     /// members means we haven't been told yet.
     ///
-    /// Built once — the text depends only on this screen's buffer, and `apply` runs on
-    /// every state change that reaches us.
+    /// Built once; its text is re-read on every `refilter`, since which reason applies moves
+    /// with the state (`awaitingList`) as well as with the query.
     private lazy var emptyLabel: UILabel = {
         let label = UILabel()
         label.text = emptyText(searching: false)
@@ -169,7 +175,7 @@ final class MemberListViewController: UITableViewController {
     private func emptyText(searching: Bool) -> String {
         if searching { return "No members match." }
         switch buffer.kind {
-        case .channel: return held ? "No members yet." : "Loading members…"
+        case .channel: return awaitingList ? "Loading members…" : "No members yet."
         case .dm: return "Direct messages have no member list."
         case .dcc: return "A DCC chat has no member list."
         case .server, .system: return "This buffer has no member list."

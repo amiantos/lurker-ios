@@ -126,6 +126,24 @@ final class ProtocolSweepTests: XCTestCase {
         XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), [])
     }
 
+    /// A join folded into no list stays no list: seeding `[bob]` would read as a held room of one,
+    /// and a pending `names` after it would defer to that. The 366 brings everyone, ourselves too.
+    func testAJoinOverNoListDoesNotSeedOne() {
+        let store = LurkerStore()
+        store.apply(snapshot([], pending: true))
+        let join = Message(id: 7, type: .join, nick: "bob", text: nil, isSelf: false, date: Date())
+        store.apply(.live(networkId: 1, target: "#lurker", message: join))
+        XCTAssertNil(store.state.members[channel.id], "join over nothing")
+
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me")], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me"], "pending names is taken over nothing")
+
+        // Over a held list the fold still adds (a fresh id: the first join is already a row).
+        let again = Message(id: 8, type: .join, nick: "bob", text: nil, isSelf: false, date: Date())
+        store.apply(.live(networkId: 1, target: "#lurker", message: again))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "bob"])
+    }
+
     /// With nothing held, a provisional list beats none.
     func testAPendingListIsTakenWhenNoneIsHeld() {
         let store = LurkerStore()

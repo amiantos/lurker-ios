@@ -2183,7 +2183,11 @@ final class LurkerStore {
         switch message.type {
         case .join:
             guard let nick = message.nick, !nick.isEmpty else { return members }
-            let list = members ?? []
+            // No list, no seeding (lurker#1292): `nil` is "the list hasn't arrived", and a join
+            // folded into nothing would make a one-person room that reads as held — and that a
+            // pending `names` would then defer to. Our own join is no exception: the 366 that
+            // follows brings the whole list, ourselves included.
+            guard let list = members else { return nil }
             // Already present (e.g. the list arrived via `names` before our fold ran):
             // keep the existing entry and whatever modes/away it carries.
             guard !list.contains(where: { $0.nick.lowercased() == nick.lowercased() })
