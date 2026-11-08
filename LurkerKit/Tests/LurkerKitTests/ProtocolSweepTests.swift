@@ -105,6 +105,27 @@ final class ProtocolSweepTests: XCTestCase {
         XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me", "carol"])
     }
 
+    /// The connect snapshot carries no channel's members (lurker#1292): every channel is
+    /// `members: []` + `membersPending`, and the list arrives as a `names` with the buffer's
+    /// first hydration. Until then the store holds nothing for the channel — not an empty list,
+    /// which the member sheet would read as a room with nobody in it.
+    func testAnEmptyPendingListOverNothingStaysNothing() {
+        let store = LurkerStore()
+        store.apply(snapshot([], pending: true))
+        XCTAssertNil(store.state.members[channel.id], "snapshot")
+
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [], pending: true))
+        XCTAssertNil(store.state.members[channel.id], "pending names")
+
+        // Something still beats nothing: a pending list WITH members is taken.
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: [Member(nick: "me")], pending: true))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), ["me"])
+
+        // And the hydration's list is the list, even when it is empty.
+        store.apply(.channelMembers(networkId: 1, target: "#lurker", members: []))
+        XCTAssertEqual(store.state.members[channel.id]?.map(\.nick), [])
+    }
+
     /// With nothing held, a provisional list beats none.
     func testAPendingListIsTakenWhenNoneIsHeld() {
         let store = LurkerStore()

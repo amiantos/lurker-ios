@@ -26,6 +26,8 @@ final class MemberListViewController: UITableViewController {
     /// Everyone in the channel, ranked. The table draws `visible`, which is this filtered by
     /// the search field.
     private var members: [Member] = []
+    /// Whether the store holds this channel's list at all (lurker#1292) — `nil` is "not yet".
+    private var held = false
     /// The network's PREFIX — its symbols and ranks (lurker-ios#191); nil before ISUPPORT.
     private var prefix: [PrefixMode]?
     /// Lowercased nick → what the row prints (lurker#1203).
@@ -86,6 +88,7 @@ final class MemberListViewController: UITableViewController {
 
     private func apply(_ state: ChatState) {
         prefix = buffer.networkId.flatMap { state.networks[$0]?.modeSpec?.prefix }
+        held = state.members[buffer.key.id] != nil
         members = MemberPrefix.sorted(state.visibleMembers(in: buffer.key), prefix: prefix)
         // What each row prints (lurker#1203): the display name, else the nick. Keyed, sorted and
         // coloured on the nick still — the name is only what's written.
@@ -160,10 +163,13 @@ final class MemberListViewController: UITableViewController {
 
     /// A filter that matched nothing is a different fact from a channel with nobody in it, and
     /// the two need different things from the reader — one is "type less", the other is "wait".
+    /// So is a channel whose list hasn't arrived: the connect snapshot carries no members, and
+    /// the list comes with the buffer's first hydration (lurker#1292), so until the store holds
+    /// one at all the room isn't empty, it's unread.
     private func emptyText(searching: Bool) -> String {
         if searching { return "No members match." }
         switch buffer.kind {
-        case .channel: return "No members yet."
+        case .channel: return held ? "No members yet." : "Loading members…"
         case .dm: return "Direct messages have no member list."
         case .dcc: return "A DCC chat has no member list."
         case .server, .system: return "This buffer has no member list."
