@@ -101,7 +101,7 @@ public enum MessageRow: Equatable, Sendable {
         switch self {
         case .bubble(let message, _): message.id == id
         case .line(let message): message.id == id
-        case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
+        case .consolidated(let summary): summary.ids.contains(id)
         case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
              .typing: false
         }
@@ -140,10 +140,13 @@ public enum MessageRows {
     /// `/clear` marker, the away/back markers) is another cut, not another special case.
     ///
     /// - Parameters:
-    ///   - messages: this buffer's messages, already filtered to what it renders, in order.
+    ///   - messages: this buffer's messages, already filtered to what it renders, in the
+    ///     order they are shown (`MessageOrder`): by time, which is not always id order.
     ///   - dividerAfterId: the latched read boundary, or nil if the server hasn't said yet.
     ///     The unread divider only shows when there was a real read point (`> 0`) *and*
     ///     something sits past it — a brand-new buffer with nothing previously read shows none.
+    ///     It goes above the first unread row SHOWN, so a line fetched after the fact can put
+    ///     it over rows already read (lurker#1290).
     ///   - hasMoreOlder: whether the server has older history left. Pass `true` when unknown:
     ///     "no more history" has to be something the server told us, not the absence of an
     ///     answer, or an unhydrated buffer claims to have reached its beginning.
