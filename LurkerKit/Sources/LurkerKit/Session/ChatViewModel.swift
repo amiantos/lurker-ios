@@ -1456,8 +1456,15 @@ public final class ChatViewModel {
     /// The buffer's held rows as the screen shows them where it matters to a command: a line
     /// deleted while held reads as deleted (`Redactions.presenting`), so `/react` and `/delete`
     /// never land on one. The stored rows carry no mark of their own — see `ChatState.redactions`.
+    ///
+    /// And in the order the screen shows them (`MessageOrder`, lurker#1290): "the last line" is
+    /// the last one on screen, not the newest id, which after a filled gap is a line said
+    /// earlier and shown higher up.
     private func heldAsShown(_ key: BufferKey, state: ChatState) -> [Message] {
-        Redactions.presenting(state.messages[key.id] ?? [], redactions: key.networkId == nil ? [:] : state.redactions)
+        Redactions.presenting(
+            MessageOrder.byTime(state.messages[key.id] ?? []),
+            redactions: key.networkId == nil ? [:] : state.redactions
+        )
     }
 
     /// Run one of the REST connection verbs on `key`'s network and print its refusal, if any,
