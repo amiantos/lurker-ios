@@ -129,6 +129,12 @@ final class ComposerBar: UIView {
     /// Set while Tab's own edit goes in, so the change callbacks don't end the session it belongs to.
     private var isApplyingTab = false
 
+    /// Set by `shouldChangeTextIn` — the input system's own edits: a keystroke, a paste, a
+    /// deletion, an IME commit — and taken by the next `textViewDidChange`, which is also
+    /// reached by hand for layout, a Reply's address, a restore and the colour editor's
+    /// mirror. Only an input edit may turn a `:name:` into its glyph (see there).
+    private var inputEditPending = false
+
     /// The draft as of the last `onDraftChange` (or `restore`), so a re-measure that changes no
     /// text doesn't masquerade as an edit. See `textViewDidChange`.
     private var lastEmittedDraft = ""
@@ -1055,6 +1061,37 @@ final class ComposerBar: UIView {
         textViewDidChange(textView)
     }
 
+    /// Swap a `:name:` the caret just closed for its emoji — see `textViewDidChange`. Through
+    /// `replaceUndoably`, as Tab's edit goes: this follows a keystroke the undo stack already
+    /// holds, and a swap it didn't see would leave Cmd-Z replaying the seven-unit name's ranges
+    /// against a two-unit glyph. The glyph is typed in the colour the name was. Whether
+    /// anything was swapped.
+    private func convertCompletedShortcode() -> Bool {
+        let selection = textView.selectedRange
+        guard selection.length == 0,
+              let match = EmojiShortcodes.completed(in: plainText, caret: selection.location)
+        else { return false }
+        if !replaceUndoably(match.range, with: match.glyph) { splice(match.range, with: match.glyph) }
+        textView.selectedRange = NSRange(location: match.range.location + (match.glyph as NSString).length, length: 0)
+        textViewDidChange(textView)
+        return true
+    }
+
+    /// Replace `range` through the text input system rather than the storage, so the edit is
+    /// on the undo stack: a programmatic set registers no undo, and a hardware keyboard's Cmd-Z
+    /// would then replay older typing ranges against the rewritten text. The new text is typed
+    /// in the current typing attributes. False when the range can't be mapped, and the caller
+    /// falls back to the storage.
+    private func replaceUndoably(_ range: NSRange, with replacement: String) -> Bool {
+        guard let start = textView.position(from: textView.beginningOfDocument, offset: range.location),
+              let end = textView.position(from: start, offset: range.length),
+              let textRange = textView.textRange(from: start, to: end)
+        else { return false }
+        cachedLine = nil
+        textView.replace(textRange, withText: replacement)
+        return true
+    }
+
     /// Replace `range` through the text storage, so the rest of the line keeps its colour. The
     /// new text takes the colour of what it replaces, or of the character before it — a nick
     /// completed inside a red sentence is red — and is plain at the very start, so a Reply's
@@ -1192,17 +1229,10 @@ final class ComposerBar: UIView {
         }
         isApplyingTab = true
         defer { isApplyingTab = false }
-        // Through `replace`, not `text =`: a programmatic set registers no undo, and a hardware
-        // keyboard's Cmd-Z would then replay older typing ranges against the rewritten text. Only
-        // the stretch that changed, so the colour on the rest of the line survives.
+        // Through `replaceUndoably`, not `text =` — see there. Only the stretch that changed, so
+        // the colour on the rest of the line survives.
         let change = TextEdit.difference(from: text, to: edit.text)
-        if let start = textView.position(from: textView.beginningOfDocument, offset: change.range.location),
-           let end = textView.position(from: start, offset: change.range.length),
-           let range = textView.textRange(from: start, to: end) {
-            textView.replace(range, withText: change.replacement)
-        } else {
-            rewrite(to: edit.text)
-        }
+        if !replaceUndoably(change.range, with: change.replacement) { rewrite(to: edit.text) }
         textView.selectedRange = NSRange(location: edit.caret, length: 0)
         textViewDidChange(textView)
     }
@@ -1248,6 +1278,7 @@ extension ComposerBar: UITextViewDelegate {
     ///
     /// ⚠ Never over marked text: Return there commits the IME's composition.
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        inputEditPending = true
         guard text == "\n", !isComposing, !self.textView.isInsertingHardwareNewline,
               // A pasted newline is pasted text, and dictation's "new line" is a line, not a send.
               !self.textView.isPasting, self.textView.textInputMode?.primaryLanguage != "dictation",
@@ -1265,7 +1296,13 @@ extension ComposerBar: UITextViewDelegate {
         // A commit that leaves the text as it was (romaji `ka` committed as typed) changes no
         // text, so `textViewDidChange` may not hear it — but the marked range went away. Asked
         // first, because this runs on every caret move and the full comparison copies the text.
-        if isComposing != lastEdit.composing { reportEdit() }
+        guard isComposing != lastEdit.composing else { return }
+        let composingEnded = !isComposing
+        reportEdit()
+        // The same commit is the moment a `:name:` the IME held as marked text closes — the
+        // keyboard has let go of the characters, and nothing else will come through
+        // `textViewDidChange` for them. See the shortcode swap there.
+        if composingEnded, !isRestoring, !isApplyingTab { _ = convertCompletedShortcode() }
     }
 
     func textViewDidEndEditing(_ textView: UITextView) {
@@ -1317,6 +1354,20 @@ extension ComposerBar: UITextViewDelegate {
 
     func textViewDidChange(_ textView: UITextView) {
         cachedLine = nil
+        // The web's `maybeConvertShortcode` (lurker#1294): the closing `:` of a known `:name:`
+        // turns it into its glyph where it stands, so our lines leave the app the way the
+        // web's do. Only on an input edit (`inputEditPending`) — this method is also reached
+        // by hand for layout (`updateMetrics`), a Reply's address, and the colour editor's
+        // mirror of its own field, and a literal `:name:` in a draft another device wrote
+        // must not turn into a glyph because the text size changed or Reply was tapped. Not
+        // under marked text — the keyboard still owns those characters, and the web gates
+        // the same way; `textViewDidChangeSelection` picks the commit up — and not for a
+        // restore or Tab's own edit, which aren't typing. The swap comes back through here
+        // once more, with a glyph under the caret that closes nothing, and that pass does
+        // the rest.
+        let inputEdit = inputEditPending
+        inputEditPending = false
+        if inputEdit, !isRestoring, !isApplyingTab, !isComposing, convertCompletedShortcode() { return }
         if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }

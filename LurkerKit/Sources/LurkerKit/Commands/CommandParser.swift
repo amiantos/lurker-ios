@@ -201,14 +201,10 @@ public enum CommandParser {
         case "me":
             return argLine.isEmpty ? [] : [.action(target: target, text: chatBody(argLine))]
         case "react":
-            let value = argLine.trimmingCharacters(in: .whitespaces)
+            // A whole `:tada:` (or `:tada`) becomes 🎉 from the emoji table, as on the web; an
+            // unknown name, `:D`, or the emoji itself goes out as typed (lurker#1294).
+            let value = EmojiShortcodes.reaction(from: argLine)
             guard !value.isEmpty else { return [.info("usage: /react <emoji|text> — e.g. /react 👍")] }
-            // The web turns `:tada:` (or `:tada`) into 🎉 from its emoji table. This client has no
-            // table, and sending the name would react with the literal text, so it refuses
-            // instead. `:D` and `:P` are reactions people type on purpose, and still go out.
-            if isShortcode(value) {
-                return [.info("/react: emoji names like \(value) aren't supported here — use the emoji itself, e.g. /react 👍")]
-            }
             guard Reactions.isValidValue(value) else {
                 return [.info("a reaction can be at most \(Reactions.maxGraphemes) characters")]
             }
@@ -849,20 +845,6 @@ public enum CommandParser {
     private static func leadsWithChannel(_ token: String?, hasBuffer: (String) -> Bool) -> Bool {
         guard let token, ChannelName.isChannelTarget(token) else { return false }
         return token.hasPrefix("#") || hasBuffer(token)
-    }
-
-    /// A whole `:name:` in the gemoji character set — what the web's `reactionFromInput` would
-    /// look up, closing colon optional. Left open, an emoticon isn't a name: `:D` and `:P` are
-    /// too short to be one, and a nose and a letter (`:-D`, `:-p`) is a face. `:-1` and `:+1`
-    /// stay names — the web turns them into 👎 and 👍.
-    private static func isShortcode(_ text: String) -> Bool {
-        guard text.hasPrefix(":") else { return false }
-        let closed = text.count > 1 && text.hasSuffix(":")
-        let name = text.dropFirst().dropLast(closed ? 1 : 0)
-        if !closed, name.count == 2, name.first == "-", name.last?.isLetter == true { return false }
-        return name.count >= (closed ? 1 : 2) && name.allSatisfy { char in
-            char.isASCII && (char.isLetter || char.isNumber || "_+-".contains(char))
-        }
     }
 
     /// Whether the network is known to have no +q quiet list — an unknown spec isn't.
