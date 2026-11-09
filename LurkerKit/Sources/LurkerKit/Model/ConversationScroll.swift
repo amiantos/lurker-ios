@@ -55,6 +55,7 @@ public struct ConversationBuild: Sendable {
     public let awayState: AwayState?
     public let rosterSettled: Bool
     /// The filtered messages the rows were built from — what `ChatViewController` calls `messages`.
+    /// In display order (`MessageOrder`), so its last row is the newest SHOWN, not the newest id.
     public let visible: [Message]
     public let rows: [MessageRow]
     /// The frame this build's state is — see `ReplyWatch.landedIn` for why a jump has to know.
@@ -82,11 +83,17 @@ public struct ConversationBuild: Sendable {
         )
     }
 
-    /// The row that now stands for message `id` — its own, or the summary whose span covers it
-    /// after a page merged it into a consolidated run. Resolved by MESSAGE ID on every call,
-    /// never a cached index: a rebuild between two passes shifts every index.
+    /// The row that now stands for message `id` — its own, or the summary of the run a page
+    /// merged it into; failing both, the summary whose ids span it most narrowly (an event the
+    /// tier hides inside a run). Resolved by MESSAGE ID on every call, never a cached index: a
+    /// rebuild between two passes shifts every index.
     public func rowIndex(containing id: Int) -> Int? {
-        rows.firstIndex { $0.represents(id) }
+        if let exact = rows.firstIndex(where: { $0.represents(id) }) { return exact }
+        var best: (row: Int, span: Int)?
+        for (index, row) in rows.enumerated() {
+            if let span = row.span(over: id), span < (best?.span ?? Int.max) { best = (index, span) }
+        }
+        return best?.row
     }
 
     public init(
@@ -139,6 +146,10 @@ public struct ConversationBuild: Sendable {
     /// what the ignore filter left, and the rules above match the bot's real nick. Replies
     /// (lurker-ios#184) read last of all: a reply's quote is judged against the line as it now
     /// displays, a relayed one included.
+    ///
+    /// All of it over the held rows in DISPLAY order (`MessageOrder`, lurker#1290): by time, so
+    /// a line fetched after the fact sits where it was said. `held` itself stays as the store
+    /// has it, in id order, for everything that reads the list's ends.
     public static func make(
         state: ChatState, key: BufferKey, kind: BufferKind, options: RowOptions, seq: Int,
         now: Date = Date()
@@ -157,7 +168,7 @@ public struct ConversationBuild: Sendable {
             Redactions.presenting(
                 state.relayBots.reattributing(
                     state.ignores.visible(
-                        (held ?? []).filter { kind.renders($0.type) && $0.isRenderable },
+                        MessageOrder.byTime(held ?? []).filter { kind.renders($0.type) && $0.isRenderable },
                         networkId: key.networkId,
                         target: key.target,
                         keeping: options.keeping,
@@ -413,6 +424,9 @@ public final class ConversationScroll {
 
     /// What the previous build drew, for telling a real append from everything else.
     private var previousVisible: [Message]?
+
+    /// The oldest id the previous build's buffer held, for telling an older page from an append.
+    private var previousOldestHeld: Int?
 
     /// The rule set the previous build was filtered by — identity is the whole comparison.
     private var lastIgnores: IgnoreSet?
@@ -794,12 +808,23 @@ public final class ConversationScroll {
         // Appends only — the first id moving means older pages were pulled — and not while
         // detached (or just re-attached): a detached buffer holds live traffic out, so anything
         // appended there is a page the reader asked for, not a surprise from below.
+        //
+        // The first id HELD, not the first row shown: a line fetched after the fact can be
+        // older than everything loaded and take the top of the list (lurker#1290).
+        let oldestHeld = built.held?.first(where: { $0.id != 0 })?.id
+        defer { previousOldestHeld = oldestHeld }
         if let previous = previousVisible, !wasNearBottom, !wasDetached, !nowDetached, !rulesChanged,
-           built.visible.first?.id == previous.first?.id {
+           oldestHeld == previousOldestHeld {
             // By id, not by how much longer the list got: a restored row lands in the middle.
             // And not ephemerals (id 0) — a local echo isn't something the reader is missing.
-            let tail = previous.last(where: { $0.id != 0 })?.id ?? 0
-            let appended = built.visible.filter { $0.id > tail }
+            // The newest id, not the last row's: shown by time (lurker#1290), a line fetched
+            // after the fact has a newer id than the rows under it. And only what landed BELOW
+            // the last row that was shown, which is what the badge promises: a filled gap goes
+            // in above the reader.
+            let tail = previous.lazy.map(\.id).max() ?? 0
+            let last = previous.last(where: { $0.id != 0 })?.id
+            let below = last.flatMap { id in built.visible.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
+            let appended = built.visible[below...].filter { $0.id > tail }
             // What the reader will actually SEE arrive — the tier the list applies, so the two
             // can't disagree. At `none` a netsplit rejoin appends dozens of rows that build to
             // nothing.

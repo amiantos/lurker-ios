@@ -95,16 +95,28 @@ public enum MessageRow: Equatable, Sendable {
         }
     }
 
-    /// Whether this row stands in for message `id` — its own row, or the summary whose span
-    /// covers it after a history page merged it into a consolidated run.
+    /// Whether this row stands in for message `id` — its own row, or the summary of the
+    /// consolidated run a history page merged it into.
     public func represents(_ id: Int) -> Bool {
         switch self {
         case .bubble(let message, _): message.id == id
         case .line(let message): message.id == id
-        case .consolidated(let summary): summary.firstId <= id && id <= summary.lastId
+        case .consolidated(let summary): summary.ids.contains(id)
         case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
              .typing: false
         }
+    }
+
+    /// How many ids lie between the lowest and highest of this summary's run, when `id` is one
+    /// of them; nil when it isn't, or this is no summary. The place to land for an id that is
+    /// held and that no row draws (an event the tier hides inside a run), and only for one: a
+    /// run holding a line fetched after the fact also spans ids drawn elsewhere, which is why
+    /// `represents` is asked first and the NARROWEST span wins (`ConversationBuild.rowIndex`).
+    public func span(over id: Int) -> Int? {
+        guard case .consolidated(let summary) = self,
+              let low = summary.ids.min(), let high = summary.ids.max(),
+              low <= id, id <= high else { return nil }
+        return high - low
     }
 }
 
@@ -140,10 +152,13 @@ public enum MessageRows {
     /// `/clear` marker, the away/back markers) is another cut, not another special case.
     ///
     /// - Parameters:
-    ///   - messages: this buffer's messages, already filtered to what it renders, in order.
+    ///   - messages: this buffer's messages, already filtered to what it renders, in the
+    ///     order they are shown (`MessageOrder`): by time, which is not always id order.
     ///   - dividerAfterId: the latched read boundary, or nil if the server hasn't said yet.
     ///     The unread divider only shows when there was a real read point (`> 0`) *and*
     ///     something sits past it — a brand-new buffer with nothing previously read shows none.
+    ///     It goes above the first unread row SHOWN, so a line fetched after the fact can put
+    ///     it over rows already read (lurker#1290).
     ///   - hasMoreOlder: whether the server has older history left. Pass `true` when unknown:
     ///     "no more history" has to be something the server told us, not the absence of an
     ///     answer, or an unhydrated buffer claims to have reached its beginning.

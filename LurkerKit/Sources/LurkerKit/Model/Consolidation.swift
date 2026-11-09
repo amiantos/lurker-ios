@@ -117,8 +117,8 @@ public enum Consolidation {
             groups: identityGroups(presence, maxNames: max(1, maxNames), recentSpeakers: recentSpeakers)
                 + modeGroups(modeEvents, maxNames: max(1, maxNames), recentSpeakers: recentSpeakers),
             date: events.last?.date,
-            firstId: events.first?.id ?? 0,
-            lastId: events.last?.id ?? 0
+            lastId: events.last?.id ?? 0,
+            ids: Set(events.lazy.map(\.id).filter { $0 != 0 })
         )
     }
 
@@ -351,24 +351,29 @@ public struct ConsolidationSummary: Equatable, Sendable {
     public let groups: [IdentityGroup]
     /// The last event's timestamp — what the summary reveals on a drag, matching a line.
     public let date: Date?
-    /// The persisted-id span of the events this summary replaces. Lets the view find the
-    /// summary that now stands in for a given line after a history page reshapes the run —
-    /// which is what keeps scroll position pinned across a "load older" (see
-    /// `ChatViewController`). A run grows only at its top as older history prepends, so
-    /// `lastId` is a stable anchor.
-    public let firstId: Int
+    /// The last event this summary replaces, as shown: what the row is anchored and keyed by.
+    /// A run mostly grows at its top, as older history prepends, so it seldom moves.
     public let lastId: Int
+    /// Every persisted event this summary replaces. Lets the view find the summary that now
+    /// stands in for a given line after a history page reshapes the run — which is what keeps
+    /// scroll position pinned across a "load older" (see `ChatViewController`).
+    ///
+    /// The ids themselves, not a first-to-last span: rows are shown by time (lurker#1290), so
+    /// a run can hold a line fetched after the fact whose id is far above its neighbours', and
+    /// the span between them would claim rows drawn elsewhere. `MessageRow.spans` is the span,
+    /// for an id nothing draws.
+    public let ids: Set<Int>
 
     public init(
         groups: [IdentityGroup],
         date: Date?,
-        firstId: Int,
-        lastId: Int
+        lastId: Int,
+        ids: Set<Int>
     ) {
         self.groups = groups
         self.date = date
-        self.firstId = firstId
         self.lastId = lastId
+        self.ids = ids
     }
 
     /// One identity within the summary: a nick that joined/left/reconnected/joined-briefly/

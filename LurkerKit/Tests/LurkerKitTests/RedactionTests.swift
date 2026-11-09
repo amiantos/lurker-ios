@@ -381,6 +381,50 @@ final class RedactionTests: XCTestCase {
         XCTAssertEqual(lastLocal(model), "can't react to a deleted message")
     }
 
+    func testReactAndDeleteTakeTheLastLineShownNotTheNewestId() {
+        // A filled gap (lurker#1290): ids 3 and 4 were said before 1 and 2, and show above them.
+        func said(_ id: Int, _ minute: Int, isSelf: Bool) -> Message {
+            Message(
+                id: id, type: .message, nick: isSelf ? "me" : "bob", text: "hi", isSelf: isSelf,
+                date: Date(timeIntervalSince1970: 1_793_955_600 + TimeInterval(minute * 60)), msgid: "m\(id)"
+            )
+        }
+        let model = model()
+        var sent: [String] = []
+        model.reactSeam = { id, value, _ in sent.append("react \(id) \(value)"); return true }
+        model.redactSeam = { id, _ in sent.append("delete \(id)"); return true }
+        model.handle(backlog([
+            said(1, 22, isSelf: false), said(2, 23, isSelf: true),
+            said(3, 19, isSelf: false), said(4, 20, isSelf: true),
+        ]))
+        model.send(key, text: "/react 👍")
+        model.send(key, text: "/delete")
+        XCTAssertEqual(sent, ["react 1 👍", "delete 2"])
+    }
+
+    func testReactAndDeleteLeaveALineAboveTheClearMarkerAlone() {
+        // Cleared rows stay held; a command typed at the screen never lands on one.
+        let model = model()
+        model.reactSeam = { _, _, _ in XCTFail("nothing should go out"); return true }
+        model.redactSeam = { _, _ in XCTFail("nothing should go out"); return true }
+        model.handle(backlog([line(1, nick: "bob"), line(2, isSelf: true)]))
+        model.handle(.bufferCleared(networkId: 1, target: "#lurker", clearedBeforeId: 2, clearedAt: Date()))
+        model.send(key, text: "/react 👍")
+        XCTAssertEqual(lastLocal(model), "nothing here to react to")
+        model.send(key, text: "/delete")
+        XCTAssertEqual(lastLocal(model), "nothing of yours here to delete")
+    }
+
+    func testReactSkipsALineFromSomeoneIgnored() {
+        let model = model()
+        var sent: [Int] = []
+        model.reactSeam = { id, _, _ in sent.append(id); return true }
+        model.handle(.ignoreListUpdated(networkId: nil, rules: [IgnoreRule(mask: "mallory")]))
+        model.handle(backlog([line(1, nick: "bob"), line(2, nick: "mallory")]))
+        model.send(key, text: "/react 👍")
+        XCTAssertEqual(sent, [1])
+    }
+
     func testDeleteCommandTakesYourNewestStandingLineWithItsReason() {
         let model = model()
         var sent: [String] = []
