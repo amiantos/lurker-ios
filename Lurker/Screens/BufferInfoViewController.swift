@@ -38,6 +38,8 @@ final class BufferInfoViewController: UITableViewController {
     /// What the table is showing. The next build is compared against it to decide whether
     /// there is anything to reload — see `render`.
     private var sections: [Section] = []
+    /// The topic's opened spoilers, the screen's so a reload keeps them (lurker#1297).
+    private var topicReveals = ProseReveals()
 
     /// The most recent refusal of a connection verb, shown under the Connection section.
     ///
@@ -76,6 +78,7 @@ final class BufferInfoViewController: UITableViewController {
             }
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "info")
+        tableView.register(FormProseCell.self, forCellReuseIdentifier: FormProseCell.reuseID)
 
         // Every emission, deduped on what this screen would DRAW rather than on a hand-kept
         // list of the inputs it draws from. The list drifted the moment it was written: it
@@ -195,12 +198,16 @@ final class BufferInfoViewController: UITableViewController {
             let lists: [Row] = access.joined
                 ? access.spec.map { ChannelModeForm.lists(in: $0).map { Row.modeList(letter: $0.letter, name: $0.name) } } ?? []
                 : []
+            // Judged on what would be drawn (`IRCFormatting.drawsNothing`): a topic of nothing but
+            // formatting codes renders as nothing, and a blank row under "Topic" says less than
+            // the placeholder.
+            let topic = live.topic.flatMap { IRCFormatting.drawsNothing($0) ? nil : $0 }
             return [
                 // Nothing under no topic: there's no one to credit.
                 Section(
                     header: "Topic",
-                    footer: live.topic?.isEmpty == false ? held?.topicSetterLine : nil,
-                    rows: [.topic(live.topic)]
+                    footer: topic != nil ? held?.topicSetterLine : nil,
+                    rows: [.topic(topic)]
                 ),
                 Section(
                     header: nil,
@@ -310,19 +317,29 @@ final class BufferInfoViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        // A topic is prose of arbitrary length, not a label — it wraps rather than truncating,
+        // because a truncated topic is the half you don't need — and it is drawn as the log
+        // draws a body (lurker#1297): links, colours, `:shortcode:` glyphs.
+        if case .topic(let topic?) = sections[indexPath.section].rows[indexPath.row] {
+            let cell = tableView.dequeueReusableCell(withIdentifier: FormProseCell.reuseID, for: indexPath) as! FormProseCell
+            cell.show(topic, revealed: topicReveals.ordinals(for: topic)) { [weak self] ordinal in
+                self?.topicReveals.toggle(ordinal)
+                self?.tableView.reloadRows(at: [indexPath], with: .none)
+            }
+            return cell
+        }
+
         let cell = tableView.dequeueReusableCell(withIdentifier: "info", for: indexPath)
         cell.accessoryType = .none
         cell.accessoryView = nil
         cell.selectionStyle = .none
 
         switch sections[indexPath.section].rows[indexPath.row] {
-        case .topic(let topic):
+        case .topic:
             var content = UIListContentConfiguration.cell()
-            // A topic is prose of arbitrary length, not a label — it wraps rather than
-            // truncating, because a truncated topic is the half you don't need.
             content.textProperties.numberOfLines = 0
-            content.text = topic?.isEmpty == false ? topic : "No topic set."
-            content.textProperties.color = topic?.isEmpty == false ? .label : .secondaryLabel
+            content.text = "No topic set."
+            content.textProperties.color = .secondaryLabel
             cell.contentConfiguration = content
 
         case .channelSettings(let modes):

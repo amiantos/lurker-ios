@@ -70,6 +70,17 @@ public enum IRCFormatting {
         parse(text).map(\.text).joined()
     }
 
+    /// Whether `text` would draw nothing at all: only control codes, or whitespace no run paints.
+    /// A background, reverse video, an underline or a strike on spaces is a box or a rule, and
+    /// visible, so `\u{03}04,04   \u{03}` draws and `\u{03}04   \u{03}` doesn't. For judging a
+    /// topic the way the log judges an activity body (lurker#1297): on what is drawn, not on what
+    /// came over the wire.
+    public static func drawsNothing(_ text: String) -> Bool {
+        parse(text).allSatisfy { run in
+            run.text.allSatisfy(\.isWhitespace) && run.bg == nil && !run.reverse && !run.underline && !run.strike
+        }
+    }
+
     public static func parse(_ text: String) -> [FormattingRun] {
         var runs: [FormattingRun] = []
         var current = ""

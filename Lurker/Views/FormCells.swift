@@ -3,8 +3,8 @@
 
 import UIKit
 
-/// The three cells a settings-shaped form needs: a labelled text field, a labelled switch,
-/// and a multi-line text box.
+/// The cells a settings-shaped form needs: a labelled text field, a labelled switch, a
+/// multi-line text box, and a run of prose it shows rather than edits.
 ///
 /// Reusable primitives rather than three private classes inside the networks form (#11),
 /// because a form is the one thing this app has needed repeatedly and built ad hoc each time
@@ -336,5 +336,129 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         placeholderLabel.isHidden = !textView.text.isEmpty
         onChange?(textView.text)
         onHeightChange?()
+    }
+}
+
+/// Prose the form shows rather than edits — a channel's topic in buffer info and channel settings
+/// (lurker#1297) — drawn the way the log draws a body: `MessageRenderer.prose` for the colours,
+/// links, spoilers and `:shortcode:` glyphs, in a `MessageTextView` so a link in it opens and a
+/// spoiler in it reveals. The web renders its topic through `LinkedText`, and a topic that read
+/// `:skull:` here while the message list showed 💀 was the gap.
+final class FormProseCell: UITableViewCell {
+    static let reuseID = "form.prose"
+
+    private let textView = MessageTextView()
+    private var text = ""
+    private var revealed: Set<Int> = []
+    private var onToggleSpoiler: ((Int) -> Void)?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        textView.isScrollEnabled = false // the cell grows instead
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.adjustsFontForContentSizeCategory = true
+        textView.onOpenURL = { url in UIApplication.shared.openExternal(url) }
+        textView.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(textView)
+        NSLayoutConstraint.activate([
+            textView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+        ])
+        selectionStyle = .none
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onToggleSpoiler = nil
+    }
+
+    /// Show `text` with the spoilers in `revealed` open. The set is the screen's (`ProseReveals`),
+    /// not the cell's: a table reload for an unrelated row, or this cell scrolling off and back,
+    /// configures a cell anew, and a reader's opened box must not snap shut for it. A tap on a
+    /// box reaches `onToggleSpoiler`; the screen records it and shows the row again.
+    func show(_ text: String, revealed: Set<Int>, onToggleSpoiler: @escaping (Int) -> Void) {
+        self.text = text
+        self.revealed = revealed
+        self.onToggleSpoiler = onToggleSpoiler
+        render()
+    }
+
+    /// `.label`, not the log's palette: this is a row among system-styled form rows, and the body
+    /// font so it reads as one of them. Opening a spoiler recolours its run and changes no
+    /// character, so the row's height holds and the table needn't re-measure.
+    private func render() {
+        let rendered = MessageRenderer.prose(text, base: .preferredFont(forTextStyle: .body), color: .label, revealed: revealed)
+        textView.attributedText = rendered
+        // What VoiceOver hears: the spoken form hides what a spoiler hides, and the value is
+        // blanked so the text view's own text can't follow the label and say it anyway — the
+        // log's precaution (`CompactCell`), taken here for the same reason.
+        textView.accessibilityLabel = MessageRenderer.spoken(rendered)
+        textView.accessibilityValue = ""
+        textView.accessibilityCustomActions = accessibilityActions(for: rendered)
+    }
+
+    /// One action per hidden spoiler and one per link: the tap that opens either is aimed at a
+    /// screen point, and VoiceOver has none to give. The log's rows do the same for their
+    /// spoilers (`CompactCell.applySpoilerActions`) and reach their links through the actions
+    /// sheet, which a form row doesn't have.
+    private func accessibilityActions(for rendered: NSAttributedString) -> [UIAccessibilityCustomAction]? {
+        let whole = NSRange(location: 0, length: rendered.length)
+        var ordinals: [Int] = []
+        rendered.enumerateAttribute(.spoiler, in: whole) { value, range, _ in
+            guard let ordinal = value as? Int,
+                  rendered.attribute(.spoilerHidden, at: range.location, effectiveRange: nil) != nil,
+                  !ordinals.contains(ordinal)
+            else { return }
+            ordinals.append(ordinal)
+        }
+        var links: [URL] = []
+        rendered.enumerateAttribute(.messageLink, in: whole) { value, _, _ in
+            if let url = value as? URL, !links.contains(url) { links.append(url) }
+        }
+        var actions: [UIAccessibilityCustomAction] = []
+        for (position, ordinal) in ordinals.enumerated() {
+            let name = ordinals.count == 1 ? "Reveal spoiler" : "Reveal spoiler \(position + 1) of \(ordinals.count)"
+            actions.append(UIAccessibilityCustomAction(name: name) { [weak self] _ in
+                self?.textView.onToggleSpoiler?(ordinal)
+                return true
+            })
+        }
+        for (position, url) in links.enumerated() {
+            let name = links.count == 1 ? "Open link" : "Open link \(position + 1) of \(links.count)"
+            actions.append(UIAccessibilityCustomAction(name: name) { _ in
+                UIApplication.shared.openExternal(url)
+                return true
+            })
+        }
+        return actions.isEmpty ? nil : actions
+    }
+}
+
+/// The spoilers a screen's prose row has open, kept by the screen rather than the cell so a reload
+/// or a recycled cell draws them as they were (`FormProseCell.show`). Cleared when the text changes:
+/// a new topic's boxes start shut.
+struct ProseReveals {
+    private var text = ""
+    private var ordinals: Set<Int> = []
+
+    /// The open spoilers of `text` — none, once it differs from the text they were opened in.
+    mutating func ordinals(for text: String) -> Set<Int> {
+        if text != self.text {
+            self.text = text
+            ordinals = []
+        }
+        return ordinals
+    }
+
+    mutating func toggle(_ ordinal: Int) {
+        ordinals.formSymmetricDifference([ordinal])
     }
 }
