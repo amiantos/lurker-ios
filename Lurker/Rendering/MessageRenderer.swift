@@ -777,7 +777,7 @@ enum MessageRenderer {
         // openable. Rare (notices, MOTD), and the alternative is a control that acts on the
         // wrong message.
         body(
-            text: message.text ?? "", revealable: message.id != 0, base: base, fallback: fallback,
+            raw: message.text ?? "", revealable: message.id != 0, base: base, fallback: fallback,
             highlighter: highlighter, revealed: revealed, hiddenUrls: hiddenUrls
         )
     }
@@ -785,16 +785,17 @@ enum MessageRenderer {
     /// Text shown as prose outside the log — a channel's topic in buffer info and channel
     /// settings (lurker#1297) — through the same pass a message body gets: mIRC colours, links,
     /// spoilers and `:shortcode:` glyphs, in `color`. The web renders a topic with `LinkedText`,
-    /// which is its name for exactly this. No message stands behind the text, so a spoiler in it
-    /// is hidden and not openable, as in a MOTD line.
-    static func prose(_ text: String, base: UIFont, color: UIColor) -> NSAttributedString {
-        body(text: text, revealable: false, base: base, fallback: color)
+    /// which is its name for exactly this, and a spoiler in one is a button there, so it opens
+    /// here too: `revealed` is the owning view's own set, since only the one text stands behind
+    /// it — the id-keyed hazard of the `Message` overload doesn't arise.
+    static func prose(_ text: String, base: UIFont, color: UIColor, revealed: Set<Int> = []) -> NSAttributedString {
+        body(raw: text, revealable: true, base: base, fallback: color, revealed: revealed)
     }
 
-    /// The body pass proper. `revealable` is whether a spoiler in it may be opened — see the
-    /// `Message` overload for why an id-less line's may not.
+    /// The body pass proper, over the wire text `raw`. `revealable` is whether a spoiler in it
+    /// may be opened — see the `Message` overload for why an id-less line's may not.
     private static func body(
-        text: String, revealable: Bool, base: UIFont, fallback: UIColor,
+        raw: String, revealable: Bool, base: UIFont, fallback: UIColor,
         highlighter: NickHighlighter? = nil, revealed: Set<Int> = [],
         hiddenUrls: Set<String> = []
     ) -> NSAttributedString {
@@ -811,7 +812,7 @@ enum MessageRenderer {
         // Reversed runs the nick pass may still colour, with the ink their text is drawn in — see
         // the nick pass for why it needs both.
         var reversed: [(range: NSRange, ink: UIColor)] = []
-        for run in IRCFormatting.parse(text) {
+        for run in IRCFormatting.parse(raw) {
             let explicitFg = run.fg.flatMap(ircColor)
             let explicitBg = run.bg.flatMap(ircColor)
             // `explicitFg != nil` as well, so the reveal's unwrap below can't trip on a palette

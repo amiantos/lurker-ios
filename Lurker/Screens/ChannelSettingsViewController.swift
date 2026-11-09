@@ -283,7 +283,7 @@ final class ChannelSettingsViewController: UITableViewController {
 
     private enum Content: Equatable {
         case topicField(text: String)
-        case topicText(String, muted: Bool)
+        case topicText(String)
         case notice(String)
         case toggle(label: String, on: Bool, enabled: Bool)
         case value(letter: String, label: String, value: String, isKey: Bool, placeholder: String, enabled: Bool)
@@ -314,17 +314,21 @@ final class ChannelSettingsViewController: UITableViewController {
         var out: [Section] = []
 
         // Topic. Out of the channel we don't know it has no topic — or that it exists at all;
-        // only what we last saw.
+        // only what we last saw. Judged on what would be drawn: a topic of nothing but formatting
+        // codes renders as nothing, and a blank row under "Topic" says less than the placeholder.
+        // The placeholder is a `.notice`, its own item: a reconfigure hands back the same cell,
+        // and the topic's cell is a different class from a sentence's.
+        let hasTopic = !IRCFormatting.strip(topic).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let topicItem: (ItemID, Content)
         if access.canSetTopic {
             topicItem = (.topicField, .topicField(text: drafts.topic ?? topic))
-        } else if !topic.isEmpty {
-            topicItem = (.topicText, .topicText(topic, muted: false))
+        } else if hasTopic {
+            topicItem = (.topicText, .topicText(topic))
         } else {
-            topicItem = (.topicText, .topicText(access.joined ? "No topic set." : "Join the channel to see its topic.", muted: true))
+            topicItem = (.notice("topic"), .notice(access.joined ? "No topic set." : "Join the channel to see its topic."))
         }
         var topicNotes: [String] = []
-        if !topic.isEmpty, let setter = held?.topicSetterLine { topicNotes.append(setter) }
+        if hasTopic, let setter = held?.topicSetterLine { topicNotes.append(setter) }
         if access.canSetTopic, let limit = access.spec?.topicLen {
             let bytes = ChannelModeForm.topicBytes(ChannelModeForm.topicToSend(drafts.topic ?? topic))
             topicNotes.append("\(bytes) / \(limit) bytes")
@@ -493,21 +497,10 @@ final class ChannelSettingsViewController: UITableViewController {
             }
             return cell
 
-        case .topicText(let text, false):
-            // The topic itself, drawn as the log draws a body (lurker#1297); the muted
-            // placeholders below are the form's own words and stay plain.
+        case .topicText(let text):
+            // The topic itself, drawn as the log draws a body (lurker#1297).
             let cell = tableView.dequeueReusableCell(withIdentifier: FormProseCell.reuseID, for: indexPath) as! FormProseCell
             cell.show(text)
-            return cell
-
-        case .topicText(let text, let muted):
-            let cell = tableView.dequeueReusableCell(withIdentifier: "text", for: indexPath)
-            var config = UIListContentConfiguration.cell()
-            config.text = text
-            config.textProperties.numberOfLines = 0
-            config.textProperties.color = muted ? .secondaryLabel : .label
-            cell.contentConfiguration = config
-            cell.selectionStyle = .none
             return cell
 
         case .notice(let text):

@@ -341,13 +341,18 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
 
 /// Prose the form shows rather than edits — a channel's topic in buffer info and channel settings
 /// (lurker#1297) — drawn the way the log draws a body: `MessageRenderer.prose` for the colours,
-/// links, spoilers and `:shortcode:` glyphs, in a `MessageTextView` so a link in it opens. The
-/// web renders its topic through `LinkedText`, and a topic that read `:skull:` here while the
-/// message list showed 💀 was the gap.
+/// links, spoilers and `:shortcode:` glyphs, in a `MessageTextView` so a link in it opens and a
+/// spoiler in it reveals. The web renders its topic through `LinkedText`, and a topic that read
+/// `:skull:` here while the message list showed 💀 was the gap.
 final class FormProseCell: UITableViewCell {
     static let reuseID = "form.prose"
 
     private let textView = MessageTextView()
+    private var text = ""
+    /// The spoilers opened in this text, by ordinal — the cell's own, since no message stands
+    /// behind a topic to key them by. Reset with the text, so a recycled cell shows a new topic's
+    /// boxes closed.
+    private var revealed: Set<Int> = []
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -357,6 +362,11 @@ final class FormProseCell: UITableViewCell {
         textView.textContainer.lineFragmentPadding = 0
         textView.adjustsFontForContentSizeCategory = true
         textView.onOpenURL = { url in UIApplication.shared.openExternal(url) }
+        textView.onToggleSpoiler = { [weak self] ordinal in
+            guard let self else { return }
+            if !self.revealed.insert(ordinal).inserted { self.revealed.remove(ordinal) }
+            self.render()
+        }
         textView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(textView)
         NSLayoutConstraint.activate([
@@ -371,12 +381,59 @@ final class FormProseCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Render `text`. `.label`, not the log's palette: this is a row among system-styled form
-    /// rows, and the body font so it reads as one of them.
     func show(_ text: String) {
-        let rendered = MessageRenderer.prose(text, base: .preferredFont(forTextStyle: .body), color: .label)
+        self.text = text
+        revealed = []
+        render()
+    }
+
+    /// `.label`, not the log's palette: this is a row among system-styled form rows, and the body
+    /// font so it reads as one of them. Opening a spoiler recolours its run and changes no
+    /// character, so the row's height holds and the table needn't re-measure.
+    private func render() {
+        let rendered = MessageRenderer.prose(text, base: .preferredFont(forTextStyle: .body), color: .label, revealed: revealed)
         textView.attributedText = rendered
-        // The spoken form hides what a spoiler hides, as the log's rows do.
+        // What VoiceOver hears: the spoken form hides what a spoiler hides, and the value is
+        // blanked so the text view's own text can't follow the label and say it anyway — the
+        // log's precaution (`CompactCell`), taken here for the same reason.
         textView.accessibilityLabel = MessageRenderer.spoken(rendered)
+        textView.accessibilityValue = ""
+        textView.accessibilityCustomActions = accessibilityActions(for: rendered)
+    }
+
+    /// One action per hidden spoiler and one per link: the tap that opens either is aimed at a
+    /// screen point, and VoiceOver has none to give. The log's rows do the same for their
+    /// spoilers (`CompactCell.applySpoilerActions`) and reach their links through the actions
+    /// sheet, which a form row doesn't have.
+    private func accessibilityActions(for rendered: NSAttributedString) -> [UIAccessibilityCustomAction]? {
+        let whole = NSRange(location: 0, length: rendered.length)
+        var ordinals: [Int] = []
+        rendered.enumerateAttribute(.spoiler, in: whole) { value, range, _ in
+            guard let ordinal = value as? Int,
+                  rendered.attribute(.spoilerHidden, at: range.location, effectiveRange: nil) != nil,
+                  !ordinals.contains(ordinal)
+            else { return }
+            ordinals.append(ordinal)
+        }
+        var links: [URL] = []
+        rendered.enumerateAttribute(.messageLink, in: whole) { value, _, _ in
+            if let url = value as? URL, !links.contains(url) { links.append(url) }
+        }
+        var actions: [UIAccessibilityCustomAction] = []
+        for (position, ordinal) in ordinals.enumerated() {
+            let name = ordinals.count == 1 ? "Reveal spoiler" : "Reveal spoiler \(position + 1) of \(ordinals.count)"
+            actions.append(UIAccessibilityCustomAction(name: name) { [weak self] _ in
+                self?.textView.onToggleSpoiler?(ordinal)
+                return true
+            })
+        }
+        for (position, url) in links.enumerated() {
+            let name = links.count == 1 ? "Open link" : "Open link \(position + 1) of \(links.count)"
+            actions.append(UIAccessibilityCustomAction(name: name) { _ in
+                UIApplication.shared.openExternal(url)
+                return true
+            })
+        }
+        return actions.isEmpty ? nil : actions
     }
 }
