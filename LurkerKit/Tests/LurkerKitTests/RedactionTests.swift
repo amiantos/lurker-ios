@@ -402,6 +402,29 @@ final class RedactionTests: XCTestCase {
         XCTAssertEqual(sent, ["react 1 👍", "delete 2"])
     }
 
+    func testReactAndDeleteLeaveALineAboveTheClearMarkerAlone() {
+        // Cleared rows stay held; a command typed at the screen never lands on one.
+        let model = model()
+        model.reactSeam = { _, _, _ in XCTFail("nothing should go out"); return true }
+        model.redactSeam = { _, _ in XCTFail("nothing should go out"); return true }
+        model.handle(backlog([line(1, nick: "bob"), line(2, isSelf: true)]))
+        model.handle(.bufferCleared(networkId: 1, target: "#lurker", clearedBeforeId: 2, clearedAt: Date()))
+        model.send(key, text: "/react 👍")
+        XCTAssertEqual(lastLocal(model), "nothing here to react to")
+        model.send(key, text: "/delete")
+        XCTAssertEqual(lastLocal(model), "nothing of yours here to delete")
+    }
+
+    func testReactSkipsALineFromSomeoneIgnored() {
+        let model = model()
+        var sent: [Int] = []
+        model.reactSeam = { id, _, _ in sent.append(id); return true }
+        model.handle(.ignoreListUpdated(networkId: nil, rules: [IgnoreRule(mask: "mallory")]))
+        model.handle(backlog([line(1, nick: "bob"), line(2, nick: "mallory")]))
+        model.send(key, text: "/react 👍")
+        XCTAssertEqual(sent, [1])
+    }
+
     func testDeleteCommandTakesYourNewestStandingLineWithItsReason() {
         let model = model()
         var sent: [String] = []

@@ -1460,9 +1460,25 @@ public final class ChatViewModel {
     /// And in the order the screen shows them (`MessageOrder`, lurker#1290): "the last line" is
     /// the last one on screen, not the newest id, which after a filled gap is a line said
     /// earlier and shown higher up.
+    ///
+    /// And only the rows the screen shows. A line above the `/clear` marker and a line an ignore
+    /// rule hides are both still held, and a command typed at the screen must not land on one:
+    /// `/delete` with nothing said since a clear would otherwise take back a line the reader
+    /// can't see, and `/react` could answer someone they ignore. The marker counts even while
+    /// the screen is showing cleared history (`RowOptions.showsClearedHistory`, view state this
+    /// doesn't see): the command then says there is nothing here, which is the safe way to be
+    /// wrong. The same filters `ConversationBuild.make` runs; a hard hide added there belongs
+    /// here too.
     private func heldAsShown(_ key: BufferKey, state: ChatState) -> [Message] {
-        Redactions.presenting(
-            MessageOrder.byTime(state.messages[key.id] ?? []),
+        let buffer = state.buffers[key.id]
+        let cleared = buffer?.clearedAt == nil ? 0 : max(0, buffer?.clearedBeforeId ?? 0)
+        let ordered = MessageOrder.byTime(state.messages[key.id] ?? [])
+        return Redactions.presenting(
+            state.ignores.visible(
+                cleared > 0 ? ordered.filter { $0.id == 0 || $0.id > cleared } : ordered,
+                networkId: key.networkId,
+                target: key.target
+            ),
             redactions: key.networkId == nil ? [:] : state.redactions
         )
     }
