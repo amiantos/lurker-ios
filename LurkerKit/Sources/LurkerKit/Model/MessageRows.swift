@@ -107,14 +107,16 @@ public enum MessageRow: Equatable, Sendable {
         }
     }
 
-    /// Whether `id` falls between the lowest and highest ids of this summary's run. The place
-    /// to land for an id that is held and that no row draws (an event the tier hides inside a
-    /// run), and only for one: a run holding a line fetched after the fact also spans ids drawn
-    /// elsewhere, which is why `represents` is asked first (`ConversationBuild.rowIndex`).
-    public func spans(_ id: Int) -> Bool {
+    /// How many ids lie between the lowest and highest of this summary's run, when `id` is one
+    /// of them; nil when it isn't, or this is no summary. The place to land for an id that is
+    /// held and that no row draws (an event the tier hides inside a run), and only for one: a
+    /// run holding a line fetched after the fact also spans ids drawn elsewhere, which is why
+    /// `represents` is asked first and the NARROWEST span wins (`ConversationBuild.rowIndex`).
+    public func span(over id: Int) -> Int? {
         guard case .consolidated(let summary) = self,
-              let low = summary.ids.min(), let high = summary.ids.max() else { return false }
-        return low <= id && id <= high
+              let low = summary.ids.min(), let high = summary.ids.max(),
+              low <= id, id <= high else { return nil }
+        return high - low
     }
 }
 

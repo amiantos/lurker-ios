@@ -84,11 +84,16 @@ public struct ConversationBuild: Sendable {
     }
 
     /// The row that now stands for message `id` — its own, or the summary of the run a page
-    /// merged it into; failing both, a summary whose ids span it (an event the tier hides inside
-    /// a run). Resolved by MESSAGE ID on every call, never a cached index: a rebuild between two
-    /// passes shifts every index.
+    /// merged it into; failing both, the summary whose ids span it most narrowly (an event the
+    /// tier hides inside a run). Resolved by MESSAGE ID on every call, never a cached index: a
+    /// rebuild between two passes shifts every index.
     public func rowIndex(containing id: Int) -> Int? {
-        rows.firstIndex { $0.represents(id) } ?? rows.firstIndex { $0.spans(id) }
+        if let exact = rows.firstIndex(where: { $0.represents(id) }) { return exact }
+        var best: (row: Int, span: Int)?
+        for (index, row) in rows.enumerated() {
+            if let span = row.span(over: id), span < (best?.span ?? Int.max) { best = (index, span) }
+        }
+        return best?.row
     }
 
     public init(
@@ -419,6 +424,9 @@ public final class ConversationScroll {
 
     /// What the previous build drew, for telling a real append from everything else.
     private var previousVisible: [Message]?
+
+    /// The oldest id the previous build's buffer held, for telling an older page from an append.
+    private var previousOldestHeld: Int?
 
     /// The rule set the previous build was filtered by — identity is the whole comparison.
     private var lastIgnores: IgnoreSet?
@@ -800,8 +808,13 @@ public final class ConversationScroll {
         // Appends only — the first id moving means older pages were pulled — and not while
         // detached (or just re-attached): a detached buffer holds live traffic out, so anything
         // appended there is a page the reader asked for, not a surprise from below.
+        //
+        // The first id HELD, not the first row shown: a line fetched after the fact can be
+        // older than everything loaded and take the top of the list (lurker#1290).
+        let oldestHeld = built.held?.first(where: { $0.id != 0 })?.id
+        defer { previousOldestHeld = oldestHeld }
         if let previous = previousVisible, !wasNearBottom, !wasDetached, !nowDetached, !rulesChanged,
-           built.visible.first?.id == previous.first?.id {
+           oldestHeld == previousOldestHeld {
             // By id, not by how much longer the list got: a restored row lands in the middle.
             // And not ephemerals (id 0) — a local echo isn't something the reader is missing.
             // The newest id, not the last row's: shown by time (lurker#1290), a line fetched

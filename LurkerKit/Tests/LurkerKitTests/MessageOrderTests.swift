@@ -168,6 +168,23 @@ struct MessageOrderTests {
         #expect(built.rowIndex(containing: 53) == nil)
     }
 
+    @Test("of two runs that span a hidden id, the narrower one is its own")
+    func hiddenIdTakesTheNarrowestRun() {
+        // The first run holds a replayed join (105), so its ids span everything after it.
+        let rows = [
+            msg(40, 10, nick: "bob", type: .part),
+            msg(105, 11, nick: "carol", type: .join),
+            msg(41, 12, "said"),
+            msg(43, 13, nick: "dave", type: .part),
+            msg(44, 14, nick: "dave", type: .system),
+            msg(45, 15, nick: "dave", type: .join),
+        ]
+        let built = build(state(rows))
+        #expect(shown(built) == ["summary", "41", "summary"])
+        #expect(built.rowIndex(containing: 44) == built.rowIndex(containing: 45))
+        #expect(built.rowIndex(containing: 44) != built.rowIndex(containing: 40))
+    }
+
     @Test("the badge counts what landed below the last row shown, once")
     func badgeCountsWhatLandedBelow() {
         let scroll = ConversationScroll(kind: .channel)
@@ -182,5 +199,9 @@ struct MessageOrderTests {
         // The last row shown is still 24, though the newest id is 25: 24 isn't counted again.
         _ = scroll.onRows(build(state(filledGap + [msg(24, 24), msg(25, 21), msg(26, 25)]), options: scroll.options), wasNearBottom: false)
         #expect(scroll.newWhileAway == 2)
+        // A late line older than everything loaded takes the top of the list, in the same
+        // frame as a live one. Nothing was paged: the live line counts.
+        _ = scroll.onRows(build(state(filledGap + [msg(24, 24), msg(25, 21), msg(26, 25), msg(27, 5), msg(28, 26)]), options: scroll.options), wasNearBottom: false)
+        #expect(scroll.newWhileAway == 3)
     }
 }
