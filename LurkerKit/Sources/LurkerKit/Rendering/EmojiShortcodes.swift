@@ -78,19 +78,35 @@ public enum EmojiShortcodes {
     }
 
     /// Every resolvable `:name:` in `text`, in order, as the render pass replaces them. An
-    /// unknown name is left out (it stays literal), and so is a match touching any of
-    /// `protecting` — the caller's spoilers and links, which the web never splits for emoji
-    /// either: a glyph inside a spoiler would be a visible shape in a box of invisible ones,
-    /// and a URL's path is text, not a shortcode.
+    /// unknown name is left out (it stays literal). `protecting` — the caller's spoilers and
+    /// links — is cut out before the scan, and each stretch between is scanned on its own: the
+    /// web splits URLs out first and runs its emoji pass over what remains, so a shortcode never
+    /// forms inside a link (a URL's path is text) or a spoiler (a glyph there would be a visible
+    /// shape in a box of invisible ones), and the opening-colon rule never looks INTO a link —
+    /// `<https://x.test>:skull:` is a link and then 💀, not a colon glued to the `t`.
     public static func matches(in text: String, protecting: [NSRange] = []) -> [Match] {
         guard let scan, !text.isEmpty else { return [] }
         let source = text as NSString
         var out: [Match] = []
-        for found in scan.matches(in: text, range: NSRange(location: 0, length: source.length)) {
-            guard let glyph = glyph(for: source.substring(with: found.range(at: 1))) else { continue }
-            if protecting.contains(where: { NSIntersectionRange($0, found.range).length > 0 }) { continue }
-            out.append(Match(range: found.range, glyph: glyph))
+        for gap in gaps(in: source.length, protecting: protecting) {
+            let stretch = source.substring(with: gap)
+            for found in scan.matches(in: stretch, range: NSRange(location: 0, length: gap.length)) {
+                guard let glyph = glyph(for: (stretch as NSString).substring(with: found.range(at: 1))) else { continue }
+                out.append(Match(range: NSRange(location: gap.location + found.range.location, length: found.range.length), glyph: glyph))
+            }
         }
+        return out
+    }
+
+    /// The stretches of `0..<length` that none of `protecting` covers, in order.
+    private static func gaps(in length: Int, protecting: [NSRange]) -> [NSRange] {
+        var out: [NSRange] = []
+        var from = 0
+        for range in protecting.sorted(by: { $0.location < $1.location }) {
+            if range.location > from { out.append(NSRange(location: from, length: min(range.location, length) - from)) }
+            from = max(from, NSMaxRange(range))
+        }
+        if from < length { out.append(NSRange(location: from, length: length - from)) }
         return out
     }
 

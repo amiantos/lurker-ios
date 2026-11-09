@@ -80,6 +80,17 @@ final class EmojiShortcodesTests: XCTestCase {
         XCTAssertEqual(EmojiShortcodes.matches(in: text, protecting: [link]).map(\.range.location), [3, 37])
     }
 
+    func testAProtectedRangeIsAlsoABoundaryForTheOpeningColon() {
+        // `<https://x.test>:skull:` once the brackets are gone: the colon sits right after the
+        // link's `t`. The web splits the URL out and scans the rest, so it's a link and then 💀.
+        let text = "https://x.test:skull: and https://y.test/:tada:"
+        let found = EmojiShortcodes.matches(
+            in: text, protecting: [NSRange(location: 0, length: 14), NSRange(location: 26, length: 21)])
+        XCTAssertEqual(found.map(\.range), [NSRange(location: 14, length: 7)])
+        // Unprotected, the first is a glued colon and only the one after the `/` is found.
+        XCTAssertEqual(EmojiShortcodes.matches(in: text).map(\.range), [NSRange(location: 41, length: 6)])
+    }
+
     func testNothingInEmptyText() {
         XCTAssertEqual(EmojiShortcodes.matches(in: ""), [])
     }
