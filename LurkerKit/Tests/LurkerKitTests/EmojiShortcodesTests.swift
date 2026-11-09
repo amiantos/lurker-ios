@@ -134,6 +134,13 @@ final class EmojiShortcodesTests: XCTestCase {
         XCTAssertNil(EmojiShortcodes.completed(in: ":nope:", caret: 6))
     }
 
+    func testCompletedIsNilWhenANewlineFollowsTheShortcode() {
+        // ICU's `$` matches before a final line terminator; the pattern uses `\z` so a newline
+        // typed after a literal `:tada:` (a restored line, a synced draft) doesn't swap the line above.
+        XCTAssertNil(EmojiShortcodes.completed(in: ":tada:\n", caret: 7))
+        XCTAssertNil(EmojiShortcodes.completed(in: "hi :tada:\n", caret: 10))
+    }
+
     func testCompletedOnlyLooksBeforeTheCaret() {
         // Text after the caret is someone else's problem — the conversion is for what was just typed.
         let text = ":tada: :skull:"
@@ -148,6 +155,13 @@ final class EmojiShortcodesTests: XCTestCase {
         XCTAssertEqual(EmojiShortcodes.reaction(from: ":tada"), "🎉")
         XCTAssertEqual(EmojiShortcodes.reaction(from: " :+1: "), "👍")
         XCTAssertEqual(EmojiShortcodes.reaction(from: ":-1"), "👎")
+    }
+
+    func testReactionResolvesOneLetterNamesLikeTheWeb() {
+        // gemoji has one-letter names, so `:x` and `:o` are ❌ and ⭕ here as in the web's
+        // `reactionFromInput` — parity, pinned so a change to it is a decision for all three clients.
+        XCTAssertEqual(EmojiShortcodes.reaction(from: ":x"), "❌")
+        XCTAssertEqual(EmojiShortcodes.reaction(from: ":o"), "⭕")
     }
 
     func testReactionSendsAnythingElseAsTyped() {

@@ -1331,11 +1331,15 @@ extension ComposerBar: UITextViewDelegate {
         cachedLine = nil
         // The web's `maybeConvertShortcode` (lurker#1294): the closing `:` of a known `:name:`
         // turns it into its glyph where it stands, so our lines leave the app the way the
-        // web's do. Not under marked text — the keyboard still owns those characters, and
-        // the web gates the same way — and not for a restore or Tab's own edit, which aren't
-        // typing. The swap comes back through here once more, with a glyph under the caret
-        // that closes nothing, and that pass does the rest.
-        if !isRestoring, !isApplyingTab, !isComposing, convertCompletedShortcode() { return }
+        // web's do. Only for text that actually changed since the last pass — this method is
+        // also called by hand for layout (`updateMetrics`), and a draft another device wrote
+        // must not turn into a glyph because the text size changed. Not under marked text —
+        // the keyboard still owns those characters, and the web gates the same way — and not
+        // for a restore or Tab's own edit, which aren't typing. The swap comes back through
+        // here once more, with a glyph under the caret that closes nothing, and that pass
+        // does the rest.
+        if !isRestoring, !isApplyingTab, !isComposing, plainText != lastEmittedDraft,
+           convertCompletedShortcode() { return }
         if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }

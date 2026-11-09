@@ -49,9 +49,11 @@ public enum EmojiShortcodes {
         pattern: "(?<!\(nameChars)):(\(nameChars)+):", options: [.caseInsensitive])
 
     /// A completed `:name:` ending exactly at the end of the string — the web's `CLOSE_RE`,
-    /// run on the text up to the caret.
+    /// run on the text up to the caret. ⚠ `\z`, not the web's `$`: in ICU (and java.util.regex)
+    /// `$` also matches before a final line terminator, so `:tada:\n` with the caret after the
+    /// newline would read as "just closed" and the swap would land on the line above.
     private static let closing = try? NSRegularExpression(
-        pattern: "(?<!\(nameChars)):(\(nameChars)+):$", options: [.caseInsensitive])
+        pattern: "(?<!\(nameChars)):(\(nameChars)+):\\z", options: [.caseInsensitive])
 
     /// A whole typed reaction that is one shortcode, closing colon optional — the web's
     /// `reactionFromInput`. Nothing may follow it, so `:tada` is unambiguous.
@@ -107,12 +109,10 @@ public enum EmojiShortcodes {
     /// including for an unknown name, which stays as typed. The web's `findCompletedShortcode`
     /// and the lookup that follows it.
     public static func completed(in text: String, caret: Int) -> Match? {
-        guard let closing, caret > 0 else { return nil }
-        let source = text as NSString
-        guard caret <= source.length else { return nil }
-        let head = source.substring(to: caret)
-        guard let found = closing.firstMatch(in: head, range: NSRange(location: 0, length: caret)),
-              let glyph = glyph(for: (head as NSString).substring(with: found.range(at: 1)))
+        guard let closing, caret > 0, caret <= (text as NSString).length else { return nil }
+        let head = (text as NSString).substring(to: caret) as NSString
+        guard let found = closing.firstMatch(in: head as String, range: NSRange(location: 0, length: caret)),
+              let glyph = glyph(for: head.substring(with: found.range(at: 1)))
         else { return nil }
         return Match(range: found.range, glyph: glyph)
     }

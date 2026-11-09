@@ -930,9 +930,14 @@ enum MessageRenderer {
         // beside the string would not follow. Nothing here reads them any more: the spoilers
         // and links the pass must stay out of are read back off the string's own attributes,
         // which do move with the text. The web runs its emoji pass after URL and channel
-        // splitting and skips spoiler runs entirely; this is the same rule in a different
-        // order, and a glyph inside a link's path or a spoiler's box would be the same defect.
-        EmojiShortcodes.replace(in: attributed, protecting: emojiProtectedRanges(in: attributed))
+        // splitting and skips spoiler runs entirely; a glyph inside a link's path or a
+        // spoiler's box would be the same defect here. One difference, accepted: the web
+        // scans each formatting run on its own, so a name split by a control code
+        // (`:ta\u{2}da:`) stays literal there and converts here, in the first run's style.
+        // Most lines have no colon at all, and those skip the scan and the attribute walks.
+        if attributed.string.contains(":") {
+            EmojiShortcodes.replace(in: attributed, protecting: emojiProtectedRanges(in: attributed))
+        }
         return attributed
     }
 
