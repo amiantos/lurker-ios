@@ -71,6 +71,8 @@ final class ChannelSettingsViewController: UITableViewController {
 
     private var dataSource: UITableViewDiffableDataSource<SectionID, ItemID>!
     private var sections: [Section] = []
+    /// The topic's opened spoilers, the screen's so a reload keeps them (lurker#1297).
+    private var topicReveals = ProseReveals()
 
     init(viewModel: ChatViewModel, key: BufferKey) {
         self.viewModel = viewModel
@@ -314,11 +316,12 @@ final class ChannelSettingsViewController: UITableViewController {
         var out: [Section] = []
 
         // Topic. Out of the channel we don't know it has no topic — or that it exists at all;
-        // only what we last saw. Judged on what would be drawn: a topic of nothing but formatting
-        // codes renders as nothing, and a blank row under "Topic" says less than the placeholder.
-        // The placeholder is a `.notice`, its own item: a reconfigure hands back the same cell,
-        // and the topic's cell is a different class from a sentence's.
-        let hasTopic = !IRCFormatting.strip(topic).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // only what we last saw. Judged on what would be drawn (`IRCFormatting.drawsNothing`): a
+        // topic of nothing but formatting codes renders as nothing, and a blank row under "Topic"
+        // says less than the placeholder. The placeholder is a `.notice`, its own item: a
+        // reconfigure hands back the same cell, and the topic's cell is a different class from a
+        // sentence's.
+        let hasTopic = !IRCFormatting.drawsNothing(topic)
         let topicItem: (ItemID, Content)
         if access.canSetTopic {
             topicItem = (.topicField, .topicField(text: drafts.topic ?? topic))
@@ -500,7 +503,13 @@ final class ChannelSettingsViewController: UITableViewController {
         case .topicText(let text):
             // The topic itself, drawn as the log draws a body (lurker#1297).
             let cell = tableView.dequeueReusableCell(withIdentifier: FormProseCell.reuseID, for: indexPath) as! FormProseCell
-            cell.show(text)
+            cell.show(text, revealed: topicReveals.ordinals(for: text)) { [weak self] ordinal in
+                guard let self else { return }
+                self.topicReveals.toggle(ordinal)
+                var snapshot = self.dataSource.snapshot()
+                snapshot.reconfigureItems([.topicText])
+                self.dataSource.apply(snapshot, animatingDifferences: false)
+            }
             return cell
 
         case .notice(let text):

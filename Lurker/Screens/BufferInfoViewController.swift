@@ -38,6 +38,8 @@ final class BufferInfoViewController: UITableViewController {
     /// What the table is showing. The next build is compared against it to decide whether
     /// there is anything to reload — see `render`.
     private var sections: [Section] = []
+    /// The topic's opened spoilers, the screen's so a reload keeps them (lurker#1297).
+    private var topicReveals = ProseReveals()
 
     /// The most recent refusal of a connection verb, shown under the Connection section.
     ///
@@ -196,11 +198,10 @@ final class BufferInfoViewController: UITableViewController {
             let lists: [Row] = access.joined
                 ? access.spec.map { ChannelModeForm.lists(in: $0).map { Row.modeList(letter: $0.letter, name: $0.name) } } ?? []
                 : []
-            // Judged on what would be drawn: a topic of nothing but formatting codes renders as
-            // nothing, and a blank row under "Topic" says less than the placeholder.
-            let topic = live.topic.flatMap {
-                IRCFormatting.strip($0).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
-            }
+            // Judged on what would be drawn (`IRCFormatting.drawsNothing`): a topic of nothing but
+            // formatting codes renders as nothing, and a blank row under "Topic" says less than
+            // the placeholder.
+            let topic = live.topic.flatMap { IRCFormatting.drawsNothing($0) ? nil : $0 }
             return [
                 // Nothing under no topic: there's no one to credit.
                 Section(
@@ -321,7 +322,10 @@ final class BufferInfoViewController: UITableViewController {
         // draws a body (lurker#1297): links, colours, `:shortcode:` glyphs.
         if case .topic(let topic?) = sections[indexPath.section].rows[indexPath.row] {
             let cell = tableView.dequeueReusableCell(withIdentifier: FormProseCell.reuseID, for: indexPath) as! FormProseCell
-            cell.show(topic)
+            cell.show(topic, revealed: topicReveals.ordinals(for: topic)) { [weak self] ordinal in
+                self?.topicReveals.toggle(ordinal)
+                self?.tableView.reloadRows(at: [indexPath], with: .none)
+            }
             return cell
         }
 

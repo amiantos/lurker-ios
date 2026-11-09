@@ -349,10 +349,8 @@ final class FormProseCell: UITableViewCell {
 
     private let textView = MessageTextView()
     private var text = ""
-    /// The spoilers opened in this text, by ordinal — the cell's own, since no message stands
-    /// behind a topic to key them by. Reset with the text, so a recycled cell shows a new topic's
-    /// boxes closed.
     private var revealed: Set<Int> = []
+    private var onToggleSpoiler: ((Int) -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -362,11 +360,7 @@ final class FormProseCell: UITableViewCell {
         textView.textContainer.lineFragmentPadding = 0
         textView.adjustsFontForContentSizeCategory = true
         textView.onOpenURL = { url in UIApplication.shared.openExternal(url) }
-        textView.onToggleSpoiler = { [weak self] ordinal in
-            guard let self else { return }
-            if !self.revealed.insert(ordinal).inserted { self.revealed.remove(ordinal) }
-            self.render()
-        }
+        textView.onToggleSpoiler = { [weak self] ordinal in self?.onToggleSpoiler?(ordinal) }
         textView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(textView)
         NSLayoutConstraint.activate([
@@ -381,9 +375,19 @@ final class FormProseCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    func show(_ text: String) {
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        onToggleSpoiler = nil
+    }
+
+    /// Show `text` with the spoilers in `revealed` open. The set is the screen's (`ProseReveals`),
+    /// not the cell's: a table reload for an unrelated row, or this cell scrolling off and back,
+    /// configures a cell anew, and a reader's opened box must not snap shut for it. A tap on a
+    /// box reaches `onToggleSpoiler`; the screen records it and shows the row again.
+    func show(_ text: String, revealed: Set<Int>, onToggleSpoiler: @escaping (Int) -> Void) {
         self.text = text
-        revealed = []
+        self.revealed = revealed
+        self.onToggleSpoiler = onToggleSpoiler
         render()
     }
 
@@ -435,5 +439,26 @@ final class FormProseCell: UITableViewCell {
             })
         }
         return actions.isEmpty ? nil : actions
+    }
+}
+
+/// The spoilers a screen's prose row has open, kept by the screen rather than the cell so a reload
+/// or a recycled cell draws them as they were (`FormProseCell.show`). Cleared when the text changes:
+/// a new topic's boxes start shut.
+struct ProseReveals {
+    private var text = ""
+    private var ordinals: Set<Int> = []
+
+    /// The open spoilers of `text` — none, once it differs from the text they were opened in.
+    mutating func ordinals(for text: String) -> Set<Int> {
+        if text != self.text {
+            self.text = text
+            ordinals = []
+        }
+        return ordinals
+    }
+
+    mutating func toggle(_ ordinal: Int) {
+        ordinals.formSymmetricDifference([ordinal])
     }
 }
