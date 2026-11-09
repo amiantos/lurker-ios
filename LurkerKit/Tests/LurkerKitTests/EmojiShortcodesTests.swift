@@ -63,8 +63,12 @@ final class EmojiShortcodesTests: XCTestCase {
         XCTAssertEqual(scan(":-)").count, 0)
     }
 
-    func testMatchesCaseInsensitively() {
+    func testMatchesCaseInsensitivelyOverASCIIOnly() {
         XCTAssertEqual(scan(":Tada:").map(\.1), ["🎉"])
+        // The web's regex has no Unicode case folding: a Kelvin sign is not a `k`, and a long s
+        // before the colon is not a name character gluing it shut.
+        XCTAssertEqual(scan(":s\u{212A}ull:").count, 0)
+        XCTAssertEqual(scan("\u{17F}:skull:").map(\.1), ["💀"])
     }
 
     func testAMatchTouchingAProtectedRangeIsLeftAlone() {

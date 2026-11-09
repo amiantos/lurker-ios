@@ -13,8 +13,8 @@ import Foundation
 /// clients resolve the same set.
 ///
 /// A shortcode is `:name:` where `name` is one or more of `[a-z0-9_+-]` — the gemoji
-/// character set (`:+1:`, `:e-mail:`, `:thumbsup:`). Matching is case-insensitive: a typed
-/// `:Bone:` resolves straight against the (lowercase) table. The opening `:` must not sit
+/// character set (`:+1:`, `:e-mail:`, `:thumbsup:`). Matching is case-insensitive over ASCII:
+/// a typed `:Bone:` resolves straight against the (lowercase) table. The opening `:` must not sit
 /// right behind another shortcode character, so a clock like `12:00` or `word:bone:` never
 /// reads as a shortcode start, and ASCII smileys fall out for free: `:-)` never closes
 /// because `)` isn't a shortcode character. An unknown name stays literal.
@@ -39,26 +39,26 @@ public enum EmojiShortcodes {
         }
     }
 
-    /// The gemoji shortcode character set. Defined once so the body pattern and the
-    /// opening-boundary lookbehind can't drift apart — the web's `NAME_CHARS`.
-    private static let nameChars = "[a-z0-9_+-]"
+    /// The gemoji shortcode character set, both cases spelled out. Defined once so the body
+    /// pattern and the opening-boundary lookbehind can't drift apart — the web's `NAME_CHARS`.
+    /// ⚠ Not `[a-z]` with `.caseInsensitive`: ICU folds beyond ASCII, so the Kelvin sign in
+    /// `:sKull:` would match `k` and the long s in `ſ:skull:` would glue the colon, where the
+    /// web's non-Unicode regex does neither.
+    private static let nameChars = "[A-Za-z0-9_+-]"
 
     /// Every completed `:name:` whose opening colon isn't glued to a preceding shortcode
     /// character — the web's `shortcodeScanRegex`.
-    private static let scan = try? NSRegularExpression(
-        pattern: "(?<!\(nameChars)):(\(nameChars)+):", options: [.caseInsensitive])
+    private static let scan = try? NSRegularExpression(pattern: "(?<!\(nameChars)):(\(nameChars)+):")
 
     /// A completed `:name:` ending exactly at the end of the string — the web's `CLOSE_RE`,
     /// run on the text up to the caret. ⚠ `\z`, not the web's `$`: in ICU (and java.util.regex)
     /// `$` also matches before a final line terminator, so `:tada:\n` with the caret after the
     /// newline would read as "just closed" and the swap would land on the line above.
-    private static let closing = try? NSRegularExpression(
-        pattern: "(?<!\(nameChars)):(\(nameChars)+):\\z", options: [.caseInsensitive])
+    private static let closing = try? NSRegularExpression(pattern: "(?<!\(nameChars)):(\(nameChars)+):\\z")
 
     /// A whole typed reaction that is one shortcode, closing colon optional — the web's
     /// `reactionFromInput`. Nothing may follow it, so `:tada` is unambiguous.
-    private static let whole = try? NSRegularExpression(
-        pattern: "^:(\(nameChars)+):?$", options: [.caseInsensitive])
+    private static let whole = try? NSRegularExpression(pattern: "^:(\(nameChars)+):?$")
 
     /// Shortcode body (no colons, lowercase) → glyph. Read once from the bundle; a resource
     /// that doesn't reach it leaves an empty table, and every shortcode stays literal — which
