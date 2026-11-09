@@ -925,7 +925,29 @@ enum MessageRenderer {
         // about. `PreviewHiding` measures which URLs may go and `PreviewText.stripHiddenUrls`
         // takes them out, and the two agreeing to the character is the entire defect class (#126).
         PreviewText.stripHiddenUrls(from: attributed, hidden: hiddenUrls, spoilered: spoilered)
+        // `:shortcode:` → glyph (lurker#1294), after everything above because it CHANGES
+        // CHARACTERS — `:skull:` is seven units and 💀 is two — and the bookkeeping arrays
+        // beside the string would not follow. Nothing here reads them any more: the spoilers
+        // and links the pass must stay out of are read back off the string's own attributes,
+        // which do move with the text. The web runs its emoji pass after URL and channel
+        // splitting and skips spoiler runs entirely; this is the same rule in a different
+        // order, and a glyph inside a link's path or a spoiler's box would be the same defect.
+        EmojiShortcodes.replace(in: attributed, protecting: emojiProtectedRanges(in: attributed))
         return attributed
+    }
+
+    /// Where the emoji pass may not write: every spoiler (hidden or revealed, openable or not —
+    /// `.spoiler` marks the openable ones, `.spoilerHidden` the rest and the hidden) and every
+    /// link, as the string itself records them.
+    private static func emojiProtectedRanges(in attributed: NSAttributedString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        let whole = NSRange(location: 0, length: attributed.length)
+        for key in [NSAttributedString.Key.spoiler, .spoilerHidden, .messageLink] {
+            attributed.enumerateAttribute(key, in: whole) { value, range, _ in
+                if value != nil { ranges.append(range) }
+            }
+        }
+        return ranges
     }
 
     // MARK: - Timestamps

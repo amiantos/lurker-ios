@@ -311,8 +311,10 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         return button
     }
 
+    /// What's typed, trimmed — and a whole `:name:` the emoji table knows is its glyph, as the
+    /// web's React dialog and `/react` read it (lurker#1294).
     private var typedValue: String {
-        (field.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        EmojiShortcodes.reaction(from: field.text ?? "")
     }
 
     private func typedChanged() {

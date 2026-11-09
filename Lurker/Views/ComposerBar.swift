@@ -1055,6 +1055,18 @@ final class ComposerBar: UIView {
         textViewDidChange(textView)
     }
 
+    /// Swap a `:name:` the caret just closed for its emoji — see `textViewDidChange`. Through
+    /// `replaceToken`, so the glyph takes the colour of the name it replaces and the caret lands
+    /// after it. Whether anything was swapped.
+    private func convertCompletedShortcode() -> Bool {
+        let selection = textView.selectedRange
+        guard selection.length == 0,
+              let match = EmojiShortcodes.completed(in: plainText, caret: selection.location)
+        else { return false }
+        replaceToken(match.range, with: match.glyph)
+        return true
+    }
+
     /// Replace `range` through the text storage, so the rest of the line keeps its colour. The
     /// new text takes the colour of what it replaces, or of the character before it — a nick
     /// completed inside a red sentence is red — and is plain at the very start, so a Reply's
@@ -1317,6 +1329,13 @@ extension ComposerBar: UITextViewDelegate {
 
     func textViewDidChange(_ textView: UITextView) {
         cachedLine = nil
+        // The web's `maybeConvertShortcode` (lurker#1294): the closing `:` of a known `:name:`
+        // turns it into its glyph where it stands, so our lines leave the app the way the
+        // web's do. Not under marked text — the keyboard still owns those characters, and
+        // the web gates the same way — and not for a restore or Tab's own edit, which aren't
+        // typing. The swap comes back through here once more, with a glyph under the caret
+        // that closes nothing, and that pass does the rest.
+        if !isRestoring, !isApplyingTab, !isComposing, convertCompletedShortcode() { return }
         if !isApplyingTab { tabCompletion = nil }
         updateSendEnabled()
         if !isRestoring { emitCompletion() }

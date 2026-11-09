@@ -966,19 +966,22 @@ final class CommandParserTests: XCTestCase {
         }
     }
 
-    func testReactRefusesAnEmojiNameItCannotResolve() {
-        XCTAssertTrue(isInfo(effects("/react :tada:")))
-        XCTAssertTrue(isInfo(effects("/react :+1:")))
+    func testReactResolvesAnEmojiNameLikeTheWeb() {
+        // lurker#1294: the table is here now, so a name reacts with its glyph.
+        XCTAssertEqual(effects("/react :tada:"), [.react(value: "🎉")])
+        XCTAssertEqual(effects("/react :+1:"), [.react(value: "👍")])
         // The web resolves the unclosed form too.
-        XCTAssertTrue(isInfo(effects("/react :tada")))
+        XCTAssertEqual(effects("/react :tada"), [.react(value: "🎉")])
+        // An unknown name goes out as typed, as on the web — not refused.
+        XCTAssertEqual(effects("/react :nope:"), [.react(value: ":nope:")])
         // Emoticons and the emoji itself still go out.
         XCTAssertEqual(effects("/react :D"), [.react(value: ":D")])
         XCTAssertEqual(effects("/react :P"), [.react(value: ":P")])
         XCTAssertEqual(effects("/react :-D"), [.react(value: ":-D")])
         XCTAssertEqual(effects("/react :-p"), [.react(value: ":-p")])
         // `:-1` and `:+1` are names on the web (👎, 👍), not faces.
-        XCTAssertTrue(isInfo(effects("/react :-1")))
-        XCTAssertTrue(isInfo(effects("/react :+1")))
+        XCTAssertEqual(effects("/react :-1"), [.react(value: "👎")])
+        XCTAssertEqual(effects("/react :+1"), [.react(value: "👍")])
         XCTAssertEqual(effects("/react :-)"), [.react(value: ":-)")])
         XCTAssertEqual(effects("/react 🎉"), [.react(value: "🎉")])
     }
