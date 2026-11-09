@@ -95,8 +95,8 @@ public enum MessageRow: Equatable, Sendable {
         }
     }
 
-    /// Whether this row stands in for message `id` — its own row, or the summary whose span
-    /// covers it after a history page merged it into a consolidated run.
+    /// Whether this row stands in for message `id` — its own row, or the summary of the
+    /// consolidated run a history page merged it into.
     public func represents(_ id: Int) -> Bool {
         switch self {
         case .bubble(let message, _): message.id == id
@@ -105,6 +105,16 @@ public enum MessageRow: Equatable, Sendable {
         case .unreadDivider, .dateDivider, .startOfHistory, .clearedDivider, .awayDivider, .backDivider,
              .typing: false
         }
+    }
+
+    /// Whether `id` falls between the lowest and highest ids of this summary's run. The place
+    /// to land for an id that is held and that no row draws (an event the tier hides inside a
+    /// run), and only for one: a run holding a line fetched after the fact also spans ids drawn
+    /// elsewhere, which is why `represents` is asked first (`ConversationBuild.rowIndex`).
+    public func spans(_ id: Int) -> Bool {
+        guard case .consolidated(let summary) = self,
+              let low = summary.ids.min(), let high = summary.ids.max() else { return false }
+        return low <= id && id <= high
     }
 }
 

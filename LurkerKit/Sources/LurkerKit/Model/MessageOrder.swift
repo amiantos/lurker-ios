@@ -22,12 +22,14 @@ public enum MessageOrder {
         }
     }
 
-    /// Where a row sorts. A row with no clock (a line the app wrote itself, `appendLocal`) has
-    /// nothing to be placed by, so it rides the row it arrived after and moves with it. A row
-    /// with a clock and no id (an ephemeral) goes by its time, last among rows of that time.
-    private static func key(_ message: Message, after previous: Key?) -> Key {
+    /// Where a row sorts. A row with a clock and no id (an ephemeral) goes by its time, last
+    /// among rows of that time. A row with no clock (a line the app wrote itself, `appendLocal`)
+    /// has nothing to be placed by, so it takes `latest`, the latest key among the rows held
+    /// before it: it stays under everything that was on screen when it was written. Not the key
+    /// of the row before it, which can be a line fetched after the fact, shown far above.
+    private static func key(_ message: Message, latest: Key?) -> Key {
         guard let date = message.date else {
-            return previous ?? Key(date: .distantPast, id: 0)
+            return latest ?? Key(date: .distantPast, id: 0)
         }
         return Key(date: date, id: message.id != 0 ? message.id : Int.max)
     }
@@ -35,25 +37,27 @@ public enum MessageOrder {
     /// `rows` in display order. The array itself when it already is, which is every buffer that
     /// holds nothing replayed, so a build costs one pass.
     public static func byTime(_ rows: [Message]) -> [Message] {
-        var previous: Key?
+        // While the rows are in order, the latest key so far is the previous row's.
+        var latest: Key?
         var ordered = true
         for message in rows {
-            let next = key(message, after: previous)
-            if let previous, !(previous <= next) {
+            let next = key(message, latest: latest)
+            if let latest, !(latest <= next) {
                 ordered = false
                 break
             }
-            previous = next
+            latest = next
         }
         if ordered { return rows }
 
         var keyed: [(key: Key, offset: Int)] = []
         keyed.reserveCapacity(rows.count)
-        previous = nil
+        latest = nil
         for (offset, message) in rows.enumerated() {
-            let next = key(message, after: previous)
+            let next = key(message, latest: latest)
             keyed.append((next, offset))
-            previous = next
+            if let held = latest, next <= held { continue }
+            latest = next
         }
         // The offset is the last word, so rows that tie keep the order they were held in.
         keyed.sort { a, b in

@@ -361,13 +361,13 @@ final class ConsolidationTests: XCTestCase {
         XCTAssertEqual(summary?.date, base.addingTimeInterval(30))
     }
 
-    func testSummarySpansItsEventIds() {
-        // The id span is what lets the scroll anchor re-find a line after a history page
-        // merges it into a summary. `msg` stamps id = offset + 1, so this run spans 1…31.
+    func testSummaryCarriesItsEventIds() {
+        // The ids are what let the scroll anchor re-find a line after a history page merges
+        // it into a summary. `msg` stamps id = offset + 1, so this run holds 1 and 31.
         let summary = onlySummary(Consolidation.consolidate([
             msg(.join, "alice", at: 0), msg(.join, "bob", at: 30),
         ]))
-        XCTAssertEqual(summary?.firstId, 1)
+        XCTAssertEqual(summary?.ids, [1, 31])
         XCTAssertEqual(summary?.lastId, 31)
     }
 }

@@ -96,12 +96,17 @@ struct MessageOrderTests {
         #expect(ids(MessageOrder.byTime([msg(2, 5), msg(0, 5), msg(1, 3)])) == [1, 2, 0])
     }
 
-    @Test("a row with no time rides the row it arrived after")
-    func undatedRidesItsPredecessor() {
+    @Test("a row with no time stays under everything held when it was written")
+    func undatedStaysUnderWhatWasHeld() {
         // The app's own line, written under the join; the gap's lines go above both.
-        let rows = [msg(10, 18), msg(20, 22, "join"), msg(0, nil, "unknown command"), msg(21, 19), msg(22, 20)]
-        #expect(MessageOrder.byTime(rows).map(\.text) == ["line", "line", "line", "join", "unknown command"])
-        #expect(ids(MessageOrder.byTime(rows)) == [10, 21, 22, 20, 0])
+        let before = [msg(10, 18), msg(20, 22, "join"), msg(0, nil, "unknown command"), msg(21, 19), msg(22, 20)]
+        #expect(ids(MessageOrder.byTime(before)) == [10, 21, 22, 20, 0])
+        // Written after the gap was filled: the row before it in the held list is a line
+        // shown far above, and the app's answer still goes at the foot.
+        let after = [msg(10, 18), msg(20, 22, "join"), msg(21, 19), msg(22, 20), msg(0, nil, "unknown command")]
+        #expect(ids(MessageOrder.byTime(after)) == [10, 21, 22, 20, 0])
+        // And a line said later goes under it.
+        #expect(ids(MessageOrder.byTime(after + [msg(23, 23)])) == [10, 21, 22, 20, 0, 23])
     }
 
     @Test("rows with no time at the head of the list stay there")
@@ -146,19 +151,36 @@ struct MessageOrderTests {
         #expect(built.rowIndex(containing: 42).map { built.rows[$0].message?.id } == 42)
     }
 
-    @Test("the badge counts a line above the newest id once, however the rows are shown")
-    func badgeCountsByNewestId() {
+    @Test("an id no row draws lands on the run that spans it")
+    func hiddenIdLandsOnItsRun() {
+        // A part and a join fold into one run; between them sits a row a channel doesn't
+        // render, held and drawn by nothing.
+        let rows = [
+            msg(49, 10, nick: "bob", type: .part),
+            msg(50, 11, nick: "bob", type: .system),
+            msg(51, 12, nick: "bob", type: .join),
+            msg(52, 13, "said"),
+        ]
+        let built = build(state(rows))
+        #expect(shown(built) == ["summary", "52"])
+        #expect(built.rowIndex(containing: 49) != nil)
+        #expect(built.rowIndex(containing: 50) == built.rowIndex(containing: 49))
+        #expect(built.rowIndex(containing: 53) == nil)
+    }
+
+    @Test("the badge counts what landed below the last row shown, once")
+    func badgeCountsWhatLandedBelow() {
         let scroll = ConversationScroll(kind: .channel)
         _ = scroll.onFrame(state(filledGap, lastReadId: 23), key: channel, seq: 0)
         _ = scroll.onRows(build(state(filledGap), options: scroll.options), wasNearBottom: false)
         // The last row SHOWN is 23, and so is the newest id. A live line lands: one new.
         _ = scroll.onRows(build(state(filledGap + [msg(24, 24)]), options: scroll.options), wasNearBottom: false)
         #expect(scroll.newWhileAway == 1)
-        // A late line of the gap lands above (id 25, said at :21). The last row shown is
-        // still 24; nothing already counted is counted again.
+        // A late line of the gap lands above (id 25, said at :21): not something below.
         _ = scroll.onRows(build(state(filledGap + [msg(24, 24), msg(25, 21)]), options: scroll.options), wasNearBottom: false)
-        #expect(scroll.newWhileAway == 2)
+        #expect(scroll.newWhileAway == 1)
+        // The last row shown is still 24, though the newest id is 25: 24 isn't counted again.
         _ = scroll.onRows(build(state(filledGap + [msg(24, 24), msg(25, 21), msg(26, 25)]), options: scroll.options), wasNearBottom: false)
-        #expect(scroll.newWhileAway == 3)
+        #expect(scroll.newWhileAway == 2)
     }
 }

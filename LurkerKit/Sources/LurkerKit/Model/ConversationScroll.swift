@@ -83,11 +83,12 @@ public struct ConversationBuild: Sendable {
         )
     }
 
-    /// The row that now stands for message `id` — its own, or the summary whose span covers it
-    /// after a page merged it into a consolidated run. Resolved by MESSAGE ID on every call,
-    /// never a cached index: a rebuild between two passes shifts every index.
+    /// The row that now stands for message `id` — its own, or the summary of the run a page
+    /// merged it into; failing both, a summary whose ids span it (an event the tier hides inside
+    /// a run). Resolved by MESSAGE ID on every call, never a cached index: a rebuild between two
+    /// passes shifts every index.
     public func rowIndex(containing id: Int) -> Int? {
-        rows.firstIndex { $0.represents(id) }
+        rows.firstIndex { $0.represents(id) } ?? rows.firstIndex { $0.spans(id) }
     }
 
     public init(
@@ -803,10 +804,14 @@ public final class ConversationScroll {
            built.visible.first?.id == previous.first?.id {
             // By id, not by how much longer the list got: a restored row lands in the middle.
             // And not ephemerals (id 0) — a local echo isn't something the reader is missing.
-            // The newest id, not the last row: shown by time (lurker#1290), a line fetched
-            // after the fact sits above rows with older ids.
+            // The newest id, not the last row's: shown by time (lurker#1290), a line fetched
+            // after the fact has a newer id than the rows under it. And only what landed BELOW
+            // the last row that was shown, which is what the badge promises: a filled gap goes
+            // in above the reader.
             let tail = previous.lazy.map(\.id).max() ?? 0
-            let appended = built.visible.filter { $0.id > tail }
+            let last = previous.last(where: { $0.id != 0 })?.id
+            let below = last.flatMap { id in built.visible.lastIndex { $0.id == id } }.map { $0 + 1 } ?? 0
+            let appended = built.visible[below...].filter { $0.id > tail }
             // What the reader will actually SEE arrive — the tier the list applies, so the two
             // can't disagree. At `none` a netsplit rejoin appends dozens of rows that build to
             // nothing.
