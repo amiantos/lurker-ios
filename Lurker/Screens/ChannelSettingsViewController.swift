@@ -88,6 +88,7 @@ final class ChannelSettingsViewController: UITableViewController {
         tableView.register(FormSwitchCell.self, forCellReuseIdentifier: FormSwitchCell.reuseID)
         tableView.register(FormTextCell.self, forCellReuseIdentifier: FormTextCell.reuseID)
         tableView.register(FormTextViewCell.self, forCellReuseIdentifier: FormTextViewCell.reuseID)
+        tableView.register(FormProseCell.self, forCellReuseIdentifier: FormProseCell.reuseID)
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "text")
         tableView.register(UITableViewHeaderFooterView.self, forHeaderFooterViewReuseIdentifier: "footer")
         tableView.register(UITableViewHeaderFooterView.self, forHeaderFooterViewReuseIdentifier: "header")
@@ -490,6 +491,13 @@ final class ChannelSettingsViewController: UITableViewController {
                 // Re-measure without reloading, which would resign the keyboard mid-typing.
                 UIView.performWithoutAnimation { tableView?.performBatchUpdates(nil) }
             }
+            return cell
+
+        case .topicText(let text, false):
+            // The topic itself, drawn as the log draws a body (lurker#1297); the muted
+            // placeholders below are the form's own words and stay plain.
+            let cell = tableView.dequeueReusableCell(withIdentifier: FormProseCell.reuseID, for: indexPath) as! FormProseCell
+            cell.show(text)
             return cell
 
         case .topicText(let text, let muted):

@@ -76,6 +76,7 @@ final class BufferInfoViewController: UITableViewController {
             }
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "info")
+        tableView.register(FormProseCell.self, forCellReuseIdentifier: FormProseCell.reuseID)
 
         // Every emission, deduped on what this screen would DRAW rather than on a hand-kept
         // list of the inputs it draws from. The list drifted the moment it was written: it
@@ -310,19 +311,26 @@ final class BufferInfoViewController: UITableViewController {
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        // A topic is prose of arbitrary length, not a label — it wraps rather than truncating,
+        // because a truncated topic is the half you don't need — and it is drawn as the log
+        // draws a body (lurker#1297): links, colours, `:shortcode:` glyphs.
+        if case .topic(let topic?) = sections[indexPath.section].rows[indexPath.row], !topic.isEmpty {
+            let cell = tableView.dequeueReusableCell(withIdentifier: FormProseCell.reuseID, for: indexPath) as! FormProseCell
+            cell.show(topic)
+            return cell
+        }
+
         let cell = tableView.dequeueReusableCell(withIdentifier: "info", for: indexPath)
         cell.accessoryType = .none
         cell.accessoryView = nil
         cell.selectionStyle = .none
 
         switch sections[indexPath.section].rows[indexPath.row] {
-        case .topic(let topic):
+        case .topic:
             var content = UIListContentConfiguration.cell()
-            // A topic is prose of arbitrary length, not a label — it wraps rather than
-            // truncating, because a truncated topic is the half you don't need.
             content.textProperties.numberOfLines = 0
-            content.text = topic?.isEmpty == false ? topic : "No topic set."
-            content.textProperties.color = topic?.isEmpty == false ? .label : .secondaryLabel
+            content.text = "No topic set."
+            content.textProperties.color = .secondaryLabel
             cell.contentConfiguration = content
 
         case .channelSettings(let modes):

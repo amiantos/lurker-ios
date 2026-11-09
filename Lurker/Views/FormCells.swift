@@ -3,8 +3,8 @@
 
 import UIKit
 
-/// The three cells a settings-shaped form needs: a labelled text field, a labelled switch,
-/// and a multi-line text box.
+/// The cells a settings-shaped form needs: a labelled text field, a labelled switch, a
+/// multi-line text box, and a run of prose it shows rather than edits.
 ///
 /// Reusable primitives rather than three private classes inside the networks form (#11),
 /// because a form is the one thing this app has needed repeatedly and built ad hoc each time
@@ -336,5 +336,47 @@ final class FormTextViewCell: UITableViewCell, UITextViewDelegate {
         placeholderLabel.isHidden = !textView.text.isEmpty
         onChange?(textView.text)
         onHeightChange?()
+    }
+}
+
+/// Prose the form shows rather than edits — a channel's topic in buffer info and channel settings
+/// (lurker#1297) — drawn the way the log draws a body: `MessageRenderer.prose` for the colours,
+/// links, spoilers and `:shortcode:` glyphs, in a `MessageTextView` so a link in it opens. The
+/// web renders its topic through `LinkedText`, and a topic that read `:skull:` here while the
+/// message list showed 💀 was the gap.
+final class FormProseCell: UITableViewCell {
+    static let reuseID = "form.prose"
+
+    private let textView = MessageTextView()
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+        textView.isScrollEnabled = false // the cell grows instead
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.adjustsFontForContentSizeCategory = true
+        textView.onOpenURL = { url in UIApplication.shared.openExternal(url) }
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(textView)
+        NSLayoutConstraint.activate([
+            textView.leadingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: contentView.layoutMarginsGuide.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: contentView.layoutMarginsGuide.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
+        ])
+        selectionStyle = .none
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    /// Render `text`. `.label`, not the log's palette: this is a row among system-styled form
+    /// rows, and the body font so it reads as one of them.
+    func show(_ text: String) {
+        let rendered = MessageRenderer.prose(text, base: .preferredFont(forTextStyle: .body), color: .label)
+        textView.attributedText = rendered
+        // The spoken form hides what a spoiler hides, as the log's rows do.
+        textView.accessibilityLabel = MessageRenderer.spoken(rendered)
     }
 }

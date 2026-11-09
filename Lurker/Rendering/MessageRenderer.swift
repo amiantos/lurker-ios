@@ -770,6 +770,34 @@ enum MessageRenderer {
         highlighter: NickHighlighter? = nil, revealed: Set<Int> = [],
         hiddenUrls: Set<String> = []
     ) -> NSAttributedString {
+        // ⚠ `id` is 0 for every ephemeral event (see `Message`), so a reveal keyed by it would
+        // be shared by all of them in a buffer, and the redraw — which finds the FIRST row with
+        // that id — would flip a different line than the one tapped. An id-less line therefore
+        // gets no tap target: still hidden, still kept out of the spoken label, just not
+        // openable. Rare (notices, MOTD), and the alternative is a control that acts on the
+        // wrong message.
+        body(
+            text: message.text ?? "", revealable: message.id != 0, base: base, fallback: fallback,
+            highlighter: highlighter, revealed: revealed, hiddenUrls: hiddenUrls
+        )
+    }
+
+    /// Text shown as prose outside the log — a channel's topic in buffer info and channel
+    /// settings (lurker#1297) — through the same pass a message body gets: mIRC colours, links,
+    /// spoilers and `:shortcode:` glyphs, in `color`. The web renders a topic with `LinkedText`,
+    /// which is its name for exactly this. No message stands behind the text, so a spoiler in it
+    /// is hidden and not openable, as in a MOTD line.
+    static func prose(_ text: String, base: UIFont, color: UIColor) -> NSAttributedString {
+        body(text: text, revealable: false, base: base, fallback: color)
+    }
+
+    /// The body pass proper. `revealable` is whether a spoiler in it may be opened — see the
+    /// `Message` overload for why an id-less line's may not.
+    private static func body(
+        text: String, revealable: Bool, base: UIFont, fallback: UIColor,
+        highlighter: NickHighlighter? = nil, revealed: Set<Int> = [],
+        hiddenUrls: Set<String> = []
+    ) -> NSAttributedString {
         let attributed = NSMutableAttributedString()
         // The spans the sender colored themselves with mIRC codes — an explicit color wins
         // over nick coloring, so these are off-limits to the mention pass below.
@@ -783,7 +811,7 @@ enum MessageRenderer {
         // Reversed runs the nick pass may still colour, with the ink their text is drawn in — see
         // the nick pass for why it needs both.
         var reversed: [(range: NSRange, ink: UIColor)] = []
-        for run in IRCFormatting.parse(message.text ?? "") {
+        for run in IRCFormatting.parse(text) {
             let explicitFg = run.fg.flatMap(ircColor)
             let explicitBg = run.bg.flatMap(ircColor)
             // `explicitFg != nil` as well, so the reveal's unwrap below can't trip on a palette
@@ -817,13 +845,6 @@ enum MessageRenderer {
             // to VoiceOver over text rendered in the clear, and a tap revealed nothing, which is
             // precisely the failure the comment below calls the one we can't have.
             if isSpoiler {
-                // ⚠ `id` is 0 for every ephemeral event (see `Message`), so a reveal keyed by it
-                // would be shared by all of them in a buffer, and the redraw — which finds the
-                // FIRST row with that id — would flip a different line than the one tapped. An
-                // id-less line therefore gets no tap target: still hidden, still kept out of the
-                // spoken label, just not openable. Rare (notices, MOTD), and the alternative is
-                // a control that acts on the wrong message.
-                let revealable = message.id != 0
                 // ⚠ Ordinals count spoiler BOXES, not formatting runs. A bold or italic inside a
                 // spoiler splits it into several runs, and numbering those would make one visual
                 // box take three taps to open — each revealing only the fragment under the
