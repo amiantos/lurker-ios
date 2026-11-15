@@ -275,12 +275,12 @@ final class MetadataAndAvatarsTests: XCTestCase {
         Settings(registry: [:], values: values)
     }
 
-    func testThePointerResolvesAndADanglingOneFallsBackToInitialDark() {
+    func testThePointerResolvesAndADanglingOneFallsBackToInitial() {
         var sets = AvatarSets()
-        XCTAssertEqual(sets.active(settings: settings([:])).id, "initial-dark")
-        XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string("plain-light")])).id, "plain-light")
-        XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string("7")])).id, "initial-dark", "unfetched upload")
-        XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string("nope")])).id, "initial-dark")
+        XCTAssertEqual(sets.active(settings: settings([:])).id, "initial")
+        XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string("plain")])).id, "plain")
+        XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string("7")])).id, "initial", "unfetched upload")
+        XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string("nope")])).id, "initial")
         sets.uploaded = [UploadedAvatarSet(id: 7, name: "Cats", count: 12)]
         let active = sets.active(settings: settings([AvatarSets.settingKey: .string("7")]))
         XCTAssertEqual(active.name, "Cats")
@@ -288,19 +288,69 @@ final class MetadataAndAvatarsTests: XCTestCase {
         XCTAssertFalse(active.builtin)
     }
 
+    /// A server from before its schema v28 still stores the ids Initial and Plain had while each
+    /// came in two inks. They mean the set they became, not "unknown, so the default".
+    func testAnIdFromBeforeTheInkWasAutomaticMeansTheSetItBecame() {
+        let sets = AvatarSets()
+        for (old, now) in [("initial-light", "initial"), ("initial-dark", "initial"), ("plain-light", "plain"), ("plain-dark", "plain")] {
+            XCTAssertEqual(AvatarSets.currentSetId(old), now)
+            XCTAssertEqual(sets.active(settings: settings([AvatarSets.settingKey: .string(old)])).id, now)
+            XCTAssertEqual(sets.set(id: old)?.id, now)
+        }
+        for id in ["ealain", "initial", "plain", "7", "nope"] {
+            XCTAssertEqual(AvatarSets.currentSetId(id), id)
+        }
+    }
+
     func testTilePathNeedsAManifestAndAnInitialSetHasNone() {
         var sets = AvatarSets()
         let ealain = settings([AvatarSets.settingKey: .string("ealain")])
-        XCTAssertNil(sets.tilePath(for: "bob", settings: ealain), "no manifest yet: colour only")
+        XCTAssertNil(sets.tilePath(for: "bob", settings: ealain, ink: .dark), "no manifest yet: colour only")
         sets.manifests["ealain"] = AvatarSetManifest(count: 140)
-        XCTAssertEqual(sets.tilePath(for: "bob", settings: ealain), "/avatars/ealain/004.webp")
-        XCTAssertNil(sets.tilePath(for: "bob", settings: settings([:])), "initial-dark draws a letter")
-        XCTAssertEqual(sets.active(settings: settings([:])).ink, .dark)
-        XCTAssertEqual(sets.active(settings: ealain).ink, .light)
+        XCTAssertEqual(sets.tilePath(for: "bob", settings: ealain, ink: .dark), "/avatars/ealain/004.webp")
+        XCTAssertEqual(sets.tilePath(for: "bob", settings: ealain, ink: .light), "/avatars/ealain/004.webp", "art has one ink")
+        XCTAssertNil(sets.tilePath(for: "bob", settings: settings([:]), ink: .dark), "Initial draws a letter")
         // The stop chars follow the colour's setting.
-        sets.manifests["ealain"] = AvatarSetManifest(count: 140)
         let dash = settings([AvatarSets.settingKey: .string("ealain"), "look.nick.color_stop_chars": .string("-")])
-        XCTAssertEqual(sets.tilePath(for: "bob-x", settings: dash), "/avatars/ealain/004.webp")
+        XCTAssertEqual(sets.tilePath(for: "bob-x", settings: dash, ink: .dark), "/avatars/ealain/004.webp")
+    }
+
+    func testAPlainSetTakesItsSilhouetteFromTheDirectoryOfTheInk() {
+        var sets = AvatarSets()
+        let plain = settings([AvatarSets.settingKey: .string("plain")])
+        XCTAssertNil(sets.tilePath(for: "bob", settings: plain, ink: .light), "no manifest yet")
+        // The light directory's manifest speaks for both.
+        sets.manifests["plain-light"] = AvatarSetManifest(count: 1)
+        XCTAssertEqual(sets.tilePath(for: "bob", settings: plain, ink: .light), "/avatars/plain-light/000.webp")
+        XCTAssertEqual(sets.tilePath(for: "bob", settings: plain, ink: .dark), "/avatars/plain-dark/000.webp")
+        XCTAssertEqual(sets.active(settings: plain).tileCount, 1)
+    }
+
+    func testInkFollowsTheLuminanceOfTheColourUnderIt() {
+        func ink(_ hex: UInt32) -> AvatarInk {
+            AvatarInk.on(red: Double((hex >> 16) & 0xff) / 255, green: Double((hex >> 8) & 0xff) / 255, blue: Double(hex & 0xff) / 255)
+        }
+        XCTAssertEqual(ink(0xffffff), .dark)
+        XCTAssertEqual(ink(0x000000), .light)
+        // One from each built-in nick palette: the dark theme's pastels take dark ink, the light
+        // theme's deeper hues light.
+        XCTAssertEqual(ink(0xffd866), .dark)
+        XCTAssertEqual(ink(0xff6188), .dark, "the dark palette's darkest, 0.305")
+        XCTAssertEqual(ink(0x3163c0), .light)
+        XCTAssertEqual(ink(0xcc7a0a), .light, "the light palette's lightest, 0.274")
+        XCTAssertEqual(AvatarInk.luminanceThreshold, 0.29)
+        XCTAssertEqual(AvatarInk.relativeLuminance(red: 1, green: 1, blue: 1), 1, accuracy: 1e-9)
+        XCTAssertEqual(AvatarInk.relativeLuminance(red: 0, green: 0, blue: 0), 0, accuracy: 1e-9)
+        // The line itself: above it dark, at or below it light. Greys either side, by search.
+        var below = 0
+        while AvatarInk.relativeLuminance(red: Double(below + 1) / 255, green: Double(below + 1) / 255, blue: Double(below + 1) / 255) <= AvatarInk.luminanceThreshold {
+            below += 1
+        }
+        let grey = { (v: Int) in AvatarInk.on(red: Double(v) / 255, green: Double(v) / 255, blue: Double(v) / 255) }
+        XCTAssertEqual(grey(below), .light)
+        XCTAssertEqual(grey(below + 1), .dark)
+        // Out-of-gamut channels (extended sRGB) clamp rather than poison the sum.
+        XCTAssertEqual(AvatarInk.on(red: 1.2, green: 1.1, blue: -0.1), .dark)
     }
 
     func testListAndManifestDecode() {
@@ -314,9 +364,10 @@ final class MetadataAndAvatarsTests: XCTestCase {
     }
 
     func testBuiltinsMatchTheWeb() {
-        XCTAssertEqual(AvatarSets.builtins.map(\.id), ["ealain", "plain-light", "plain-dark", "initial-light", "initial-dark"])
-        XCTAssertEqual(AvatarSets.builtinTileSetIds, ["ealain", "plain-light", "plain-dark"])
-        XCTAssertEqual(AvatarSets.defaultSetId, "initial-dark")
+        XCTAssertEqual(AvatarSets.builtins.map(\.id), ["ealain", "plain", "initial"])
+        XCTAssertEqual(AvatarSets.builtins.map(\.name), ["Ealain", "Plain", "Initial"])
+        XCTAssertEqual(AvatarSets.builtinManifestDirs, ["ealain", "plain-light"])
+        XCTAssertEqual(AvatarSets.defaultSetId, "initial")
     }
 
     // MARK: - Density
@@ -335,10 +386,10 @@ final class MetadataAndAvatarsTests: XCTestCase {
         var sets = AvatarSets()
         sets.manifests["ealain"] = AvatarSetManifest(count: 140)
         let active = sets.active(settings: settings([AvatarSets.settingKey: .string("ealain")]))
-        XCTAssertEqual(active.tilePath(for: "bob", stopChars: AvatarTiles.defaultStopChars), "/avatars/ealain/004.webp")
-        XCTAssertEqual(active.tilePath(for: "bob-x", stopChars: ["-"]), "/avatars/ealain/004.webp")
-        XCTAssertNil(active.tilePath(for: nil, stopChars: []))
-        XCTAssertNil(sets.active(settings: settings([:])).tilePath(for: "bob", stopChars: []), "an Initial set draws a letter")
+        XCTAssertEqual(active.tilePath(for: "bob", stopChars: AvatarTiles.defaultStopChars, ink: .dark), "/avatars/ealain/004.webp")
+        XCTAssertEqual(active.tilePath(for: "bob-x", stopChars: ["-"], ink: .dark), "/avatars/ealain/004.webp")
+        XCTAssertNil(active.tilePath(for: nil, stopChars: [], ink: .dark))
+        XCTAssertNil(sets.active(settings: settings([:])).tilePath(for: "bob", stopChars: [], ink: .dark), "an Initial set draws a letter")
         XCTAssertEqual(AvatarSets.stopChars(settings: settings(["look.nick.color_stop_chars": .string("-")])), ["-"])
     }
 

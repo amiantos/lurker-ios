@@ -3,10 +3,30 @@
 
 import Foundation
 
-/// The ink an Initial set draws its letter in, and a placeholder tile draws its glyph in.
+/// What a letter, a silhouette or a placeholder glyph is drawn in over a tile's colour: near-white
+/// or near-black, whichever reads on it. Mirrors `avatarInk` in the web's `shared/avatarTiles.ts`.
 public enum AvatarInk: String, Equatable, Sendable {
     case light
     case dark
+
+    /// Above this relative luminance a tile's colour takes dark ink, at or below it light. The two
+    /// built-in nick palettes sit either side (the dark theme's pastels start at 0.305, the light
+    /// theme's stop at 0.274), so each keeps the ink it was drawn for.
+    public static let luminanceThreshold = 0.29
+
+    /// WCAG 2 relative luminance of an sRGB colour, channels 0...1 (clamped), 0 (black) ... 1 (white).
+    public static func relativeLuminance(red: Double, green: Double, blue: Double) -> Double {
+        func linear(_ channel: Double) -> Double {
+            let c = min(max(channel, 0), 1)
+            return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue)
+    }
+
+    /// The ink for a tile of this sRGB colour, channels 0...1.
+    public static func on(red: Double, green: Double, blue: Double) -> AvatarInk {
+        relativeLuminance(red: red, green: green, blue: blue) > luminanceThreshold ? .dark : .light
+    }
 }
 
 /// One set generated avatars can draw from (lurker#607): a bundled one, or one the user uploaded
@@ -17,8 +37,11 @@ public struct AvatarSet: Equatable, Sendable, Identifiable {
         /// Static image files under `baseUrl` (server-relative), numbered `000.<ext>` up to
         /// `count`. Zero tiles means the manifest hasn't been read yet: draw colour only.
         case tiles(baseUrl: String, count: Int, ext: String)
-        /// No files: the first letter of the shown name, in `ink`.
-        case initial(ink: AvatarInk)
+        /// One silhouette kept in both inks, each a directory of tiles like `tiles`: the tile's
+        /// colour says which (`AvatarInk.on`).
+        case plain(light: String, dark: String, count: Int, ext: String)
+        /// No files: the first letter of the shown name.
+        case initial
     }
 
     /// A bundled id, or an uploaded set's numeric id as a decimal string — what
@@ -35,25 +58,25 @@ public struct AvatarSet: Equatable, Sendable, Identifiable {
         self.builtin = builtin
     }
 
-    /// The ink for a letter or a placeholder glyph on this set's tiles: an Initial set's own,
-    /// light for a tiles set — the web's `NickAvatar` makes the same choice.
-    public var ink: AvatarInk {
-        if case .initial(let ink) = kind { return ink }
-        return .light
-    }
-
     public var tileCount: Int {
-        if case .tiles(_, let count, _) = kind { return count }
-        return 0
+        switch kind {
+        case .tiles(_, let count, _), .plain(_, _, let count, _): return count
+        case .initial: return 0
+        }
     }
 
     /// The server-relative path of `nick`'s tile in this set, or nil when there is no image to
-    /// draw: an Initial set, a tiles set whose manifest hasn't landed, or no nick. `stopChars` is
+    /// draw: an Initial set, a tiles set whose manifest hasn't landed, or no nick. `ink` is what
+    /// reads on the nick's colour — a Plain set has its silhouette in each. `stopChars` is
     /// the colour's (`look.nick.color_stop_chars`), resolved once by the caller for every row.
-    public func tilePath(for nick: String?, stopChars: Set<Unicode.Scalar>) -> String? {
-        guard case .tiles(let base, let count, let ext) = kind,
-              let index = AvatarTiles.index(for: nick, count: count, stopChars: stopChars)
-        else { return nil }
+    public func tilePath(for nick: String?, stopChars: Set<Unicode.Scalar>, ink: AvatarInk) -> String? {
+        let base: String, count: Int, ext: String
+        switch kind {
+        case .tiles(let url, let n, let e): (base, count, ext) = (url, n, e)
+        case .plain(let light, let dark, let n, let e): (base, count, ext) = (ink == .light ? light : dark, n, e)
+        case .initial: return nil
+        }
+        guard let index = AvatarTiles.index(for: nick, count: count, stopChars: stopChars) else { return nil }
         return AvatarTiles.url(base: base, index: index, ext: ext)
     }
 }
@@ -91,20 +114,33 @@ public struct AvatarSetManifest: Equatable, Sendable {
 public struct AvatarSets: Equatable, Sendable {
     public static let settingKey = "look.avatars.set"
     /// What the registry defaults to and where a dangling pointer falls back.
-    public static let defaultSetId = "initial-dark"
+    public static let defaultSetId = "initial"
     public static let ealainSetId = "ealain"
 
     /// The sets that ship with the client, counts unknown until their manifests are read.
     /// Same ids, names and order as the web.
     public static let builtins: [AvatarSet] = [
         AvatarSet(id: ealainSetId, name: "Ealain", kind: .tiles(baseUrl: "/avatars/ealain", count: 0, ext: "webp"), builtin: true),
-        AvatarSet(id: "plain-light", name: "Plain (Light)", kind: .tiles(baseUrl: "/avatars/plain-light", count: 0, ext: "webp"), builtin: true),
-        AvatarSet(id: "plain-dark", name: "Plain (Dark)", kind: .tiles(baseUrl: "/avatars/plain-dark", count: 0, ext: "webp"), builtin: true),
-        AvatarSet(id: "initial-light", name: "Initial (Light)", kind: .initial(ink: .light), builtin: true),
-        AvatarSet(id: "initial-dark", name: "Initial (Dark)", kind: .initial(ink: .dark), builtin: true),
+        AvatarSet(
+            id: "plain", name: "Plain",
+            kind: .plain(light: "/avatars/plain-light", dark: "/avatars/plain-dark", count: 0, ext: "webp"), builtin: true
+        ),
+        AvatarSet(id: "initial", name: "Initial", kind: .initial, builtin: true),
     ]
 
-    /// The bundled tiles sets whose manifests have been read, by id.
+    /// Initial and Plain each came in a light and a dark ink the user chose between, until the ink
+    /// followed the tile's colour. The server moves a stored pointer (its schema v28); a server
+    /// from before that still holds the old id, which means the set it became here.
+    public static func currentSetId(_ id: String) -> String {
+        switch id {
+        case "initial-light", "initial-dark": "initial"
+        case "plain-light", "plain-dark": "plain"
+        default: id
+        }
+    }
+
+    /// The bundled tile directories whose manifests have been read, by directory name
+    /// (`/avatars/<name>`).
     public var manifests: [String: AvatarSetManifest]
     public var uploaded: [UploadedAvatarSet]
 
@@ -115,24 +151,36 @@ public struct AvatarSets: Equatable, Sendable {
 
     public static let none = AvatarSets()
 
-    /// The bundled ids that have files to fetch a manifest for.
-    public static var builtinTileSetIds: [String] {
-        builtins.compactMap { set in
-            if case .tiles = set.kind { return set.id }
-            return nil
+    /// The bundled directories to fetch a manifest from. A Plain set's two hold the same tiles, so
+    /// the light one speaks for the count.
+    public static var builtinManifestDirs: [String] {
+        builtins.compactMap { set in manifestDir(set.kind) }
+    }
+
+    private static func manifestDir(_ kind: AvatarSet.Kind) -> String? {
+        let base: String
+        switch kind {
+        case .tiles(let url, _, _): base = url
+        case .plain(let light, _, _, _): base = light
+        case .initial: return nil
         }
+        return base.split(separator: "/").last.map(String.init)
     }
 
     /// Every set, bundled first in the web's order, then the uploaded ones as listed.
     public var all: [AvatarSet] {
         let bundled = Self.builtins.map { set -> AvatarSet in
-            guard case .tiles(let base, _, let ext) = set.kind else { return set }
-            guard let manifest = manifests[set.id] else { return set }
-            return AvatarSet(
-                id: set.id, name: set.name,
-                kind: .tiles(baseUrl: base, count: manifest.count, ext: manifest.ext.isEmpty ? ext : manifest.ext),
-                builtin: true
-            )
+            guard let dir = Self.manifestDir(set.kind), let manifest = manifests[dir] else { return set }
+            let kind: AvatarSet.Kind
+            switch set.kind {
+            case .tiles(let base, _, let ext):
+                kind = .tiles(baseUrl: base, count: manifest.count, ext: manifest.ext.isEmpty ? ext : manifest.ext)
+            case .plain(let light, let dark, _, let ext):
+                kind = .plain(light: light, dark: dark, count: manifest.count, ext: manifest.ext.isEmpty ? ext : manifest.ext)
+            case .initial:
+                return set
+            }
+            return AvatarSet(id: set.id, name: set.name, kind: kind, builtin: true)
         }
         let mine = uploaded.map { row in
             AvatarSet(
@@ -144,8 +192,10 @@ public struct AvatarSets: Equatable, Sendable {
         return bundled + mine
     }
 
+    /// The set an id names, an id from before the ink was automatic included.
     public func set(id: String) -> AvatarSet? {
-        all.first { $0.id == id }
+        let current = Self.currentSetId(id)
+        return all.first { $0.id == current }
     }
 
     /// The set `look.avatars.set` points at, or the default when it names nothing we know: an
@@ -163,8 +213,8 @@ public struct AvatarSets: Equatable, Sendable {
 
     /// `nick`'s tile in the active set — `AvatarSet.tilePath` after `active(settings:)`. For one
     /// lookup; a list resolves the set once and asks it per row.
-    public func tilePath(for nick: String?, settings: Settings) -> String? {
-        active(settings: settings).tilePath(for: nick, stopChars: Self.stopChars(settings: settings))
+    public func tilePath(for nick: String?, settings: Settings, ink: AvatarInk) -> String? {
+        active(settings: settings).tilePath(for: nick, stopChars: Self.stopChars(settings: settings), ink: ink)
     }
 
     // MARK: - Decoding

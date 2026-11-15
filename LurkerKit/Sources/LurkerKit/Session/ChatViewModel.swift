@@ -719,7 +719,7 @@ public final class ChatViewModel {
             // The four reads at once: they are independent, and tiles after a connect shouldn't wait
             // for three round trips in a row.
             async let list = client.fetchAvatarSets()
-            let ids = AvatarSets.builtinTileSetIds
+            let ids = AvatarSets.builtinManifestDirs
             let read: [AvatarSetManifest?] = await withTaskGroup(of: (Int, AvatarSetManifest?).self) { group in
                 for (index, id) in ids.enumerated() {
                     group.addTask { (index, await self.client.fetchAvatarManifest(setId: id)) }

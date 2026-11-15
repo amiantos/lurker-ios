@@ -33,10 +33,12 @@ final class NickAvatarView: UIView {
         let color: UIColor
         /// The metadata avatar's server-minted path, or nil for the generated tile.
         let imagePath: String?
-        /// The active set's tile for this nick, or nil for an Initial set or an unread manifest.
+        /// The active set's tile for this nick (a Plain set's in the ink that reads on `color`), or
+        /// nil for an Initial set or an unread manifest.
         let tilePath: String?
         /// The letter an Initial set draws, upper-cased.
         let letter: String?
+        /// What reads on `color`: the letter's ink and a placeholder glyph's.
         let ink: AvatarInk
         let mark: Mark?
     }
@@ -154,6 +156,15 @@ final class NickAvatarView: UIView {
         }
     }
 
+    /// The ink that reads on a tile of `color` (`AvatarInk.on`, the web's `avatarInk`). The colours
+    /// here are a theme's or a palette's, already resolved; one with no RGB to read takes dark ink,
+    /// as the web gives a colour it cannot resolve.
+    static func ink(on color: UIColor) -> AvatarInk {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return .dark }
+        return AvatarInk.on(red: Double(red), green: Double(green), blue: Double(blue))
+    }
+
     // MARK: - Geometry
 
     /// The tile's side: the web's `min(2.25em, 2lh)` at phone width and `min(2.7em, 2lh)` wider,
@@ -212,13 +223,14 @@ final class NickAvatarView: UIView {
             // The first code point, as the web's `Array.from(name)[0]`, upper-cased.
             letter = (shown ?? nick)?.unicodeScalars.first.map { String($0).uppercased() }
         }
+        let ink = Self.ink(on: color)
         return Spec(
             nick: nick,
             color: color,
             imagePath: meta?.avatarUrl,
-            tilePath: mark == nil ? active.tilePath(for: nick, stopChars: stopChars) : nil,
+            tilePath: mark == nil ? active.tilePath(for: nick, stopChars: stopChars, ink: ink) : nil,
             letter: letter,
-            ink: active.ink,
+            ink: ink,
             mark: mark
         )
     }
