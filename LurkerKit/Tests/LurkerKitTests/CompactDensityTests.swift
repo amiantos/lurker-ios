@@ -53,4 +53,51 @@ final class CompactDensityTests: XCTestCase {
         let d = CompactDensity(settings: Settings(registry: registry, values: [:]))
         XCTAssertEqual(d.lineHeightPercent, 170)
     }
+
+    // MARK: - A server from before the keys were renamed (its schema v28)
+
+    private func option(_ key: String, _ value: Int) -> SettingOption {
+        SettingOption(key: key, label: "", description: "", type: .int, default: .int(value))
+    }
+
+    func testAnOlderServersValuesAreReadUnderTheKeysItStillUses() {
+        let d = density([
+            "look.message.compact.group_gap": .int(4),
+            "look.message.compact.line_height": .int(120),
+            "look.message.compact.indent": .int(3),
+        ])
+        XCTAssertEqual(d, CompactDensity(groupGap: 4, lineHeightPercent: 120, indent: 3))
+    }
+
+    func testAnOlderServersRegistryDefaultIsReadTheSameWay() {
+        let registry = ["look.message.compact.line_height": option("look.message.compact.line_height", 170)]
+        XCTAssertEqual(CompactDensity(settings: Settings(registry: registry, values: [:])).lineHeightPercent, 170)
+    }
+
+    func testTheCurrentKeyWinsOverTheFormerOne() {
+        // A stored value under the new key, and the new registry's default, both come before
+        // anything under the old name.
+        XCTAssertEqual(density([CompactDensity.indentKey: .int(2), "look.message.compact.indent": .int(7)]).indent, 2)
+        let registry = [CompactDensity.indentKey: option(CompactDensity.indentKey, 1)]
+        let settings = Settings(registry: registry, values: ["look.message.compact.indent": .int(7)])
+        XCTAssertEqual(CompactDensity(settings: settings).indent, 1)
+    }
+
+    func testEveryRenamedKeyIsOneTheKitReads() {
+        XCTAssertEqual(
+            Set(Settings.formerKeys.keys),
+            [
+                CompactDensity.groupGapKey, CompactDensity.lineHeightKey, CompactDensity.indentKey,
+                TimestampFormat.compactTimeKey, TimestampFormat.compactDateKey,
+            ]
+        )
+        for (now, former) in Settings.formerKeys {
+            XCTAssertNotEqual(now, former)
+            XCTAssertFalse(now.contains("compact"), now)
+            XCTAssertTrue(former.contains("compact"), former)
+        }
+        let old = Settings(registry: [:], values: ["look.buffer.time_format_compact": .string("h:mm a")])
+        XCTAssertEqual(old.string(TimestampFormat.compactTimeKey, default: "HH:mm"), "h:mm a")
+        XCTAssertNil(Settings(registry: [:], values: [:]).effective(TimestampFormat.compactTimeKey))
+    }
 }

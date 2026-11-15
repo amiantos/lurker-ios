@@ -319,7 +319,7 @@ enum MessageRenderer {
 
     // MARK: - Compact (terminal) style
 
-    /// The compact style's spacing at one text size and one density (`look.message.compact.*`,
+    /// The compact style's spacing at one text size and one density (`look.message.modern.*`,
     /// lurker#1224) — the settings' units turned into points.
     ///
     /// One value per row rather than separate lookups, so the body's paragraph style and the
@@ -584,7 +584,7 @@ enum MessageRenderer {
     ///
     /// Indentation is a paragraph style rather than the cell's inset because the two kinds of row
     /// want different first lines. A message body is indented throughout, sitting under its
-    /// author, by `look.message.compact.indent`. Narration that names its own actor — a `/me`, a
+    /// author, by `look.message.modern.indent`. Narration that names its own actor — a `/me`, a
     /// join, a collapsed run — starts flush with where a nick would be, since it *is* the nick
     /// line, and only its wrapped continuations tuck in: by one character for most, two for a
     /// `/me` (its `* ` prefix is two wide, so one put the wrap under the space rather than under

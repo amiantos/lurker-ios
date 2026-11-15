@@ -3,7 +3,7 @@
 
 import Foundation
 
-/// How tightly the compact layout sits: the three `look.message.compact.*` settings (lurker#1186,
+/// How tightly the compact layout sits: the three `look.message.modern.*` settings (lurker#1186,
 /// Mobile lurker#1224), in the units the registry stores them in. Turning them into points is the
 /// renderer's job, since that needs the font.
 ///
@@ -27,9 +27,9 @@ public struct CompactDensity: Equatable, Sendable {
     /// feed reads the same settings and draws no gutter (lurker#1203).
     public let indent: Int
 
-    public static let groupGapKey = "look.message.compact.group_gap"
-    public static let lineHeightKey = "look.message.compact.line_height"
-    public static let indentKey = "look.message.compact.indent"
+    public static let groupGapKey = "look.message.modern.group_gap"
+    public static let lineHeightKey = "look.message.modern.line_height"
+    public static let indentKey = "look.message.modern.indent"
     /// The avatar column in the compact layout (lurker#607). Default off.
     public static let avatarsKey = "look.message.avatars"
 
