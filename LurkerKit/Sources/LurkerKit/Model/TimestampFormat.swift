@@ -73,11 +73,11 @@ public enum TimestampFormat {
         return out
     }
 
-    public static let compactTimeKey = "look.buffer.time_format_compact"
-    public static let compactDateKey = "look.buffer.date_format_compact"
+    public static let compactTimeKey = "look.buffer.time_format_modern"
+    public static let compactDateKey = "look.buffer.date_format_modern"
 
-    /// A compact-layout line's time: `look.buffer.time_format_compact`, with
-    /// `look.buffer.date_format_compact` before it on a line from a day other than today
+    /// A compact-layout line's time: `look.buffer.time_format_modern`, with
+    /// `look.buffer.date_format_modern` before it on a line from a day other than today
     /// (lurker#1237), as the web's `MessageList` builds it. Nil when the time format is empty,
     /// which hides the time — and the date with it.
     ///

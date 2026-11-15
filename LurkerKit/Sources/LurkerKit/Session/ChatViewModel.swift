@@ -710,27 +710,28 @@ public final class ChatViewModel {
 
     /// Re-read the uploaded sets and every bundled manifest. The manifests too, every time: a
     /// deploy that re-cuts a set changes its count without changing its URL, and a deploy is what
-    /// drops the socket — the same reason `/api/config` is read on every reconnect. Three small
+    /// drops the socket — the same reason `/api/config` is read on every reconnect. A few small
     /// revalidating GETs. A failed read keeps the last answer — one 502 must not blank every tile.
     private func refreshAvatarSets() {
         let uploadedRead = uploadedSetReads.start()
         let manifestRead = manifestReads.start()
         Task {
-            // The four reads at once: they are independent, and tiles after a connect shouldn't wait
-            // for three round trips in a row.
+            // Every read at once: they are independent, and tiles after a connect shouldn't wait
+            // for one round trip after another.
             async let list = client.fetchAvatarSets()
-            let ids = AvatarSets.builtinTileSetIds
+            // Directory names under `/avatars`, not set ids: a Plain set has one per ink.
+            let dirs = AvatarSets.builtinManifestDirs
             let read: [AvatarSetManifest?] = await withTaskGroup(of: (Int, AvatarSetManifest?).self) { group in
-                for (index, id) in ids.enumerated() {
-                    group.addTask { (index, await self.client.fetchAvatarManifest(setId: id)) }
+                for (index, dir) in dirs.enumerated() {
+                    group.addTask { (index, await self.client.fetchAvatarManifest(setId: dir)) }
                 }
-                var out = [AvatarSetManifest?](repeating: nil, count: ids.count)
+                var out = [AvatarSetManifest?](repeating: nil, count: dirs.count)
                 for await (index, manifest) in group { out[index] = manifest }
                 return out
             }
             var manifests: [String: AvatarSetManifest] = [:]
-            for (id, manifest) in zip(ids, read) {
-                if let manifest { manifests[id] = manifest }
+            for (dir, manifest) in zip(dirs, read) {
+                if let manifest { manifests[dir] = manifest }
             }
             let uploaded = await list
             guard session == .loggedIn else { return }

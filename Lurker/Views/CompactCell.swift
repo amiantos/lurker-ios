@@ -24,7 +24,7 @@ import UIKit
 /// as a body line, because a nick header above "alice waves" would say her name twice. Its time
 /// follows its text, inside the body (`MessageRenderer.renderCompactBody`).
 ///
-/// How far apart it all sits is `look.message.compact.*` (lurker#1224), handed in per configure as
+/// How far apart it all sits is `look.message.modern.*` (lurker#1224), handed in per configure as
 /// `MessageRenderer.CompactSpacing`.
 ///
 /// There's no drag-to-reveal timestamp gesture anywhere in the app any more: the times are already
@@ -245,7 +245,7 @@ final class CompactCell: UITableViewCell, MessageBodyHosting {
         attachments.onOpenGallery = { [weak self] previews, at in
             self?.onOpenMedia?(previews, at)
         }
-        // Line up with the message body, which sits `look.message.compact.indent` characters in
+        // Line up with the message body, which sits `look.message.modern.indent` characters in
         // from its author (the paragraph style's indent — see MessageRenderer.spaced). Without this an attachment
         // starts flush with the nick while the words above it don't, and the block loses the
         // single left edge that makes a run of messages read as one column.

@@ -160,9 +160,34 @@ public struct Settings: Equatable, Sendable {
     /// The value in force for `key`: what the user stored, else the registry default, else nil
     /// for a key this server doesn't know. Mirrors the server's `effectiveSetting`
     /// (`settingsService.ts:14`) and the web's `settings.effective`.
+    ///
+    /// A key the server renamed is read under its old name from a server that still has it
+    /// there (`formerKeys`): a self-hosted instance can be older than the app talking to it.
     public func effective(_ key: String) -> SettingValue? {
-        values[key] ?? registry[key]?.default
+        if let value = values[key] ?? registry[key]?.default { return value }
+        guard let former = Self.formerKeys[key] else { return nil }
+        return values[former] ?? registry[former]?.default
     }
+
+    /// The registry's entry for `key`, under the name this server has it by (`formerKeys`).
+    ///
+    /// ⚠ Reads only. Nothing here writes a renamed key, and none has a row on the settings
+    /// screen; one that gains either has to write the name the server knows, which is the key of
+    /// the entry this returns.
+    public func option(_ key: String) -> SettingOption? {
+        registry[key] ?? Self.formerKeys[key].flatMap { registry[$0] }
+    }
+
+    /// Settings the server renamed, new key → the key it had before. The message layouts were
+    /// "standard" and "compact" until the server's schema v28 named them Traditional and Modern
+    /// and moved every key that said so (`shared/settingsRenames.ts`).
+    public static let formerKeys: [String: String] = [
+        "look.message.modern.group_gap": "look.message.compact.group_gap",
+        "look.message.modern.line_height": "look.message.compact.line_height",
+        "look.message.modern.indent": "look.message.compact.indent",
+        "look.buffer.time_format_modern": "look.buffer.time_format_compact",
+        "look.buffer.date_format_modern": "look.buffer.date_format_compact",
+    ]
 
     /// `effective` with a caller-supplied fallback for the window before bootstrap returns —
     /// and for a server too old to know the key at all. That second case is real rather than
@@ -200,7 +225,7 @@ public struct Settings: Equatable, Sendable {
     /// flipping the dependency back has to restore what the user had rather than a default.
     /// Mirrors `vue_client/src/utils/settingsRegistry.ts:optionEnabled`.
     public func isActive(_ key: String, depth: Int = 0) -> Bool {
-        guard let option = registry[key], !option.dependsOn.isEmpty else { return true }
+        guard let option = option(key), !option.dependsOn.isEmpty else { return true }
         guard depth < Self.maxDependencyDepth else { return false }
         return option.dependsOn.contains { dependency in
             guard let current = effective(dependency.key),

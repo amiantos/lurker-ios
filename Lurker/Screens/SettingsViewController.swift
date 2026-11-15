@@ -79,15 +79,19 @@ final class SettingsViewController: UITableViewController {
     }
 
     /// Choices that depend on what the server holds, so they can't be a static table: the avatar
-    /// sets (lurker#607) are the five bundled ones plus whatever the account uploaded on the web.
+    /// sets (lurker#607) are the three bundled ones plus whatever the account uploaded on the web.
     /// A pointer at a set we don't know — one deleted elsewhere, or not fetched yet — reads as the
     /// registry default, which is what the list then draws (`AvatarSets.active`).
     private func dynamicChoices(for key: String) -> StringChoices? {
         guard key == AvatarSets.settingKey else { return nil }
         let sets = viewModel.avatarSets
+        // What is written is the id this server knows the set by: one from before its schema v28
+        // has no `plain` or `initial`, and its web client would draw the default for either.
+        let settings = viewModel.state.settings
+        let stored = { (id: String) in AvatarSets.storedSetId(id, settings: settings) }
         return StringChoices(
-            values: sets.all.map { ($0.id, $0.name) },
-            normalize: { stored in sets.set(id: stored)?.id ?? AvatarSets.defaultSetId },
+            values: sets.all.map { (stored($0.id), $0.name) },
+            normalize: { held in stored(sets.set(id: held)?.id ?? AvatarSets.defaultSetId) },
             spoken: { id in sets.set(id: id)?.name ?? id }
         )
     }

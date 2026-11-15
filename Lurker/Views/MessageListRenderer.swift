@@ -394,7 +394,7 @@ struct MessageListRenderer {
         cell.showAttachments(plan.resolved, model: previews.model)
     }
 
-    /// A compact line's time: `look.buffer.time_format_compact`, with the date before it on a line
+    /// A compact line's time: `look.buffer.time_format_modern`, with the date before it on a line
     /// from another day. Nil when the format hides it, or the line has no clock.
     static func time(_ date: Date?, context: MessageListContext) -> String? {
         date.flatMap { TimestampFormat.compact($0, settings: context.settings) }
