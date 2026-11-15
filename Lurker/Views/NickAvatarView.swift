@@ -157,11 +157,13 @@ final class NickAvatarView: UIView {
     }
 
     /// The ink that reads on a tile of `color` (`AvatarInk.on`, the web's `avatarInk`). The colours
-    /// here are a theme's or a palette's, already resolved; one with no RGB to read takes dark ink,
-    /// as the web gives a colour it cannot resolve.
-    static func ink(on color: UIColor) -> AvatarInk {
+    /// here are a theme's or a palette's, dynamic: light and dark each have their own, so the one
+    /// read is the one `traits` draws. Not `UITraitCollection.current`, which a cell being built
+    /// cannot rely on, and a wrong read bakes the other theme's ink into the tile. A colour with
+    /// no RGB to read takes dark ink, as the web gives one it cannot resolve.
+    static func ink(on color: UIColor, traits: UITraitCollection) -> AvatarInk {
         var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
-        guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return .dark }
+        guard color.resolvedColor(with: traits).getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return .dark }
         return AvatarInk.on(red: Double(red), green: Double(green), blue: Double(blue))
     }
 
@@ -196,7 +198,8 @@ final class NickAvatarView: UIView {
     /// `AvatarSets.stopChars`), not per row: the resolution walks every set.
     static func spec(
         for message: Message, networkId: Int?, state: ChatState,
-        active: AvatarSet, stopChars: Set<Unicode.Scalar>, networkName: String?
+        active: AvatarSet, stopChars: Set<Unicode.Scalar>, networkName: String?,
+        traits: UITraitCollection
     ) -> Spec {
         let nick: String?
         let color: UIColor
@@ -223,7 +226,7 @@ final class NickAvatarView: UIView {
             // The first code point, as the web's `Array.from(name)[0]`, upper-cased.
             letter = (shown ?? nick)?.unicodeScalars.first.map { String($0).uppercased() }
         }
-        let ink = Self.ink(on: color)
+        let ink = Self.ink(on: color, traits: traits)
         return Spec(
             nick: nick,
             color: color,

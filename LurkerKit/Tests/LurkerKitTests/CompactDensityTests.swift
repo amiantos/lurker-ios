@@ -83,6 +83,19 @@ final class CompactDensityTests: XCTestCase {
         XCTAssertEqual(CompactDensity(settings: settings).indent, 1)
     }
 
+    /// A dependency is read off the registry's entry, which an older server keeps under the old key.
+    func testARenamedKeysRegistryEntryIsFoundUnderItsOldName() {
+        let former = Settings.formerKeys[CompactDensity.indentKey]!
+        let entry = SettingOption(
+            key: former, label: "Indent", description: "", type: .int, default: .int(1),
+            dependsOn: [SettingDependency(key: "look.message.avatars", values: [.bool(false)])]
+        )
+        let old = Settings(registry: [former: entry], values: ["look.message.avatars": .bool(true)])
+        XCTAssertEqual(old.option(CompactDensity.indentKey)?.key, former)
+        XCTAssertFalse(old.isActive(CompactDensity.indentKey), "the old entry's dependency still counts")
+        XCTAssertNil(old.option("look.no.such.key"))
+    }
+
     func testEveryRenamedKeyIsOneTheKitReads() {
         XCTAssertEqual(
             Set(Settings.formerKeys.keys),

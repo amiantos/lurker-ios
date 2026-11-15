@@ -3837,7 +3837,10 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         avatarSpec = { [weak self] message in
             NickAvatarView.spec(
                 for: message, networkId: networkId, state: state, active: active, stopChars: stopChars,
-                networkName: self?.networkName(for: message)
+                networkName: self?.networkName(for: message),
+                // The list's own traits at the moment the row is built: the ink is read off a
+                // dynamic colour, and `.current` is not the list's while a cell is configured.
+                traits: self?.traitCollection ?? .current
             )
         }
     }

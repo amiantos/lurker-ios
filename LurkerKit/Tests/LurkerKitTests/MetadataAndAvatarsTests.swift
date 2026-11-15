@@ -284,7 +284,7 @@ final class MetadataAndAvatarsTests: XCTestCase {
         sets.uploaded = [UploadedAvatarSet(id: 7, name: "Cats", count: 12)]
         let active = sets.active(settings: settings([AvatarSets.settingKey: .string("7")]))
         XCTAssertEqual(active.name, "Cats")
-        XCTAssertEqual(active.kind, .tiles(baseUrl: "/api/avatar-sets/7", count: 12, ext: "webp"))
+        XCTAssertEqual(active.kind, .tiles(.init(baseUrl: "/api/avatar-sets/7", count: 12, ext: "webp")))
         XCTAssertFalse(active.builtin)
     }
 
@@ -299,6 +299,31 @@ final class MetadataAndAvatarsTests: XCTestCase {
         }
         for id in ["ealain", "initial", "plain", "7", "nope"] {
             XCTAssertEqual(AvatarSets.currentSetId(id), id)
+        }
+    }
+
+    /// The other direction: that server's web client knows no `plain` or `initial`, so a pick
+    /// made here is written under the id it does know.
+    func testAPickIsWrittenUnderTheIdTheServerKnows() {
+        func server(default id: String) -> Settings {
+            let option = SettingOption(
+                key: AvatarSets.settingKey, label: "Set", description: "", type: .string, default: .string(id)
+            )
+            return Settings(registry: [AvatarSets.settingKey: option], values: [:])
+        }
+        let old = server(default: "initial-dark")
+        XCTAssertEqual(AvatarSets.storedSetId("plain", settings: old), "plain-dark")
+        XCTAssertEqual(AvatarSets.storedSetId("initial", settings: old), "initial-dark")
+        XCTAssertEqual(AvatarSets.storedSetId("ealain", settings: old), "ealain")
+        XCTAssertEqual(AvatarSets.storedSetId("7", settings: old), "7")
+        // Whatever is written reads back as the set that was picked.
+        for id in ["plain", "initial", "ealain"] {
+            XCTAssertEqual(AvatarSets.currentSetId(AvatarSets.storedSetId(id, settings: old)), id)
+        }
+        let current = server(default: "initial")
+        for id in ["plain", "initial", "ealain", "7"] {
+            XCTAssertEqual(AvatarSets.storedSetId(id, settings: current), id)
+            XCTAssertEqual(AvatarSets.storedSetId(id, settings: settings([:])), id, "no registry yet")
         }
     }
 
@@ -319,10 +344,14 @@ final class MetadataAndAvatarsTests: XCTestCase {
         var sets = AvatarSets()
         let plain = settings([AvatarSets.settingKey: .string("plain")])
         XCTAssertNil(sets.tilePath(for: "bob", settings: plain, ink: .light), "no manifest yet")
-        // The light directory's manifest speaks for both.
+        // Each directory is counted by its own manifest, as the web counts them: one that has
+        // not been read draws colour only, whatever the other says.
         sets.manifests["plain-light"] = AvatarSetManifest(count: 1)
         XCTAssertEqual(sets.tilePath(for: "bob", settings: plain, ink: .light), "/avatars/plain-light/000.webp")
-        XCTAssertEqual(sets.tilePath(for: "bob", settings: plain, ink: .dark), "/avatars/plain-dark/000.webp")
+        XCTAssertNil(sets.tilePath(for: "bob", settings: plain, ink: .dark))
+        sets.manifests["plain-dark"] = AvatarSetManifest(count: 1, ext: "png")
+        XCTAssertEqual(sets.tilePath(for: "bob", settings: plain, ink: .light), "/avatars/plain-light/000.webp")
+        XCTAssertEqual(sets.tilePath(for: "bob", settings: plain, ink: .dark), "/avatars/plain-dark/000.png")
         XCTAssertEqual(sets.active(settings: plain).tileCount, 1)
     }
 
@@ -332,13 +361,15 @@ final class MetadataAndAvatarsTests: XCTestCase {
         }
         XCTAssertEqual(ink(0xffffff), .dark)
         XCTAssertEqual(ink(0x000000), .light)
-        // One from each built-in nick palette: the dark theme's pastels take dark ink, the light
-        // theme's deeper hues light.
-        XCTAssertEqual(ink(0xffd866), .dark)
-        XCTAssertEqual(ink(0xff6188), .dark, "the dark palette's darkest, 0.305")
-        XCTAssertEqual(ink(0x3163c0), .light)
-        XCTAssertEqual(ink(0xcc7a0a), .light, "the light palette's lightest, 0.274")
-        XCTAssertEqual(AvatarInk.luminanceThreshold, 0.29)
+        // Both built-in nick palettes, whole: the dark theme's pastels take dark ink, the light
+        // theme's deeper hues light. A palette edit that crosses the line fails here.
+        func hex(_ string: String) -> UInt32 { UInt32(string.dropFirst(), radix: 16)! }
+        for colour in IRCPalette.nick { XCTAssertEqual(ink(hex(colour)), .dark, colour) }
+        for colour in IRCPalette.nickLight { XCTAssertEqual(ink(hex(colour)), .light, colour) }
+        // The muted greys under a server line's mark (the app's Palette.fgMuted), dark and light.
+        XCTAssertEqual(ink(0x939293), .dark)
+        XCTAssertEqual(ink(0x706b6e), .light)
+        XCTAssertEqual(AvatarInk.luminanceThreshold, 0.28)
         XCTAssertEqual(AvatarInk.relativeLuminance(red: 1, green: 1, blue: 1), 1, accuracy: 1e-9)
         XCTAssertEqual(AvatarInk.relativeLuminance(red: 0, green: 0, blue: 0), 0, accuracy: 1e-9)
         // The line itself: above it dark, at or below it light. Greys either side, by search.
@@ -366,7 +397,7 @@ final class MetadataAndAvatarsTests: XCTestCase {
     func testBuiltinsMatchTheWeb() {
         XCTAssertEqual(AvatarSets.builtins.map(\.id), ["ealain", "plain", "initial"])
         XCTAssertEqual(AvatarSets.builtins.map(\.name), ["Ealain", "Plain", "Initial"])
-        XCTAssertEqual(AvatarSets.builtinManifestDirs, ["ealain", "plain-light"])
+        XCTAssertEqual(AvatarSets.builtinManifestDirs, ["ealain", "plain-light", "plain-dark"])
         XCTAssertEqual(AvatarSets.defaultSetId, "initial")
     }
 

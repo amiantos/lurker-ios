@@ -85,9 +85,13 @@ final class SettingsViewController: UITableViewController {
     private func dynamicChoices(for key: String) -> StringChoices? {
         guard key == AvatarSets.settingKey else { return nil }
         let sets = viewModel.avatarSets
+        // What is written is the id this server knows the set by: one from before its schema v28
+        // has no `plain` or `initial`, and its web client would draw the default for either.
+        let settings = viewModel.state.settings
+        let stored = { (id: String) in AvatarSets.storedSetId(id, settings: settings) }
         return StringChoices(
-            values: sets.all.map { ($0.id, $0.name) },
-            normalize: { stored in sets.set(id: stored)?.id ?? AvatarSets.defaultSetId },
+            values: sets.all.map { (stored($0.id), $0.name) },
+            normalize: { held in stored(sets.set(id: held)?.id ?? AvatarSets.defaultSetId) },
             spoken: { id in sets.set(id: id)?.name ?? id }
         )
     }

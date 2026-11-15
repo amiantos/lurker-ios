@@ -11,8 +11,9 @@ public enum AvatarInk: String, Equatable, Sendable {
 
     /// Above this relative luminance a tile's colour takes dark ink, at or below it light. The two
     /// built-in nick palettes sit either side (the dark theme's pastels start at 0.305, the light
-    /// theme's stop at 0.274), so each keeps the ink it was drawn for.
-    public static let luminanceThreshold = 0.29
+    /// theme's stop at 0.274), so each keeps the ink it was drawn for. The dark theme's muted grey
+    /// (#939293, 0.289), which the apps put under a server line's mark, is above it too.
+    public static let luminanceThreshold = 0.28
 
     /// WCAG 2 relative luminance of an sRGB colour, channels 0...1 (clamped), 0 (black) ... 1 (white).
     public static func relativeLuminance(red: Double, green: Double, blue: Double) -> Double {
@@ -33,15 +34,62 @@ public enum AvatarInk: String, Equatable, Sendable {
 /// on the web. Mirrors `shared/avatarTiles.ts`'s `BUILTIN_AVATAR_SETS` plus the rows of
 /// `GET /api/avatar-sets`.
 public struct AvatarSet: Equatable, Sendable, Identifiable {
+    /// Static image files under `baseUrl` (server-relative), numbered `000.<ext>` up to `count`.
+    /// Zero tiles means the manifest hasn't been read yet: draw colour only.
+    public struct Tiles: Equatable, Sendable {
+        public let baseUrl: String
+        public let count: Int
+        public let ext: String
+
+        public init(baseUrl: String, count: Int = 0, ext: String = "webp") {
+            self.baseUrl = baseUrl
+            self.count = count
+            self.ext = ext
+        }
+
+        /// The directory's name under `/avatars`, which is what its manifest is read and kept by.
+        var dir: String? { baseUrl.split(separator: "/").last.map(String.init) }
+
+        /// These tiles counted by their own manifest, where it has been read.
+        func counted(by manifests: [String: AvatarSetManifest]) -> Tiles {
+            guard let dir, let manifest = manifests[dir] else { return self }
+            return Tiles(baseUrl: baseUrl, count: manifest.count, ext: manifest.ext.isEmpty ? ext : manifest.ext)
+        }
+    }
+
     public enum Kind: Equatable, Sendable {
-        /// Static image files under `baseUrl` (server-relative), numbered `000.<ext>` up to
-        /// `count`. Zero tiles means the manifest hasn't been read yet: draw colour only.
-        case tiles(baseUrl: String, count: Int, ext: String)
-        /// One silhouette kept in both inks, each a directory of tiles like `tiles`: the tile's
-        /// colour says which (`AvatarInk.on`).
-        case plain(light: String, dark: String, count: Int, ext: String)
+        case tiles(Tiles)
+        /// One silhouette kept in both inks, each its own directory of tiles with its own
+        /// manifest: the tile's colour says which (`AvatarInk.on`).
+        case plain(light: Tiles, dark: Tiles)
         /// No files: the first letter of the shown name.
         case initial
+
+        /// The tiles a nick on `ink` draws from, nil for a set with no files.
+        func tiles(ink: AvatarInk) -> Tiles? {
+            switch self {
+            case .tiles(let tiles): tiles
+            case .plain(let light, let dark): ink == .light ? light : dark
+            case .initial: nil
+            }
+        }
+
+        /// Every directory of tiles the set has.
+        var directories: [Tiles] {
+            switch self {
+            case .tiles(let tiles): [tiles]
+            case .plain(let light, let dark): [light, dark]
+            case .initial: []
+            }
+        }
+
+        func counted(by manifests: [String: AvatarSetManifest]) -> Kind {
+            switch self {
+            case .tiles(let tiles): .tiles(tiles.counted(by: manifests))
+            case .plain(let light, let dark): .plain(light: light.counted(by: manifests), dark: dark.counted(by: manifests))
+            case .initial: .initial
+            }
+        }
     }
 
     /// A bundled id, or an uploaded set's numeric id as a decimal string — what
@@ -58,11 +106,10 @@ public struct AvatarSet: Equatable, Sendable, Identifiable {
         self.builtin = builtin
     }
 
+    /// How many tiles the set draws from; a Plain set's two directories hold the same tiles, so
+    /// either says.
     public var tileCount: Int {
-        switch kind {
-        case .tiles(_, let count, _), .plain(_, _, let count, _): return count
-        case .initial: return 0
-        }
+        kind.directories.map(\.count).max() ?? 0
     }
 
     /// The server-relative path of `nick`'s tile in this set, or nil when there is no image to
@@ -70,14 +117,10 @@ public struct AvatarSet: Equatable, Sendable, Identifiable {
     /// reads on the nick's colour — a Plain set has its silhouette in each. `stopChars` is
     /// the colour's (`look.nick.color_stop_chars`), resolved once by the caller for every row.
     public func tilePath(for nick: String?, stopChars: Set<Unicode.Scalar>, ink: AvatarInk) -> String? {
-        let base: String, count: Int, ext: String
-        switch kind {
-        case .tiles(let url, let n, let e): (base, count, ext) = (url, n, e)
-        case .plain(let light, let dark, let n, let e): (base, count, ext) = (ink == .light ? light : dark, n, e)
-        case .initial: return nil
-        }
-        guard let index = AvatarTiles.index(for: nick, count: count, stopChars: stopChars) else { return nil }
-        return AvatarTiles.url(base: base, index: index, ext: ext)
+        guard let tiles = kind.tiles(ink: ink),
+              let index = AvatarTiles.index(for: nick, count: tiles.count, stopChars: stopChars)
+        else { return nil }
+        return AvatarTiles.url(base: tiles.baseUrl, index: index, ext: tiles.ext)
     }
 }
 
@@ -120,10 +163,11 @@ public struct AvatarSets: Equatable, Sendable {
     /// The sets that ship with the client, counts unknown until their manifests are read.
     /// Same ids, names and order as the web.
     public static let builtins: [AvatarSet] = [
-        AvatarSet(id: ealainSetId, name: "Ealain", kind: .tiles(baseUrl: "/avatars/ealain", count: 0, ext: "webp"), builtin: true),
+        AvatarSet(id: ealainSetId, name: "Ealain", kind: .tiles(.init(baseUrl: "/avatars/ealain")), builtin: true),
         AvatarSet(
             id: "plain", name: "Plain",
-            kind: .plain(light: "/avatars/plain-light", dark: "/avatars/plain-dark", count: 0, ext: "webp"), builtin: true
+            kind: .plain(light: .init(baseUrl: "/avatars/plain-light"), dark: .init(baseUrl: "/avatars/plain-dark")),
+            builtin: true
         ),
         AvatarSet(id: "initial", name: "Initial", kind: .initial, builtin: true),
     ]
@@ -139,6 +183,21 @@ public struct AvatarSets: Equatable, Sendable {
         }
     }
 
+    /// The id to write for a set: its own, or on a server from before schema v28 (one whose
+    /// registry default is still an old id) the dark-ink id the set had there. That server's web
+    /// client knows no `plain` or `initial` and would draw its default for either; the dark ink is
+    /// the one its default had. Read back, either id is the same set here (`currentSetId`).
+    public static func storedSetId(_ id: String, settings: Settings) -> String {
+        guard let serverDefault = settings.registry[settingKey]?.default.stringValue,
+              currentSetId(serverDefault) != serverDefault
+        else { return id }
+        switch id {
+        case "initial": return "initial-dark"
+        case "plain": return "plain-dark"
+        default: return id
+        }
+    }
+
     /// The bundled tile directories whose manifests have been read, by directory name
     /// (`/avatars/<name>`).
     public var manifests: [String: AvatarSetManifest]
@@ -151,41 +210,21 @@ public struct AvatarSets: Equatable, Sendable {
 
     public static let none = AvatarSets()
 
-    /// The bundled directories to fetch a manifest from. A Plain set's two hold the same tiles, so
-    /// the light one speaks for the count.
+    /// The bundled directories to fetch a manifest from, by name. A Plain set has one per ink,
+    /// each counted by its own, as the web counts them.
     public static var builtinManifestDirs: [String] {
-        builtins.compactMap { set in manifestDir(set.kind) }
-    }
-
-    private static func manifestDir(_ kind: AvatarSet.Kind) -> String? {
-        let base: String
-        switch kind {
-        case .tiles(let url, _, _): base = url
-        case .plain(let light, _, _, _): base = light
-        case .initial: return nil
-        }
-        return base.split(separator: "/").last.map(String.init)
+        builtins.flatMap { set in set.kind.directories.compactMap(\.dir) }
     }
 
     /// Every set, bundled first in the web's order, then the uploaded ones as listed.
     public var all: [AvatarSet] {
-        let bundled = Self.builtins.map { set -> AvatarSet in
-            guard let dir = Self.manifestDir(set.kind), let manifest = manifests[dir] else { return set }
-            let kind: AvatarSet.Kind
-            switch set.kind {
-            case .tiles(let base, _, let ext):
-                kind = .tiles(baseUrl: base, count: manifest.count, ext: manifest.ext.isEmpty ? ext : manifest.ext)
-            case .plain(let light, let dark, _, let ext):
-                kind = .plain(light: light, dark: dark, count: manifest.count, ext: manifest.ext.isEmpty ? ext : manifest.ext)
-            case .initial:
-                return set
-            }
-            return AvatarSet(id: set.id, name: set.name, kind: kind, builtin: true)
+        let bundled = Self.builtins.map { set in
+            AvatarSet(id: set.id, name: set.name, kind: set.kind.counted(by: manifests), builtin: true)
         }
         let mine = uploaded.map { row in
             AvatarSet(
                 id: String(row.id), name: row.name,
-                kind: .tiles(baseUrl: "/api/avatar-sets/\(row.id)", count: row.count, ext: "webp"),
+                kind: .tiles(.init(baseUrl: "/api/avatar-sets/\(row.id)", count: row.count)),
                 builtin: false
             )
         }
