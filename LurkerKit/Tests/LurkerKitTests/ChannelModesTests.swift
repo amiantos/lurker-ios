@@ -155,6 +155,12 @@ final class ChannelModesTests: XCTestCase {
         model.handle(.live(networkId: 1, target: "#C", message: Message(
             id: 7, type: .mode, nick: "op", text: "+b x", modes: [ModeChange(mode: "+b", param: "x", kind: .list)]
         )))
+        // A row fetched after the fact (lurker#1283) is not the newest word on the channel: an old
+        // `-b` from a filled gap would take a ban that is in force off an open list.
+        model.handle(.live(networkId: 1, target: "#C", message: Message(
+            id: 8, type: .mode, nick: "op", text: "-b x",
+            modes: [ModeChange(mode: "-b", param: "x", kind: .list)], replay: true
+        )))
         model.handle(.socketOpen)
         model.handle(.snapshot([NetworkSnapshot(id: 1, state: .connected, nick: "me", channels: [])], globalIgnores: [], uploadLimits: .unstated))
         XCTAssertEqual(seen, ["1::#c mode", "resynced"], "after the snapshot, not the socket opening")

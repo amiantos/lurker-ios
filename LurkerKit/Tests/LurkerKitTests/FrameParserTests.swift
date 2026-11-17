@@ -316,6 +316,25 @@ final class FrameParserTests: XCTestCase {
         )
     }
 
+    /// lurker#1283: a line fetched after the fact says so, and the store must be able to tell.
+    func testALiveLineCarriesItsReplayFlag() {
+        let replayed = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"join","id":7,"nick":"bob","replay":true}"##
+        )
+        guard case let .live(_, _, message) = replayed else {
+            return XCTFail("expected live, got \(replayed)")
+        }
+        XCTAssertTrue(message.replay)
+
+        let heard = FrameParser.parseWs(
+            ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"join","id":8,"nick":"bob"}"##
+        )
+        guard case let .live(_, _, live) = heard else {
+            return XCTFail("expected live, got \(heard)")
+        }
+        XCTAssertFalse(live.replay)
+    }
+
     func testAMemberUpdateParsesItsMemberSnapshot() {
         let frame = FrameParser.parseWs(
             ##"{"kind":"irc","networkId":1,"target":"#lurker","type":"member-update","member":{"nick":"bob","modes":["v"],"away":true,"user":"rob","host":"new.example.org"}}"##

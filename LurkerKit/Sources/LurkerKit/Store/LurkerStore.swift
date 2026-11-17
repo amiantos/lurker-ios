@@ -2088,7 +2088,10 @@ final class LurkerStore {
         // it). An ephemeral event can name a channel we're NOT in — a refused join's `join-error`
         // is aimed at the channel it refused — and a row minted for it read joined, so the list
         // showed the refused channel and `/join`'s wait switched the user into it.
-        if next.buffers[key] == nil, message.id == 0,
+        //
+        // A row fetched after the fact (`replay`) is no better evidence: it is persisted, but it
+        // says where things stood, and a channel closed on this device mid-fill came back joined.
+        if next.buffers[key] == nil, message.id == 0 || message.replay,
            BufferKind.of(networkId: networkId, target: target) == .channel {
             return next
         }
@@ -2114,7 +2117,11 @@ final class LurkerStore {
         // overlap would otherwise re-apply an old topic over the current one, silently
         // reverting the channel's topic to whatever it was at replay time. The Vue client
         // hit this first and its handler carries the same warning.
-        if message.type == .topic {
+        //
+        // ⚠ And not at all for a row fetched after the fact (`replay`, §9.6): a gap filled from
+        // the network's history is new as a row and old as state, whatever its id. The rejoin's
+        // 332 and NAMES already said where things stand.
+        if message.type == .topic, !message.replay {
             next.buffers[key]?.topic = message.text
             // …and who set it, from the same line: its author and its time.
             if next.buffers[key] != nil {
@@ -2127,7 +2134,10 @@ final class LurkerStore {
         // replayed join must not resurrect a member who has since parted. Backlog and
         // history replays deliberately don't fold — the snapshot/`names` list is the
         // authoritative baseline those events predate.
-        next.members[key] = foldMembership(next.members[key], message)
+        // A fetched-after-the-fact row (`replay`) doesn't fold either, for the same reason.
+        if !message.replay {
+            next.members[key] = foldMembership(next.members[key], message)
+        }
         // Who spoke here and when (#63) — the same seat below the id de-dupe as the fold above,
         // so a replayed line can't restate a speaker's recency.
         //
@@ -2143,6 +2153,8 @@ final class LurkerStore {
         }
         // A rename carries the entry with it, so someone who spoke and then went `_afk` doesn't
         // read as a stranger when they quit ten seconds later.
+        // A replayed rename carries it too: a replayed line records its speaker just above, and
+        // the entry has to end up under the nick they hold now.
         if message.type == .nick, let old = message.nick, let new = message.newNick {
             next.speakers[key]?.rename(from: old, to: new)
         }
@@ -2160,7 +2172,9 @@ final class LurkerStore {
         // Covers the spec's second condition too — a part/quit/kick from someone mid-sentence
         // clears them rather than leaving a ghost typing in a channel they've left. The web
         // does the same, keyed off the resolved buffer (`stores/buffers.ts:444`).
-        if let speaker = message.nick?.lowercased(), next.typing[key]?[speaker] != nil {
+        //
+        // Not for a replayed row: an old line says nothing about who is typing now.
+        if !message.replay, let speaker = message.nick?.lowercased(), next.typing[key]?[speaker] != nil {
             next.typing[key]?.removeValue(forKey: speaker)
             if next.typing[key]?.isEmpty == true { next.typing[key] = nil }
         }

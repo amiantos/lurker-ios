@@ -916,6 +916,103 @@ final class LurkerStoreTests: XCTestCase {
         XCTAssertNil(store.state.buffers[chanKey]!.topic)
     }
 
+    // MARK: - Rows fetched after the fact (lurker#1283, §9.6)
+    //
+    // A gap filled from the network's history arrives on the live socket with ids NEWER than
+    // anything held, so the id de-dupe waves it through. `replay` is what says it is old: such
+    // a row is drawn, and moves neither the nicklist nor the topic.
+
+    func testAReplayRowIsDrawnButDoesNotMoveTheNicklist() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice"), Member(nick: "bob")])
+        let rows: [Message] = [
+            Message(id: 20, type: .join, nick: "carol", text: nil, replay: true),
+            Message(id: 21, type: .part, nick: "alice", text: nil, replay: true),
+            Message(id: 22, type: .quit, nick: "bob", text: nil, replay: true),
+            Message(id: 23, type: .kick, nick: "op", text: nil, kicked: "alice", replay: true),
+            Message(id: 24, type: .nick, nick: "bob", text: nil, newNick: "robert", replay: true),
+        ]
+        for row in rows {
+            store.apply(.live(networkId: 1, target: "#lurker", message: row))
+        }
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["alice", "bob"])
+        XCTAssertEqual(store.state.messages[chanKey]?.map(\.id), [20, 21, 22, 23, 24], "the rows are still lines")
+    }
+
+    func testAReplayedTopicRowDoesNotSetTheTopic() {
+        let store = LurkerStore()
+        store.apply(channelBuffer(hydrated: true, messages: []))
+        store.apply(.live(networkId: 1, target: "#lurker", message: topicEvent(5, "current")))
+
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 9, type: .topic, nick: "alice", text: "from last week", replay: true)
+        ))
+
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "current")
+        XCTAssertEqual(store.state.channelModes[chanKey]?.topicSetBy, "alice", "nor who set it")
+        XCTAssertEqual(store.state.messages[chanKey]?.count, 2, "the old change is still a line")
+    }
+
+    func testAReplayRowLeavesATypistTyping() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice")])
+        store.apply(.typing(networkId: 1, target: "#lurker", nick: "alice", activity: .active, userhost: nil))
+        XCTAssertNotNil(store.state.typing[chanKey]?["alice"])
+
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 30, type: .message, nick: "alice", text: "from before the drop", replay: true)
+        ))
+        XCTAssertNotNil(store.state.typing[chanKey]?["alice"], "an old line says nothing about now")
+
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 31, type: .message, nick: "alice", text: "now")))
+        XCTAssertNil(store.state.typing[chanKey]?["alice"], "the control: a live line ends the run")
+    }
+
+    /// A replayed line records its speaker, so the replayed rename after it has to carry the
+    /// entry: the nick they hold now is the one a later quit is looked up under.
+    func testAReplayedRenameCarriesTheSpeaker() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "robert")])
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 40, type: .message, nick: "bob", text: "hi", replay: true)
+        ))
+        store.apply(.live(
+            networkId: 1, target: "#lurker",
+            message: Message(id: 41, type: .nick, nick: "bob", text: nil, newNick: "robert", replay: true)
+        ))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["robert"], "the nicklist is untouched")
+        XCTAssertNotNil(store.state.speakers[chanKey]?["robert"])
+        XCTAssertNil(store.state.speakers[chanKey]?["bob"])
+    }
+
+    /// A replayed row is no sign we are in a channel this device holds no row for.
+    func testAReplayRowDoesNotMintAChannel() {
+        let store = LurkerStore()
+        seedMembers(store, [])
+        let key = BufferKey(networkId: 1, target: "#closed").id
+        store.apply(.live(
+            networkId: 1, target: "#closed",
+            message: Message(id: 50, type: .message, nick: "alice", text: "old", replay: true)
+        ))
+        XCTAssertNil(store.state.buffers[key])
+    }
+
+    /// The control: the same rows heard live do move state.
+    func testTheSameRowsHeardLiveDoMoveState() {
+        let store = LurkerStore()
+        seedMembers(store, [Member(nick: "alice")])
+        store.apply(.live(networkId: 1, target: "#lurker", message: Message(id: 20, type: .join, nick: "carol", text: nil)))
+        store.apply(.live(networkId: 1, target: "#lurker", message: topicEvent(21, "new")))
+
+        XCTAssertEqual(store.state.members[chanKey]!.map(\.nick), ["alice", "carol"])
+        XCTAssertEqual(store.state.buffers[chanKey]!.topic, "new")
+    }
+
     // MARK: - Channel membership (#163)
     //
     // `channel-joined` and `channel-parted` are the server's word on whether we're in a channel
