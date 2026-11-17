@@ -143,6 +143,8 @@ public final class ChatViewModel {
     private let channelEventsSubject = PassthroughSubject<ChannelEvent, Never>()
 
     public enum ChannelEvent: Sendable {
+        /// ⚠ Never a row fetched after the fact (`Message.replay`): those screens fold a line in
+        /// as the newest word on the channel, and an old `-b` or `+k` from a filled gap is not.
         case line(BufferKey, Message)
         /// A new socket's snapshot has been applied, so the store's word on each network is this
         /// socket's now. A list fetched before the drop can't be patched up to date — the gap
@@ -2577,7 +2579,9 @@ public final class ChatViewModel {
 
         switch frame {
         case .live(let networkId, let target, let message):
-            channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
+            if !message.replay {
+                channelEventsSubject.send(.line(BufferKey(networkId: networkId, target: target), message))
+            }
             noteUnknownCommand(networkId: networkId, message)
             // Not for a line already held — the store dropped it, and the alert went with it.
             if !repeatsLine, let notification = StatusNotification.make(
