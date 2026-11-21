@@ -2057,31 +2057,60 @@ public final class ChatViewModel {
     /// a remove that never left would add a second rule beside the first. True when there was
     /// nothing to do.
     ///
-    /// ⚠ One change at a time per buffer. A plan is made from state the server has confirmed,
-    /// and a second pick made before the first one's echoes land would plan against state that
-    /// is about to change: Muted then All messages, tapped quickly, sent the mute rule and then
-    /// only the flag, leaving a channel that reads "All messages" while the rule silences it.
-    /// So a pick is dropped while an earlier one for the same buffer is still on its way —
-    /// until the rung it asked for is the rung in force, or `settleWindow` has passed (the
-    /// server refused it, or the echo was lost). Dropped is not failed: it answers true.
+    /// ⚠ One change at a time per buffer, and the last pick wins. A plan is made from state the
+    /// server has confirmed, and a second pick made before the first one's echoes land would
+    /// plan against state that is about to change: Muted then All messages, tapped quickly,
+    /// sent the mute rule and then only the flag, leaving a channel that reads "All messages"
+    /// while the rule silences it. So while a pick is on its way, a later one for the same
+    /// buffer is kept rather than sent, and goes out once the first has settled.
+    ///
+    /// Settled means there is nothing left to send to reach it — the flag AND the rule, not
+    /// merely the rung reading right, which it can after the first of two echoes — or
+    /// `notifySettleWindow` has passed (the server refused it, or an echo was lost).
     @discardableResult
     public func setNotifyRung(
         _ rung: NotifyRung, for scope: NotifyLadder.Scope, now: Date = Date()
     ) -> Bool {
-        if let pending = pendingNotify[scope] {
-            if store.state.notifyRung(for: scope) != pending.rung, now < pending.deadline { return true }
+        if var pending = pendingNotify[scope] {
+            if !notifyPickSettled(pending, for: scope, now: now) {
+                pending.next = rung
+                pendingNotify[scope] = pending
+                return true
+            }
             pendingNotify[scope] = nil
         }
-        let steps = store.state.notifyPlan(to: rung, for: scope)
+        let steps = store.state.notifyPlan(to: rung, for: scope, now: now)
         guard !steps.isEmpty else { return true }
         guard canWrite else { return false }
         guard steps.allSatisfy(sendNotifyStep) else { return false }
-        pendingNotify[scope] = (rung, now.addingTimeInterval(Self.notifySettleWindow))
+        pendingNotify[scope] = PendingNotify(
+            rung: rung, deadline: now.addingTimeInterval(Self.notifySettleWindow))
         return true
     }
 
+    /// After every frame: retire the picks that have settled, and send what was picked while
+    /// they were on their way.
+    func settleNotifyPicks(now: Date = Date()) {
+        guard !pendingNotify.isEmpty else { return }
+        for (scope, pending) in pendingNotify where notifyPickSettled(pending, for: scope, now: now) {
+            pendingNotify[scope] = nil
+            if let next = pending.next { setNotifyRung(next, for: scope, now: now) }
+        }
+    }
+
+    private func notifyPickSettled(_ pending: PendingNotify, for scope: NotifyLadder.Scope, now: Date) -> Bool {
+        now >= pending.deadline || store.state.notifyPlan(to: pending.rung, for: scope, now: now).isEmpty
+    }
+
+    private struct PendingNotify {
+        let rung: NotifyRung
+        let deadline: Date
+        /// Picked while this one was on its way; only the latest is kept.
+        var next: NotifyRung?
+    }
+
     /// The pick still on its way for each buffer — see `setNotifyRung`.
-    private var pendingNotify: [NotifyLadder.Scope: (rung: NotifyRung, deadline: Date)] = [:]
+    private var pendingNotify: [NotifyLadder.Scope: PendingNotify] = [:]
     /// How long a pick may wait for its echoes before another is allowed regardless.
     static let notifySettleWindow: TimeInterval = 3
 
@@ -2457,6 +2486,8 @@ public final class ChatViewModel {
     /// Internal rather than private so a test can feed a frame through the same path the socket
     /// does.
     func handle(_ frame: ServerFrame) {
+        // Last, whatever the frame was: an echo is what settles a notification pick.
+        defer { settleNotifyPicks() }
         // Read before the store moves: a came-online is a transition, and after `apply` the prior
         // state is gone.
         let cameOnline = StatusNotification.cameOnline(frame, before: store.state)

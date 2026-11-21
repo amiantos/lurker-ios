@@ -179,7 +179,7 @@ final class BufferInfoViewController: UITableViewController {
         }
         // A rung that moved is the server answering — this tap's echo, or another device's —
         // and "not connected" under a list that just changed would contradict it.
-        let rung = NotifyLadder.Scope.of(buffer.key).map(state.notifyRung(for:))
+        let rung = NotifyLadder.Scope.of(buffer.key).map { state.notifyRung(for: $0) }
         if rung != shownRung {
             shownRung = rung
             notifyError = nil

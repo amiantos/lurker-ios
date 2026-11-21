@@ -1687,7 +1687,7 @@ final class BufferListViewController: UICollectionViewController {
         // and from the same `NotifyLadder`. The mark is read as the menu opens, like the rest
         // of it; the tap is planned against the state at the tap (see `setNotifyRung`).
         let notifyScope = NotifyLadder.Scope.of(buffer.key)
-        let notifyRung = notifyScope.map(state.notifyRung(for:))
+        let notifyRung = notifyScope.map { state.notifyRung(for: $0) }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             var children: [UIMenuElement] = []
             // A parted channel keeps its row and its history, and getting back in is the usual

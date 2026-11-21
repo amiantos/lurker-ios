@@ -152,8 +152,12 @@ public enum NotifyLadder {
     ///
     /// Remove comes before add so the two never coexist, and a caller that stops at the first
     /// step that fails to send leaves at most a missing rule, never a duplicate.
+    ///
+    /// A rule past its `expiresAt` is still a row the server holds, for up to a minute, but it
+    /// mutes nothing. It is never "already there": a quiet rung replaces it with a live one.
     public static func plan(
-        to rung: NotifyRung, for scope: Scope, notifiesAlways: Bool, muteRule: ScopedIgnoreRule?
+        to rung: NotifyRung, for scope: Scope, notifiesAlways: Bool, muteRule: ScopedIgnoreRule?,
+        now: Date = Date()
     ) -> [Step] {
         guard scope.rungs.contains(rung) else { return [] }
         var steps: [Step] = []
@@ -164,15 +168,9 @@ public enum NotifyLadder {
         }
         let want = levels(for: rung)
         if let muteRule, let want, Set(muteRule.rule.levels) == Set(want),
-           muteRule.rule.levels.count == want.count {
+           muteRule.rule.levels.count == want.count, !isLapsed(muteRule.rule, at: now) {
             return steps
         }
-        // A rule that only hides the badge is on no rung of this ladder (see `rung`), so a rung
-        // that needs no rule leaves it alone. Only someone typing `/ignore … NOUNREAD` makes
-        // one, and the row they would tap to lose it is the one already checked. (The web's
-        // reconcile removes it; this is the one place the two differ.) A quiet rung still
-        // replaces it: two rules for one buffer is the state this ladder exists to prevent.
-        if want == nil, let muteRule, !muteRule.rule.levels.contains("NONOTIFY") { return steps }
         if let muteRule { steps.append(.removeRule(id: muteRule.rule.id, scope: muteRule.scope)) }
         if let want {
             steps.append(.addRule(
@@ -201,21 +199,32 @@ extension ChatState {
         return notifiesAlways(networkId: networkId, target: target)
     }
 
-    /// The rung `scope` is on right now.
-    public func notifyRung(for scope: NotifyLadder.Scope) -> NotifyRung {
-        NotifyLadder.rung(
+    /// The rung `scope` is on right now. A lapsed mute rule mutes nothing, so it reads as none.
+    public func notifyRung(for scope: NotifyLadder.Scope, now: Date = Date()) -> NotifyRung {
+        let rule = notifyMuteRule(for: scope)?.rule
+        let live = rule.map { !NotifyLadder.isLapsed($0, at: now) } ?? false
+        return NotifyLadder.rung(
             for: scope,
             notifiesAlways: notifiesAlways(for: scope),
-            muteLevels: notifyMuteRule(for: scope)?.rule.levels ?? []
+            muteLevels: live ? rule?.levels ?? [] : []
         )
     }
 
     /// What to send to put `scope` on `rung`, from this state.
-    public func notifyPlan(to rung: NotifyRung, for scope: NotifyLadder.Scope) -> [NotifyLadder.Step] {
+    public func notifyPlan(
+        to rung: NotifyRung, for scope: NotifyLadder.Scope, now: Date = Date()
+    ) -> [NotifyLadder.Step] {
         NotifyLadder.plan(
             to: rung, for: scope,
             notifiesAlways: notifiesAlways(for: scope),
-            muteRule: notifyMuteRule(for: scope)
+            muteRule: notifyMuteRule(for: scope),
+            now: now
         )
+    }
+}
+
+extension NotifyLadder {
+    static func isLapsed(_ rule: IgnoreRule, at now: Date) -> Bool {
+        rule.expiresAt.map { $0 <= now } ?? false
     }
 }

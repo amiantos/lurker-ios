@@ -195,24 +195,29 @@ final class NotifyLadderTests: XCTestCase {
         )
     }
 
-    /// A `NOUNREAD`-only rule is on no rung, so a rung that needs no rule leaves it alone. The
-    /// web's reconcile removes it; here the row that would do so is the one already checked,
-    /// and tapping a checked row must not delete a rule somebody typed.
-    func testARungThatNeedsNoRuleLeavesANoUnreadOnlyRuleAlone() {
+    /// The base rung clears a `NOUNREAD`-only rule too, as the web's reconcile does: the rule
+    /// is this buffer's canonical mute rule, and the base rung is the absence of one.
+    func testTheBaseRungRemovesANoUnreadOnlyRule() {
         let badgeOnly = ScopedIgnoreRule(rule: mute(4, channels: ["#chan"], levels: ["NOUNREAD"]), scope: 1)
-        XCTAssertEqual(plan(.highlights, channel, rule: badgeOnly), [])
-        XCTAssertEqual(
-            plan(.all, channel, rule: badgeOnly),
-            [.setNotifyAlways(networkId: 1, target: "#Chan", notifyAlways: true)]
-        )
+        XCTAssertEqual(plan(.highlights, channel, rule: badgeOnly), [.removeRule(id: 4, scope: 1)])
     }
 
-    /// A quiet rung still replaces it: one rule per buffer.
-    func testAQuietRungReplacesANoUnreadOnlyRule() {
-        let badgeOnly = ScopedIgnoreRule(rule: mute(4, channels: ["#chan"], levels: ["NOUNREAD"]), scope: 1)
-        let steps = plan(.nothing, channel, rule: badgeOnly)
-        XCTAssertEqual(steps.first, .removeRule(id: 4, scope: 1))
+    /// A lapsed rule is still a row for up to a minute, and mutes nothing: it reads as no rule,
+    /// and picking its rung replaces it rather than counting as already there.
+    func testALapsedMuteRuleIsReplacedNotTrusted() {
+        let now = Date()
+        let lapsed = IgnoreRule(
+            id: 6, channels: ["#chan"], levels: ["NOUNREAD", "NONOTIFY"], expiresAt: now.addingTimeInterval(-5))
+        let steps = NotifyLadder.plan(
+            to: .muted, for: channel, notifiesAlways: false,
+            muteRule: ScopedIgnoreRule(rule: lapsed, scope: 1), now: now)
+        XCTAssertEqual(steps.first, .removeRule(id: 6, scope: 1))
         XCTAssertEqual(steps.count, 2)
+
+        let store = LurkerStore()
+        store.apply(.ignoreListUpdated(networkId: 1, rules: [lapsed]))
+        XCTAssertEqual(store.state.notifyRung(for: channel, now: now), .highlights)
+        XCTAssertEqual(store.state.notifyRung(for: channel, now: now.addingTimeInterval(-10)), .muted)
     }
 
     func testARungTheLadderDoesNotOfferPlansNothing() {
@@ -485,27 +490,48 @@ final class NotifyLadderTests: XCTestCase {
         )
     }
 
-    /// Muted then All messages, tapped before the first echo: the second plan would see no rule
-    /// and send only the flag, leaving both standing.
-    func testASecondPickWaitsForTheFirstOnesEcho() {
+    /// Muted then All messages, tapped before the first echo: sent at once, the second plan
+    /// would see no rule and send only the flag, leaving both standing. It waits, then goes.
+    func testASecondPickWaitsForTheFirstOnesEchoThenGoesOut() {
         let model = viewModel()
         let sent = recording(model)
         let scope = NotifyLadder.Scope.channel(networkId: 1, target: "#chan")
-        let start = Date()
-        XCTAssertTrue(model.setNotifyRung(.muted, for: scope, now: start))
+        XCTAssertTrue(model.setNotifyRung(.muted, for: scope))
         let first = sent()
         XCTAssertEqual(first.count, 1)
 
-        XCTAssertTrue(model.setNotifyRung(.all, for: scope, now: start.addingTimeInterval(0.5)), "dropped, not failed")
-        XCTAssertEqual(sent(), first, "nothing more went out")
+        XCTAssertTrue(model.setNotifyRung(.nothing, for: scope))
+        XCTAssertTrue(model.setNotifyRung(.all, for: scope), "kept, not failed")
+        XCTAssertEqual(sent(), first, "nothing more went out yet")
 
-        // The echo lands: the channel is on Muted, and the next pick is planned against that.
+        // The echo lands: the channel is on Muted, and the LAST pick goes out against that.
         model.handle(.ignoreListUpdated(networkId: 1, rules: [mute(9, channels: ["#chan"])]))
-        XCTAssertTrue(model.setNotifyRung(.all, for: scope, now: start.addingTimeInterval(1)))
         XCTAssertEqual(
             Array(sent().dropFirst(first.count)),
             [.setNotifyAlways(networkId: 1, target: "#chan", notifyAlways: true), .removeRule(id: 9, scope: 1)]
         )
+    }
+
+    /// Muted to All messages is two sends. After the flag's echo the rung already reads "All
+    /// messages", with the rule's removal still on its way; a pick let through then would plan
+    /// around a rule that is about to vanish.
+    func testAPickIsNotSettledUntilEveryEchoHasLanded() {
+        let model = viewModel()
+        let sent = recording(model)
+        let scope = NotifyLadder.Scope.channel(networkId: 1, target: "#chan")
+        model.handle(.ignoreListUpdated(networkId: 1, rules: [mute(9, channels: ["#chan"])]))
+        XCTAssertTrue(model.setNotifyRung(.all, for: scope))
+        XCTAssertEqual(sent().count, 2)
+
+        model.handle(.channelNotifyChanged(networkId: 1, target: "#chan", bufferId: nil, notifyAlways: true))
+        XCTAssertEqual(model.state.notifyRung(for: scope), .all, "reads settled, and is not")
+        XCTAssertTrue(model.setNotifyRung(.muted, for: scope))
+        XCTAssertEqual(sent().count, 2, "held until the rule's removal echoes")
+
+        model.handle(.ignoreListUpdated(networkId: 1, rules: []))
+        let after = Array(sent().dropFirst(2))
+        XCTAssertEqual(after.first, .setNotifyAlways(networkId: 1, target: "#chan", notifyAlways: false))
+        XCTAssertEqual(after.count, 2, "the flag off and a fresh mute rule")
     }
 
     /// A pick the server refused, or whose echo was lost, must not lock the ladder for good.
