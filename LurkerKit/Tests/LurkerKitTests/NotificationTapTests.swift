@@ -26,6 +26,34 @@ final class NotificationTapTests: XCTestCase {
         ]
     }
 
+    /// A test push as `POST /api/push/test` sends it (lurker#1273): real-looking routing keys
+    /// that name nothing. Read as a destination they open an empty `test` buffer on network 0.
+    func testATestPushNamesNoBuffer() {
+        let payload: [AnyHashable: Any] = [
+            "aps": ["alert": ["title": "Test notification", "body": "Push is working."], "sound": "default"],
+            "networkId": 0,
+            "target": "test",
+            "kind": "test",
+        ]
+        XCTAssertNil(NotificationTap.parse(payload))
+    }
+
+    /// The same push through the relay: the extension copies `kind` into the notification's
+    /// `userInfo`, which is what a tap is read from.
+    func testARelayedTestPushNamesNoBuffer() throws {
+        let body = #"{"title":"Test notification","body":"Push is working.","tag":"test","networkId":0,"target":"test","kind":"test"}"#
+        let relayed = try XCTUnwrap(RelayNotification.parse(Data(body.utf8)))
+        XCTAssertNil(NotificationTap.parse(relayed.userInfo))
+    }
+
+    /// Only the test kind is refused: every other kind still routes.
+    func testOtherKindsStillRoute() {
+        XCTAssertNotNil(NotificationTap.parse(dmPayload()))
+        var payload = dmPayload()
+        payload["kind"] = "highlight"
+        XCTAssertNotNil(NotificationTap.parse(payload))
+    }
+
     func testParsesADMPush() {
         let tap = NotificationTap.parse(dmPayload())
         XCTAssertEqual(tap, NotificationTap(networkId: 7, target: "bob", messageId: 42))
