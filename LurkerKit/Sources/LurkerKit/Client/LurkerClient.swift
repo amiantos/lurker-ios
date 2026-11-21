@@ -1281,7 +1281,10 @@ final class LurkerClient {
     /// whose delete failed: the server's `can_delete` is a judgment, and a row it gets wrong
     /// must not be stuck on the list.
     func forgetUpload(id: Int) async -> String? {
-        await act("DELETE", Self.forgetUploadPath(id: id), goneIsDone: true)
+        // ⚠ No `goneIsDone` here, unlike the delete above. This route is new in lurker 2.7.0, and
+        // an older server answers 404 for the route itself; read as "already gone" that would
+        // take the row off the screen while the server still holds it.
+        await act("DELETE", Self.forgetUploadPath(id: id))
     }
 
     nonisolated static func forgetUploadPath(id: Int) -> String { "/api/uploads/\(id)/record" }

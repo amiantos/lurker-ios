@@ -387,8 +387,9 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             renderPlaceholder()
             return
         }
-        items = page.items
-        cursor = items.last?.id
+        // A list read before a removal landed can arrive after it, and would put the row back.
+        items = page.items.filter { !deletedIds.contains($0.id) }
+        cursor = page.items.last?.id
         hasMore = UploadsRequest.hasMore(filter: filter, received: page.items.count, limit: limit)
         isTruncated = UploadsRequest.isTruncated(filter: filter, received: page.items.count)
         shownFilter = filter
@@ -418,8 +419,8 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             return
         }
         let start = items.count
-        items.append(contentsOf: page.items)
-        cursor = items.last?.id
+        items.append(contentsOf: page.items.filter { !deletedIds.contains($0.id) })
+        cursor = page.items.last?.id ?? cursor
         hasMore = UploadsRequest.hasMore(filter: filter, received: page.items.count, limit: limit)
         collectionView.insertItems(
             at: (start..<items.count).map { IndexPath(item: $0, section: 0) })

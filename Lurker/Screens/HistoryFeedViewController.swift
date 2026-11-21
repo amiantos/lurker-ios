@@ -324,6 +324,20 @@ class HistoryFeedViewController: UITableViewController {
         start(fetch)
     }
 
+    /// Leaving stops the request: on every feed, not only Search. Since lurker 2.7.0 each of
+    /// these reads holds a place in the server's search queue until it is answered or aborted
+    /// (lurker#1308), so one nobody will read is worth not running.
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        cancelLoad()
+    }
+
+    /// And coming back asks again, if leaving left nothing on screen.
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        if loadWasCancelled { reload() }
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         // A header or footer is sized by frame, so a rotation or a split resize leaves it
