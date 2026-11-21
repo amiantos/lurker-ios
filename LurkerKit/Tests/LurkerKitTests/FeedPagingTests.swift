@@ -381,6 +381,27 @@ final class FeedPagingTests: XCTestCase {
         XCTAssertNil(fine.retry())
     }
 
+    /// A failed pull's notice sits above the rows. Scrolling on pages in beneath them, and that
+    /// must not take the notice down: the newest page is still the one that didn't arrive.
+    func testScrollingOnDoesNotEraseAFailedPull() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.unavailable(reason: "search took too long"), for: paging.reload()!, visible: visible)
+        let more = paging.loadMore()!
+        XCTAssertEqual(paging.failure?.firstPage, true, "asking for an older page says nothing about the pull")
+        _ = paging.land(page([20, 19], nextBefore: nil), for: more, visible: visible)
+        XCTAssertEqual(paging.failure?.firstPage, true, "nor does that page arriving")
+        XCTAssertEqual(ids(paging).count, 12)
+    }
+
+    func testAskingForThePageAgainTakesAFailedPageInDown() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.failed, for: paging.loadMore()!, visible: visible)
+        XCTAssertNotNil(paging.failure)
+        // The next scroll re-arms the page-in, and the notice goes while it is asked.
+        XCTAssertNotNil(paging.loadMore())
+        XCTAssertNil(paging.failure)
+    }
+
     func testTheNextAnswerClearsTheFailure() {
         var paging = loaded(supersedes: false)
         _ = paging.land(.unavailable(reason: "search took too long"), for: paging.reload()!, visible: visible)

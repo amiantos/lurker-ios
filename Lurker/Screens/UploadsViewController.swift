@@ -67,6 +67,9 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     private var loadGeneration = 0
     /// Files deleted while this screen is up: a star refused after the delete must not put one back.
     private var deletedIds: Set<Int> = []
+    /// Rows with a delete or a remove-from-list out. A second ask for the same row, from a menu
+    /// reopened while the first is still in flight, is dropped rather than answered twice.
+    private var removingIds: Set<Int> = []
     /// Per row, the token of its newest star toggle still out. Answers can land out of order — star,
     /// unstar, star in a second — and an older refusal must not undo a newer toggle.
     private var pendingStars: [Int: Int] = [:]
@@ -633,8 +636,10 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     }
 
     private func delete(_ item: UploadItem) {
+        guard removingIds.insert(item.id).inserted else { return }
         Task { [weak self] in
             guard let self else { return }
+            defer { removingIds.remove(item.id) }
             if let message = await viewModel.deleteUpload(id: item.id) {
                 // The bytes weren't destroyed, so the row stays and the reason surfaces. The
                 // row still says it can be deleted, so its menu keeps offering only Delete;
@@ -662,16 +667,20 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             preferredStyle: .alert
         )
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        // Not the destructive red: nothing is destroyed, and it has to read differently from
+        // Delete, which does destroy the file.
         alert.addAction(
-            UIAlertAction(title: "Remove", style: .destructive) { [weak self] _ in
+            UIAlertAction(title: "Remove", style: .default) { [weak self] _ in
                 self?.forget(item)
             })
         presentOverTop(alert)
     }
 
     private func forget(_ item: UploadItem) {
+        guard removingIds.insert(item.id).inserted else { return }
         Task { [weak self] in
             guard let self else { return }
+            defer { removingIds.remove(item.id) }
             if let message = await viewModel.forgetUpload(id: item.id) {
                 report(title: "Couldn't Remove", message: message)
                 return
@@ -864,10 +873,9 @@ extension UploadsViewController: UICollectionViewDataSource, UICollectionViewDel
                 ) { [weak self] _ in self?.confirmDelete(item) })
         case .forget:
             actions.append(
-                UIAction(
-                    title: "Remove from List", image: UIImage(systemName: "text.badge.minus"),
-                    attributes: .destructive
-                ) { [weak self] _ in self?.confirmForget(item) })
+                UIAction(title: "Remove from List", image: UIImage(systemName: "text.badge.minus")) {
+                    [weak self] _ in self?.confirmForget(item)
+                })
         }
         return actions
     }

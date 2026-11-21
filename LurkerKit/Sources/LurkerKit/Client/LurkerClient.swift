@@ -510,8 +510,12 @@ final class LurkerClient {
         }
     }
 
-    private func act(_ method: String, _ path: String, body: [String: Any]? = nil) async -> String? {
-        switch await rest(method, path, body: body) {
+    /// `goneIsDone` is for a removal: a 404 says the thing is already gone, which is what was
+    /// asked for, so it is success rather than a refusal to show the user.
+    private func act(
+        _ method: String, _ path: String, body: [String: Any]? = nil, goneIsDone: Bool = false
+    ) async -> String? {
+        switch await rest(method, path, body: body, goneIsDone: goneIsDone) {
         case .ok: return nil
         case .failure(let message): return message
         }
@@ -536,7 +540,9 @@ final class LurkerClient {
     /// is a deliberate user action, so a dead token has to end the session rather than read
     /// as "that network wouldn't save". (`fetchSettings` deliberately does the opposite and
     /// keeps its own path — see its note for why.)
-    private func rest(_ method: String, _ path: String, body: [String: Any]? = nil) async -> RestResult {
+    private func rest(
+        _ method: String, _ path: String, body: [String: Any]? = nil, goneIsDone: Bool = false
+    ) async -> RestResult {
         guard let token, let url = URL(string: baseURL + path) else {
             return .failure("Not signed in.")
         }
@@ -558,7 +564,7 @@ final class LurkerClient {
                 reportUnauthorized(sentWith: token)
                 return .failure("Signed out.")
             }
-            if (200..<300).contains(code) { return .ok(text) }
+            if (200..<300).contains(code) || (goneIsDone && code == 404) { return .ok(text) }
             // The server explains its own refusals — a host the admin's allowlist excludes, a
             // missing field, a paused account — and its wording is better than anything this
             // layer could infer from a status code.
@@ -1263,8 +1269,11 @@ final class LurkerClient {
     ///
     /// ⚠⚠ Only ever called for a row whose `canDelete` is set: the route answers 409 for a row
     /// whose bytes can't be destroyed. That row leaves the list through `forgetUpload`.
+    ///
+    /// A 404 is success: the row was removed somewhere else while this list was up, and saying
+    /// "not found" about a file the user is trying to be rid of leaves it stuck on screen.
     func deleteUpload(id: Int) async -> String? {
-        await act("DELETE", "/api/uploads/\(id)")
+        await act("DELETE", "/api/uploads/\(id)", goneIsDone: true)
     }
 
     /// Drop an upload's row and leave its file wherever it is (lurker#1289). Nil on success,
@@ -1272,7 +1281,7 @@ final class LurkerClient {
     /// whose delete failed: the server's `can_delete` is a judgment, and a row it gets wrong
     /// must not be stuck on the list.
     func forgetUpload(id: Int) async -> String? {
-        await act("DELETE", Self.forgetUploadPath(id: id))
+        await act("DELETE", Self.forgetUploadPath(id: id), goneIsDone: true)
     }
 
     nonisolated static func forgetUploadPath(id: Int) -> String { "/api/uploads/\(id)/record" }

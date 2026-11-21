@@ -162,7 +162,10 @@ public struct FeedPaging {
         guard !isLoading, !reachedEnd, let cursor = nextCursor else { return nil }
         isLoading = true
         firstInFlight = false
-        failure = nil
+        // Asking for the page again takes a failed page-in down. A failed pull stays: this is
+        // also what a scroll does, and the reader scrolling on must not erase the notice that
+        // the list above them is not as fresh as they asked for.
+        if failure?.firstPage == false { failure = nil }
         return Fetch(generation: generation, cursor: cursor)
     }
 
@@ -202,7 +205,12 @@ public struct FeedPaging {
         guard isCurrent(fetch) else { return nil }
         isLoading = false
         let page = answer.page
-        failure = page == nil ? Failure(reason: answer.reason, firstPage: fetch.isFirstPage) : nil
+        if page == nil {
+            failure = Failure(reason: answer.reason, firstPage: fetch.isFirstPage)
+        } else if fetch.isFirstPage || failure?.firstPage == false {
+            // A page-in that lands answers a failed page-in, not a failed pull.
+            failure = nil
+        }
         return fetch.isFirstPage ? landFirst(page, visible: visible) : landMore(page, visible: visible)
     }
 
