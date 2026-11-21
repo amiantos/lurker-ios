@@ -35,8 +35,30 @@ public struct FeedPaging {
         public let next: Fetch?
     }
 
+    /// A page that didn't arrive, for as long as that is the latest thing to have happened.
+    public struct Failure: Equatable, Sendable {
+        /// The server's own words for it, when it gave any — a 503's `error` (lurker#1308).
+        public let reason: String?
+        /// Whether it was a first page (an open, a pull, a new question) or a page-in. Says
+        /// which fetch a retry repeats.
+        public let firstPage: Bool
+
+        /// One sentence for the screen: the server's reason, or `fallback` when it gave none.
+        /// The server writes its reasons lowercase and unpunctuated ("search took too long").
+        public func sentence(or fallback: String) -> String {
+            guard let reason, let first = reason.first else { return fallback }
+            let text = first.uppercased() + reason.dropFirst()
+            return ".!?".contains(text.last ?? ".") ? text : text + "."
+        }
+    }
+
     /// All rows, newest-first as the server returns them, after the ignore filter.
     public private(set) var items: [HighlightItem] = []
+    /// The last fetch failed and nothing has been asked since. Set whether or not rows are up:
+    /// with none, `placeholder` is `.error` and this says why; with rows, this is the only sign
+    /// that the pull or the page-in under them came back with nothing, and the screen says so
+    /// beneath them rather than leaving a refresh that silently did nothing.
+    public private(set) var failure: Failure?
     /// Nil while there are rows to show.
     public private(set) var placeholder: Placeholder? = .loading
     public private(set) var isLoading = false
@@ -123,6 +145,7 @@ public struct FeedPaging {
         isLoading = true
         firstInFlight = true
         loadFailed = false
+        failure = nil
         fruitlessHops = 0
         if newQuestion {
             items = []
@@ -139,6 +162,7 @@ public struct FeedPaging {
         guard !isLoading, !reachedEnd, let cursor = nextCursor else { return nil }
         isLoading = true
         firstInFlight = false
+        failure = nil
         return Fetch(generation: generation, cursor: cursor)
     }
 
@@ -165,9 +189,28 @@ public struct FeedPaging {
         for fetch: Fetch,
         visible: ([HighlightItem]) -> [HighlightItem]
     ) -> Landing? {
+        land(FeedAnswer(page), for: fetch, visible: visible)
+    }
+
+    /// `land`, told why when there is no page: a 503's reason is kept in `failure` for the screen
+    /// to show. A failure of any kind keeps the rows already up (lurker#1308).
+    public mutating func land(
+        _ answer: FeedAnswer,
+        for fetch: Fetch,
+        visible: ([HighlightItem]) -> [HighlightItem]
+    ) -> Landing? {
         guard isCurrent(fetch) else { return nil }
         isLoading = false
+        let page = answer.page
+        failure = page == nil ? Failure(reason: answer.reason, firstPage: fetch.isFirstPage) : nil
         return fetch.isFirstPage ? landFirst(page, visible: visible) : landMore(page, visible: visible)
+    }
+
+    /// The fetch that repeats the one that failed: the newest page again, or the page-in again.
+    /// Nil when nothing failed, or when a page-in has no cursor left to repeat.
+    public mutating func retry() -> Fetch? {
+        guard let failure else { return nil }
+        return failure.firstPage ? reload() : loadMore()
     }
 
     private mutating func landFirst(
@@ -229,7 +272,10 @@ public struct FeedPaging {
     public mutating func remove(messageId: Int) -> Landing? {
         guard let index = items.firstIndex(where: { $0.message.id == messageId }) else { return nil }
         items.remove(at: index)
-        if items.isEmpty { loadFailed = false }
+        if items.isEmpty {
+            loadFailed = false
+            failure = nil
+        }
         if items.count <= Self.prefetchWindow, let next = pageIn() {
             return Landing(rowsChanged: true, next: next)
         }

@@ -1171,20 +1171,20 @@ final class LurkerClient {
     /// `networkId` is the caller's resolution of the query's `on:` *name*, which only the roster
     /// can turn into an id; the query itself carries the rest.
     ///
-    /// Nil means no answer, never "no matches" (that's an empty page): unauthenticated, offline,
-    /// or a response we couldn't read. All three leave the caller free to show an error rather
-    /// than an empty list — a search that silently reads as "nothing matched" is the one wrong
-    /// answer here.
+    /// `.failed` means no answer, never "no matches" (that's an empty page): unauthenticated,
+    /// offline, or a response we couldn't read. All three leave the caller free to show an error
+    /// rather than an empty list — a search that silently reads as "nothing matched" is the one
+    /// wrong answer here. `.unavailable` is the server's 503, with its reason (lurker#1308).
     func search(
         _ query: SearchQuery,
         networkId: Int?,
         before: Int? = nil,
         limit: Int = 50
-    ) async -> HighlightsPage? {
+    ) async -> FeedAnswer {
         guard let token,
             let url = SearchRequest.url(
                 base: baseURL, query: query, networkId: networkId, before: before, limit: limit)
-        else { return nil }
+        else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
@@ -1195,19 +1195,20 @@ final class LurkerClient {
             switch SearchRequest.outcome(status: code, scoped: networkId != nil) {
             case .unauthorized:
                 reportUnauthorized(sentWith: token)
-                return nil
-            case .emptyPage: return HighlightsPage(items: [], nextBefore: nil)
-            case .failed: return nil
+                return .failed
+            case .emptyPage: return .page(HighlightsPage(items: [], nextBefore: nil))
+            case .unavailable: return .unavailable(body: data)
+            case .failed: return .failed
             case .page: break
             }
-            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            guard let text = String(data: data, encoding: .utf8) else { return .failed }
             // Same `{items, nextBefore}` envelope as highlights and bookmarks, and the same
             // decorated rows — the route and the WS verb call the same `search_messages`. The
             // cursor is now the server's rather than one synthesized from `hasMore` plus the last
             // row's id, which is the other half of the deletion.
-            return FrameParser.parseHighlights(text)
+            return FeedAnswer(FrameParser.parseHighlights(text))
         } catch {
-            return nil
+            return .failed
         }
     }
 
@@ -1497,14 +1498,15 @@ final class LurkerClient {
 
     /// Fetch a page of recent highlights (`GET /api/highlights`). `before` is the cursor
     /// from a prior page's `nextBefore` (nil for the first, newest page); the server pages
-    /// backward by message id. Returns nil on any failure so the caller can show an error
-    /// state — a 401 additionally bounces the session, matching `fetchNetworks`.
-    func fetchHighlights(before: Int? = nil, limit: Int = 50) async -> HighlightsPage? {
-        guard let token, var components = URLComponents(string: baseURL + "/api/highlights") else { return nil }
+    /// backward by message id. `.failed` on any failure so the caller can show an error
+    /// state — a 401 additionally bounces the session, matching `fetchNetworks` — and
+    /// `.unavailable` for the 503 this read shares with search (lurker#1308).
+    func fetchHighlights(before: Int? = nil, limit: Int = 50) async -> FeedAnswer {
+        guard let token, var components = URLComponents(string: baseURL + "/api/highlights") else { return .failed }
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
         components.queryItems = query
-        guard let url = components.url else { return nil }
+        guard let url = components.url else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
@@ -1512,12 +1514,13 @@ final class LurkerClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
                 reportUnauthorized(sentWith: token)
-                return nil
+                return .failed
             }
-            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
-            return FrameParser.parseHighlights(text)
+            if code == 503 { return .unavailable(body: data) }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return .failed }
+            return FeedAnswer(FrameParser.parseHighlights(text))
         } catch {
-            return nil
+            return .failed
         }
     }
 
@@ -1526,8 +1529,8 @@ final class LurkerClient {
     ///
     /// ⚠ A self-hosted server older than the feed answers 404; that falls back to the plain
     /// highlights read, which is everything such a server has to give.
-    func fetchActivity(cursor: FeedCursor? = nil, limit: Int = 50) async -> HighlightsPage? {
-        guard let token, var components = URLComponents(string: baseURL + "/api/activity") else { return nil }
+    func fetchActivity(cursor: FeedCursor? = nil, limit: Int = 50) async -> FeedAnswer {
+        guard let token, var components = URLComponents(string: baseURL + "/api/activity") else { return .failed }
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let before = cursor?.beforeMessage {
             query.append(URLQueryItem(name: "beforeMessage", value: String(before)))
@@ -1536,7 +1539,7 @@ final class LurkerClient {
             query.append(URLQueryItem(name: "beforeReaction", value: String(before)))
         }
         components.queryItems = query
-        guard let url = components.url else { return nil }
+        guard let url = components.url else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
@@ -1544,13 +1547,14 @@ final class LurkerClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
                 reportUnauthorized(sentWith: token)
-                return nil
+                return .failed
             }
             if code == 404 { return await fetchHighlights(before: cursor?.beforeMessage, limit: limit) }
-            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
-            return FrameParser.parseActivity(text)
+            if code == 503 { return .unavailable(body: data) }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return .failed }
+            return FeedAnswer(FrameParser.parseActivity(text))
         } catch {
-            return nil
+            return .failed
         }
     }
 

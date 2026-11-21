@@ -100,8 +100,9 @@ class HistoryFeedViewController: UITableViewController {
     var feedTitle: String { "" }
 
     /// One page, newest-first. `before` is the previous page's `next`, nil for the first.
-    /// Nil return means the fetch failed (a 401 has already bounced the session).
-    func fetchPage(before: FeedCursor?) async -> HighlightsPage? { nil }
+    /// `.failed` means the fetch failed (a 401 has already bounced the session); `.unavailable`
+    /// is the server's 503, with its reason (lurker#1308).
+    func fetchPage(before: FeedCursor?) async -> FeedAnswer { .failed }
 
     /// The first page, when this feed can answer it without asking anyone — nil (the default)
     /// when it has to ask. Landed inside the `reload()` that asked, before anything is drawn, so
@@ -119,6 +120,12 @@ class HistoryFeedViewController: UITableViewController {
             subtitle: "Pull to try again."
         )
     }
+    /// What the row under the list says when a pull or a page-in failed with rows still up and
+    /// the server gave no reason of its own.
+    var failureFallback: String { "Couldn't load." }
+
+    /// Under the rows after a failed pull or page-in: what went wrong, and Try Again.
+    private lazy var failureFooter = FeedFailureFooter { [weak self] in self?.retry() }
 
     /// Trailing swipe actions for a row, if this feed offers any. Nil (the default) leaves rows
     /// unswipeable. Subclasses that mutate the list from here should call `removeItem(id:)` so
@@ -214,7 +221,7 @@ class HistoryFeedViewController: UITableViewController {
             // Answered on the spot: whatever was in flight answers an older question.
             loadTask?.cancel()
             loadTask = nil
-            land(page, for: fetch)
+            land(.page(page), for: fetch)
             return
         }
         renderPlaceholder()
@@ -287,23 +294,31 @@ class HistoryFeedViewController: UITableViewController {
         loadTask?.cancel()
         loadTask = Task { [weak self] in
             guard let self, paging.isCurrent(fetch) else { return }
-            let page = await fetchPage(before: fetch.cursor)
-            // ⚠ A cancelled fetch reports nil, which is indistinguishable here from a failure —
+            let answer = await fetchPage(before: fetch.cursor)
+            // ⚠ A cancelled fetch reports a failure, which is indistinguishable here from a real one —
             // and `land` would put an error placeholder up for a request the user superseded by
             // typing. The generation check inside it catches this too; this says so where the
             // cancelling happens.
             guard !Task.isCancelled else { return }
-            land(page, for: fetch)
+            land(answer, for: fetch)
         }
+    }
+
+    /// Ask again for the page that failed: the newest one, or the page-in.
+    private func retry() {
+        guard let fetch = paging.retry() else { return }
+        loadWasCancelled = false
+        renderPlaceholder()
+        start(fetch)
     }
 
     /// A page arrived (nil: the fetch failed): apply it, redraw what it changed, and follow on
     /// with the next page if it filtered to nothing (see `FeedPaging.settle`).
     @MainActor
-    private func land(_ page: HighlightsPage?, for fetch: FeedPaging.Fetch) {
+    private func land(_ answer: FeedAnswer, for fetch: FeedPaging.Fetch) {
         // Superseded: a newer reload owns the list now, and it will report its own result —
         // including ending the refresh control, which belongs to that reload, not this one.
-        guard let landing = paging.land(page, for: fetch, visible: visible) else { return }
+        guard let landing = paging.land(answer, for: fetch, visible: visible) else { return }
         if fetch.isFirstPage { refreshControl?.endRefreshing() }
         apply(landing)
     }
@@ -435,17 +450,36 @@ class HistoryFeedViewController: UITableViewController {
     /// Draw whichever placeholder the paging state says stands in for the rows, in this feed's
     /// own words — or none, when there are rows.
     private func renderPlaceholder() {
-        let model: StateView.Model
+        renderFailureFooter()
+        var model: StateView.Model
         switch paging.placeholder {
         case nil:
             tableView.backgroundView = nil
             return
         case .loading: model = loadingModel
         case .empty: model = emptyModel
-        case .error: model = errorModel
+        case .error:
+            model = errorModel
+            // The server's own reason, when it gave one (a 503: "search took too long").
+            if let failure = paging.failure, failure.reason != nil {
+                model.subtitle = failure.sentence(or: "") + " Pull to try again."
+            }
         }
         placeholder.configure(model)
         tableView.backgroundView = placeholder
+    }
+
+    /// With rows up, a failed pull or page-in has no placeholder to say so in — the rows stay,
+    /// which is right, and without this the refresh would simply stop having done nothing.
+    private func renderFailureFooter() {
+        guard let failure = paging.failure, paging.placeholder == nil else {
+            if tableView.tableFooterView === failureFooter { tableView.tableFooterView = nil }
+            return
+        }
+        failureFooter.configure(text: failure.sentence(or: failureFallback), width: tableView.bounds.width)
+        // Assigned again even when already installed: a table only re-reads its footer's height
+        // when the footer is set.
+        tableView.tableFooterView = failureFooter
     }
 
     // MARK: - Table
@@ -662,5 +696,56 @@ private final class HistoryFeedSectionHeader: UITableViewHeaderFooterView {
     func configure(location: String, day: String) {
         locationLabel.text = location
         dayLabel.text = day
+    }
+}
+
+/// The row under a feed's rows when the latest fetch failed: one line saying what happened, and
+/// a button that asks again. A table footer, so it scrolls with the rows and takes no room when
+/// nothing is wrong.
+final class FeedFailureFooter: UIView {
+    private let label = UILabel()
+    private let button = UIButton(configuration: .gray())
+    private let stack = UIStackView()
+
+    init(onRetry: @escaping () -> Void) {
+        super.init(frame: .zero)
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.adjustsFontForContentSizeCategory = true
+        label.textColor = .secondaryLabel
+        label.textAlignment = .center
+        label.numberOfLines = 0
+
+        button.configuration?.title = "Try Again"
+        button.configuration?.buttonSize = .small
+        button.addAction(UIAction { _ in onRetry() }, for: .touchUpInside)
+
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 8
+        stack.addArrangedSubview(label)
+        stack.addArrangedSubview(button)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: 16),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -16),
+            stack.leadingAnchor.constraint(equalTo: layoutMarginsGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: layoutMarginsGuide.trailingAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("not using storyboards") }
+
+    /// A table footer is laid out by frame, so its height is measured here for the width it
+    /// will be given.
+    func configure(text: String, width: CGFloat) {
+        label.text = text
+        let fitted = systemLayoutSizeFitting(
+            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
+            withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel
+        )
+        frame = CGRect(x: 0, y: 0, width: width, height: fitted.height)
     }
 }
