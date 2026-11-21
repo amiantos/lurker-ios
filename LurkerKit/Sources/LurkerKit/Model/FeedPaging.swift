@@ -206,7 +206,12 @@ public struct FeedPaging {
         isLoading = false
         let page = answer.page
         if page == nil {
-            failure = Failure(reason: answer.reason, firstPage: fetch.isFirstPage)
+            // A page-in failing under a failed pull does not take the pull's place: the notice
+            // above the rows is the one whose retry refreshes them, and the page-in asks again
+            // on the next scroll anyway.
+            if fetch.isFirstPage || failure?.firstPage != true {
+                failure = Failure(reason: answer.reason, firstPage: fetch.isFirstPage)
+            }
         } else if fetch.isFirstPage || failure?.firstPage == false {
             // A page-in that lands answers a failed page-in, not a failed pull.
             failure = nil

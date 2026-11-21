@@ -393,6 +393,16 @@ final class FeedPagingTests: XCTestCase {
         XCTAssertEqual(ids(paging).count, 12)
     }
 
+    /// Otherwise the only notice left is the page-in's, and its retry fetches older rows: the
+    /// refresh that failed could never be asked for again from the notice.
+    func testAFailedPageInDoesNotReplaceAFailedPull() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.unavailable(reason: "search took too long"), for: paging.reload()!, visible: visible)
+        _ = paging.land(.unavailable(reason: "too many searches are waiting"), for: paging.loadMore()!, visible: visible)
+        XCTAssertEqual(paging.failure, FeedPaging.Failure(reason: "search took too long", firstPage: true))
+        XCTAssertNil(paging.retry()?.cursor, "and its retry is still the newest page")
+    }
+
     func testAskingForThePageAgainTakesAFailedPageInDown() {
         var paging = loaded(supersedes: false)
         _ = paging.land(.failed, for: paging.loadMore()!, visible: visible)
