@@ -47,7 +47,7 @@ public enum NotifyRung: String, CaseIterable, Equatable, Sendable {
 public enum NotifyLadder {
 
     /// What a ladder is about: one channel, one DM, or a whole network.
-    public enum Scope: Equatable, Sendable {
+    public enum Scope: Hashable, Sendable {
         case channel(networkId: Int, target: String)
         case dm(networkId: Int, target: String)
         case network(networkId: Int)
@@ -167,6 +167,12 @@ public enum NotifyLadder {
            muteRule.rule.levels.count == want.count {
             return steps
         }
+        // A rule that only hides the badge is on no rung of this ladder (see `rung`), so a rung
+        // that needs no rule leaves it alone. Only someone typing `/ignore … NOUNREAD` makes
+        // one, and the row they would tap to lose it is the one already checked. (The web's
+        // reconcile removes it; this is the one place the two differ.) A quiet rung still
+        // replaces it: two rules for one buffer is the state this ladder exists to prevent.
+        if want == nil, let muteRule, !muteRule.rule.levels.contains("NONOTIFY") { return steps }
         if let muteRule { steps.append(.removeRule(id: muteRule.rule.id, scope: muteRule.scope)) }
         if let want {
             steps.append(.addRule(

@@ -453,9 +453,10 @@ public struct ChatState: Sendable {
         unsent[key] = nil
         // The draft too: the server deletes its row on a close.
         drafts[key] = nil
-        // And its "All messages" flag, as the web's lifecycle sweep does: a flag keyed to a
-        // buffer nothing lists is one nobody can see to turn off.
-        notifyAlways.remove(key)
+        // ⚠ Not its "All messages" flag. The server keeps that row when a channel is closed and
+        // reads it again on a rejoin, so dropping it here would show "Highlights only" on a
+        // channel that still notifies on every message, with no step that could turn it off.
+        // A snapshot replaces the set whole, which is what retires a flag the server dropped.
     }
 
     /// Forget a network and everything under it — the local half of a delete, whether it

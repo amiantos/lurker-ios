@@ -429,6 +429,10 @@ final class BufferListViewController: UICollectionViewController {
                     // until some unrelated change happens to let a rebuild through.
                     // (`===` is the right test — see `IgnoreSet`.)
                     && $0.ignores === $1.ignores
+                    // The other half of a row's Notifications menu: "All messages" is a flag,
+                    // not a rule, and its frame moves nothing else — so without this the menu
+                    // keeps marking the rung it was on before.
+                    && $0.notifyAlways == $1.notifyAlways
                     // ⚠⚠ Pins order every network section, and a `pins-changed` frame moves
                     // NOTHING else in the state — so without this the frame is dropped as a
                     // duplicate, `apply` never runs, and a pin set on the web moves nothing

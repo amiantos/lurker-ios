@@ -69,6 +69,8 @@ final class BufferInfoViewController: UITableViewController {
 
     /// The rung as last rendered, so the echo that moves it retires a refusal from before.
     private var shownRung: NotifyRung?
+    /// Whether the socket could carry a write as last rendered, for the same reason.
+    private var shownWritable = false
 
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
@@ -181,6 +183,12 @@ final class BufferInfoViewController: UITableViewController {
         if rung != shownRung {
             shownRung = rung
             notifyError = nil
+        }
+        // And "not connected" is about Lurker's own socket, which can come back with the
+        // network's connection and the rung exactly as they were.
+        if state.socketWritable != shownWritable {
+            shownWritable = state.socketWritable
+            if shownWritable { notifyError = nil }
         }
         let next = sections(for: state)
         guard next != sections else { return }

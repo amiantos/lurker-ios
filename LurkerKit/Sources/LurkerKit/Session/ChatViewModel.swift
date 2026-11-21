@@ -2056,13 +2056,34 @@ public final class ChatViewModel {
     /// ordered remove-then-add, so stopping leaves at most a missing rule, and carrying on past
     /// a remove that never left would add a second rule beside the first. True when there was
     /// nothing to do.
+    ///
+    /// ⚠ One change at a time per buffer. A plan is made from state the server has confirmed,
+    /// and a second pick made before the first one's echoes land would plan against state that
+    /// is about to change: Muted then All messages, tapped quickly, sent the mute rule and then
+    /// only the flag, leaving a channel that reads "All messages" while the rule silences it.
+    /// So a pick is dropped while an earlier one for the same buffer is still on its way —
+    /// until the rung it asked for is the rung in force, or `settleWindow` has passed (the
+    /// server refused it, or the echo was lost). Dropped is not failed: it answers true.
     @discardableResult
-    public func setNotifyRung(_ rung: NotifyRung, for scope: NotifyLadder.Scope) -> Bool {
+    public func setNotifyRung(
+        _ rung: NotifyRung, for scope: NotifyLadder.Scope, now: Date = Date()
+    ) -> Bool {
+        if let pending = pendingNotify[scope] {
+            if store.state.notifyRung(for: scope) != pending.rung, now < pending.deadline { return true }
+            pendingNotify[scope] = nil
+        }
         let steps = store.state.notifyPlan(to: rung, for: scope)
         guard !steps.isEmpty else { return true }
         guard canWrite else { return false }
-        return steps.allSatisfy(sendNotifyStep)
+        guard steps.allSatisfy(sendNotifyStep) else { return false }
+        pendingNotify[scope] = (rung, now.addingTimeInterval(Self.notifySettleWindow))
+        return true
     }
+
+    /// The pick still on its way for each buffer — see `setNotifyRung`.
+    private var pendingNotify: [NotifyLadder.Scope: (rung: NotifyRung, deadline: Date)] = [:]
+    /// How long a pick may wait for its echoes before another is allowed regardless.
+    static let notifySettleWindow: TimeInterval = 3
 
     /// Every ladder step's way onto the socket — through `notifyStepSeam` when a test has set one.
     private func sendNotifyStep(_ step: NotifyLadder.Step) -> Bool {
