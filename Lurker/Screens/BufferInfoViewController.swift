@@ -7,9 +7,9 @@ import UIKit
 
 /// What this buffer *is*, rather than what's been said in it — the chat screen's info
 /// button opens this. A channel gets its topic, a count of who's here, and how it notifies; a DM gets
-/// the person and how it notifies; a server log gets the connection behind it and the
-/// verbs that change it (#152); a DCC chat gets its session and the verb that ends or restarts
-/// it, then the person (lurker#270).
+/// the person and how it notifies; a server log gets the connection behind it, the verbs
+/// that change it (#152), and how its whole network notifies; a DCC chat gets its session and
+/// the verb that ends or restarts it, then the person and how it notifies (lurker#270).
 ///
 /// The button means the same thing on every buffer: "about this one". That's why a DM lands
 /// here and not straight in a whois — whois is about a *person*, and a person is one of
@@ -17,10 +17,11 @@ import UIKit
 /// the same way a channel's members do, so the button keeps one meaning and whois still has
 /// somewhere to live. That row is live now.
 ///
-/// Notification rows are placeholders and say so. The per-channel flag they'll drive
-/// (`notify_always`) already exists server-side and already rides the snapshot, but the
-/// client doesn't parse it yet — so there's no honest state to render, and a switch that
-/// silently does nothing is worse than one that admits it.
+/// Notifications are one list, not a set of switches: the web's "quietness" ladder
+/// (lurker#359, Mobile lurker#1087), one rung checked, tap another to move. Which rungs a
+/// buffer offers, which it is on and what a tap sends are all `NotifyLadder`'s, so this screen
+/// and the buffer list's menu can't disagree. Nothing is checked optimistically — the
+/// checkmark moves when the server's echo folds into state, like every other row here.
 final class BufferInfoViewController: UITableViewController {
     private let viewModel: ChatViewModel
     private let buffer: Buffer
@@ -61,6 +62,14 @@ final class BufferInfoViewController: UITableViewController {
     /// other kind of buffer, and for a chat whose state isn't known yet.
     private var shownDccLive: Bool?
 
+    /// Set when picking a rung went nowhere, and shown under the Notifications section the way
+    /// `actionError` is shown under Connection. Its own slot because a server log has both
+    /// sections, and a refusal belongs under the one that was tapped.
+    private var notifyError: String?
+
+    /// The rung as last rendered, so the echo that moves it retires a refusal from before.
+    private var shownRung: NotifyRung?
+
     init(viewModel: ChatViewModel, buffer: Buffer) {
         self.viewModel = viewModel
         self.buffer = buffer
@@ -78,6 +87,9 @@ final class BufferInfoViewController: UITableViewController {
             }
         )
         tableView.register(UITableViewCell.self, forCellReuseIdentifier: "info")
+        // Their own pool: a rung row carries accessibility traits, and a reused cell would
+        // carry "selected" onto whatever row drew in it next.
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "rung")
         tableView.register(FormProseCell.self, forCellReuseIdentifier: FormProseCell.reuseID)
 
         // Every emission, deduped on what this screen would DRAW rather than on a hand-kept
@@ -118,7 +130,8 @@ final class BufferInfoViewController: UITableViewController {
         /// Search pre-scoped to this buffer; the payload is the `in:`/`on:` prefix to seed the
         /// query field with.
         case search(scope: String)
-        case notifyPlaceholder(title: String)
+        /// One rung of the notification ladder, and whether the buffer is on it.
+        case notifyRung(NotifyRung, selected: Bool)
         /// The network's connection, as a status line.
         case connection(NetworkRow)
         /// One verb that changes it. Only the non-destructive ones reach this sheet — see
@@ -160,6 +173,14 @@ final class BufferInfoViewController: UITableViewController {
             shownConnection = connection
             shownDccLive = dccLive
             actionError = nil
+            notifyError = nil
+        }
+        // A rung that moved is the server answering — this tap's echo, or another device's —
+        // and "not connected" under a list that just changed would contradict it.
+        let rung = NotifyLadder.Scope.of(buffer.key).map(state.notifyRung(for:))
+        if rung != shownRung {
+            shownRung = rung
+            notifyError = nil
         }
         let next = sections(for: state)
         guard next != sections else { return }
@@ -215,13 +236,11 @@ final class BufferInfoViewController: UITableViewController {
                     rows: [.channelSettings(modes: held?.modes ?? "")] + lists
                 ),
                 Section(header: nil, footer: nil, rows: [.members(memberCount)] + scopeRows),
-                notifications,
-            ]
+            ] + notifications(in: state)
         case .dm:
             return [
                 Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
-                notifications,
-            ]
+            ] + notifications(in: state)
         case .dcc:
             // The session first: whether a line typed here will arrive is the thing about this
             // buffer most worth knowing, and its verbs live nowhere else a thumb can reach. The
@@ -237,13 +256,16 @@ final class BufferInfoViewController: UITableViewController {
                     rows: [.dccStatus(live: session)] + (session.map { [.dccAction($0 ? .end : .start)] } ?? [])
                 ),
                 Section(header: nil, footer: nil, rows: [.whois] + scopeRows),
-                notifications,
-            ]
+            ] + notifications(in: state)
         case .server:
             // A server log has no topic or members; the one thing it is *about* is the
             // connection behind it, so this is where that connection is managed (#152) — the
             // same verbs as the networks screen, minus Delete, which belongs with the roster.
-            return connectionSection(in: state).map { [$0] } ?? []
+            //
+            // Its ladder is the network's: a rule covering every buffer on it. Offered only
+            // beside the connection, so a network the store can't describe yet still gets the
+            // empty label rather than a lone list of rungs.
+            return connectionSection(in: state).map { [$0] + notifications(in: state) } ?? []
         case .system:
             // Nothing here is a setting: the app's own buffer has no topic, no members, no
             // connection of its own, and nothing to notify about.
@@ -292,12 +314,30 @@ final class BufferInfoViewController: UITableViewController {
         return label
     }()
 
-    private var notifications: Section {
-        Section(
+    /// The buffer's notification ladder: its rungs in order, the current one checked.
+    ///
+    /// Read from `state` on every build, so it follows both things that decide a rung — the
+    /// channel's notify-always flag and the ignore rules — whichever device changed them.
+    ///
+    /// The footer says what the checked rung does, since "Nothing" and "Muted" differ only in
+    /// the unread badge and the labels alone don't say so. A refusal takes its place.
+    private func notifications(in state: ChatState) -> [Section] {
+        guard let scope = NotifyLadder.Scope.of(buffer.key) else { return [] }
+        let current = state.notifyRung(for: scope)
+        return [Section(
             header: "Notifications",
-            footer: "Not wired up yet — these don't change anything.",
-            rows: [.notifyPlaceholder(title: "Notify me about every message")]
-        )
+            footer: notifyError ?? Self.explanation(of: current),
+            rows: scope.rungs.map { .notifyRung($0, selected: $0 == current) }
+        )]
+    }
+
+    private static func explanation(of rung: NotifyRung) -> String {
+        switch rung {
+        case .all: "Every message notifies you."
+        case .highlights: "Only highlights notify you."
+        case .nothing: "No notifications. Unread still shows."
+        case .muted: "No notifications, and unread is hidden."
+        }
     }
 
     // MARK: - Table
@@ -326,6 +366,17 @@ final class BufferInfoViewController: UITableViewController {
                 self?.topicReveals.toggle(ordinal)
                 self?.tableView.reloadRows(at: [indexPath], with: .none)
             }
+            return cell
+        }
+
+        if case .notifyRung(let rung, let selected) = sections[indexPath.section].rows[indexPath.row] {
+            let cell = tableView.dequeueReusableCell(withIdentifier: "rung", for: indexPath)
+            var content = UIListContentConfiguration.cell()
+            content.text = rung.label
+            cell.contentConfiguration = content
+            cell.accessoryType = selected ? .checkmark : .none
+            // A checkmark is a picture; the trait is what VoiceOver reads as "selected".
+            cell.accessibilityTraits = selected ? [.button, .selected] : .button
             return cell
         }
 
@@ -388,15 +439,8 @@ final class BufferInfoViewController: UITableViewController {
             cell.accessoryType = .disclosureIndicator
             cell.selectionStyle = .default
 
-        case .notifyPlaceholder(let title):
-            var content = UIListContentConfiguration.cell()
-            content.text = title
-            content.textProperties.color = .tertiaryLabel
-            cell.contentConfiguration = content
-            let toggle = UISwitch()
-            toggle.isOn = false
-            toggle.isEnabled = false
-            cell.accessoryView = toggle
+        case .notifyRung:
+            break // drawn above, from its own cell pool
 
         case .connection(let row):
             var content = UIListContentConfiguration.valueCell()
@@ -465,9 +509,31 @@ final class BufferInfoViewController: UITableViewController {
             perform(action)
         case .dccAction(let action):
             perform(action)
-        case .topic, .notifyPlaceholder, .connection, .dccStatus:
+        case .notifyRung(let rung, _):
+            pick(rung)
+        case .topic, .connection, .dccStatus:
             break
         }
+    }
+
+    /// Ask for a rung. Nothing moves here: the checkmark follows state, and state follows the
+    /// server's echo — so a tap that went nowhere leaves the list as it was and says why
+    /// underneath, and one that went out is answered by the row changing.
+    ///
+    /// The view model plans against the state at this moment, not the one this list was drawn
+    /// from, so a change that landed from another device in between is reconciled rather than
+    /// fought (web #1136).
+    private func pick(_ rung: NotifyRung) {
+        guard let scope = NotifyLadder.Scope.of(buffer.key) else { return }
+        // Catch up first. State reaches this screen a main-queue hop late, and `render` retires
+        // a refusal when the rung has moved — so a move still in flight would otherwise be
+        // taken for the answer to this tap and clear the refusal set just below.
+        render(viewModel.state)
+        let sent = viewModel.setNotifyRung(rung, for: scope)
+        let message = sent ? nil : ToastView.notConnected
+        guard notifyError != message else { return }
+        notifyError = message
+        render(viewModel.state)
     }
 
     /// End or restart this DCC chat, pinning a refusal under its section — the connection verbs'
