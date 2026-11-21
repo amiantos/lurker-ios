@@ -135,10 +135,30 @@ final class FeedRequestTests: XCTestCase {
         XCTAssertNil(refusal)
     }
 
-    func testForgettingOnAServerWithoutTheRouteIsNotReadAsDone() async throws {
-        // Before lurker 2.7.0 the route itself is a 404; the row is still there.
-        let (model, _) = try await signedIn([:])
+    func testForgettingARowThatIsAlreadyGoneIsDone() async throws {
+        let (model, _) = try await signedIn([
+            "DELETE /api/uploads/7/record": .init(status: 404, body: #"{"error":"not found"}"#)
+        ])
         let refusal = await model.forgetUpload(id: 7)
+        XCTAssertNil(refusal)
+    }
+
+    func testForgettingOnAServerWithoutTheRouteIsNotReadAsDone() async throws {
+        // Before lurker 2.7.0 the route itself is a 404, answered by Express in HTML; the row is
+        // still there.
+        let (model, _) = try await signedIn([
+            "DELETE /api/uploads/7/record": .init(status: 404, body: "<pre>Cannot DELETE /api/uploads/7/record</pre>")
+        ])
+        let refusal = await model.forgetUpload(id: 7)
+        XCTAssertNotNil(refusal)
+    }
+
+    func testA404ThatIsNotTheServersOwnDoesNotCountAsDeleted() async throws {
+        // A reverse proxy answering while the server restarts: the file was never destroyed.
+        let (model, _) = try await signedIn([
+            "DELETE /api/uploads/7": .init(status: 404, body: "404 page not found")
+        ])
+        let refusal = await model.deleteUpload(id: 7)
         XCTAssertNotNil(refusal)
     }
 }

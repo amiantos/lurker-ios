@@ -220,6 +220,9 @@ class HistoryFeedViewController: UITableViewController {
             return
         }
         loadWasCancelled = false
+        // A pull or a new question replaces a retry that was out: its notice is no longer busy
+        // with anything.
+        retrying = nil
         // The rows went with the old question, so the table has to stop drawing them now — not
         // when the new answer lands, or a failure would leave them up.
         if newQuestion { rowsChanged() }
