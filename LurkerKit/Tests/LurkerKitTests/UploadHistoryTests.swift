@@ -105,3 +105,37 @@ struct UploadHistoryTests {
         #expect(FrameParser.parseUploads(#"{"items":[]}"#).items.isEmpty)
     }
 }
+
+/// How a row leaves the list (lurker#1289, lurker#1295).
+@Suite("Upload removal")
+struct UploadRemovalTests {
+
+    private func item(canDelete: Bool, removed: Bool = false) -> UploadItem {
+        UploadItem(id: 7, url: "https://files.example/a.png", canDelete: canDelete, removed: removed)
+    }
+
+    @Test("a row whose file can be destroyed offers Delete")
+    func deletableRowIsDestroyed() {
+        #expect(item(canDelete: true).removal == .destroy)
+    }
+
+    @Test("a row whose file is out of reach is taken off the list instead")
+    func undeletableRowIsForgotten() {
+        // The case the issue is about: before this the row offered nothing, and stayed forever.
+        #expect(item(canDelete: false).removal == .forget)
+        // A moderation tombstone is one of them: the server sends `can_delete: false` for it.
+        #expect(item(canDelete: false, removed: true).removal == .forget)
+    }
+
+    @Test("the confirmation says the file stays, except where there is no file left")
+    func forgetMessageDropsTheReassuranceOnATombstone() {
+        #expect(item(canDelete: false).forgetMessage?.contains("stays where it is") == true)
+        #expect(item(canDelete: false, removed: true).forgetMessage == nil)
+    }
+
+    @Test("forgetting asks for the record route, not the delete route")
+    func forgetPathIsTheRecordRoute() {
+        // ⚠ One path segment apart from the route that destroys the file.
+        #expect(LurkerClient.forgetUploadPath(id: 7) == "/api/uploads/7/record")
+    }
+}

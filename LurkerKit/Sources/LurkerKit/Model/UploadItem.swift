@@ -25,11 +25,11 @@ public struct UploadItem: Sendable, Equatable, Identifiable {
     public let favorite: Bool
     /// Whether deleting this row would actually destroy the stored bytes.
     ///
-    /// ⚠⚠ **Never offer a delete affordance without it.** There is no remove-the-record-only
-    /// path: the route refuses a delete for a row whose bytes can't be destroyed (no ref, a
-    /// driver that can't delete, a config since removed, a moderation tombstone), so a button
-    /// offered anyway would be one that reliably fails. Anonymous and legacy rows can't be
-    /// deleted, and that is a fact about where the file went, not a permission.
+    /// ⚠⚠ **Never offer Delete without it.** The route refuses a delete for a row whose bytes
+    /// can't be destroyed (no ref, a driver that can't delete, a config since removed, a
+    /// moderation tombstone), so a Delete offered anyway would be one that reliably fails.
+    /// Anonymous and legacy rows can't be deleted, and that is a fact about where the file
+    /// went, not a permission. Such a row is taken off the list instead — see `removal`.
     public let canDelete: Bool
     /// Where to fetch this row's thumbnail, or nil when there isn't one.
     ///
@@ -73,6 +73,24 @@ public struct UploadItem: Sendable, Equatable, Identifiable {
     /// a file that arrived from the clipboard genuinely never had a name, and inventing one
     /// from the URL's last path segment would show the storage key, which means nothing.
     public var displayName: String { filename ?? "(pasted)" }
+
+    /// The one way this row leaves the list (lurker#1289). The web's tile offers the same pair:
+    /// the trash where the file can be destroyed, "remove from list" everywhere else.
+    public var removal: UploadRemoval { canDelete ? .destroy : .forget }
+
+    /// What the confirmation says before a row is taken off the list with its file left alone.
+    /// A tombstone's file is already gone, so there is no file to reassure anyone about.
+    public var forgetMessage: String? {
+        removed ? nil : "The file stays where it is. This only takes it off your uploads list."
+    }
+}
+
+/// How an upload's row can be removed.
+public enum UploadRemoval: Sendable, Equatable {
+    /// `DELETE /api/uploads/:id`: the stored bytes are destroyed, then the row goes.
+    case destroy
+    /// `DELETE /api/uploads/:id/record`: the row goes and the file stays wherever it is.
+    case forget
 }
 
 /// One page of `GET /api/uploads`.

@@ -1260,12 +1260,21 @@ final class LurkerClient {
 
     /// Destroy an upload's bytes and drop its row. Nil on success, else the server's own reason.
     ///
-    /// ⚠⚠ Only ever called for a row whose `canDelete` is set. There is deliberately no
-    /// remove-the-record-but-leave-the-file path — the route answers 409 for a row whose bytes
-    /// can't be destroyed, so asking for one is a bug on this side, not a case to handle.
+    /// ⚠⚠ Only ever called for a row whose `canDelete` is set: the route answers 409 for a row
+    /// whose bytes can't be destroyed. That row leaves the list through `forgetUpload`.
     func deleteUpload(id: Int) async -> String? {
         await act("DELETE", "/api/uploads/\(id)")
     }
+
+    /// Drop an upload's row and leave its file wherever it is (lurker#1289). Nil on success,
+    /// else the server's own reason. For a row that can't be deleted, and the way out for one
+    /// whose delete failed: the server's `can_delete` is a judgment, and a row it gets wrong
+    /// must not be stuck on the list.
+    func forgetUpload(id: Int) async -> String? {
+        await act("DELETE", Self.forgetUploadPath(id: id))
+    }
+
+    nonisolated static func forgetUploadPath(id: Int) -> String { "/api/uploads/\(id)/record" }
 
     /// Tell the network we're composing. Fire-and-forget: the server turns it into a
     /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
