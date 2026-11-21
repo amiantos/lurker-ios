@@ -2043,6 +2043,45 @@ public final class ChatViewModel {
         canWrite && client.setNickNote(networkId: networkId, nick: DccChat.peer(nick), note: note)
     }
 
+    /// Put a buffer, or a network, on a rung of the notification ladder (lurker#359, Mobile
+    /// lurker#1087). No local mutation: the rung moves when the server's echoes fold in.
+    ///
+    /// ⚠⚠ The plan is made from the state as it is NOW, at the tap — not from whatever a menu
+    /// or a sheet read when it was drawn. A rung is a target, not a toggle of what was on
+    /// screen: built at open time, "Highlights only" picked after another device turned "All
+    /// messages" on would leave the flag standing (web #1136). That is why this takes the rung
+    /// and the scope and nothing a caller could have computed earlier.
+    ///
+    /// False when any step went nowhere. It stops at the first one that did: the steps are
+    /// ordered remove-then-add, so stopping leaves at most a missing rule, and carrying on past
+    /// a remove that never left would add a second rule beside the first. True when there was
+    /// nothing to do.
+    @discardableResult
+    public func setNotifyRung(_ rung: NotifyRung, for scope: NotifyLadder.Scope) -> Bool {
+        let steps = store.state.notifyPlan(to: rung, for: scope)
+        guard !steps.isEmpty else { return true }
+        guard canWrite else { return false }
+        return steps.allSatisfy(sendNotifyStep)
+    }
+
+    /// Every ladder step's way onto the socket — through `notifyStepSeam` when a test has set one.
+    private func sendNotifyStep(_ step: NotifyLadder.Step) -> Bool {
+        if let notifyStepSeam { return notifyStepSeam(step) }
+        switch step {
+        case .setNotifyAlways(let networkId, let target, let notifyAlways):
+            return client.setChannelNotifyAlways(
+                networkId: networkId, target: target, notifyAlways: notifyAlways
+            )
+        case .removeRule(let id, let scope):
+            return client.removeIgnore(networkId: scope, id: id, mask: nil)
+        case .addRule(let networkId, let rule):
+            return client.addIgnore(networkId: networkId, rule: rule)
+        }
+    }
+
+    /// Test seam: stands in for the socket, answering whether the step "went out".
+    var notifyStepSeam: ((NotifyLadder.Step) -> Bool)?
+
     /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
     /// False when it went nowhere, and then no echo is coming to settle a drop (sweep L29).
     @discardableResult

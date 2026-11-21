@@ -278,6 +278,19 @@ public struct ChatState: Sendable {
     /// `relayBots` above and for the same reason: both are user-authored, server-stored, and
     /// fanned to every device.
     public var nickNotes: NickNoteSet = .empty
+    /// The channels whose `notify_always` flag is on, as `BufferKey.id`s (lurker#359, Mobile
+    /// lurker#1087) — "All messages" on the notification ladder. Seeded by the connect
+    /// `snapshot`, one map per network blob, and patched a channel at a time by
+    /// `channel-notify-changed`.
+    ///
+    /// Only the channels that have it: absent is off, which mirrors the server deleting the row
+    /// when the flag is cleared. Keyed by buffer key so a target is compared the way every other
+    /// per-buffer map here compares it, and so it rides the same lifecycle they do — dropped
+    /// with its buffer, moved by a rename, gone with its network.
+    ///
+    /// Server-authoritative: picking a rung *asks*, and this changes when the echo lands.
+    /// **Read through `notifiesAlways(networkId:target:)`.**
+    public internal(set) var notifyAlways: Set<String> = []
     /// Every nick's IRCv3 metadata the server holds (lurker#607, Mobile lurker#1203): display
     /// names, avatars, pronouns, homepage, status. Seeded by the connect `snapshot` — one map per
     /// network blob — and patched a nick at a time by `user-metadata`, like `relayBots` above.
@@ -440,6 +453,9 @@ public struct ChatState: Sendable {
         unsent[key] = nil
         // The draft too: the server deletes its row on a close.
         drafts[key] = nil
+        // And its "All messages" flag, as the web's lifecycle sweep does: a flag keyed to a
+        // buffer nothing lists is one nobody can see to turn off.
+        notifyAlways.remove(key)
     }
 
     /// Forget a network and everything under it — the local half of a delete, whether it
@@ -470,6 +486,8 @@ public struct ChatState: Sendable {
         // Drafts are kept apart from `buffers`, so the loop above misses one whose row we never
         // held.
         drafts = drafts.filter { !$0.key.hasPrefix("\(id)::") }
+        // Likewise the notify flags: the loop above only reaches a channel whose row we hold.
+        notifyAlways = notifyAlways.filter { !$0.hasPrefix("\(id)::") }
     }
 
     /// Move everything keyed by `from` onto `to` — the rename mirror of
@@ -514,6 +532,9 @@ public struct ChatState: Sendable {
         // Moved with its lines, so a renamed DM's chips still redraw when a reaction lands.
         reactionsRevisions[to] = reactionsRevisions[from]
         reactionsRevisions[from] = nil
+        // The flag follows its buffer. A set, so landing on a destination that already has it
+        // is the web's "destination wins" with nothing to choose between.
+        if notifyAlways.remove(from) != nil { notifyAlways.insert(to) }
         if burstSeen.remove(from) != nil { burstSeen.insert(to) }
         if let id = renamed.bufferId { keysById[id] = to }
     }
@@ -845,6 +866,12 @@ public struct ChatState: Sendable {
     /// future fold correction would have to chase individually.
     public func isFavorite(_ key: BufferKey) -> Bool {
         favorites.contains { $0.key.id == key.id }
+    }
+
+    /// Whether every message in this channel notifies — its `notify_always` flag, the "All
+    /// messages" rung (lurker#359). Case-insensitive on the target, as buffer keys are.
+    public func notifiesAlways(networkId: Int, target: String) -> Bool {
+        notifyAlways.contains(BufferKey(networkId: networkId, target: target).id)
     }
 
     /// Reconcile `bookmarkedIds` against a page of rows.
@@ -1497,6 +1524,17 @@ final class LurkerStore {
                 networkId: networkId, nick: nick, note: note, updatedAt: updatedAt
             )
             return next
+        case .channelNotifyChanged(let networkId, let target, _, let notifyAlways):
+            // A patch, one channel at a time. Off removes the entry rather than storing a
+            // false, mirroring the server's row delete.
+            var next = state
+            let key = BufferKey(networkId: networkId, target: target).id
+            if notifyAlways {
+                next.notifyAlways.insert(key)
+            } else {
+                next.notifyAlways.remove(key)
+            }
+            return next
         case .whoisResult(let networkId, let whois):
             var next = state
             var byNick = next.whois[networkId] ?? [:]
@@ -1874,6 +1912,11 @@ final class LurkerStore {
             nickNotesByNetwork[snapshot.id] = snapshot.nickNotes
         }
         next.nickNotes = NickNoteSet(byNetwork: nickNotesByNetwork)
+        // The notify flags replace wholesale too: a channel taken off "All messages" on the web
+        // while this device was away has to read that way here, not keep a leftover yes.
+        next.notifyAlways = Set(networks.flatMap { snapshot in
+            snapshot.notifyAlways.map { BufferKey(networkId: snapshot.id, target: $0).id }
+        })
         // Metadata (lurker#607) replaces wholesale for the same reason again: the snapshot is
         // what the connection holds now, so a nick forgotten while this device was away is gone
         // here rather than left showing a stale name.

@@ -205,6 +205,24 @@ enum FrameParser {
                 note: note,
                 updatedAt: ISOTime.parse(obj.stringOrNull("updatedAt"))
             )
+        case "channel-notify-changed":
+            // The flag is about one channel on one network; a frame missing either half
+            // addresses nothing, the posture the relay mark above takes.
+            //
+            // ⚠ `notifyAlways` must be PRESENT, not merely readable. `bool("notifyAlways")`
+            // folds a missing or mistyped field to false, and false here is a statement — it
+            // turns "All messages" off on this device while the server still holds it on. An
+            // absent field is not that statement (the rule `nick-note-updated` follows above).
+            let notifyTarget = obj.string("target")
+            guard let networkId = obj.intOrNull("networkId"), !notifyTarget.isEmpty,
+                  let notifyAlways = obj["notifyAlways"] as? Bool
+            else { return .ignored }
+            return .channelNotifyChanged(
+                networkId: networkId,
+                target: notifyTarget,
+                bufferId: obj.intOrNull("bufferId"),
+                notifyAlways: notifyAlways
+            )
         case "buffer-renamed":
             // Same trust posture as buffer-closed below: empty names can't
             // identify anything, so refuse rather than rename an arbitrary
@@ -483,6 +501,7 @@ enum FrameParser {
                 ignoredMasks: network.objects("ignoredMasks").map(parseIgnoreRule),
                 relayBots: network.objects("relayBots").compactMap(parseRelayBot),
                 nickNotes: network.objects("nickNotes").compactMap(parseNickNote),
+                notifyAlways: parseChannelNotify(network["channelNotify"]),
                 away: parseAwayState(network["away"]),
                 pinned: (network["pinned"] as? [String]) ?? [],
                 dccChats: nonEmptyStrings(network["dccChats"]),
@@ -578,6 +597,23 @@ enum FrameParser {
     private static func parseRelayBot(_ obj: [String: Any]) -> RelayBot? {
         let nick = obj.string("nick")
         return nick.isEmpty ? nil : RelayBot(nick: nick, pattern: obj.string("pattern"))
+    }
+
+    /// A snapshot network's `channelNotify` — `{target: {notifyAlways: bool}}` — as the targets
+    /// whose flag is on (lurker#359). The server only lists channels that have it set, but the
+    /// value is read rather than assumed, so a row that says `false` is not turned into a yes.
+    ///
+    /// Anything that isn't that shape is skipped an entry at a time: an absent or mistyped map
+    /// is "no channels", and one unreadable entry doesn't take its neighbours with it. Sorted,
+    /// because a JSON object has no order and `NetworkSnapshot` is compared.
+    private static func parseChannelNotify(_ raw: Any?) -> [String] {
+        guard let map = raw as? [String: Any] else { return [] }
+        return map.compactMap { target, flags -> String? in
+            guard !target.isEmpty, let flags = flags as? [String: Any],
+                  flags["notifyAlways"] as? Bool == true
+            else { return nil }
+            return target
+        }.sorted()
     }
 
     /// One stored nick note (#12) — the same `{nick, note, updatedAt}` row in the snapshot's

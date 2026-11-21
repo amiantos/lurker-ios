@@ -943,6 +943,37 @@ final class LurkerClient {
         )
     }
 
+    /// Set or clear a channel's `notify_always` flag — "All messages" on the notification
+    /// ladder (lurker#359, Mobile lurker#1087).
+    ///
+    /// Fire-and-ask, like the ignore verbs above: the server stores it and fans a
+    /// `channel-notify-changed` back to every device, and the flag exists here only once that
+    /// lands. It refuses anything that isn't a channel without answering, so a caller picks the
+    /// target with `NotifyLadder.Scope`, which only makes this step for one.
+    ///
+    /// **Returns false when it went nowhere**, and the caller must check, for the same reason
+    /// `addIgnore` does: no echo is coming to move the rung, and nothing else would say so.
+    @discardableResult
+    func setChannelNotifyAlways(networkId: Int, target: String, notifyAlways: Bool) -> Bool {
+        send(
+            Self.channelNotifyFrame(networkId: networkId, target: target, notifyAlways: notifyAlways),
+            surfacesFailure: true
+        )
+    }
+
+    /// `set-channel-notify-always` as it goes out. `nonisolated static` so a test can assert the
+    /// payload without a socket, like `ruleJSON` below.
+    nonisolated static func channelNotifyFrame(
+        networkId: Int, target: String, notifyAlways: Bool
+    ) -> [String: Any] {
+        [
+            "type": "set-channel-notify-always",
+            "networkId": networkId,
+            "target": target,
+            "notifyAlways": notifyAlways,
+        ]
+    }
+
     /// A rule as `add-ignore` carries it. Unset dimensions are *omitted* rather than sent as
     /// null: the server reads an absent field as "unconstrained", which is the same thing and
     /// keeps the frame to what the rule actually says.
