@@ -190,18 +190,21 @@ final class ComposerBar: UIView {
     private let fieldGlass = UIVisualEffectView()
     private let textView = ComposerTextView()
     private let placeholderLabel = UILabel()
-    private let sendButton = UIButton(type: .system)
+    private let sendButton = OutsetHitButton(type: .system)
     /// The status row across the top of the slab. Always there, at a fixed height, so nothing
     /// it shows or hides ever moves the conversation. Left side, one thing at a time:
     ///
-    /// 1. Completion chips while a nick/command/channel is being typed (they take the whole row).
-    /// 2. A notification from elsewhere, for a few seconds — never over the chips; it waits.
-    /// 3. The pending reply (iOS #184): "↩ alice: excerpt  ×".
-    /// 4. Where you are, with who's typing (#61) appended — out of the message list, so it's
+    /// 1. A notification from elsewhere, for a few seconds.
+    /// 2. The pending reply (iOS #184): "↩ alice: excerpt  ×".
+    /// 3. Where you are, with who's typing (#61) appended — out of the message list, so it's
     ///    visible at any scroll position.
+    ///
+    /// The completion chips used to take this row over. They float above the bar now
+    /// (`suggestions`): the row is where iOS draws its autocorrect bubble, just above the word
+    /// being typed, and a chip under the bubble could not be tapped (lurker#1401).
     private let statusRow = UIView()
     private let leadLabel = UILabel()
-    private let cancelReplyButton = RowHeightHitButton(type: .system)
+    private let cancelReplyButton = OutsetHitButton(type: .system)
     /// That you're away (#135), in its own glass strip above the slab: "Away since 2:32 PM ·
     /// lunch  Back". Not in the status row — being away is worth being nagged about, and the row
     /// has no room for the time.
@@ -212,11 +215,12 @@ final class ComposerBar: UIView {
     private var containerBelowAway: NSLayoutConstraint!
     /// The status row's right end: highlights waiting in other buffers, a plain gold number like
     /// a buffer row's count. Tapping it goes back to the list. Hidden at 0.
-    private let highlightCountButton = UIButton(type: .system)
+    private let highlightCountButton = OutsetHitButton(type: .system)
     /// The toast showing now, and the ones waiting their turn.
     private let toasts = StatusToastPresenter()
     private let statusRule = UIView()
-    /// The completion chips, owned by the chat screen's suggestion logic but drawn in the row.
+    /// The completion chips. Made here, since they are the composer's, but placed by the chat
+    /// screen in a strip above the bar — see `statusRow` for why not in it.
     let suggestions = SuggestionsView()
     private var reply: PendingReply?
     private var away: AwayState?
@@ -227,9 +231,6 @@ final class ComposerBar: UIView {
     /// `DateFormatter`.
     private var awayText: AwayStrip?
     private var statusHeight: NSLayoutConstraint!
-    /// The row's own contents (lead + away), hidden while the chips are up.
-    private var statusContent: UIView?
-
     /// How tall the text may grow before it scrolls internally instead. Five lines is the
     /// Messages ceiling too — past that you're writing a paragraph, and the conversation
     /// behind the bar has given up enough room.
@@ -447,7 +448,6 @@ final class ComposerBar: UIView {
         cancel.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
         cancelReplyButton.configuration = cancel
         cancelReplyButton.accessibilityLabel = "Cancel reply"
-        cancelReplyButton.horizontalOutset = 8
         cancelReplyButton.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
 
         var count = UIButton.Configuration.plain()
@@ -472,17 +472,7 @@ final class ComposerBar: UIView {
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
 
-        suggestions.translatesAutoresizingMaskIntoConstraints = false
         configureToasts()
-        suggestions.onVisibilityChange = { [weak self] in
-            guard let self else { return }
-            // Chips over a toast: it goes back to the front of the queue, to be shown in full
-            // once they close, rather than running out its time underneath them.
-            if !suggestions.isHidden { toasts.requeueActive() }
-            self.renderStatus()
-            // Toasts that arrived mid-completion waited for the chips to close.
-            self.toasts.presentNext()
-        }
 
         let lead = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton])
         lead.alignment = .center
@@ -491,21 +481,60 @@ final class ComposerBar: UIView {
         row.alignment = .fill
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
-        statusContent = row
 
         statusRow.addSubview(row)
-        statusRow.addSubview(suggestions)
         NSLayoutConstraint.activate([
             row.topAnchor.constraint(equalTo: statusRow.topAnchor),
             row.bottomAnchor.constraint(equalTo: statusRow.bottomAnchor),
             row.leadingAnchor.constraint(equalTo: statusRow.leadingAnchor, constant: Self.textInset.left),
             row.trailingAnchor.constraint(equalTo: statusRow.trailingAnchor),
-
-            suggestions.topAnchor.constraint(equalTo: statusRow.topAnchor),
-            suggestions.bottomAnchor.constraint(equalTo: statusRow.bottomAnchor),
-            suggestions.leadingAnchor.constraint(equalTo: statusRow.leadingAnchor),
-            suggestions.trailingAnchor.constraint(equalTo: statusRow.trailingAnchor),
         ])
+    }
+
+    // MARK: - Touch targets
+
+    /// The clear space between the bar's top edge (or the away strip) and the slab, and under it.
+    private static let slabGap: CGFloat = 6
+
+    /// The three controls drawn smaller than a finger: asked first, because their reach leaves
+    /// the slab and no ancestor of theirs would hand the touch down (lurker#1401).
+    private var outsetButtons: [OutsetHitButton] { [sendButton, cancelReplyButton, highlightCountButton] }
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        guard isUserInteractionEnabled, !isHidden, alpha > 0.01 else { return nil }
+        for button in outsetButtons where !button.isHidden && button.isEnabled && button.window != nil {
+            if button.point(inside: convert(point, to: button), with: event) { return button }
+        }
+        return super.hitTest(point, with: event)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateHitOutsets()
+    }
+
+    /// Grow each small control's target towards 44pt, into space nothing else answers for.
+    ///
+    /// Upward there is only `slabGap` before the bar ends (or the away strip begins), so the
+    /// status row's two reach 6pt over their row and stop: a row's height plus 6, which is 42
+    /// at the default text size. The send circle reaches down through the slab's inset and the
+    /// gap under it, and up only as far as the status row, which belongs to the count above it.
+    private func updateHitOutsets() {
+        let target: CGFloat = 44
+        func side(_ length: CGFloat) -> CGFloat { max(0, (target - length) / 2) }
+
+        let send = side(sendButton.bounds.width)
+        sendButton.hitOutsets = UIEdgeInsets(
+            top: Self.sendInset, left: send, bottom: Self.sendInset + Self.slabGap, right: send
+        )
+        let cancel = side(cancelReplyButton.bounds.width)
+        cancelReplyButton.hitOutsets = UIEdgeInsets(top: Self.slabGap, left: cancel, bottom: 0, right: cancel)
+        // The count sits at the row's trailing end, so all of its extra width is to the leading side.
+        let count = max(0, target - highlightCountButton.bounds.width)
+        let leading = effectiveUserInterfaceLayoutDirection == .rightToLeft
+        highlightCountButton.hitOutsets = UIEdgeInsets(
+            top: Self.slabGap, left: leading ? 0 : count, bottom: 0, right: leading ? count : 0
+        )
     }
 
     /// The send button: a plain circle inside the slab. It can't be glass of its own — glass
@@ -621,10 +650,6 @@ final class ComposerBar: UIView {
         // status bar's look. Re-read here because it doesn't follow Dynamic Type on its own.
         let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
         leadLabel.font = font
-        // The chips own the whole row while they're up: they're about the word under the caret,
-        // and they're gone the moment it's finished.
-        statusContent?.isHidden = !suggestions.isHidden
-
         if let toast = toasts.active {
             let text = toast.attributedText(font: font)
             leadLabel.attributedText = text
@@ -763,8 +788,7 @@ final class ComposerBar: UIView {
         highlightCountButton.accessibilityLabel = "\(count) highlight" + (count == 1 ? "" : "s") + " in other buffers"
     }
 
-    /// Show a toast in the status row for a few seconds, in turn (`StatusToastQueue`). Never over
-    /// the completion chips — they're what you're tapping — so the queue waits for them to close.
+    /// Show a toast in the status row for a few seconds, in turn (`StatusToastQueue`).
     func showToast(_ toast: StatusToast) {
         toasts.show(toast)
     }
@@ -779,7 +803,6 @@ final class ComposerBar: UIView {
     }
 
     private func configureToasts() {
-        toasts.isReady = { [weak self] in self?.suggestions.isHidden ?? false }
         toasts.isVisible = { [weak self] in self?.canShowToasts?() ?? true }
         toasts.shouldPresent = { [weak self] toast in
             guard let self, case .notice(let message) = toast, !fitsAsNotice(message) else { return true }

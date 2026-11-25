@@ -16,7 +16,8 @@ final class StatusToastPresenter {
     var active: StatusToast? { queue.active }
 
     /// Whether the surface is free for the next toast. False holds the queue until `presentNext`
-    /// is called again — the completion chips own the status row while they're up.
+    /// is called again. Nothing holds it today: the completion chips, which once took the status
+    /// row over, float above the bar (lurker#1401).
     var isReady: () -> Bool = { true }
     /// Whether the surface can be seen at all, asked before each toast. False drops whatever
     /// waits: one shown under a sheet, or after the screen has gone, would expire unseen while
