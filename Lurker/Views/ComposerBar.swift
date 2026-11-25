@@ -850,7 +850,6 @@ final class ComposerBar: UIView {
     /// `punctuation` is the resolved `input.completion.nick_suffix`; the owner reads it,
     /// because the setting lives on the store and this view has no window onto it.
     func completeMention(with nick: String, punctuation: String) {
-        restoreChipPress()
         let selection = textView.selectedRange
         guard selection.length == 0, !isComposing,
               let token = NickCompletion.activeMention(in: textView.text, caret: selection.location),
@@ -867,7 +866,6 @@ final class ComposerBar: UIView {
     /// caret lands where the first argument goes — picking `/join` leaves `/join |`, and the
     /// owner immediately floats channel chips for the empty slot.
     func completeCommand(name: String) {
-        restoreChipPress()
         let selection = textView.selectedRange
         guard selection.length == 0,
               case .command(_, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
@@ -878,7 +876,6 @@ final class ComposerBar: UIView {
     /// Replace the channel/nick argument under the caret with the pick, trailing a space so
     /// the next argument (a key, a message, another nick) can follow.
     func completeArgument(value: String) {
-        restoreChipPress()
         let selection = textView.selectedRange
         guard selection.length == 0,
               case .argument(_, _, _, _, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
@@ -1104,13 +1101,17 @@ final class ComposerBar: UIView {
         DispatchQueue.main.async { [weak self] in self?.chipPress = nil }
     }
 
-    /// Before a pick: if the field moved under the press, put it back as the press found it.
-    private func restoreChipPress() {
+    /// Before a pick: if the field moved under the press, put it back as the press found it,
+    /// and say so — the owner's idea of what is being completed moved with it, and has to move
+    /// back before it decides what the pick means.
+    func prepareForPick() {
         guard let chipPress, !textView.attributedText.isEqual(to: chipPress.text) else { return }
         Self.completionLog.debug("the field changed under a chip press; put back")
+        textView.inputDelegate?.textWillChange(textView)
         textView.attributedText = chipPress.text
         textView.selectedRange = chipPress.selection
-        cachedLine = nil
+        textView.inputDelegate?.textDidChange(textView)
+        textViewDidChange(textView)
     }
 
     /// Swap a `:name:` the caret just closed for its emoji — see `textViewDidChange`. Through

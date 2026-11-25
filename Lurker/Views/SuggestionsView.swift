@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import LurkerKit
+import OSLog
 import UIKit
 
 /// One floating pill's worth of content: what it says, what it inserts, its color, and its
@@ -56,6 +57,13 @@ final class SuggestionsView: UIView {
     /// Whether a chip is under a finger right now, and the list that arrived meanwhile.
     private var pressed = false
     private var waiting: [Suggestion]?
+    /// The chips as drawn, in order, so a touch seen at the window can be matched to one.
+    private var shown: [Suggestion] = []
+    /// A touch that went down on a chip, as the window saw it — see `windowWillSend`.
+    private var watched: (touch: UITouch, suggestion: Suggestion, start: CGPoint)?
+    /// Set when a chip's own tap was delivered, so the window's copy of it isn't picked twice.
+    private var delivered = false
+    private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Lurker", category: "completion")
     /// Fired when the row appears or goes, so the composer can swap its status content.
     var onVisibilityChange: (() -> Void)?
 
@@ -114,9 +122,29 @@ final class SuggestionsView: UIView {
         for suggestion in suggestions {
             stack.addArrangedSubview(chip(for: suggestion))
         }
+        shown = suggestions
         scroll.contentOffset = CGPoint(x: -scroll.contentInset.left, y: 0)
         isHidden = suggestions.isEmpty
         if wasHidden != isHidden { onVisibilityChange?() }
+    }
+
+    // MARK: - Taps the system took
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        (window as? TouchWatchingWindow)?.addTouchWatcher(self)
+    }
+
+    /// The suggestion whose chip — at the row's full height, as its own target is — holds `point`.
+    private func suggestion(at point: CGPoint) -> Suggestion? {
+        guard !isHidden, bounds.contains(point) else { return nil }
+        for (index, chip) in stack.arrangedSubviews.enumerated() where index < shown.count {
+            let frame = chip.convert(chip.bounds, to: self)
+            if point.x >= frame.minX - stack.spacing / 2, point.x <= frame.maxX + stack.spacing / 2 {
+                return shown[index]
+            }
+        }
+        return nil
     }
 
     private func pressEnded() {
@@ -153,10 +181,16 @@ final class SuggestionsView: UIView {
         button.horizontalOutset = stack.spacing / 2
         button.accessibilityLabel = suggestion.accessibility
         button.addAction(UIAction { [weak self] _ in
-            self?.pressed = true
-            self?.onPressBegan?()
+            // Usually the window saw this touch first and began the press; not twice, or the
+            // field would be held as it is now, which may already be the corrected one.
+            guard let self, !pressed else { return }
+            pressed = true
+            onPressBegan?()
         }, for: .touchDown)
-        button.addAction(UIAction { [weak self] _ in self?.onPick?(suggestion) }, for: .touchUpInside)
+        button.addAction(UIAction { [weak self] _ in
+            self?.delivered = true
+            self?.onPick?(suggestion)
+        }, for: .touchUpInside)
         // After the pick, which is registered first: the pick reads the text the press protected.
         button.addAction(UIAction { [weak self] _ in self?.pressEnded() }, for: [.touchUpInside, .touchUpOutside, .touchCancel])
         let title = ceil((suggestion.title as NSString).size(withAttributes: [.font: font]).width)
@@ -195,5 +229,47 @@ extension CGRect {
 final class ReachingButton: UIButton {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.reaching().contains(point)
+    }
+}
+
+extension SuggestionsView: WindowTouchWatcher {
+    /// Every touch in the window, before it is handed out — `TouchWatchingWindow` says why.
+    ///
+    /// A touch that goes down on a chip and comes up, or is cancelled, without having moved is
+    /// a tap on that chip, whether or not the system let the chip have it. The press is begun
+    /// here too, so the composer holds the field before the keyboard applies its correction.
+    /// The pick waits a turn of the run loop: a tap the chip did get has made it by then
+    /// (`delivered`), and this copy stands down.
+    func windowWillSend(_ touches: Set<UITouch>) {
+        for touch in touches {
+            let point = touch.location(in: self)
+            switch touch.phase {
+            case .began:
+                guard watched == nil, let suggestion = suggestion(at: point) else { continue }
+                watched = (touch, suggestion, point)
+                delivered = false
+                if !pressed {
+                    pressed = true
+                    onPressBegan?()
+                }
+            case .ended, .cancelled:
+                guard let watched, watched.touch === touch else { continue }
+                self.watched = nil
+                let moved = hypot(point.x - watched.start.x, point.y - watched.start.y)
+                let phase = touch.phase == .ended ? "ended" : "cancelled"
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    // Moved: a scroll of the row, not a tap.
+                    if !delivered, moved < 10 {
+                        Self.log.debug("a chip tap the chip never got (\(phase)); picked from the window")
+                        onPick?(watched.suggestion)
+                    }
+                    delivered = false
+                    pressEnded()
+                }
+            default:
+                break
+            }
+        }
     }
 }
