@@ -31,11 +31,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     private let placeholderView = StateView()
     private let composer = ComposerBar()
     private var composerBottom: NSLayoutConstraint!
-    /// The space just above the composer that the completion chips float in: no height until
-    /// they're up. What sits above the composer — the jump button, the upload status, a floated
-    /// notice — sits above this, so the strip never lands on them (lurker#1401).
-    private let aboveComposer = UILayoutGuide()
-    private var chipStripHeight: NSLayoutConstraint!
     /// The in-flight upload readout above the composer (#14) — phase, progress, and a cancel.
     private let uploadStatus = UploadStatusView()
     /// Retained across the async pick→compress→upload flow (the picker delegates need it kept
@@ -320,16 +315,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         composer.offersMenu = takesUploads
         view.addSubview(composer)
 
-        // The completion chips, in their strip above the bar. Under the composer in the view
-        // order, so VoiceOver reaches them before the field they complete into.
-        view.addLayoutGuide(aboveComposer)
-        suggestions.translatesAutoresizingMaskIntoConstraints = false
-        view.insertSubview(suggestions, belowSubview: composer)
-        suggestions.onVisibilityChange = { [weak self] in
-            guard let self else { return }
-            chipStripHeight.constant = suggestions.isHidden ? 0 : SuggestionsView.height
-        }
-
         uploadStatus.onCancel = { [weak self] in self?.cancelUpload() }
         uploadStatus.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(uploadStatus)
@@ -405,7 +390,6 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // `keyboardDismissMode` above) it's the keyboard's top edge. One anchor covers
         // every position; the notifications below only add the breathing gap.
         composerBottom = composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
-        chipStripHeight = aboveComposer.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             // Full height, under everything. The conversation scrolls beneath the glass
             // navigation bar at the top and the floating composer at the bottom, and off into
@@ -447,7 +431,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             // a notched phone in landscape — and the view's edge doesn't. Pinned to the view,
             // the button sat under the Duo's rail, off the end of the composer.
             jumpButton.trailingAnchor.constraint(equalTo: composer.layoutMarginsGuide.trailingAnchor),
-            jumpButton.bottomAnchor.constraint(equalTo: aboveComposer.topAnchor, constant: -12),
+            jumpButton.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -12),
 
             // Up at the top, where it's pointing — the connection banner's slot, which the two
             // take turns in (see `applyLayout`). Down at the bottom, up at the top: each
@@ -469,17 +453,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
             uploadStatus.trailingAnchor.constraint(
                 lessThanOrEqualTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16
             ),
-            uploadStatus.bottomAnchor.constraint(equalTo: aboveComposer.topAnchor, constant: -8),
-
-            aboveComposer.bottomAnchor.constraint(equalTo: composer.topAnchor),
-            aboveComposer.leadingAnchor.constraint(equalTo: composer.layoutMarginsGuide.leadingAnchor),
-            aboveComposer.trailingAnchor.constraint(equalTo: composer.layoutMarginsGuide.trailingAnchor),
-            chipStripHeight,
-            // The same edges as the slab below it, by the same margins.
-            suggestions.leadingAnchor.constraint(equalTo: aboveComposer.leadingAnchor),
-            suggestions.trailingAnchor.constraint(lessThanOrEqualTo: aboveComposer.trailingAnchor),
-            suggestions.bottomAnchor.constraint(equalTo: aboveComposer.bottomAnchor),
-            suggestions.heightAnchor.constraint(equalToConstant: SuggestionsView.height),
+            uploadStatus.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
         ])
 
         observeKeyboard()
@@ -2120,7 +2094,7 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
     /// A notice too long for the one-line row, floated above the composer where it can wrap.
     private func floatNotice(_ message: String) {
         ToastView.show(
-            message, symbol: "exclamationmark.circle", over: view, above: aboveComposer.topAnchor,
+            message, symbol: "exclamationmark.circle", over: view, above: composer.topAnchor,
             hold: ToastView.readingHoldSeconds
         )
     }

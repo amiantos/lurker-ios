@@ -40,38 +40,26 @@ struct Suggestion: Equatable {
     }
 }
 
-/// The completion suggestions: a strip of chips floating just above the composer, best
-/// candidate first (leading), scrolling sideways when there are more than fit.
-///
-/// Above the bar, not in its status row where the mobile PWA has them: that row is where iOS
-/// draws its autocorrect bubble — just above the word being typed, which while a nick is half
-/// typed is always — and a chip under the bubble could not be tapped (lurker#1401). Up here
-/// the strip is also a full `height` tall, so each chip is a 44pt target however small it draws.
-///
-/// One glass strip with plain chips in it, rather than a glass capsule each: glass inside
-/// glass doesn't sample, and the strip is one thing to read against the conversation behind it.
+/// The completion suggestions: a horizontal row of plain chips in the composer's status row,
+/// best candidate first (leading), scrolling sideways when there are more than fit. Plain
+/// rather than glass — they live inside the composer's slab, and glass inside glass doesn't
+/// sample.
 ///
 /// Dumb by design: the owner computes the suggestions (a command, channel, or nick strip) and
 /// hands them to `show`; this view only draws chips and reports taps.
 final class SuggestionsView: UIView {
-    /// The strip's height: the least a finger needs.
-    static let height: CGFloat = 44
-    /// The widest a chip draws before its title truncates, so one long nick can't take the strip.
-    private static let maxChipWidth: CGFloat = 240
-    private static let chipInsets = NSDirectionalEdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12)
-
     var onPick: ((Suggestion) -> Void)?
-    /// Fired when the strip appears or goes, so the screen can make room above the composer.
+    /// Fired when the row appears or goes, so the composer can swap its status content.
     var onVisibilityChange: (() -> Void)?
 
-    private let glass = UIVisualEffectView(effect: UIGlassEffect())
     private let scroll = UIScrollView()
     private let stack = UIStackView()
+    /// The widest a chip draws before its title truncates, so one long nick can't take the row.
+    private static let maxChipWidth: CGFloat = 240
+    private static let chipInsets = NSDirectionalEdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        glass.cornerConfiguration = .capsule()
-        glass.translatesAutoresizingMaskIntoConstraints = false
         scroll.showsHorizontalScrollIndicator = false
         scroll.alwaysBounceHorizontal = true
         scroll.contentInset = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
@@ -80,39 +68,26 @@ final class SuggestionsView: UIView {
         stack.alignment = .center
         stack.spacing = 6
         stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(glass)
-        glass.contentView.addSubview(scroll)
+        addSubview(scroll)
         scroll.addSubview(stack)
         NSLayoutConstraint.activate([
-            glass.topAnchor.constraint(equalTo: topAnchor),
-            glass.bottomAnchor.constraint(equalTo: bottomAnchor),
-            glass.leadingAnchor.constraint(equalTo: leadingAnchor),
-            glass.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: glass.contentView.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor),
-            scroll.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
             stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
-        // As wide as its chips, up to whatever room its owner gives it: two short nicks are a
-        // short strip, not two chips at the end of an empty bar.
-        let hug = scroll.frameLayoutGuide.widthAnchor.constraint(
-            equalTo: scroll.contentLayoutGuide.widthAnchor,
-            constant: scroll.contentInset.left + scroll.contentInset.right
-        )
-        hug.priority = .defaultHigh
-        hug.isActive = true
         isHidden = true
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// Rebuild the chips from a best-first list. Empty hides the strip. Rebuilt wholesale rather
+    /// Rebuild the chips from a best-first list. Empty hides the row. Rebuilt wholesale rather
     /// than diffed — it's a handful of small views, and a keystroke replaces the whole answer
     /// anyway.
     func show(_ suggestions: [Suggestion]) {
@@ -158,8 +133,9 @@ final class SuggestionsView: UIView {
 }
 
 /// A button that takes touches across the full height of the row it sits in, though it draws
-/// smaller: a chip is drawn at the one-line text's size, but a target that short is easy to
-/// miss. Its container must span the row, or touches beyond the container never reach it.
+/// smaller: the status row's chips and its reply ✕ are drawn at the one-line text's size, but a
+/// target that short is easy to miss. Its container must span the row, or touches beyond the
+/// container never reach it.
 final class RowHeightHitButton: UIButton {
     /// Extra width taken on each side — half the gap to a neighbour, so two never overlap.
     var horizontalOutset: CGFloat = 0
@@ -179,20 +155,11 @@ extension CGRect {
     }
 }
 
-/// A button whose target reaches past what it draws, by a stated amount on each side: the
-/// composer's send circle, its reply ✕ and its highlight count are all drawn smaller than the
-/// 44pt a finger needs (lurker#1401).
-///
-/// ⚠ The reach usually leaves the button's ancestors, which would never hand the touch down.
-/// So whoever owns one asks it first, from its own `hitTest` — see `ComposerBar.hitTest`.
-final class OutsetHitButton: UIButton {
-    /// How far the target reaches past the bounds on each side.
-    var hitOutsets: UIEdgeInsets = .zero
-
+/// A button whose target is a finger's reach though it draws smaller: the composer's send
+/// circle (lurker#1401). The reach has to stay inside the button's ancestors, or the touch is
+/// never handed down to it.
+final class ReachingButton: UIButton {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        let reach = UIEdgeInsets(
-            top: -hitOutsets.top, left: -hitOutsets.left, bottom: -hitOutsets.bottom, right: -hitOutsets.right
-        )
-        return bounds.inset(by: reach).contains(point)
+        bounds.reaching().contains(point)
     }
 }
