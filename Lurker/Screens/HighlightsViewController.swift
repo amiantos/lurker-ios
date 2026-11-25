@@ -15,9 +15,11 @@ import UIKit
 final class HighlightsViewController: HistoryFeedViewController {
     override var feedTitle: String { "Activity" }
 
-    override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
+    override func fetchPage(before cursor: FeedCursor?) async -> FeedAnswer {
         await viewModel.fetchActivity(cursor: cursor)
     }
+
+    override var failureFallback: String { "Couldn't load activity." }
 
     override var loadingModel: StateView.Model {
         StateView.Model(title: "Loading activity…", isLoading: true)

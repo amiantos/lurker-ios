@@ -326,4 +326,150 @@ final class FeedPagingTests: XCTestCase {
         XCTAssertFalse(paged.abandon())
         XCTAssertFalse(paged.items.isEmpty)
     }
+
+    // MARK: - A failure says so, and keeps the rows (lurker#1308)
+
+    func testAFailedPullKeepsTheRowsAndSaysWhy() {
+        var paging = loaded(supersedes: false)
+        let pull = paging.reload()!
+        let landing = paging.land(.unavailable(reason: "search took too long"), for: pull, visible: visible)
+        XCTAssertEqual(landing?.rowsChanged, false)
+        XCTAssertEqual(ids(paging), Array((21...30).reversed()), "the page already on screen stays")
+        XCTAssertNil(paging.placeholder, "rows are up, so no placeholder covers them")
+        XCTAssertEqual(paging.failure, FeedPaging.Failure(reason: "search took too long", firstPage: true))
+    }
+
+    func testAFailedFirstPageWithNoRowsIsTheErrorPlaceholderWithTheReason() {
+        var paging = FeedPaging(supersedes: true)
+        let first = paging.reload()!
+        _ = paging.land(.unavailable(reason: "too many searches are waiting"), for: first, visible: visible)
+        XCTAssertEqual(paging.placeholder, .error)
+        XCTAssertEqual(paging.failure?.reason, "too many searches are waiting")
+    }
+
+    func testAPlainFailureCarriesNoReason() {
+        var paging = loaded(supersedes: false)
+        let pull = paging.reload()!
+        _ = paging.land(nil, for: pull, visible: visible)
+        XCTAssertEqual(paging.failure, FeedPaging.Failure(reason: nil, firstPage: true))
+    }
+
+    func testAFailedPageInIsRememberedAsAPageIn() {
+        var paging = loaded(supersedes: false)
+        let more = paging.loadMore()!
+        _ = paging.land(.unavailable(reason: "search took too long"), for: more, visible: visible)
+        XCTAssertEqual(ids(paging).count, 10)
+        XCTAssertEqual(paging.failure?.firstPage, false)
+    }
+
+    func testRetryRepeatsTheFetchThatFailed() {
+        // A pull: the newest page again.
+        var pulled = loaded(supersedes: false)
+        _ = pulled.land(.failed, for: pulled.reload()!, visible: visible)
+        let again = pulled.retry()
+        XCTAssertNil(again?.cursor)
+        XCTAssertNil(pulled.failure, "asking again takes the failure down")
+        XCTAssertEqual(ids(pulled).count, 10, "and still keeps the rows while it asks")
+
+        // A page-in: the same older page again, from the cursor the list still holds.
+        var paged = loaded(supersedes: false)
+        _ = paged.land(.failed, for: paged.loadMore()!, visible: visible)
+        XCTAssertEqual(paged.retry()?.cursor, FeedCursor(beforeMessage: 21))
+
+        // Nothing failed: nothing to retry.
+        var fine = loaded(supersedes: false)
+        XCTAssertNil(fine.retry())
+    }
+
+    /// A failed pull's notice sits above the rows. Scrolling on pages in beneath them, and that
+    /// must not take the notice down: the newest page is still the one that didn't arrive.
+    func testScrollingOnDoesNotEraseAFailedPull() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.unavailable(reason: "search took too long"), for: paging.reload()!, visible: visible)
+        let more = paging.loadMore()!
+        XCTAssertEqual(paging.failure?.firstPage, true, "asking for an older page says nothing about the pull")
+        _ = paging.land(page([20, 19], nextBefore: nil), for: more, visible: visible)
+        XCTAssertEqual(paging.failure?.firstPage, true, "nor does that page arriving")
+        XCTAssertEqual(ids(paging).count, 12)
+    }
+
+    /// Otherwise the only notice left is the page-in's, and its retry fetches older rows: the
+    /// refresh that failed could never be asked for again from the notice.
+    func testAFailedPageInDoesNotReplaceAFailedPull() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.unavailable(reason: "search took too long"), for: paging.reload()!, visible: visible)
+        _ = paging.land(.unavailable(reason: "too many searches are waiting"), for: paging.loadMore()!, visible: visible)
+        XCTAssertEqual(paging.failure, FeedPaging.Failure(reason: "search took too long", firstPage: true))
+        XCTAssertNil(paging.retry()?.cursor, "and its retry is still the newest page")
+    }
+
+    func testAskingForThePageAgainTakesAFailedPageInDown() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.failed, for: paging.loadMore()!, visible: visible)
+        XCTAssertNotNil(paging.failure)
+        // The next scroll re-arms the page-in, and the notice goes while it is asked.
+        XCTAssertNotNil(paging.loadMore())
+        XCTAssertNil(paging.failure)
+    }
+
+    func testTheNextAnswerClearsTheFailure() {
+        var paging = loaded(supersedes: false)
+        _ = paging.land(.unavailable(reason: "search took too long"), for: paging.reload()!, visible: visible)
+        _ = paging.land(page([40, 39], nextBefore: nil), for: paging.reload()!, visible: visible)
+        XCTAssertNil(paging.failure)
+        XCTAssertEqual(ids(paging), [40, 39])
+    }
+
+    func testASupersededFailureTouchesNothing() {
+        var paging = loaded(supersedes: true)
+        let stale = paging.reload()!
+        _ = paging.reload(newQuestion: true)
+        XCTAssertNil(paging.land(.unavailable(reason: "search superseded"), for: stale, visible: visible))
+        XCTAssertNil(paging.failure, "the displaced search's 503 is not the new question's failure")
+        XCTAssertEqual(paging.placeholder, .loading)
+    }
+
+    func testEmptyingTheListByHandClearsTheFailure() {
+        var paging = FeedPaging(supersedes: false)
+        _ = paging.land(page([5], nextBefore: nil), for: paging.reload()!, visible: visible)
+        _ = paging.land(.failed, for: paging.reload()!, visible: visible)
+        XCTAssertNotNil(paging.failure)
+        _ = paging.remove(messageId: 5)
+        XCTAssertNil(paging.failure)
+        XCTAssertEqual(paging.placeholder, .empty)
+    }
+
+    func testTheReasonReadsAsASentence() {
+        let said = FeedPaging.Failure(reason: "search took too long", firstPage: true)
+        XCTAssertEqual(said.sentence(or: "Couldn't search."), "Search took too long.")
+        let punctuated = FeedPaging.Failure(reason: "Try again later!", firstPage: true)
+        XCTAssertEqual(punctuated.sentence(or: "Couldn't search."), "Try again later!")
+        let silent = FeedPaging.Failure(reason: nil, firstPage: false)
+        XCTAssertEqual(silent.sentence(or: "Couldn't search."), "Couldn't search.")
+    }
+
+    // MARK: - Reading a 503 (lurker#1308)
+
+    func testA503BodyGivesItsReason() {
+        let body = Data(#"{"error":"search took too long"}"#.utf8)
+        XCTAssertEqual(FeedAnswer.unavailable(body: body), .unavailable(reason: "search took too long"))
+    }
+
+    func testA503WithNoUsableBodyIsStillUnavailable() {
+        // A proxy's own 503 page, an empty body, an `error` that isn't text: still "try again".
+        for body in ["", "<html>503</html>", #"{"error":42}"#, #"{"error":"  "}"#, "[]"] {
+            XCTAssertEqual(FeedAnswer.unavailable(body: Data(body.utf8)), .unavailable(reason: nil), body)
+        }
+        let long = String(repeating: "x", count: FeedAnswer.maxReasonLength + 1)
+        XCTAssertEqual(
+            FeedAnswer.unavailable(body: Data(#"{"error":"\#(long)"}"#.utf8)), .unavailable(reason: nil))
+    }
+
+    func testAnAnswerWrapsAPageOrItsAbsence() {
+        let some = page([1], nextBefore: nil)
+        XCTAssertEqual(FeedAnswer(some), .page(some))
+        XCTAssertEqual(FeedAnswer(nil), .failed)
+        XCTAssertNil(FeedAnswer.unavailable(reason: "x").page)
+        XCTAssertNil(FeedAnswer.failed.reason)
+    }
 }

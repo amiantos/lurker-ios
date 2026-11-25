@@ -112,5 +112,9 @@ struct SearchRequestTests {
         // the truth is that nobody looked.
         #expect(SearchRequest.outcome(status: 400, scoped: true) == .failed)
         #expect(SearchRequest.outcome(status: 500, scoped: true) == .failed)
+        // lurker#1308: a 503 is the search process saying "not this time", scoped or not. It is
+        // its own outcome so the caller can quote the reason and keep its rows.
+        #expect(SearchRequest.outcome(status: 503, scoped: true) == .unavailable)
+        #expect(SearchRequest.outcome(status: 503, scoped: false) == .unavailable)
     }
 }

@@ -659,20 +659,21 @@ public final class ChatViewModel {
     /// at saved?", an unsave arrives as its own `bookmark-updated` frame, and a feed page was
     /// never a mirror of what the account owns. One mutation, not one per row, because each
     /// `store.apply` publishes a whole `ChatState`.
-    public func fetchHighlights(before: Int? = nil) async -> HighlightsPage? {
-        let page = await client.fetchHighlights(before: before)
-        store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
-        store.noteRedactions(from: (page?.items ?? []).map(\.message))
-        return page
+    public func fetchHighlights(before: Int? = nil) async -> FeedAnswer {
+        let answer = await client.fetchHighlights(before: before)
+        let items = answer.page?.items ?? []
+        store.noteBookmarked(ids: items.filter(\.message.bookmarked).map(\.message.id))
+        store.noteRedactions(from: items.map(\.message))
+        return answer
     }
 
     /// A page of the activity feed — highlights and reactions to your lines (iOS #183). Bookmark
     /// flags noted the way `fetchHighlights` notes them; a reaction row carries none.
-    public func fetchActivity(cursor: FeedCursor? = nil) async -> HighlightsPage? {
-        let page = await client.fetchActivity(cursor: cursor)
+    public func fetchActivity(cursor: FeedCursor? = nil) async -> FeedAnswer {
+        let answer = await client.fetchActivity(cursor: cursor)
         store.noteBookmarked(
-            ids: (page?.items ?? []).filter { $0.reaction == nil && $0.message.bookmarked }.map(\.message.id))
-        return page
+            ids: (answer.page?.items ?? []).filter { $0.reaction == nil && $0.message.bookmarked }.map(\.message.id))
+        return answer
     }
 
     // MARK: - Link previews
@@ -860,9 +861,9 @@ public final class ChatViewModel {
     /// roster lives. A name that matches no network drops the filter instead of failing the
     /// search: `on:` is being typed a character at a time, and every prefix of a real network
     /// name would otherwise be a search that returns nothing.
-    public func searchMessages(_ raw: String, before: Int? = nil) async -> HighlightsPage? {
+    public func searchMessages(_ raw: String, before: Int? = nil) async -> FeedAnswer {
         let query = SearchQuery.parse(raw)
-        guard !query.isEmpty else { return HighlightsPage(items: [], nextBefore: nil) }
+        guard !query.isEmpty else { return .page(HighlightsPage(items: [], nextBefore: nil)) }
         // Lowest id wins, rather than whichever the dictionary happens to yield first. Two
         // networks can legitimately share a name — two connections to the same server, or two
         // user-named entries that collide — and `networks` is a dictionary, whose iteration
@@ -876,13 +877,14 @@ public final class ChatViewModel {
                 // guessing would point the search at an arbitrary network (#136).
                 .filter { $0.name?.caseInsensitiveCompare(query.network) == .orderedSame }
                 .min(by: { $0.id < $1.id })?.id
-        let page = await client.search(query, networkId: networkId, before: before)
+        let answer = await client.search(query, networkId: networkId, before: before)
         // Search rows carry the same `bookmarked` flag as any other message row, and this is
         // the only place a saved line the user has never opened can become known — same
         // reasoning as `fetchBookmarks`, and the same single mutation rather than one per row.
-        store.noteBookmarked(ids: (page?.items ?? []).filter(\.message.bookmarked).map(\.message.id))
-        store.noteRedactions(from: (page?.items ?? []).map(\.message))
-        return page
+        let items = answer.page?.items ?? []
+        store.noteBookmarked(ids: items.filter(\.message.bookmarked).map(\.message.id))
+        store.noteRedactions(from: items.map(\.message))
+        return answer
     }
 
     /// Whether `messageId` is saved — what the message action sheet reads to decide between
@@ -1013,6 +1015,12 @@ public final class ChatViewModel {
     /// reason. Only ever called for a row whose `canDelete` is set.
     public func deleteUpload(id: Int) async -> String? {
         await client.deleteUpload(id: id)
+    }
+
+    /// Take an upload off the list and leave its file alone (lurker#1289). Nil on success, else
+    /// the server's own reason.
+    public func forgetUpload(id: Int) async -> String? {
+        await client.forgetUpload(id: id)
     }
 
     /// What the UI should do after a line of input — almost always nothing. `/msg` and `/query`
