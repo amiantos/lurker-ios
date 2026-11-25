@@ -476,10 +476,10 @@ final class ComposerBar: UIView {
 
         var count = UIButton.Configuration.plain()
         count.baseForegroundColor = Palette.warn
-        count.contentInsets = NSDirectionalEdgeInsets(
-            // A few points past the text inset: the slab's corner curves in at the right end.
-            top: 0, leading: 8, bottom: 0, trailing: Self.textInset.left + 2
-        )
+        // Centred in a 44pt box at the row's end, which puts the number over the middle of the
+        // send circle below it (`sendInset` plus half of 34 is 22), as the reply's ✕ is. The
+        // insets only matter once a count is too wide for the box and it grows.
+        count.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4)
         count.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
             outgoing.font = MessageRenderer.compactFont()
@@ -487,8 +487,7 @@ final class ComposerBar: UIView {
         }
         highlightCountButton.configuration = count
         highlightCountButton.isHidden = true
-        // A finger's width for a one-digit count, with the number still at the trailing end.
-        highlightCountButton.contentHorizontalAlignment = .trailing
+        // A finger's width for a one-digit count.
         highlightCountButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         highlightCountButton.accessibilityHint = "Goes back to the buffer list."
         highlightCountButton.addAction(UIAction { [weak self] _ in self?.onHighlightCountTap?() }, for: .touchUpInside)
