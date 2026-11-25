@@ -230,6 +230,8 @@ final class ComposerBar: UIView {
     /// The completion chips, owned by the chat screen's suggestion logic but drawn in the row.
     let suggestions = SuggestionsView()
     private var reply: PendingReply?
+    /// Highlights waiting in other buffers, kept so the count can come back after a reply.
+    private var highlightCount = 0
     private var away: AwayState?
     private var typists: [String] = []
     private var location: Location?
@@ -461,10 +463,12 @@ final class ComposerBar: UIView {
         cancel.image = UIImage(systemName: "xmark.circle.fill")
         cancel.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: MessageRenderer.compactFont().pointSize)
         cancel.baseForegroundColor = .secondaryLabel
-        // Wide insets around a small glyph: nothing more is drawn, and the ✕ is 44pt across.
-        cancel.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 14, bottom: 0, trailing: 14)
+        // No insets and a stated width: nothing more is drawn, the ✕ is 44pt across, and its
+        // glyph's centre is exactly the send circle's (`sendInset` plus half of 34 is 22).
+        cancel.contentInsets = .zero
         cancelReplyButton.configuration = cancel
         cancelReplyButton.accessibilityLabel = "Cancel reply"
+        cancelReplyButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
         cancelReplyButton.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
 
         var count = UIButton.Configuration.plain()
@@ -507,11 +511,11 @@ final class ComposerBar: UIView {
             self.toasts.presentNext()
         }
 
-        let lead = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton])
-        // `.fill`: the ✕ is the row's height, not its glyph's.
-        lead.alignment = .fill
-        lead.spacing = 0
-        let row = UIStackView(arrangedSubviews: [lead, UIView(), highlightCountButton])
+        // The label takes what the buttons leave, so the reply's ✕ sits at the row's trailing
+        // end: 44pt wide there, its glyph is centred over the send circle below it. The
+        // highlight count has that place the rest of the time and gives it up to a reply
+        // (`renderStatus`). `.fill`, so both are the row's height and not their glyph's.
+        let row = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton, highlightCountButton])
         row.alignment = .fill
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -713,6 +717,8 @@ final class ComposerBar: UIView {
             leadLabel.accessibilityTraits = .staticText
             cancelReplyButton.isHidden = true
         }
+        // The ✕ takes the count's place while it is up.
+        highlightCountButton.isHidden = highlightCount <= 0 || !cancelReplyButton.isHidden
     }
 
     /// The away strip, shown or hidden for `awayText`. Changes the composer's height, so it runs
@@ -782,7 +788,8 @@ final class ComposerBar: UIView {
 
     /// Highlights waiting in other buffers; 0 hides the count.
     func showHighlightCount(_ count: Int) {
-        highlightCountButton.isHidden = count <= 0
+        highlightCount = count
+        highlightCountButton.isHidden = count <= 0 || !cancelReplyButton.isHidden
         highlightCountButton.configuration?.title = count <= 0 ? nil : count > 999 ? ">999" : "\(count)"
         highlightCountButton.accessibilityLabel = "\(count) highlight" + (count == 1 ? "" : "s") + " in other buffers"
     }

@@ -60,6 +60,8 @@ final class LoginViewController: UIViewController {
 
         signInButton.setTitle("Sign in", for: .normal)
         signInButton.configuration = .filled()
+        // About 50pt: the default size is 35, under what a finger needs (lurker#1401).
+        signInButton.configuration?.buttonSize = .large
         signInButton.addTarget(self, action: #selector(signIn), for: .touchUpInside)
 
         statusLabel.font = .preferredFont(forTextStyle: .footnote)
