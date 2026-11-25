@@ -22,9 +22,11 @@ import UIKit
 final class BookmarksViewController: HistoryFeedViewController {
     override var feedTitle: String { "Bookmarks" }
 
-    override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
-        await viewModel.fetchBookmarks(before: cursor?.beforeMessage)
+    override func fetchPage(before cursor: FeedCursor?) async -> FeedAnswer {
+        FeedAnswer(await viewModel.fetchBookmarks(before: cursor?.beforeMessage))
     }
+
+    override var failureFallback: String { "Couldn't load bookmarks." }
 
     override var loadingModel: StateView.Model {
         StateView.Model(title: "Loading bookmarks…", isLoading: true)

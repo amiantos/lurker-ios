@@ -136,16 +136,20 @@ final class MessageSearchViewController: HistoryFeedViewController, UISearchResu
     ///
     /// `.tooShort` never reaches the wire — that's the point of the state — and is answered by
     /// `localFirstPage` before this is asked. The case here is only for completeness: it has no
-    /// cursor, so nothing pages it. Answering it with an empty page (rather than nil) matters:
-    /// nil means "we couldn't ask", which would put an error in front of someone who is simply
-    /// mid-word.
-    override func fetchPage(before cursor: FeedCursor?) async -> HighlightsPage? {
+    /// cursor, so nothing pages it. Answering it with an empty page (rather than a failure)
+    /// matters: a failure means "we couldn't ask", which would put an error in front of someone
+    /// who is simply mid-word.
+    override func fetchPage(before cursor: FeedCursor?) async -> FeedAnswer {
         let before = cursor?.beforeMessage
         return switch showing {
         case .landing: await viewModel.fetchHighlights(before: before)
-        case .tooShort: HighlightsPage(items: [], nextBefore: nil)
+        case .tooShort: .page(HighlightsPage(items: [], nextBefore: nil))
         case .results: await viewModel.searchMessages(query, before: before)
         }
+    }
+
+    override var failureFallback: String {
+        showing == .landing ? "Couldn't load highlights." : "Couldn't search."
     }
 
     /// `.tooShort` is answered on the spot, so typing into or out of it never flashes

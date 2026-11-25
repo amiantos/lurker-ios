@@ -60,6 +60,9 @@ public enum SearchRequest {
         case emptyPage
         /// The session is gone.
         case unauthorized
+        /// `503`: the search took too long, too many are waiting, or a newer one displaced it
+        /// (lurker#1308). The body says which; the caller offers a retry and keeps its rows.
+        case unavailable
         /// We could not ask, or could not read the answer. NEVER rendered as "no matches".
         case failed
     }
@@ -82,6 +85,7 @@ public enum SearchRequest {
         case 200..<300: .page
         case 401: .unauthorized
         case 404: scoped ? .emptyPage : .failed
+        case 503: .unavailable
         default: .failed
         }
     }

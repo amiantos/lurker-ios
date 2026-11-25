@@ -33,7 +33,14 @@ public struct NotificationTap: Equatable, Sendable {
     /// `nil` for anything that doesn't name a buffer. A malformed payload should open the
     /// app on whatever screen it would have shown anyway — never crash, and never guess at
     /// a destination the user didn't ask for.
+    ///
+    /// `nil` for a test push too (`kind: "test"`, Settings → Notifications → "send a test
+    /// push"). Its routing keys are placeholders — `networkId: 0`, `target: "test"` — there
+    /// because parsers refuse a payload without them, and read as a destination they would
+    /// open an empty buffer called `test` (lurker#1273). A tap on one only brings the app
+    /// forward, which the system has already done by the time this is asked.
     public static func parse(_ userInfo: [AnyHashable: Any]) -> NotificationTap? {
+        if userInfo["kind"] as? String == testKind { return nil }
         guard let networkId = intField(userInfo["networkId"]),
               let target = userInfo["target"] as? String,
               !target.isEmpty
@@ -42,6 +49,9 @@ public struct NotificationTap: Equatable, Sendable {
         // the buffer at its bottom rather than jumping.
         return NotificationTap(networkId: networkId, target: target, messageId: intField(userInfo["messageId"]))
     }
+
+    /// The `kind` of a push sent by the server's "send a test push".
+    static let testKind = "test"
 
     /// An id field off a push payload, coping with either shape it can arrive in: APNs sends a
     /// JSON number (an NSNumber that `as? Int` bridges), FCM's data dictionary sends a string.

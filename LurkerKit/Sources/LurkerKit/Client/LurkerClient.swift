@@ -510,8 +510,16 @@ final class LurkerClient {
         }
     }
 
-    private func act(_ method: String, _ path: String, body: [String: Any]? = nil) async -> String? {
-        switch await rest(method, path, body: body) {
+    /// `goneIsDone` is for a removal: a 404 says the thing is already gone, which is what was
+    /// asked for, so it is success rather than a refusal to show the user.
+    ///
+    /// ⚠ Only the server's own 404, the one with a JSON `{error}` body. A 404 without one came
+    /// from somewhere else — a reverse proxy while the server restarts, or a server too old to
+    /// have the route (Express answers those in HTML) — and says nothing about the row.
+    private func act(
+        _ method: String, _ path: String, body: [String: Any]? = nil, goneIsDone: Bool = false
+    ) async -> String? {
+        switch await rest(method, path, body: body, goneIsDone: goneIsDone) {
         case .ok: return nil
         case .failure(let message): return message
         }
@@ -536,7 +544,9 @@ final class LurkerClient {
     /// is a deliberate user action, so a dead token has to end the session rather than read
     /// as "that network wouldn't save". (`fetchSettings` deliberately does the opposite and
     /// keeps its own path — see its note for why.)
-    private func rest(_ method: String, _ path: String, body: [String: Any]? = nil) async -> RestResult {
+    private func rest(
+        _ method: String, _ path: String, body: [String: Any]? = nil, goneIsDone: Bool = false
+    ) async -> RestResult {
         guard let token, let url = URL(string: baseURL + path) else {
             return .failure("Not signed in.")
         }
@@ -558,7 +568,8 @@ final class LurkerClient {
                 reportUnauthorized(sentWith: token)
                 return .failure("Signed out.")
             }
-            if (200..<300).contains(code) { return .ok(text) }
+            let gone = goneIsDone && code == 404 && FrameParser.errorMessage(from: text) != nil
+            if (200..<300).contains(code) || gone { return .ok(text) }
             // The server explains its own refusals — a host the admin's allowlist excludes, a
             // missing field, a paused account — and its wording is better than anything this
             // layer could infer from a status code.
@@ -1171,20 +1182,20 @@ final class LurkerClient {
     /// `networkId` is the caller's resolution of the query's `on:` *name*, which only the roster
     /// can turn into an id; the query itself carries the rest.
     ///
-    /// Nil means no answer, never "no matches" (that's an empty page): unauthenticated, offline,
-    /// or a response we couldn't read. All three leave the caller free to show an error rather
-    /// than an empty list — a search that silently reads as "nothing matched" is the one wrong
-    /// answer here.
+    /// `.failed` means no answer, never "no matches" (that's an empty page): unauthenticated,
+    /// offline, or a response we couldn't read. All three leave the caller free to show an error
+    /// rather than an empty list — a search that silently reads as "nothing matched" is the one
+    /// wrong answer here. `.unavailable` is the server's 503, with its reason (lurker#1308).
     func search(
         _ query: SearchQuery,
         networkId: Int?,
         before: Int? = nil,
         limit: Int = 50
-    ) async -> HighlightsPage? {
+    ) async -> FeedAnswer {
         guard let token,
             let url = SearchRequest.url(
                 base: baseURL, query: query, networkId: networkId, before: before, limit: limit)
-        else { return nil }
+        else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
@@ -1195,19 +1206,20 @@ final class LurkerClient {
             switch SearchRequest.outcome(status: code, scoped: networkId != nil) {
             case .unauthorized:
                 reportUnauthorized(sentWith: token)
-                return nil
-            case .emptyPage: return HighlightsPage(items: [], nextBefore: nil)
-            case .failed: return nil
+                return .failed
+            case .emptyPage: return .page(HighlightsPage(items: [], nextBefore: nil))
+            case .unavailable: return .unavailable(body: data)
+            case .failed: return .failed
             case .page: break
             }
-            guard let text = String(data: data, encoding: .utf8) else { return nil }
+            guard let text = String(data: data, encoding: .utf8) else { return .failed }
             // Same `{items, nextBefore}` envelope as highlights and bookmarks, and the same
             // decorated rows — the route and the WS verb call the same `search_messages`. The
             // cursor is now the server's rather than one synthesized from `hasMore` plus the last
             // row's id, which is the other half of the deletion.
-            return FrameParser.parseHighlights(text)
+            return FeedAnswer(FrameParser.parseHighlights(text))
         } catch {
-            return nil
+            return .failed
         }
     }
 
@@ -1260,12 +1272,26 @@ final class LurkerClient {
 
     /// Destroy an upload's bytes and drop its row. Nil on success, else the server's own reason.
     ///
-    /// ⚠⚠ Only ever called for a row whose `canDelete` is set. There is deliberately no
-    /// remove-the-record-but-leave-the-file path — the route answers 409 for a row whose bytes
-    /// can't be destroyed, so asking for one is a bug on this side, not a case to handle.
+    /// ⚠⚠ Only ever called for a row whose `canDelete` is set: the route answers 409 for a row
+    /// whose bytes can't be destroyed. That row leaves the list through `forgetUpload`.
+    ///
+    /// A 404 is success: the row was removed somewhere else while this list was up, and saying
+    /// "not found" about a file the user is trying to be rid of leaves it stuck on screen.
     func deleteUpload(id: Int) async -> String? {
-        await act("DELETE", "/api/uploads/\(id)")
+        await act("DELETE", "/api/uploads/\(id)", goneIsDone: true)
     }
+
+    /// Drop an upload's row and leave its file wherever it is (lurker#1289). Nil on success,
+    /// else the server's own reason. For a row that can't be deleted, and the way out for one
+    /// whose delete failed: the server's `can_delete` is a judgment, and a row it gets wrong
+    /// must not be stuck on the list.
+    func forgetUpload(id: Int) async -> String? {
+        // This route is new in lurker 2.7.0. An older server answers 404 for the route itself,
+        // in HTML, which `goneIsDone` does not take for "already gone".
+        await act("DELETE", Self.forgetUploadPath(id: id), goneIsDone: true)
+    }
+
+    nonisolated static func forgetUploadPath(id: Int) -> String { "/api/uploads/\(id)/record" }
 
     /// Tell the network we're composing. Fire-and-forget: the server turns it into a
     /// `+typing` TAGMSG and there's no ack, so a dropped one simply lapses on the peer's lease
@@ -1488,14 +1514,15 @@ final class LurkerClient {
 
     /// Fetch a page of recent highlights (`GET /api/highlights`). `before` is the cursor
     /// from a prior page's `nextBefore` (nil for the first, newest page); the server pages
-    /// backward by message id. Returns nil on any failure so the caller can show an error
-    /// state — a 401 additionally bounces the session, matching `fetchNetworks`.
-    func fetchHighlights(before: Int? = nil, limit: Int = 50) async -> HighlightsPage? {
-        guard let token, var components = URLComponents(string: baseURL + "/api/highlights") else { return nil }
+    /// backward by message id. `.failed` on any failure so the caller can show an error
+    /// state — a 401 additionally bounces the session, matching `fetchNetworks` — and
+    /// `.unavailable` for the 503 this read shares with search (lurker#1308).
+    func fetchHighlights(before: Int? = nil, limit: Int = 50) async -> FeedAnswer {
+        guard let token, var components = URLComponents(string: baseURL + "/api/highlights") else { return .failed }
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let before { query.append(URLQueryItem(name: "before", value: String(before))) }
         components.queryItems = query
-        guard let url = components.url else { return nil }
+        guard let url = components.url else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
@@ -1503,12 +1530,13 @@ final class LurkerClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
                 reportUnauthorized(sentWith: token)
-                return nil
+                return .failed
             }
-            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
-            return FrameParser.parseHighlights(text)
+            if code == 503 { return .unavailable(body: data) }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return .failed }
+            return FeedAnswer(FrameParser.parseHighlights(text))
         } catch {
-            return nil
+            return .failed
         }
     }
 
@@ -1517,8 +1545,8 @@ final class LurkerClient {
     ///
     /// ⚠ A self-hosted server older than the feed answers 404; that falls back to the plain
     /// highlights read, which is everything such a server has to give.
-    func fetchActivity(cursor: FeedCursor? = nil, limit: Int = 50) async -> HighlightsPage? {
-        guard let token, var components = URLComponents(string: baseURL + "/api/activity") else { return nil }
+    func fetchActivity(cursor: FeedCursor? = nil, limit: Int = 50) async -> FeedAnswer {
+        guard let token, var components = URLComponents(string: baseURL + "/api/activity") else { return .failed }
         var query = [URLQueryItem(name: "limit", value: String(limit))]
         if let before = cursor?.beforeMessage {
             query.append(URLQueryItem(name: "beforeMessage", value: String(before)))
@@ -1527,7 +1555,7 @@ final class LurkerClient {
             query.append(URLQueryItem(name: "beforeReaction", value: String(before)))
         }
         components.queryItems = query
-        guard let url = components.url else { return nil }
+        guard let url = components.url else { return .failed }
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {
@@ -1535,13 +1563,14 @@ final class LurkerClient {
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 {
                 reportUnauthorized(sentWith: token)
-                return nil
+                return .failed
             }
             if code == 404 { return await fetchHighlights(before: cursor?.beforeMessage, limit: limit) }
-            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return nil }
-            return FrameParser.parseActivity(text)
+            if code == 503 { return .unavailable(body: data) }
+            guard (200..<300).contains(code), let text = String(data: data, encoding: .utf8) else { return .failed }
+            return FeedAnswer(FrameParser.parseActivity(text))
         } catch {
-            return nil
+            return .failed
         }
     }
 

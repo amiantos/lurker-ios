@@ -67,6 +67,9 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     private var loadGeneration = 0
     /// Files deleted while this screen is up: a star refused after the delete must not put one back.
     private var deletedIds: Set<Int> = []
+    /// Rows with a delete or a remove-from-list out. A second ask for the same row, from a menu
+    /// reopened while the first is still in flight, is dropped rather than answered twice.
+    private var removingIds: Set<Int> = []
     /// Per row, the token of its newest star toggle still out. Answers can land out of order — star,
     /// unstar, star in a second — and an older refusal must not undo a newer toggle.
     private var pendingStars: [Int: Int] = [:]
@@ -384,8 +387,9 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             renderPlaceholder()
             return
         }
-        items = page.items
-        cursor = items.last?.id
+        // A list read before a removal landed can arrive after it, and would put the row back.
+        items = page.items.filter { !deletedIds.contains($0.id) }
+        cursor = page.items.last?.id
         hasMore = UploadsRequest.hasMore(filter: filter, received: page.items.count, limit: limit)
         isTruncated = UploadsRequest.isTruncated(filter: filter, received: page.items.count)
         shownFilter = filter
@@ -415,8 +419,8 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
             return
         }
         let start = items.count
-        items.append(contentsOf: page.items)
-        cursor = items.last?.id
+        items.append(contentsOf: page.items.filter { !deletedIds.contains($0.id) })
+        cursor = page.items.last?.id ?? cursor
         hasMore = UploadsRequest.hasMore(filter: filter, received: page.items.count, limit: limit)
         collectionView.insertItems(
             at: (start..<items.count).map { IndexPath(item: $0, section: 0) })
@@ -633,19 +637,66 @@ final class UploadsViewController: UIViewController, UISearchResultsUpdating {
     }
 
     private func delete(_ item: UploadItem) {
+        guard removingIds.insert(item.id).inserted else { return }
         Task { [weak self] in
             guard let self else { return }
+            defer { removingIds.remove(item.id) }
             if let message = await viewModel.deleteUpload(id: item.id) {
-                // The bytes weren't destroyed, so the row stays and the reason surfaces.
-                report(title: "Couldn't Delete", message: message)
+                // The bytes weren't destroyed, so the row stays and the reason surfaces. The
+                // row still says it can be deleted, so its menu keeps offering only Delete;
+                // the way off the list for it is offered here.
+                let alert = UIAlertController(title: "Couldn't Delete", message: message, preferredStyle: .alert)
+                alert.addAction(
+                    UIAlertAction(title: "Remove from List Instead", style: .default) { [weak self] _ in
+                        self?.confirmForget(item)
+                    })
+                alert.addAction(UIAlertAction(title: "OK", style: .cancel))
+                presentOverTop(alert)
                 return
             }
-            // Any star change still out for it is void now.
-            deletedIds.insert(item.id)
-            pendingStars[item.id] = nil
-            guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-            removeRow(at: index)
+            dropRow(of: item)
         }
+    }
+
+    /// Take the row off the list and leave the file wherever it is (lurker#1289), after asking.
+    /// What a row offers when its file can't be destroyed from here: another uploader's, one
+    /// whose config is gone, a moderation tombstone.
+    private func confirmForget(_ item: UploadItem) {
+        let alert = UIAlertController(
+            title: "Remove \(item.displayName) from your uploads?",
+            message: item.forgetMessage,
+            preferredStyle: .alert
+        )
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        // Not the destructive red: nothing is destroyed, and it has to read differently from
+        // Delete, which does destroy the file.
+        alert.addAction(
+            UIAlertAction(title: "Remove", style: .default) { [weak self] _ in
+                self?.forget(item)
+            })
+        presentOverTop(alert)
+    }
+
+    private func forget(_ item: UploadItem) {
+        guard removingIds.insert(item.id).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { removingIds.remove(item.id) }
+            if let message = await viewModel.forgetUpload(id: item.id) {
+                report(title: "Couldn't Remove", message: message)
+                return
+            }
+            dropRow(of: item)
+        }
+    }
+
+    /// The row is gone from the server, by either road.
+    private func dropRow(of item: UploadItem) {
+        // Any star change still out for it is void now.
+        deletedIds.insert(item.id)
+        pendingStars[item.id] = nil
+        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
+        removeRow(at: index)
     }
 
     private func removeRow(at index: Int) {
@@ -815,11 +866,17 @@ extension UploadsViewController: UICollectionViewDataSource, UICollectionViewDel
                     [weak self] _ in self?.share(item)
                 })
         }
-        if item.canDelete {
+        switch item.removal {
+        case .destroy:
             actions.append(
                 UIAction(
                     title: "Delete", image: UIImage(systemName: "trash"), attributes: .destructive
                 ) { [weak self] _ in self?.confirmDelete(item) })
+        case .forget:
+            actions.append(
+                UIAction(title: "Remove from List", image: UIImage(systemName: "text.badge.minus")) {
+                    [weak self] _ in self?.confirmForget(item)
+                })
         }
         return actions
     }
