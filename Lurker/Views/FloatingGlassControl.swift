@@ -48,6 +48,13 @@ class FloatingGlassControl: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// A finger's reach, whatever the silhouette: the jump pill is drawn 36pt across and the
+    /// unread banner 34pt tall (lurker#1401). Both float over the messages with room around
+    /// them, and hidden, neither takes touches at all.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.reaching().contains(point)
+    }
+
     /// Fade + a small settle, and the touch target goes with the visibility.
     func setVisible(_ visible: Bool, animated: Bool) {
         guard visible != isUserInteractionEnabled else { return }

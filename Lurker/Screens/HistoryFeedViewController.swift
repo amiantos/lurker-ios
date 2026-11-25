@@ -790,6 +790,15 @@ final class FeedFailureNotice: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// Try Again is a small button, about 28pt tall, with the notice's own padding above and
+    /// below it: that padding is its target too (lurker#1401).
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard hit != nil, button.isEnabled else { return hit }
+        let reach = button.convert(button.bounds, to: self).reaching()
+        return reach.contains(point) ? button : hit
+    }
+
     /// A table footer is laid out by frame, so its height is measured here for the width it
     /// will be given.
     func configure(text: String, busy: Bool, width: CGFloat) {

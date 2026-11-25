@@ -779,6 +779,11 @@ final class SettingsViewController: UITableViewController {
         button.accessibilityLabel = selected?.spoken
         button.isEnabled = enabled
         button.sizeToFit()
+        // A finger's target (lurker#1401): fitted, it is its title's width and about 30pt tall,
+        // in a row that does nothing when tapped anywhere else. The title stays at the trailing
+        // edge, where it was.
+        button.contentHorizontalAlignment = .trailing
+        button.frame.size = CGSize(width: max(button.frame.width, 44), height: max(button.frame.height, 44))
         return button
     }
 

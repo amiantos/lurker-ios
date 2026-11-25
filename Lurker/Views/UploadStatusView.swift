@@ -120,6 +120,15 @@ final class UploadStatusView: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// The ✕ is drawn 24pt square. It takes what a finger needs of the capsule around it
+    /// (lurker#1401) — as much as the capsule has, since past its edge is the conversation's.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard hit != nil, !cancelButton.isHidden, cancelButton.isEnabled else { return hit }
+        let reach = cancelButton.convert(cancelButton.bounds, to: self).reaching()
+        return reach.contains(point) ? cancelButton : hit
+    }
+
     func update(_ phase: Phase, in batch: Batch? = nil) {
         // `stopping` is terminal for this run. The legs still unwinding behind a cancel keep
         // reporting — a compression pass ticks until it notices, and device-progress callbacks

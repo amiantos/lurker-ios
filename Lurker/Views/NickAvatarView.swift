@@ -91,6 +91,13 @@ final class NickAvatarView: UIView {
 
     @objc private func tapped() { onTap?() }
 
+    /// A tile that opens a profile takes a finger's reach (lurker#1401): it is about 33pt on a
+    /// phone, with the row's margin on one side of it and the gutter's gap on the other. One
+    /// that opens nothing keeps to its bounds, so a tap beside it is still the row's.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        (onTap == nil ? bounds : bounds.reaching()).contains(point)
+    }
+
     /// Draw `spec` at `size` points. `model` fetches the pictures; nil draws colour and letter only
     /// (the layout probes have no model).
     func configure(_ spec: Spec, size: CGFloat, model: ChatViewModel?) {

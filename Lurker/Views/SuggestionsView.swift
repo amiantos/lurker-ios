@@ -171,6 +171,14 @@ final class RowHeightHitButton: UIButton {
     }
 }
 
+extension CGRect {
+    /// This rect grown about its centre until it is at least `minimum` on each side — the least
+    /// a finger needs (lurker#1401). A side already that long is left alone.
+    func reaching(_ minimum: CGFloat = 44) -> CGRect {
+        insetBy(dx: min(0, (width - minimum) / 2), dy: min(0, (height - minimum) / 2))
+    }
+}
+
 /// A button whose target reaches past what it draws, by a stated amount on each side: the
 /// composer's send circle, its reply ✕ and its highlight count are all drawn smaller than the
 /// 44pt a finger needs (lurker#1401).

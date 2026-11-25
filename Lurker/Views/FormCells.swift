@@ -77,6 +77,24 @@ final class FormTextCell: UITableViewCell {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
+    /// The whole row is the field's target (lurker#1401). The field itself is one line of text
+    /// sitting on the label's baseline, about 22pt of a 44pt row, and a tap above or below it
+    /// did nothing. A control the field carries on its trailing side — the key's show/hide eye
+    /// — is clipped to that same line, so it gets the row's height and a finger's width here.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard let hit, hit === self || hit === contentView || hit.isDescendant(of: contentView),
+              field.isEnabled, field.isUserInteractionEnabled, !field.isHidden
+        else { return hit }
+        if let control = field.rightView as? UIControl, control.window != nil, !control.isHidden, control.isEnabled {
+            let frame = control.convert(control.bounds, to: self).reaching()
+            if point.x >= frame.minX, point.x <= frame.maxX { return control }
+        }
+        // A control somewhere else in the row keeps its own taps.
+        if hit is UIControl, hit !== field { return hit }
+        return field
+    }
+
     override func prepareForReuse() {
         super.prepareForReuse()
         // ⚠ Cleared explicitly. A dequeued cell keeps the last row's handler, and a reused
@@ -186,7 +204,9 @@ final class FormMenuCell: UITableViewCell {
         let stack = UIStackView(arrangedSubviews: [label, button])
         stack.axis = .horizontal
         stack.spacing = 12
-        stack.alignment = .center
+        // `.fill`, so the button is the row's height: centred, it was one line of text with
+        // dead space above and below it (lurker#1401).
+        stack.alignment = .fill
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         NSLayoutConstraint.activate([
