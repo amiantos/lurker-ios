@@ -429,6 +429,10 @@ final class BufferListViewController: UICollectionViewController {
                     // until some unrelated change happens to let a rebuild through.
                     // (`===` is the right test — see `IgnoreSet`.)
                     && $0.ignores === $1.ignores
+                    // The other half of a row's Notifications menu: "All messages" is a flag,
+                    // not a rule, and its frame moves nothing else — so without this the menu
+                    // keeps marking the rung it was on before.
+                    && $0.notifyAlways == $1.notifyAlways
                     // ⚠⚠ Pins order every network section, and a `pins-changed` frame moves
                     // NOTHING else in the state — so without this the frame is dropped as a
                     // duplicate, `apply` never runs, and a pin set on the web moves nothing
@@ -1679,6 +1683,11 @@ final class BufferListViewController: UICollectionViewController {
         // test `requestJoin` makes: while Lurker's own socket is reconnecting the network's state
         // is last-known, and offering Join then only earns a "not connected" toast.
         let canJoin = state.canWrite(networkId: networkId)
+        // The notification ladder (lurker#1087), the same rungs the buffer's info sheet lists
+        // and from the same `NotifyLadder`. The mark is read as the menu opens, like the rest
+        // of it; the tap is planned against the state at the tap (see `setNotifyRung`).
+        let notifyScope = NotifyLadder.Scope.of(buffer.key)
+        let notifyRung = notifyScope.map { state.notifyRung(for: $0) }
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             var children: [UIMenuElement] = []
             // A parted channel keeps its row and its history, and getting back in is the usual
@@ -1706,6 +1715,18 @@ final class BufferListViewController: UICollectionViewController {
                         }
                     }
                 )
+            }
+            if let notifyScope {
+                children.append(UIMenu(
+                    title: "Notifications",
+                    image: UIImage(systemName: "bell"),
+                    children: notifyScope.rungs.map { rung in
+                        UIAction(title: rung.label, state: rung == notifyRung ? .on : .off) { _ in
+                            guard let self, !self.viewModel.setNotifyRung(rung, for: notifyScope) else { return }
+                            ToastView.showNotConnected(over: self.navigationController?.view ?? self.view)
+                        }
+                    }
+                ))
             }
             children.append(UIMenu(options: .displayInline, children: [
                 UIAction(

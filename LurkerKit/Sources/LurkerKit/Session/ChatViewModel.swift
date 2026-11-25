@@ -304,6 +304,8 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
+        // And notification picks: a kept one names this account's buffer.
+        pendingNotify.removeAll()
         pendingOpens.cancel()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
@@ -2051,6 +2053,105 @@ public final class ChatViewModel {
         canWrite && client.setNickNote(networkId: networkId, nick: DccChat.peer(nick), note: note)
     }
 
+    /// Put a buffer, or a network, on a rung of the notification ladder (lurker#359, Mobile
+    /// lurker#1087). No local mutation: the rung moves when the server's echoes fold in.
+    ///
+    /// ⚠⚠ The plan is made from the state as it is NOW, at the tap — not from whatever a menu
+    /// or a sheet read when it was drawn. A rung is a target, not a toggle of what was on
+    /// screen: built at open time, "Highlights only" picked after another device turned "All
+    /// messages" on would leave the flag standing (web #1136). That is why this takes the rung
+    /// and the scope and nothing a caller could have computed earlier.
+    ///
+    /// False when any step went nowhere. It stops at the first one that did: the steps are
+    /// ordered remove-then-add, so stopping leaves at most a missing rule, and carrying on past
+    /// a remove that never left would add a second rule beside the first. True when there was
+    /// nothing to do.
+    ///
+    /// ⚠ One change at a time per buffer, and the last pick wins. A plan is made from state the
+    /// server has confirmed, and a second pick made before the first one's echoes land would
+    /// plan against state that is about to change: Muted then All messages, tapped quickly,
+    /// sent the mute rule and then only the flag, leaving a channel that reads "All messages"
+    /// while the rule silences it. So while a pick is on its way, a later one for the same
+    /// buffer is kept rather than sent, and goes out once the first has settled.
+    ///
+    /// Settled means there is nothing left to send to reach it — the flag AND the rule, not
+    /// merely the rung reading right, which it can after the first of two echoes — or
+    /// `notifySettleWindow` has passed (the server refused it, or an echo was lost).
+    @discardableResult
+    public func setNotifyRung(
+        _ rung: NotifyRung, for scope: NotifyLadder.Scope, now: Date = Date()
+    ) -> Bool {
+        if var pending = pendingNotify[scope] {
+            if !notifyPickSettled(pending, for: scope, now: now) {
+                // Refused rather than kept when it could not be sent anyway: a kept pick has
+                // already been answered "true", and nothing would say it was lost.
+                guard canWrite else { return false }
+                pending.next = rung
+                pendingNotify[scope] = pending
+                // No frame may arrive to settle the first pick (the server refused it, or the
+                // account is quiet), so the window's end is scheduled, not waited for.
+                let wait = pending.deadline.timeIntervalSince(now)
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(max(0, wait)))
+                    self?.settleNotifyPicks()
+                }
+                return true
+            }
+            pendingNotify[scope] = nil
+        }
+        let steps = store.state.notifyPlan(to: rung, for: scope, now: now)
+        guard !steps.isEmpty else { return true }
+        guard canWrite else { return false }
+        guard steps.allSatisfy(sendNotifyStep) else { return false }
+        pendingNotify[scope] = PendingNotify(
+            rung: rung, deadline: now.addingTimeInterval(Self.notifySettleWindow))
+        return true
+    }
+
+    /// After every frame, and at the end of a kept pick's window: retire the picks that have
+    /// settled, and send what was picked while they were on their way.
+    func settleNotifyPicks(now: Date = Date()) {
+        guard !pendingNotify.isEmpty else { return }
+        for (scope, pending) in pendingNotify where notifyPickSettled(pending, for: scope, now: now) {
+            pendingNotify[scope] = nil
+            if let next = pending.next { setNotifyRung(next, for: scope, now: now) }
+        }
+    }
+
+    private func notifyPickSettled(_ pending: PendingNotify, for scope: NotifyLadder.Scope, now: Date) -> Bool {
+        now >= pending.deadline || store.state.notifyPlan(to: pending.rung, for: scope, now: now).isEmpty
+    }
+
+    private struct PendingNotify {
+        let rung: NotifyRung
+        let deadline: Date
+        /// Picked while this one was on its way; only the latest is kept.
+        var next: NotifyRung?
+    }
+
+    /// The pick still on its way for each buffer — see `setNotifyRung`.
+    private var pendingNotify: [NotifyLadder.Scope: PendingNotify] = [:]
+    /// How long a pick may wait for its echoes before another is allowed regardless.
+    static let notifySettleWindow: TimeInterval = 3
+
+    /// Every ladder step's way onto the socket — through `notifyStepSeam` when a test has set one.
+    private func sendNotifyStep(_ step: NotifyLadder.Step) -> Bool {
+        if let notifyStepSeam { return notifyStepSeam(step) }
+        switch step {
+        case .setNotifyAlways(let networkId, let target, let notifyAlways):
+            return client.setChannelNotifyAlways(
+                networkId: networkId, target: target, notifyAlways: notifyAlways
+            )
+        case .removeRule(let id, let scope):
+            return client.removeIgnore(networkId: scope, id: id, mask: nil)
+        case .addRule(let networkId, let rule):
+            return client.addIgnore(networkId: networkId, rule: rule)
+        }
+    }
+
+    /// Test seam: stands in for the socket, answering whether the step "went out".
+    var notifyStepSeam: ((NotifyLadder.Step) -> Bool)?
+
     /// Rewrite the global order — pass the FULL permuted bufferId list (see LurkerClient).
     /// False when it went nowhere, and then no echo is coming to settle a drop (sweep L29).
     @discardableResult
@@ -2405,6 +2506,8 @@ public final class ChatViewModel {
     /// Internal rather than private so a test can feed a frame through the same path the socket
     /// does.
     func handle(_ frame: ServerFrame) {
+        // Last, whatever the frame was: an echo is what settles a notification pick.
+        defer { settleNotifyPicks() }
         // Read before the store moves: a came-online is a transition, and after `apply` the prior
         // state is gone.
         let cameOnline = StatusNotification.cameOnline(frame, before: store.state)
@@ -2453,6 +2556,10 @@ public final class ChatViewModel {
             // banner already names the outage, and a "No response" for each would only pile up
             // behind it (#57).
             pendingJoins.removeAll()
+            // Nor will a notification pick's echo come. A kept pick is dropped with it: sent
+            // on reconnect it would be planned from state the snapshot is about to replace,
+            // and could add a second rule beside one the dead socket did deliver.
+            pendingNotify.removeAll()
             // And the read marks are asked again. One written into a socket that had died without
             // saying so was recorded as sent, and the dedupe would skip it for good (sweep L23).
             // The server MAX-clamps, so a mark that did land costs one redundant write.
@@ -2797,6 +2904,8 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
+        // And notification picks: a kept one names this account's buffer.
+        pendingNotify.removeAll()
         pendingOpens.cancel()
         loadingOlder.removeAll()
         loadingNewer.removeAll()

@@ -312,6 +312,17 @@ enum ServerFrame: Equatable, Sendable {
     /// the row for an empty string and echoes `note: ''`), not a convention invented here.
     case nickNoteUpdated(networkId: Int, nick: String, note: String, updatedAt: Date?)
 
+    /// WS `channel-notify-changed`: one channel's `notify_always` flag was set or cleared — the
+    /// "All messages" rung of the notification ladder (lurker#359, Mobile lurker#1087).
+    ///
+    /// One channel per frame, fanned to every device including the one that asked, so nothing
+    /// is applied optimistically: this frame is the change, whichever client made it.
+    ///
+    /// `bufferId` is the server's id for the channel's buffer, nil when it has none. It rides
+    /// along as the frame carries it; the store keys the flag by network and target, as the
+    /// snapshot that seeds it does.
+    case channelNotifyChanged(networkId: Int, target: String, bufferId: Int?, notifyAlways: Bool)
+
     /// A `whois_result` ephemeral (rides `irc`, `type:"whois_result"`) — a WHOIS reply (#12).
     ///
     /// ⚠⚠ It carries **no target**, so it has to be recognised above `parseIrc`'s target guard
@@ -475,6 +486,10 @@ struct NetworkSnapshot: Equatable, Sendable {
     /// This account's notes about nicks on this network (#12) — the connect-time seed that live
     /// `nick-note-updated` frames then patch. Defaulted like its neighbours.
     var nickNotes: [NickNote] = []
+    /// The channels on this network whose `notify_always` flag is on (lurker#359) — the
+    /// connect-time seed that live `channel-notify-changed` frames then patch. Only the
+    /// channels that have it; absent is off. Defaulted like its neighbours.
+    var notifyAlways: [String] = []
     /// Your own away state on this network (#68) — the connect-time seed for what live
     /// `away-state` events then replace. Nil when the server reports none, which is the
     /// normal case for a user who has never been away.

@@ -292,4 +292,57 @@ public final class IgnoreSet: Sendable {
         guard let networkId else { return false }
         return IgnoreMatch.channelMutesUnread(compiled(for: networkId), channel: target, now: now)
     }
+
+    // MARK: - The notification ladder's rules (lurker #359)
+
+    /// The two "mute" modifier levels. A ladder rung's rule carries only these.
+    private static let muteLevels: Set<String> = ["NOUNREAD", "NONOTIFY"]
+
+    /// The canonical mute rule matching a scope test — unmasked, unpatterned, non-except, and
+    /// carrying mute levels only — looked for in the network's bucket first, then the globals.
+    /// It comes back with the bucket it was found in, because that is where its removal has to
+    /// be addressed. The web's `findMuteRule`.
+    ///
+    /// "Canonical" is the point: this finds the rule a notification menu made (or one typed by
+    /// hand in the same shape), not every rule that happens to quiet the buffer. A rule about
+    /// one person, or one that hides lines, is somebody's deliberate `/ignore` and not this
+    /// ladder's to read as a rung or to delete.
+    ///
+    /// A lapsed rule still counts, as on the web: this is the row the server holds, and the
+    /// rung it would be replaced by has to remove that row either way.
+    private func muteRule(
+        networkId: Int, where scopeMatches: (IgnoreRule) -> Bool
+    ) -> ScopedIgnoreRule? {
+        func canonical(_ rule: IgnoreRule) -> Bool {
+            (rule.mask ?? "").isEmpty && (rule.pattern ?? "").isEmpty && !rule.isExcept
+                && scopeMatches(rule)
+                && !rule.levels.isEmpty && rule.levels.allSatisfy(Self.muteLevels.contains)
+        }
+        if let rule = byNetwork[networkId]?.first(where: canonical) {
+            return ScopedIgnoreRule(rule: rule, scope: networkId)
+        }
+        return global.first(where: canonical).map { ScopedIgnoreRule(rule: $0, scope: nil) }
+    }
+
+    /// The mute rule scoped to exactly this one buffer — a channel or a DM — or nil. What the
+    /// buffer's notification ladder reads its rung from and removes to change it.
+    ///
+    /// Exactly one channel entry, compared folded: a rule naming two channels is not this
+    /// buffer's alone, and removing it from here would unmute the other one too.
+    public func bufferMuteRule(networkId: Int, target: String) -> ScopedIgnoreRule? {
+        let folded = target.lowercased()
+        return muteRule(networkId: networkId) { rule in
+            rule.channels?.count == 1 && rule.channels?.first?.lowercased() == folded
+        }
+    }
+
+    /// The network-wide mute rule — no channel scope at all — or nil. The network ladder's
+    /// counterpart to `bufferMuteRule`.
+    ///
+    /// A *global* channel-less mute is "mute everything, everywhere", and it is found here too:
+    /// changing the rung from one network's ladder removes it globally, which is the honest
+    /// consequence of having made a global rule.
+    public func networkMuteRule(networkId: Int) -> ScopedIgnoreRule? {
+        muteRule(networkId: networkId) { ($0.channels ?? []).isEmpty }
+    }
 }
