@@ -304,6 +304,8 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
+        // And notification picks: a kept one names this account's buffer.
+        pendingNotify.removeAll()
         pendingOpens.cancel()
         loadingOlder.removeAll()
         loadingNewer.removeAll()
@@ -2081,8 +2083,18 @@ public final class ChatViewModel {
     ) -> Bool {
         if var pending = pendingNotify[scope] {
             if !notifyPickSettled(pending, for: scope, now: now) {
+                // Refused rather than kept when it could not be sent anyway: a kept pick has
+                // already been answered "true", and nothing would say it was lost.
+                guard canWrite else { return false }
                 pending.next = rung
                 pendingNotify[scope] = pending
+                // No frame may arrive to settle the first pick (the server refused it, or the
+                // account is quiet), so the window's end is scheduled, not waited for.
+                let wait = pending.deadline.timeIntervalSince(now)
+                Task { [weak self] in
+                    try? await Task.sleep(for: .seconds(max(0, wait)))
+                    self?.settleNotifyPicks()
+                }
                 return true
             }
             pendingNotify[scope] = nil
@@ -2096,8 +2108,8 @@ public final class ChatViewModel {
         return true
     }
 
-    /// After every frame: retire the picks that have settled, and send what was picked while
-    /// they were on their way.
+    /// After every frame, and at the end of a kept pick's window: retire the picks that have
+    /// settled, and send what was picked while they were on their way.
     func settleNotifyPicks(now: Date = Date()) {
         guard !pendingNotify.isEmpty else { return }
         for (scope, pending) in pendingNotify where notifyPickSettled(pending, for: scope, now: now) {
@@ -2544,6 +2556,10 @@ public final class ChatViewModel {
             // banner already names the outage, and a "No response" for each would only pile up
             // behind it (#57).
             pendingJoins.removeAll()
+            // Nor will a notification pick's echo come. A kept pick is dropped with it: sent
+            // on reconnect it would be planned from state the snapshot is about to replace,
+            // and could add a second rule beside one the dead socket did deliver.
+            pendingNotify.removeAll()
             // And the read marks are asked again. One written into a socket that had died without
             // saying so was recorded as sent, and the dedupe would skip it for good (sweep L23).
             // The server MAX-clamps, so a mark that did land costs one redundant write.
@@ -2888,6 +2904,8 @@ public final class ChatViewModel {
         // Joins too: a pending one names a channel the next account never asked for, and its timer
         // would otherwise toast "No response" over the sign-in screen (#57).
         pendingJoins.removeAll()
+        // And notification picks: a kept one names this account's buffer.
+        pendingNotify.removeAll()
         pendingOpens.cancel()
         loadingOlder.removeAll()
         loadingNewer.removeAll()

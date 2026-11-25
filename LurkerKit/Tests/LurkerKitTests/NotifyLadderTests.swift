@@ -389,6 +389,18 @@ final class NotifyLadderTests: XCTestCase {
         XCTAssertTrue(store.state.notifiesAlways(networkId: 1, target: "#other"))
     }
 
+    /// A closed channel keeps its flag with no row, and `rekeyBuffer` only moves what has one.
+    func testARenameCarriesTheFlagOfAChannelWithNoRow() {
+        let store = LurkerStore()
+        store.apply(snapshot(["#chan"]))
+        store.apply(.bufferClosed(networkId: 1, target: "#chan"))
+        store.apply(.bufferRenamed(
+            networkId: 1, from: "#chan", to: "#renamed", bufferId: nil, merged: false, mergedFromBufferId: nil
+        ))
+        XCTAssertFalse(store.state.notifiesAlways(networkId: 1, target: "#chan"))
+        XCTAssertTrue(store.state.notifiesAlways(networkId: 1, target: "#renamed"))
+    }
+
     func testARenamedBufferCarriesItsFlag() {
         let store = LurkerStore()
         store.apply(snapshot(["#chan"]))
@@ -543,6 +555,36 @@ final class NotifyLadderTests: XCTestCase {
         XCTAssertTrue(model.setNotifyRung(.muted, for: scope, now: start))
         let late = start.addingTimeInterval(ChatViewModel.notifySettleWindow + 0.1)
         XCTAssertTrue(model.setNotifyRung(.all, for: scope, now: late))
+        XCTAssertEqual(sent().last, .setNotifyAlways(networkId: 1, target: "#chan", notifyAlways: true))
+    }
+
+    /// A kept pick has already been answered "true", so one that could not go out is refused
+    /// at the tap instead.
+    func testAPickBehindAnotherIsRefusedWhenTheSocketHasGone() {
+        let model = viewModel()
+        let sent = recording(model)
+        let scope = NotifyLadder.Scope.channel(networkId: 1, target: "#chan")
+        let start = Date()
+        XCTAssertTrue(model.setNotifyRung(.muted, for: scope, now: start))
+        model.setReachable(false)
+        XCTAssertFalse(model.setNotifyRung(.all, for: scope, now: start))
+        XCTAssertEqual(sent().count, 1)
+    }
+
+    /// Sent on reconnect, a kept pick would be planned from state the snapshot is about to
+    /// replace, and could add a second rule beside one the dead socket did deliver.
+    func testAClosedSocketDropsTheKeptPick() {
+        let model = viewModel()
+        let sent = recording(model)
+        let scope = NotifyLadder.Scope.channel(networkId: 1, target: "#chan")
+        XCTAssertTrue(model.setNotifyRung(.muted, for: scope))
+        XCTAssertTrue(model.setNotifyRung(.nothing, for: scope))
+        model.handle(.socketClosed(reason: nil, code: nil))
+        model.handle(.socketOpen)
+        model.handle(snapshot([], channels: ["#chan"]))
+        XCTAssertEqual(sent().count, 1, "the kept pick was not replayed")
+        // And the ladder is free again at once, not after the window.
+        XCTAssertTrue(model.setNotifyRung(.all, for: scope))
         XCTAssertEqual(sent().last, .setNotifyAlways(networkId: 1, target: "#chan", notifyAlways: true))
     }
 
