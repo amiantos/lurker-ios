@@ -49,6 +49,13 @@ struct Suggestion: Equatable {
 /// hands them to `show`; this view only draws chips and reports taps.
 final class SuggestionsView: UIView {
     var onPick: ((Suggestion) -> Void)?
+    /// A finger went down on a chip, and came off it again (picked or not). The composer holds
+    /// the keyboard off the text between the two — see `ComposerBar.beginChipPress`.
+    var onPressBegan: (() -> Void)?
+    var onPressEnded: (() -> Void)?
+    /// Whether a chip is under a finger right now, and the list that arrived meanwhile.
+    private var pressed = false
+    private var waiting: [Suggestion]?
     /// Fired when the row appears or goes, so the composer can swap its status content.
     var onVisibilityChange: (() -> Void)?
 
@@ -82,6 +89,11 @@ final class SuggestionsView: UIView {
             stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor),
         ])
         isHidden = true
+        // The row's top corners are the slab's, and a chip scrolled to either end poked out
+        // past the curve. Clipped to the same corners here; `cornerRadius` is the owner's to set.
+        layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        layer.cornerCurve = .continuous
+        layer.masksToBounds = true
     }
 
     @available(*, unavailable)
@@ -91,6 +103,12 @@ final class SuggestionsView: UIView {
     /// than diffed — it's a handful of small views, and a keystroke replaces the whole answer
     /// anyway.
     func show(_ suggestions: [Suggestion]) {
+        // Not out from under a finger: rebuilding removes the chip being pressed, and its tap
+        // with it. The list is drawn when the finger lifts.
+        guard !pressed else {
+            waiting = suggestions
+            return
+        }
         let wasHidden = isHidden
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         for suggestion in suggestions {
@@ -99,6 +117,16 @@ final class SuggestionsView: UIView {
         scroll.contentOffset = CGPoint(x: -scroll.contentInset.left, y: 0)
         isHidden = suggestions.isEmpty
         if wasHidden != isHidden { onVisibilityChange?() }
+    }
+
+    private func pressEnded() {
+        guard pressed else { return }
+        pressed = false
+        onPressEnded?()
+        if let waiting {
+            self.waiting = nil
+            show(waiting)
+        }
     }
 
     /// One suggestion as a tappable chip: its title in its own color on a faint fill.
@@ -124,7 +152,13 @@ final class SuggestionsView: UIView {
         let button = RowHeightHitButton(configuration: config)
         button.horizontalOutset = stack.spacing / 2
         button.accessibilityLabel = suggestion.accessibility
+        button.addAction(UIAction { [weak self] _ in
+            self?.pressed = true
+            self?.onPressBegan?()
+        }, for: .touchDown)
         button.addAction(UIAction { [weak self] _ in self?.onPick?(suggestion) }, for: .touchUpInside)
+        // After the pick, which is registered first: the pick reads the text the press protected.
+        button.addAction(UIAction { [weak self] _ in self?.pressEnded() }, for: [.touchUpInside, .touchUpOutside, .touchCancel])
         let title = ceil((suggestion.title as NSString).size(withAttributes: [.font: font]).width)
         let width = min(title + Self.chipInsets.leading + Self.chipInsets.trailing, Self.maxChipWidth)
         button.widthAnchor.constraint(equalToConstant: width).isActive = true

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import LurkerKit
+import OSLog
 import UIKit
 
 /// The message composer, in the shape Messages uses: a glass field that grows with the
@@ -141,6 +142,16 @@ final class ComposerBar: UIView {
 
     /// Set while `restore(_:)` is putting a refused line back — see its note.
     private var isRestoring = false
+
+    /// The field as it was when a finger went down on a completion chip, until it lifts.
+    ///
+    /// ⚠ With an autocorrection pending for the word being completed — `ami`, which the keyboard
+    /// would make `am I` — tapping a chip applied the correction and the pick was lost: its word
+    /// was gone before it could be replaced (lurker#1401). So while a chip is pressed the
+    /// keyboard's edits are refused (`shouldChangeTextIn`), and if the text moved anyway, by a
+    /// road that doesn't ask, the pick puts this back first.
+    private var chipPress: (text: NSAttributedString, selection: NSRange)?
+    private static let completionLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Lurker", category: "completion")
 
     /// `text`, written once per edit rather than per read — it's read several times a keystroke
     /// (the edit check, the draft save), and writing it walks the whole field. Dropped in
@@ -483,6 +494,9 @@ final class ComposerBar: UIView {
 
         suggestions.translatesAutoresizingMaskIntoConstraints = false
         configureToasts()
+        suggestions.layer.cornerRadius = Self.slabRadius
+        suggestions.onPressBegan = { [weak self] in self?.beginChipPress() }
+        suggestions.onPressEnded = { [weak self] in self?.endChipPress() }
         suggestions.onVisibilityChange = { [weak self] in
             guard let self else { return }
             // Chips over a toast: it goes back to the front of the queue, to be shown in full
@@ -836,6 +850,7 @@ final class ComposerBar: UIView {
     /// `punctuation` is the resolved `input.completion.nick_suffix`; the owner reads it,
     /// because the setting lives on the store and this view has no window onto it.
     func completeMention(with nick: String, punctuation: String) {
+        restoreChipPress()
         let selection = textView.selectedRange
         guard selection.length == 0, !isComposing,
               let token = NickCompletion.activeMention(in: textView.text, caret: selection.location),
@@ -852,6 +867,7 @@ final class ComposerBar: UIView {
     /// caret lands where the first argument goes — picking `/join` leaves `/join |`, and the
     /// owner immediately floats channel chips for the empty slot.
     func completeCommand(name: String) {
+        restoreChipPress()
         let selection = textView.selectedRange
         guard selection.length == 0,
               case .command(_, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
@@ -862,6 +878,7 @@ final class ComposerBar: UIView {
     /// Replace the channel/nick argument under the caret with the pick, trailing a space so
     /// the next argument (a key, a message, another nick) can follow.
     func completeArgument(value: String) {
+        restoreChipPress()
         let selection = textView.selectedRange
         guard selection.length == 0,
               case .argument(_, _, _, _, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
@@ -1066,9 +1083,34 @@ final class ComposerBar: UIView {
     /// don't fire the delegate, so this runs it by hand for the height, the send button, and
     /// the completion emit (now recomputed against the spliced text).
     private func replaceToken(_ range: NSRange, with replacement: String) {
+        // Said to the input system, as an edit it didn't make has to be: it drops what it had
+        // pending for the old text — an autocorrection for the word this replaces — instead of
+        // applying it to the new.
+        textView.inputDelegate?.textWillChange(textView)
         splice(range, with: replacement)
         textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+        textView.inputDelegate?.textDidChange(textView)
         textViewDidChange(textView)
+    }
+
+    /// A finger went down on a completion chip: hold the field as it is until it lifts.
+    func beginChipPress() {
+        chipPress = (textView.attributedText, textView.selectedRange)
+    }
+
+    /// The finger lifted. The hold lasts one more turn of the run loop: the keyboard's answer
+    /// to the touch can arrive after the tap's.
+    func endChipPress() {
+        DispatchQueue.main.async { [weak self] in self?.chipPress = nil }
+    }
+
+    /// Before a pick: if the field moved under the press, put it back as the press found it.
+    private func restoreChipPress() {
+        guard let chipPress, !textView.attributedText.isEqual(to: chipPress.text) else { return }
+        Self.completionLog.debug("the field changed under a chip press; put back")
+        textView.attributedText = chipPress.text
+        textView.selectedRange = chipPress.selection
+        cachedLine = nil
     }
 
     /// Swap a `:name:` the caret just closed for its emoji — see `textViewDidChange`. Through
@@ -1288,6 +1330,12 @@ extension ComposerBar: UITextViewDelegate {
     ///
     /// ⚠ Never over marked text: Return there commits the IME's composition.
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        // A finger is on a completion chip: whatever the keyboard wants to write now is its
+        // pending autocorrection, and the pick is about to replace that word. See `beginChipPress`.
+        if chipPress != nil {
+            Self.completionLog.debug("refused a keyboard edit during a chip press: \(range.location)+\(range.length) → \(text, privacy: .private)")
+            return false
+        }
         inputEditPending = true
         guard text == "\n", !isComposing, !self.textView.isInsertingHardwareNewline,
               // A pasted newline is pasted text, and dictation's "new line" is a line, not a send.
