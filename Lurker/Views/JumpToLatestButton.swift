@@ -31,6 +31,9 @@ final class JumpToLatestButton: GlassPillButton {
         // their own, the badge views would announce it a second time as a separate focus stop.
         badge.isAccessibilityElement = false
         badgeBackground.isAccessibilityElement = false
+        // Decoration over the pill's corner: left to take touches, it swallowed taps on the
+        // part of the pill under it whenever a count was showing.
+        badgeBackground.isUserInteractionEnabled = false
 
         badgeBackground.addSubview(badge)
         addSubview(badgeBackground)

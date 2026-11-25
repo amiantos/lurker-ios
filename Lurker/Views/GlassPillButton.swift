@@ -8,7 +8,7 @@ import UIKit
 /// add anything extra on top (the latest pill's unread badge); the capsule, the fade and the
 /// touch-target coupling come from `FloatingGlassControl`.
 class GlassPillButton: FloatingGlassControl {
-    private let button = UIButton(type: .system)
+    private let button = ReachingButton(type: .system)
     /// Width/height, kept so a Dynamic Type change can re-match the composer's pills.
     private var pillSizeConstraints: [NSLayoutConstraint] = []
 
@@ -28,7 +28,8 @@ class GlassPillButton: FloatingGlassControl {
 
         glass.contentView.addSubview(button)
 
-        // The send button's exact diameter, so every pill in the family occupies one footprint.
+        // The composer's row height — 44pt at the default text size since lurker#1401, a
+        // finger's width. The send circle is that less its inset, so this is the larger of the two.
         let pill = ComposerBar.collapsedHeight
         pillSizeConstraints = [
             glass.widthAnchor.constraint(equalToConstant: pill),

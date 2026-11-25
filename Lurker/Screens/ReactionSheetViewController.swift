@@ -130,6 +130,9 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         fieldRow.axis = .horizontal
         fieldRow.spacing = 8
         fieldRow.alignment = .center
+        // A finger's height for both (lurker#1401); each was about 34.
+        field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
+        reactButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         fieldRow.addArrangedSubview(field)
         fieldRow.addArrangedSubview(reactButton)
         stack.addArrangedSubview(fieldRow)
@@ -280,7 +283,8 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
     /// shown in full — and everyone who gave it. Tapping it toggles yours, where that `works`.
     private func standingRow(_ group: ReactionGroup, works: Bool) -> UIView {
         var config = UIButton.Configuration.plain()
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+        // 12 above and below one body line: a 46pt row (lurker#1401). At 8 it was about 37.
+        config.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 10, bottom: 12, trailing: 10)
         config.background.cornerRadius = 4
         config.background.backgroundColor = group.mine
             ? Palette.translucent(Palette.accent, alpha: 0.12) : .secondarySystemGroupedBackground

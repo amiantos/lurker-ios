@@ -366,6 +366,12 @@ final class NetworksViewController: UITableViewController {
     /// for the life of that cell rather than being replaced whenever the row is redrawn.
     private final class NetworkActionButton: UIButton {
         var networkID = 0
+
+        /// Drawn at its glyph's size, about 22pt, in a row whose tap opens the edit screen: a
+        /// near miss used to do that instead of opening the menu (lurker#1401).
+        override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+            bounds.reaching().contains(point)
+        }
     }
 
     private func makeActionButton() -> NetworkActionButton {

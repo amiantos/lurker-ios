@@ -74,7 +74,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         viewModel.onPreviewCachesCleared = { PreviewImageLoader.shared.reset() }
         // The window comes first now: `render` installs the ROOT rather than filling a stack
         // that already exists, so it needs somewhere to install it.
-        let window = UIWindow(windowScene: windowScene)
+        let window = TouchWatchingWindow(windowScene: windowScene)
         self.window = window
 
         // Restore already ran in the view model's init, so the current session state is

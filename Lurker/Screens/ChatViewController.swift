@@ -366,6 +366,8 @@ final class ChatViewController: UIViewController, UITableViewDataSource, UITable
         // addressing suffix. The composer owns each insertion; this only routes to it.
         suggestions.onPick = { [weak self] suggestion in
             guard let self else { return }
+            // First, so `activeCompletion` below is about the word the chip was offered for.
+            composer.prepareForPick()
             switch activeCompletion {
             case .command: composer.completeCommand(name: suggestion.value)
             case .channelArg, .nickArg: composer.completeArgument(value: suggestion.value)

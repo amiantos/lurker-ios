@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import LurkerKit
+import OSLog
 import UIKit
 
 /// The message composer, in the shape Messages uses: a glass field that grows with the
@@ -142,6 +143,19 @@ final class ComposerBar: UIView {
     /// Set while `restore(_:)` is putting a refused line back — see its note.
     private var isRestoring = false
 
+    /// The field as it was when a finger went down on a completion chip, until it lifts.
+    ///
+    /// ⚠ With an autocorrection pending for the word being completed — `ami`, which the keyboard
+    /// would make `am I` — tapping a chip applied the correction and the pick was lost: its word
+    /// was gone before it could be replaced (lurker#1401). So while a chip is pressed the
+    /// keyboard's edits are refused (`shouldChangeTextIn`), and if the text moved anyway, by a
+    /// road that doesn't ask, the pick puts this back first.
+    ///
+    /// `text` goes nil once the app itself has edited the field under the press: there is then
+    /// nothing of the keyboard's to put back, though its edits are still refused.
+    private var chipPress: (text: NSAttributedString?, selection: NSRange)?
+    private static let completionLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Lurker", category: "completion")
+
     /// `text`, written once per edit rather than per read — it's read several times a keystroke
     /// (the edit check, the draft save), and writing it walks the whole field. Dropped in
     /// `textViewDidChange`, which every change to the field goes through.
@@ -190,7 +204,7 @@ final class ComposerBar: UIView {
     private let fieldGlass = UIVisualEffectView()
     private let textView = ComposerTextView()
     private let placeholderLabel = UILabel()
-    private let sendButton = UIButton(type: .system)
+    private let sendButton = ReachingButton(type: .system)
     /// The status row across the top of the slab. Always there, at a fixed height, so nothing
     /// it shows or hides ever moves the conversation. Left side, one thing at a time:
     ///
@@ -201,7 +215,7 @@ final class ComposerBar: UIView {
     ///    visible at any scroll position.
     private let statusRow = UIView()
     private let leadLabel = UILabel()
-    private let cancelReplyButton = RowHeightHitButton(type: .system)
+    private let cancelReplyButton = UIButton(type: .system)
     /// That you're away (#135), in its own glass strip above the slab: "Away since 2:32 PM ·
     /// lunch  Back". Not in the status row — being away is worth being nagged about, and the row
     /// has no room for the time.
@@ -219,6 +233,8 @@ final class ComposerBar: UIView {
     /// The completion chips, owned by the chat screen's suggestion logic but drawn in the row.
     let suggestions = SuggestionsView()
     private var reply: PendingReply?
+    /// Highlights waiting in other buffers, kept so the count can come back after a reply.
+    private var highlightCount = 0
     private var away: AwayState?
     private var typists: [String] = []
     private var location: Location?
@@ -238,13 +254,19 @@ final class ComposerBar: UIView {
     private static let sendInset: CGFloat = 5
     /// The slab's corner radius: a rounded rectangle, since it's always two rows tall.
     private static let slabRadius: CGFloat = 20
-    /// The status row's height: exactly the one-line field's, so the slab is two equal rows.
+    /// The status row's height: exactly the one-line field's, so the slab is two equal rows —
+    /// each the 44pt a finger needs at the default text size (lurker#1401; see `textInset`).
     /// Fixed, so the row never moves the conversation; tracks Dynamic Type through `updateMetrics`.
     private static var statusRowHeight: CGFloat { collapsedHeight }
 
     /// The text view's own inset. The placeholder is pinned to *these* exact values so it
     /// sits where the first typed character will, not merely somewhere near it.
-    private static let textInset = UIEdgeInsets(top: 9, left: 12, bottom: 9, right: 12)
+    ///
+    /// 13 above and below, which with one 18pt line makes a 44pt row (lurker#1401). It was 9,
+    /// a 36pt row: the chips, the reply's ✕ and the highlight count in the status row are that
+    /// row's height, and the send circle is the field's less `sendInset` twice, so at 36 every
+    /// one of them was under what a finger needs.
+    private static let textInset = UIEdgeInsets(top: 13, left: 12, bottom: 13, right: 12)
     /// The symbol size in the round buttons — small enough to read as an icon with air
     /// around it, like Messages'. Internal because `JumpToLatestButton` draws its glyph
     /// to the same metric, for the same reason it borrows `collapsedHeight`.
@@ -444,18 +466,20 @@ final class ComposerBar: UIView {
         cancel.image = UIImage(systemName: "xmark.circle.fill")
         cancel.preferredSymbolConfigurationForImage = UIImage.SymbolConfiguration(pointSize: MessageRenderer.compactFont().pointSize)
         cancel.baseForegroundColor = .secondaryLabel
-        cancel.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
+        // No insets and a stated width: nothing more is drawn, the ✕ is 44pt across, and its
+        // glyph's centre is exactly the send circle's (`sendInset` plus half of 34 is 22).
+        cancel.contentInsets = .zero
         cancelReplyButton.configuration = cancel
         cancelReplyButton.accessibilityLabel = "Cancel reply"
-        cancelReplyButton.horizontalOutset = 8
+        cancelReplyButton.widthAnchor.constraint(equalToConstant: 44).activatedBelowRequired()
         cancelReplyButton.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
 
         var count = UIButton.Configuration.plain()
         count.baseForegroundColor = Palette.warn
-        count.contentInsets = NSDirectionalEdgeInsets(
-            // A few points past the text inset: the slab's corner curves in at the right end.
-            top: 0, leading: 8, bottom: 0, trailing: Self.textInset.left + 2
-        )
+        // Centred in a 44pt box at the row's end, which puts the number over the middle of the
+        // send circle below it (`sendInset` plus half of 34 is 22), as the reply's ✕ is. The
+        // insets only matter once a count is too wide for the box and it grows.
+        count.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4)
         count.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var outgoing = incoming
             outgoing.font = MessageRenderer.compactFont()
@@ -463,17 +487,24 @@ final class ComposerBar: UIView {
         }
         highlightCountButton.configuration = count
         highlightCountButton.isHidden = true
+        // A finger's width for a one-digit count.
+        highlightCountButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         highlightCountButton.accessibilityHint = "Goes back to the buffer list."
         highlightCountButton.addAction(UIAction { [weak self] _ in self?.onHighlightCountTap?() }, for: .touchUpInside)
 
         for button in [cancelReplyButton, highlightCountButton] {
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.setContentHuggingPriority(.required, for: .horizontal)
+            // Hugging under the width each is given above: required, it would be a second
+            // required width, and the two disagree.
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
 
         suggestions.translatesAutoresizingMaskIntoConstraints = false
         configureToasts()
+        suggestions.layer.cornerRadius = Self.slabRadius
+        suggestions.onPressBegan = { [weak self] in self?.beginChipPress() }
+        suggestions.onPressEnded = { [weak self] in self?.endChipPress() }
         suggestions.onVisibilityChange = { [weak self] in
             guard let self else { return }
             // Chips over a toast: it goes back to the front of the queue, to be shown in full
@@ -484,10 +515,11 @@ final class ComposerBar: UIView {
             self.toasts.presentNext()
         }
 
-        let lead = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton])
-        lead.alignment = .center
-        lead.spacing = 0
-        let row = UIStackView(arrangedSubviews: [lead, UIView(), highlightCountButton])
+        // The label takes what the buttons leave, so the reply's ✕ sits at the row's trailing
+        // end: 44pt wide there, its glyph is centred over the send circle below it. The
+        // highlight count has that place the rest of the time and gives it up to a reply
+        // (`renderStatus`). `.fill`, so both are the row's height and not their glyph's.
+        let row = UIStackView(arrangedSubviews: [leadLabel, cancelReplyButton, highlightCountButton])
         row.alignment = .fill
         row.spacing = 8
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -689,6 +721,14 @@ final class ComposerBar: UIView {
             leadLabel.accessibilityTraits = .staticText
             cancelReplyButton.isHidden = true
         }
+        // The ✕ takes the count's place while it is up.
+        highlightCountButton.isHidden = highlightCount <= 0 || !cancelReplyButton.isHidden
+        // …and the excerpt runs right up to its glyph. The ✕ is 44pt wide around a glyph of
+        // about 18, so some 13pt of it on the label's side is empty: left as a gap (plus the
+        // row's own 8) the excerpt was cut some 20pt short of the ✕ for no reason anyone could
+        // see. The label laps that empty part and stops 6pt before the glyph; the button is
+        // above it, so the whole 44 still takes the tap.
+        (statusContent as? UIStackView)?.setCustomSpacing(cancelReplyButton.isHidden ? 8 : -7, after: leadLabel)
     }
 
     /// The away strip, shown or hidden for `awayText`. Changes the composer's height, so it runs
@@ -758,7 +798,8 @@ final class ComposerBar: UIView {
 
     /// Highlights waiting in other buffers; 0 hides the count.
     func showHighlightCount(_ count: Int) {
-        highlightCountButton.isHidden = count <= 0
+        highlightCount = count
+        highlightCountButton.isHidden = count <= 0 || !cancelReplyButton.isHidden
         highlightCountButton.configuration?.title = count <= 0 ? nil : count > 999 ? ">999" : "\(count)"
         highlightCountButton.accessibilityLabel = "\(count) highlight" + (count == 1 ? "" : "s") + " in other buffers"
     }
@@ -773,7 +814,7 @@ final class ComposerBar: UIView {
     /// a notice that would truncate floats instead, where it can wrap.
     func fitsAsNotice(_ message: String) -> Bool {
         let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
-        let count = highlightCountButton.isHidden ? 0 : highlightCountButton.intrinsicContentSize.width
+        let count = highlightCountButton.isHidden ? 0 : max(highlightCountButton.intrinsicContentSize.width, 44)
         let room = statusRow.bounds.width - Self.textInset.left - count - 8
         return StatusToast.notice(message).attributedText(font: font).size().width <= room
     }
@@ -835,7 +876,7 @@ final class ComposerBar: UIView {
             beforeTokenAt: token.start, in: textView.text, punctuation: punctuation)
         // The whole word, not just up to the caret — completing `@al|ice` must swallow
         // the tail, not weld the pick onto it.
-        replaceToken(NSRange(location: token.start, length: token.end - token.start), with: replacement)
+        replaceToken(NSRange(location: token.start, length: token.end - token.start), with: replacement, completing: true)
     }
 
     /// Replace the verb under the caret with the picked command, trailing a space so the
@@ -846,7 +887,7 @@ final class ComposerBar: UIView {
         guard selection.length == 0,
               case .command(_, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
         else { return }
-        replaceToken(range, with: "/\(name) ")
+        replaceToken(range, with: "/\(name) ", completing: true)
     }
 
     /// Replace the channel/nick argument under the caret with the pick, trailing a space so
@@ -856,7 +897,7 @@ final class ComposerBar: UIView {
         guard selection.length == 0,
               case .argument(_, _, _, _, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
         else { return }
-        replaceToken(range, with: "\(value) ")
+        replaceToken(range, with: "\(value) ", completing: true)
     }
 
     /// What's in the field, as it will be sent: its colour written out as `\x03` codes. The
@@ -1055,9 +1096,41 @@ final class ComposerBar: UIView {
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits
     /// don't fire the delegate, so this runs it by hand for the height, the send button, and
     /// the completion emit (now recomputed against the spliced text).
-    private func replaceToken(_ range: NSRange, with replacement: String) {
+    ///
+    /// `completing` is a pick replacing the word under the caret. That is said to the input
+    /// system, as an edit it didn't make has to be: it drops what it had pending for the old
+    /// word — an autocorrection — instead of applying it to the new. Only then, and never
+    /// mid-composition: an upload's link appended while an IME has marked text must not end it.
+    private func replaceToken(_ range: NSRange, with replacement: String, completing: Bool = false) {
+        let notifies = completing && !isComposing
+        if notifies { textView.inputDelegate?.textWillChange(textView) }
         splice(range, with: replacement)
         textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
+        if notifies { textView.inputDelegate?.textDidChange(textView) }
+        textViewDidChange(textView)
+    }
+
+    /// A finger went down on a completion chip: hold the field as it is until it lifts.
+    func beginChipPress() {
+        chipPress = (textView.attributedText, textView.selectedRange)
+    }
+
+    /// The finger lifted. The hold lasts one more turn of the run loop: the keyboard's answer
+    /// to the touch can arrive after the tap's.
+    func endChipPress() {
+        DispatchQueue.main.async { [weak self] in self?.chipPress = nil }
+    }
+
+    /// Before a pick: if the field moved under the press, put it back as the press found it,
+    /// and say so — the owner's idea of what is being completed moved with it, and has to move
+    /// back before it decides what the pick means.
+    func prepareForPick() {
+        guard let chipPress, let held = chipPress.text, !textView.attributedText.isEqual(to: held) else { return }
+        Self.completionLog.debug("the field changed under a chip press; put back")
+        textView.inputDelegate?.textWillChange(textView)
+        textView.attributedText = held
+        textView.selectedRange = chipPress.selection
+        textView.inputDelegate?.textDidChange(textView)
         textViewDidChange(textView)
     }
 
@@ -1098,6 +1171,9 @@ final class ComposerBar: UIView {
     /// `bob: ` doesn't take the colour of the words it's put in front of.
     private func splice(_ range: NSRange, with replacement: String) {
         cachedLine = nil
+        // An edit of the app's own — a pick, or an upload's link landing mid-press — is not
+        // the keyboard's correction, and a later pick must not "put back" the field over it.
+        chipPress?.text = nil
         let storage = textView.textStorage
         var attributes = plainAttributes
         if range.length > 0 {
@@ -1278,6 +1354,12 @@ extension ComposerBar: UITextViewDelegate {
     ///
     /// ⚠ Never over marked text: Return there commits the IME's composition.
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        // A finger is on a completion chip: whatever the keyboard wants to write now is its
+        // pending autocorrection, and the pick is about to replace that word. See `beginChipPress`.
+        if chipPress != nil {
+            Self.completionLog.debug("refused a keyboard edit during a chip press: \(range.location)+\(range.length) → \(text, privacy: .private)")
+            return false
+        }
         inputEditPending = true
         guard text == "\n", !isComposing, !self.textView.isInsertingHardwareNewline,
               // A pasted newline is pasted text, and dictation's "new line" is a line, not a send.

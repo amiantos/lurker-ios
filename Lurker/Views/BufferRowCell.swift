@@ -27,10 +27,11 @@ enum RosterMetrics {
     static let name: CGFloat = 24
     /// The arm's length: the `─` of `├─`.
     static let arm: CGFloat = 9
-    /// A row's floor. Under the 44pt guideline — a deliberate trade for a list you scan, and the
-    /// whole width of the row is the target. It grows with Dynamic Type.
-    static let row: CGFloat = 32
-    static let header: CGFloat = 30
+    /// A row's floor, and a header's: the 44pt a finger needs (lurker#1401). They were 32 and 30,
+    /// a trade for a denser list that cost a mis-tap often enough to notice — rows abut, so a
+    /// short one has no slack to borrow from its neighbours. It grows with Dynamic Type.
+    static let row: CGFloat = 44
+    static let header: CGFloat = 44
     /// The space between a group's last row and the rule over the next group, and between that
     /// rule and the next header.
     static let groupGap: CGFloat = 6
