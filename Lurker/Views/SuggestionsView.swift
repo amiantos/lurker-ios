@@ -59,8 +59,9 @@ final class SuggestionsView: UIView {
     private var waiting: [Suggestion]?
     /// The chips as drawn, in order, so a touch seen at the window can be matched to one.
     private var shown: [Suggestion] = []
-    /// A touch that went down on a chip, as the window saw it — see `windowWillSend`.
-    private var watched: (touch: UITouch, suggestion: Suggestion, start: CGPoint)?
+    /// A touch that went down on a chip, as the window saw it, and the farthest it has strayed
+    /// from where it began — see `windowWillSend`.
+    private var watched: (touch: UITouch, suggestion: Suggestion, start: CGPoint, strayed: CGFloat)?
     /// Set when a chip's own tap was delivered, so the window's copy of it isn't picked twice.
     private var delivered = false
     private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Lurker", category: "completion")
@@ -130,9 +131,18 @@ final class SuggestionsView: UIView {
 
     // MARK: - Taps the system took
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        (window as? TouchWatchingWindow)?.addTouchWatcher(self)
+    override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        (window as? TouchWatchingWindow)?.removeTouchWatcher(self)
+        (newWindow as? TouchWatchingWindow)?.addTouchWatcher(self)
+        watched = nil
+    }
+
+    /// Whether a touch at `point` is aimed at the chips — not at a sheet, an alert or anything
+    /// else drawn over them at the same place — and the row isn't being scrolled.
+    private func isAimedHere(_ point: CGPoint) -> Bool {
+        guard let window, !scroll.isDragging, !scroll.isDecelerating else { return false }
+        return window.hitTest(convert(point, to: window), with: nil)?.isDescendant(of: self) ?? false
     }
 
     /// The suggestion whose chip — at the row's full height, as its own target is — holds `point`.
@@ -215,6 +225,16 @@ final class RowHeightHitButton: UIButton {
     }
 }
 
+extension NSLayoutConstraint {
+    /// Activated one step under required: a minimum size on a view a stack view hides. Hiding
+    /// is the stack's own required zero-size constraint, and two required constraints that
+    /// disagree are a logged conflict with either one broken.
+    func activatedBelowRequired() {
+        priority = UILayoutPriority(999)
+        isActive = true
+    }
+}
+
 extension CGRect {
     /// This rect grown about its centre until it is at least `minimum` on each side — the least
     /// a finger needs (lurker#1401). A side already that long is left alone.
@@ -245,22 +265,28 @@ extension SuggestionsView: WindowTouchWatcher {
             let point = touch.location(in: self)
             switch touch.phase {
             case .began:
-                guard watched == nil, let suggestion = suggestion(at: point) else { continue }
-                watched = (touch, suggestion, point)
+                guard watched == nil, touch.window === window, isAimedHere(point),
+                      let suggestion = suggestion(at: point)
+                else { continue }
+                watched = (touch, suggestion, point, 0)
                 delivered = false
                 if !pressed {
                     pressed = true
                     onPressBegan?()
                 }
+            case .moved:
+                // The farthest, not the last: a row dragged out and back is not a tap.
+                guard let current = watched, current.touch === touch else { continue }
+                watched?.strayed = max(current.strayed, hypot(point.x - current.start.x, point.y - current.start.y))
             case .ended, .cancelled:
                 guard let watched, watched.touch === touch else { continue }
                 self.watched = nil
-                let moved = hypot(point.x - watched.start.x, point.y - watched.start.y)
+                let moved = max(watched.strayed, hypot(point.x - watched.start.x, point.y - watched.start.y))
                 let phase = touch.phase == .ended ? "ended" : "cancelled"
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    // Moved: a scroll of the row, not a tap.
-                    if !delivered, moved < 10 {
+                    // Moved: a scroll of the row, not a tap. Hidden or gone: nothing to pick from.
+                    if !delivered, moved < 10, !isHidden, window != nil {
                         Self.log.debug("a chip tap the chip never got (\(phase)); picked from the window")
                         onPick?(watched.suggestion)
                     }

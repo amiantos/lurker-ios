@@ -48,11 +48,28 @@ class FloatingGlassControl: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not using storyboards") }
 
-    /// A finger's reach, whatever the silhouette: the jump pill is drawn 36pt across and the
-    /// unread banner 34pt tall (lurker#1401). Both float over the messages with room around
-    /// them, and hidden, neither takes touches at all.
+    /// A finger's reach, whatever the silhouette: the unread banner is drawn about 34pt tall
+    /// (lurker#1401). These float over the messages with room around them, and hidden, none
+    /// takes touches at all.
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.reaching().contains(point)
+    }
+
+    /// The reach has to end at whatever acts on the tap. A subclass's button fills the glass,
+    /// so a touch in the ring around it would otherwise land on this bare view and be lost —
+    /// to the control and to the message underneath.
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard hit === self else { return hit }
+        return Self.firstControl(in: self) ?? hit
+    }
+
+    private static func firstControl(in view: UIView) -> UIControl? {
+        for subview in view.subviews where !subview.isHidden && subview.isUserInteractionEnabled {
+            if let control = subview as? UIControl { return control }
+            if let found = firstControl(in: subview) { return found }
+        }
+        return nil
     }
 
     /// Fade + a small settle, and the touch target goes with the visibility.

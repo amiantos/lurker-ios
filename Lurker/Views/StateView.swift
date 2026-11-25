@@ -95,7 +95,7 @@ final class StateView: UIView {
         actionButton.addAction(UIAction { [weak self] _ in self?.onAction?() }, for: .touchUpInside)
         actionButton.isHidden = true
         // Borderless, so the extra height is all target and nothing drawn (lurker#1401).
-        actionButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        actionButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         stack.addArrangedSubview(actionButton)
         stack.setCustomSpacing(14, after: glyph)
         stack.setCustomSpacing(14, after: spinner)

@@ -567,8 +567,8 @@ private final class MediaPlayerPageCell: UICollectionViewCell {
         // A finger's size for both (lurker#1401). They are bare titles, so the extra is all
         // target; the gap between them closes up to keep them reading as a pair.
         for button in [fallbackButton, closeButton] {
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         }
         fallback.addArrangedSubview(fallbackButton)
         fallback.setCustomSpacing(0, after: fallbackButton)

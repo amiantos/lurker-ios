@@ -468,7 +468,7 @@ final class ComposerBar: UIView {
         cancel.contentInsets = .zero
         cancelReplyButton.configuration = cancel
         cancelReplyButton.accessibilityLabel = "Cancel reply"
-        cancelReplyButton.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        cancelReplyButton.widthAnchor.constraint(equalToConstant: 44).activatedBelowRequired()
         cancelReplyButton.addAction(UIAction { [weak self] _ in self?.onCancelReply?() }, for: .touchUpInside)
 
         var count = UIButton.Configuration.plain()
@@ -486,13 +486,15 @@ final class ComposerBar: UIView {
         highlightCountButton.isHidden = true
         // A finger's width for a one-digit count, with the number still at the trailing end.
         highlightCountButton.contentHorizontalAlignment = .trailing
-        highlightCountButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        highlightCountButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         highlightCountButton.accessibilityHint = "Goes back to the buffer list."
         highlightCountButton.addAction(UIAction { [weak self] _ in self?.onHighlightCountTap?() }, for: .touchUpInside)
 
         for button in [cancelReplyButton, highlightCountButton] {
             button.translatesAutoresizingMaskIntoConstraints = false
-            button.setContentHuggingPriority(.required, for: .horizontal)
+            // Hugging under the width each is given above: required, it would be a second
+            // required width, and the two disagree.
+            button.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
 
@@ -810,7 +812,7 @@ final class ComposerBar: UIView {
     /// a notice that would truncate floats instead, where it can wrap.
     func fitsAsNotice(_ message: String) -> Bool {
         let font = MessageRenderer.compactFont(compatibleWith: traitCollection)
-        let count = highlightCountButton.isHidden ? 0 : highlightCountButton.intrinsicContentSize.width
+        let count = highlightCountButton.isHidden ? 0 : max(highlightCountButton.intrinsicContentSize.width, 44)
         let room = statusRow.bounds.width - Self.textInset.left - count - 8
         return StatusToast.notice(message).attributedText(font: font).size().width <= room
     }
@@ -872,7 +874,7 @@ final class ComposerBar: UIView {
             beforeTokenAt: token.start, in: textView.text, punctuation: punctuation)
         // The whole word, not just up to the caret — completing `@al|ice` must swallow
         // the tail, not weld the pick onto it.
-        replaceToken(NSRange(location: token.start, length: token.end - token.start), with: replacement)
+        replaceToken(NSRange(location: token.start, length: token.end - token.start), with: replacement, completing: true)
     }
 
     /// Replace the verb under the caret with the picked command, trailing a space so the
@@ -883,7 +885,7 @@ final class ComposerBar: UIView {
         guard selection.length == 0,
               case .command(_, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
         else { return }
-        replaceToken(range, with: "/\(name) ")
+        replaceToken(range, with: "/\(name) ", completing: true)
     }
 
     /// Replace the channel/nick argument under the caret with the pick, trailing a space so
@@ -893,7 +895,7 @@ final class ComposerBar: UIView {
         guard selection.length == 0,
               case .argument(_, _, _, _, let range)? = CommandCompletion.context(in: textView.text, caret: selection.location)
         else { return }
-        replaceToken(range, with: "\(value) ")
+        replaceToken(range, with: "\(value) ", completing: true)
     }
 
     /// What's in the field, as it will be sent: its colour written out as `\x03` codes. The
@@ -1092,14 +1094,17 @@ final class ComposerBar: UIView {
     /// Swap `range` for `replacement` and drop the caret just past it. Programmatic edits
     /// don't fire the delegate, so this runs it by hand for the height, the send button, and
     /// the completion emit (now recomputed against the spliced text).
-    private func replaceToken(_ range: NSRange, with replacement: String) {
-        // Said to the input system, as an edit it didn't make has to be: it drops what it had
-        // pending for the old text — an autocorrection for the word this replaces — instead of
-        // applying it to the new.
-        textView.inputDelegate?.textWillChange(textView)
+    ///
+    /// `completing` is a pick replacing the word under the caret. That is said to the input
+    /// system, as an edit it didn't make has to be: it drops what it had pending for the old
+    /// word — an autocorrection — instead of applying it to the new. Only then, and never
+    /// mid-composition: an upload's link appended while an IME has marked text must not end it.
+    private func replaceToken(_ range: NSRange, with replacement: String, completing: Bool = false) {
+        let notifies = completing && !isComposing
+        if notifies { textView.inputDelegate?.textWillChange(textView) }
         splice(range, with: replacement)
         textView.selectedRange = NSRange(location: range.location + (replacement as NSString).length, length: 0)
-        textView.inputDelegate?.textDidChange(textView)
+        if notifies { textView.inputDelegate?.textDidChange(textView) }
         textViewDidChange(textView)
     }
 

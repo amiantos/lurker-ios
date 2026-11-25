@@ -131,8 +131,8 @@ final class ReactionSheetViewController: UIViewController, UITextFieldDelegate {
         fieldRow.spacing = 8
         fieldRow.alignment = .center
         // A finger's height for both (lurker#1401); each was about 34.
-        field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        reactButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        field.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
+        reactButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).activatedBelowRequired()
         fieldRow.addArrangedSubview(field)
         fieldRow.addArrangedSubview(reactButton)
         stack.addArrangedSubview(fieldRow)

@@ -38,6 +38,7 @@ final class FormTextCell: UITableViewCell {
     /// place this form is careful everywhere else to keep them together. Returning nil (the
     /// default) leaves the field alone.
     var restoreOnFocus: (() -> String?)?
+    private lazy var rowTap = UITapGestureRecognizer(target: self, action: #selector(rowTapped(_:)))
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
         super.init(style: style, reuseIdentifier: reuseIdentifier)
@@ -72,6 +73,10 @@ final class FormTextCell: UITableViewCell {
             stack.bottomAnchor.constraint(equalTo: contentView.layoutMarginsGuide.bottomAnchor),
         ])
         selectionStyle = .none
+        rowTap.delegate = self
+        // The table's own touches go on as they were: this only adds a tap.
+        rowTap.cancelsTouchesInView = false
+        contentView.addGestureRecognizer(rowTap)
     }
 
     @available(*, unavailable)
@@ -80,19 +85,33 @@ final class FormTextCell: UITableViewCell {
     /// The whole row is the field's target (lurker#1401). The field itself is one line of text
     /// sitting on the label's baseline, about 22pt of a 44pt row, and a tap above or below it
     /// did nothing. A control the field carries on its trailing side — the key's show/hide eye
-    /// — is clipped to that same line, so it gets the row's height and a finger's width here.
-    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
-        let hit = super.hitTest(point, with: event)
-        guard let hit, hit === self || hit === contentView || hit.isDescendant(of: contentView),
-              field.isEnabled, field.isUserInteractionEnabled, !field.isHidden
-        else { return hit }
+    /// — is clipped to that same line, so a tap above, below or just past it is the eye's.
+    ///
+    /// ⚠ A tap recogniser, not a hit test that hands the row to the field: a touch that
+    /// belongs to a control is one the table can't take back to scroll with, and that would
+    /// have been every row of a form. Touches on the field, or on any control, never reach
+    /// this (`gestureRecognizer(_:shouldReceive:)`), so the caret still goes where it's put.
+    @objc private func rowTapped(_ tap: UITapGestureRecognizer) {
+        guard field.isEnabled, field.isUserInteractionEnabled, !field.isHidden else { return }
+        let point = tap.location(in: self)
         if let control = field.rightView as? UIControl, control.window != nil, !control.isHidden, control.isEnabled {
             let frame = control.convert(control.bounds, to: self).reaching()
-            if point.x >= frame.minX, point.x <= frame.maxX { return control }
+            if point.x >= frame.minX, point.x <= frame.maxX {
+                control.sendActions(for: .touchUpInside)
+                return
+            }
         }
-        // A control somewhere else in the row keeps its own taps.
-        if hit is UIControl, hit !== field { return hit }
-        return field
+        field.becomeFirstResponder()
+    }
+
+    override func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard gestureRecognizer === rowTap else { return true }
+        var view = touch.view
+        while let current = view, current !== self {
+            if current is UIControl { return false }
+            view = current.superview
+        }
+        return true
     }
 
     override func prepareForReuse() {
