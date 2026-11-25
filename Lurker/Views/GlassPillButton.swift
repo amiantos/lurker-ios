@@ -8,7 +8,7 @@ import UIKit
 /// add anything extra on top (the latest pill's unread badge); the capsule, the fade and the
 /// touch-target coupling come from `FloatingGlassControl`.
 class GlassPillButton: FloatingGlassControl {
-    private let button = UIButton(type: .system)
+    private let button = ReachingButton(type: .system)
     /// Width/height, kept so a Dynamic Type change can re-match the composer's pills.
     private var pillSizeConstraints: [NSLayoutConstraint] = []
 

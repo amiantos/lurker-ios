@@ -757,7 +757,7 @@ private final class HistoryFeedSectionHeader: UITableViewHeaderFooterView {
 /// room when nothing is wrong.
 final class FeedFailureNotice: UIView {
     private let label = UILabel()
-    private let button = UIButton(configuration: .gray())
+    private let button = ReachingButton(configuration: .gray())
     private let stack = UIStackView()
 
     init(onRetry: @escaping () -> Void) {

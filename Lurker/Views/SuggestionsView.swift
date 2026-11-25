@@ -135,7 +135,10 @@ final class SuggestionsView: UIView {
         super.willMove(toWindow: newWindow)
         (window as? TouchWatchingWindow)?.removeTouchWatcher(self)
         (newWindow as? TouchWatchingWindow)?.addTouchWatcher(self)
+        // A press whose end will never be seen from here has to end now: left standing it
+        // holds the chip list still and the keyboard off the field for as long as it stands.
         watched = nil
+        pressEnded()
     }
 
     /// Whether a touch at `point` is aimed at the chips — not at a sheet, an alert or anything
@@ -244,8 +247,12 @@ extension CGRect {
 }
 
 /// A button whose target is a finger's reach though it draws smaller: the composer's send
-/// circle (lurker#1401). The reach has to stay inside the button's ancestors, or the touch is
-/// never handed down to it.
+/// circle, the upload's ✕, a floating pill (lurker#1401). The reach has to stay inside the
+/// button's ancestors, or be handed to it by one of them from `hitTest`.
+///
+/// ⚠ The button's own `point(inside:)`, not only an ancestor's `hitTest` pointing at it: a
+/// control decides whether a release was inside by asking itself, so a touch merely routed
+/// here from outside its bounds would end as a touch-up outside and do nothing.
 final class ReachingButton: UIButton {
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.reaching().contains(point)
@@ -286,7 +293,10 @@ extension SuggestionsView: WindowTouchWatcher {
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     // Moved: a scroll of the row, not a tap. Hidden or gone: nothing to pick from.
-                    if !delivered, moved < 10, !isHidden, window != nil {
+                    // Not active: the touch was cancelled by a call or the app switcher, not
+                    // taken by the keyboard, and nobody tapped anything.
+                    if !delivered, moved < 10, !isHidden, window != nil,
+                       UIApplication.shared.applicationState == .active {
                         Self.log.debug("a chip tap the chip never got (\(phase)); picked from the window")
                         onPick?(watched.suggestion)
                     }

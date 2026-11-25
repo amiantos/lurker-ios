@@ -53,7 +53,7 @@ final class UploadStatusView: UIView {
     private let glass = UIVisualEffectView()
     private let spinner = UIActivityIndicatorView(style: .medium)
     private let label = UILabel()
-    private let cancelButton = UIButton(type: .system)
+    private let cancelButton = ReachingButton(type: .system)
 
     override init(frame: CGRect) {
         super.init(frame: frame)

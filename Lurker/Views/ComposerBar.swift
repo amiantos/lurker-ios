@@ -150,7 +150,10 @@ final class ComposerBar: UIView {
     /// was gone before it could be replaced (lurker#1401). So while a chip is pressed the
     /// keyboard's edits are refused (`shouldChangeTextIn`), and if the text moved anyway, by a
     /// road that doesn't ask, the pick puts this back first.
-    private var chipPress: (text: NSAttributedString, selection: NSRange)?
+    ///
+    /// `text` goes nil once the app itself has edited the field under the press: there is then
+    /// nothing of the keyboard's to put back, though its edits are still refused.
+    private var chipPress: (text: NSAttributedString?, selection: NSRange)?
     private static let completionLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Lurker", category: "completion")
 
     /// `text`, written once per edit rather than per read — it's read several times a keystroke
@@ -1123,10 +1126,10 @@ final class ComposerBar: UIView {
     /// and say so — the owner's idea of what is being completed moved with it, and has to move
     /// back before it decides what the pick means.
     func prepareForPick() {
-        guard let chipPress, !textView.attributedText.isEqual(to: chipPress.text) else { return }
+        guard let chipPress, let held = chipPress.text, !textView.attributedText.isEqual(to: held) else { return }
         Self.completionLog.debug("the field changed under a chip press; put back")
         textView.inputDelegate?.textWillChange(textView)
-        textView.attributedText = chipPress.text
+        textView.attributedText = held
         textView.selectedRange = chipPress.selection
         textView.inputDelegate?.textDidChange(textView)
         textViewDidChange(textView)
@@ -1169,6 +1172,9 @@ final class ComposerBar: UIView {
     /// `bob: ` doesn't take the colour of the words it's put in front of.
     private func splice(_ range: NSRange, with replacement: String) {
         cachedLine = nil
+        // An edit of the app's own — a pick, or an upload's link landing mid-press — is not
+        // the keyboard's correction, and a later pick must not "put back" the field over it.
+        chipPress?.text = nil
         let storage = textView.textStorage
         var attributes = plainAttributes
         if range.length > 0 {

@@ -19,7 +19,7 @@ import UIKit
 /// what keeps this on screen is the latched divider being off-screen (see `updateFloatingPills`).
 /// A number here would read `0` or stale.
 final class UnreadBanner: FloatingGlassControl {
-    private let button = UIButton(type: .system)
+    private let button = ReachingButton(type: .system)
 
     /// Tucked up under the nav bar while hidden, so it slides down into the gap between the title
     /// pill and the conversation — the same entrance `ConnectionBanner` makes from the same slot.
