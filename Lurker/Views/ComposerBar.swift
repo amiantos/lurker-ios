@@ -719,6 +719,12 @@ final class ComposerBar: UIView {
         }
         // The ✕ takes the count's place while it is up.
         highlightCountButton.isHidden = highlightCount <= 0 || !cancelReplyButton.isHidden
+        // …and the excerpt runs right up to its glyph. The ✕ is 44pt wide around a glyph of
+        // about 18, so some 13pt of it on the label's side is empty: left as a gap (plus the
+        // row's own 8) the excerpt was cut some 20pt short of the ✕ for no reason anyone could
+        // see. The label laps that empty part and stops 6pt before the glyph; the button is
+        // above it, so the whole 44 still takes the tap.
+        (statusContent as? UIStackView)?.setCustomSpacing(cancelReplyButton.isHidden ? 8 : -7, after: leadLabel)
     }
 
     /// The away strip, shown or hidden for `awayText`. Changes the composer's height, so it runs
